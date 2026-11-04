@@ -406,5 +406,85 @@ class DetachedPassTest(unittest.TestCase):
                     proc.communicate()
 
 
+class DescendantPassTest(unittest.TestCase):
+    def test_sigterm_stops_phase_descendants_before_watch(self):
+        import json
+        import signal
+        import sys
+        import textwrap
+        import time
+        from contextlib import suppress
+
+        script = textwrap.dedent("""
+            import json, os, signal, subprocess, sys, time
+            from pathlib import Path
+            from unittest.mock import patch
+            from factory import onboard
+            mode, phase, ignore, directory = sys.argv[1:]
+            root = Path(directory)
+            if mode == 'descendant':
+                if ignore == 'yes':
+                    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                (root / 'ready').touch()
+                time.sleep(60)
+            elif mode == phase:
+                child = subprocess.Popen(
+                    [sys.executable, __file__, 'descendant', phase, ignore, directory],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                (root / 'descendant.pid').write_text(str(child.pid))
+                (root / 'phase.pid').write_text(str(os.getpid()))
+                child.wait()  # Like triage waiting for gh: default SIGTERM, no cleanup handler.
+            elif mode == 'watch':
+                pid = (root / 'descendant.pid').read_text()
+                deadline = time.monotonic() + 1
+                while True:
+                    state = subprocess.run(
+                        ['ps', '-o', 'stat=', '-p', pid], capture_output=True, text=True).stdout.strip()
+                    alive = bool(state) and not state.startswith('Z')
+                    if not alive or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.01)
+                (root / 'watch.json').write_text(json.dumps({
+                    'descendant_alive': alive, 'result': os.environ['SERVICE_RESULT'],
+                    'code': os.environ['EXIT_CODE'], 'status': os.environ['EXIT_STATUS']}))
+            elif mode == 'wrapper':
+                popen = subprocess.Popen
+                def launch(argv, **kwargs):
+                    return popen([sys.executable, __file__, argv[4], phase, ignore, directory], **kwargs)
+                with patch.object(onboard.subprocess, 'Popen', side_effect=launch):
+                    sys.exit(onboard.pass_main([]))
+        """)
+        for phase in ('triage', 'dispatch'):
+            for ignore in ('no', 'yes'):
+                with self.subTest(phase=phase, ignores_sigterm=ignore), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    source = root / 'descendants.py'
+                    source.write_text(script)
+                    proc = subprocess.Popen(
+                        [sys.executable, str(source), 'wrapper', phase, ignore, tmp],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                        env={**os.environ, 'PYTHONPATH': str(Path(__file__).resolve().parents[1])},
+                        start_new_session=True)
+                    try:
+                        deadline = time.monotonic() + 10
+                        while not (root / 'ready').exists() and proc.poll() is None and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        self.assertTrue((root / 'ready').exists(), 'phase descendant did not start')
+                        proc.send_signal(signal.SIGTERM)
+                        _, stderr = proc.communicate(timeout=5)
+                        self.assertEqual(proc.returncode, 143, stderr)
+                        self.assertEqual(json.loads((root / 'watch.json').read_text()), {
+                            'descendant_alive': False, 'result': 'signal',
+                            'code': 'killed', 'status': '15'})
+                    finally:
+                        for name in ('phase.pid', 'descendant.pid'):
+                            if (root / name).exists():
+                                with suppress(ProcessLookupError):
+                                    os.kill(int((root / name).read_text()), signal.SIGKILL)
+                        with suppress(ProcessLookupError):
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        proc.communicate()
+
+
 if __name__ == '__main__':
     unittest.main()
