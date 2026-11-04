@@ -195,7 +195,7 @@ class LearnCandidateReviewTest(unittest.TestCase):
                         self.assertEqual(record["attempts"], 3)
                     self.assertIn("200 tokens", record["proposal"])
                     if reason != "REVISE":
-                        self.assertIn("Factory rejected reviewer evidence", record["findings"])
+                        self.assertIn(reason, record["findings"])
                     self.assertIsNone(event["branch"])
                     if helpful == "curate":
                         self.assertIn("rejected:", event["curate"])

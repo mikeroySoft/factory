@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, stats
+from factory.domain import ReviewVerdict
 
 
 def git(root: Path, *args: str) -> str:
@@ -101,8 +102,8 @@ class ReviewPolicyTest(unittest.TestCase):
         verdict, _ = dispatch.review(self.root, 7, "PASS", self.head)
         result = self.publish()
 
-        self.assertEqual(verdict, "REVISE")
-        self.assertEqual(result["verdict"], "REQUEST_CHANGES")
+        self.assertIs(verdict, ReviewVerdict.ERROR)
+        self.assertIs(result["verdict"], ReviewVerdict.ERROR)
         self.assertEqual(result["reason"], "verdict_counts_mismatch")
         self.assertEqual(result["counts"], {"important": 1, "nit": 0, "pre_existing": 0})
 
@@ -113,12 +114,12 @@ class ReviewPolicyTest(unittest.TestCase):
 
         self.assertNotIn("pr", self.publish())
 
-    def test_verdict_counts_mismatch_returns_revise(self) -> None:
+    def test_verdict_counts_mismatch_returns_error(self) -> None:
         _findings, verdict, parsed, counts, reason = dispatch._parse_review_output(
             tally([self.finding("nit", 1)], "REVISE"), 5
         )
 
-        self.assertEqual(verdict, "REVISE")
+        self.assertIs(verdict, ReviewVerdict.ERROR)
         self.assertTrue(parsed)
         self.assertEqual(counts, {"important": 0, "nit": 1, "pre_existing": 0})
         self.assertEqual(reason, "verdict_counts_mismatch")
@@ -136,7 +137,7 @@ class ReviewPolicyTest(unittest.TestCase):
             self.root, 7, "PASS", git(self.root, "rev-parse", "HEAD")
         )
 
-        self.assertEqual(verdict, "REVISE")
+        self.assertIs(verdict, ReviewVerdict.ERROR)
         self.assertIn("unparsed_verdict", findings)
 
     def test_missing_or_invalid_tally_fails_closed(self) -> None:
@@ -144,7 +145,7 @@ class ReviewPolicyTest(unittest.TestCase):
             with self.subTest(output=output):
                 self.configure(output)
                 verdict, findings = dispatch.review(self.root, 7, "PASS", self.head)
-                self.assertEqual(verdict, "REVISE")
+                self.assertIs(verdict, ReviewVerdict.ERROR)
                 self.assertIn("unparsed_verdict", findings)
 
     def test_policy_path_is_configurable(self) -> None:
