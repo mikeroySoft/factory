@@ -154,6 +154,59 @@ class InstallStateTest(unittest.TestCase):
         self.assertEqual(self.states[self.timer], ("disabled", "inactive"))
         self.assertEqual(self.calls, [])
 
+    def test_install_fresh_units_with_legacy_missing_response_activate(self) -> None:
+        self.cfg.triage_service = "model.service"
+        self.cfg.eval_schedule = True
+        command = self.command
+
+        def legacy_command(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+            if cmd[2] == "is-enabled":
+                self.calls.append(cmd)
+                return subprocess.CompletedProcess(
+                    cmd, 1, "", f"Failed to get unit file state for {cmd[-1]}: No such file or directory\n",
+                )
+            if cmd[2] == "show":
+                self.calls.append(cmd)
+                self.assertEqual(cmd[3:5], ["--property=LoadState", "--value"])
+                return subprocess.CompletedProcess(cmd, 0, "not-found\n", "")
+            return command(cmd, cwd)
+
+        with patch.object(self, "command", side_effect=legacy_command), \
+                patch.object(onboard, "_dashboard_port_check", return_value=(True, "free")):
+            self.install("--dashboard")
+        for name in (
+            self.timer, f"{self.cfg.unit}-triage-probe.timer", f"{self.cfg.unit}-eval.timer",
+            f"{self.cfg.unit}-dashboard.service",
+        ):
+            self.assertEqual(self.states.get(name), ("enabled", "active"))
+            self.assertIn(["systemctl", "--user", "enable", "--now", name], self.calls)
+
+    def test_install_ambiguous_query_failure_aborts_before_writing(self) -> None:
+        command = self.command
+        for code, state, error in (
+            (1, "", "Failed to connect to user scope bus: Permission denied"),
+            (0, "loaded\n", ""),
+            (0, "", ""),
+        ):
+            with self.subTest(code=code, state=state):
+                self.calls.clear()
+
+                def failed_command(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+                    if cmd[2] == "is-enabled":
+                        self.calls.append(cmd)
+                        return subprocess.CompletedProcess(cmd, 1, "", "Failed to get unit file state")
+                    if cmd[2] == "show":
+                        self.calls.append(cmd)
+                        return subprocess.CompletedProcess(cmd, code, state, error)
+                    return command(cmd, cwd)
+
+                with patch.object(self, "command", side_effect=failed_command), \
+                        self.assertRaises(config.ConfigError):
+                    self.install("--enable")
+                self.assertEqual(list(self.udir.iterdir()), [])
+                self.assertFalse(any(call[2] in ("enable", "restart", "daemon-reload") for call in self.calls))
+
+
 
 if __name__ == "__main__":
     unittest.main()
