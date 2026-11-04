@@ -157,11 +157,23 @@ STANDING_INSTRUCTIONS = """
 - Commit only; do not push. The dispatcher pushes `agent/{n}`, opens the PR, and
   the merge stage lands it after review and CI. NEVER merge into or fast-forward
   `{main}`, and never close the ticket yourself.
-- Finish by running `{python} -m factory gate --report .factory/gate-report-{n}.md`
-  and fixing any failures it reports.
-- Last, write `.factory/handoff-{n}.md` (gitignored): what you changed, what is
-  still unverified, and what you would do next. The next attempt and the human
-  who inherits this ticket read it.
+- Run verification before the final commit and handoff:
+  `{python} -m factory gate --report .factory/gate-report-{n}.md` and fix any failures.
+  If `scripts/mutation.py` exists, also run
+  `uv run --frozen --no-managed-python --group mutation python scripts/mutation.py --working-tree --blocking --report .factory/mutation-{n}.md`.
+  This selects the PR-base changed files and lines, including uncommitted changes.
+  Kill each survivor with a behavior test asserting an observable outcome, not internals,
+  then repeat this pre-handoff check while time remains. Otherwise list every survivor
+  as `file:line: mutation` under `## Blocking mutation findings` in the handoff.
+  Record deadline-cut or unstarted mutants as incomplete, never survivors or passed.
+  This run uses at most `[gate].timeout - 60` seconds (1140 by default), bounded by
+  `FACTORY_WORKER_DEADLINE`, and counts against the attempt's wall-clock limit.
+  The dispatcher's PR-tier gate remains authoritative; do not override or skip it.
+- Make the final commit, then write `.factory/handoff-{n}.md` (gitignored): what you
+  changed, what is still unverified, blocking mutation findings, and what comes next.
+  Never claim a clean finish with remaining survivors or incomplete mutation work.
+  Do not re-run the full gate or mutation check after the final commit or handoff;
+  do not start or wait on checks then. Exit immediately instead of waiting for exit_grace.
 """
 
 
@@ -1826,6 +1838,7 @@ def run_worker(
             launch.update(env_overrides)
             if context is not None:
                 launch[lifecycle.CONTEXT_ENV] = context
+        launch["FACTORY_WORKER_DEADLINE"] = str(deadline)
         with without_github(launch) as isolated:
             raise_if_interrupted()
             proc = subprocess.Popen(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT,
@@ -4279,19 +4292,35 @@ def merge_pass_locked(dry_run: bool) -> None:
             return
 
 
+def _worker_mutation_findings(wt: Path, n: int) -> str:
+    """Read pre-handoff evidence only; never launch mutation after the worker exits."""
+    if not (wt / "scripts/mutation.py").is_file():
+        return ""
+    path = wt / ".factory" / f"mutation-{n}.md"
+    if not path.is_file():
+        return "missing pre-handoff mutation report"
+    report = path.read_text()
+    if (
+        report.rstrip().endswith("worker mutation: PASS")
+        and not re.search(r"(?m)^(?:factory/[^:\n]+:\d+: |incomplete:)", report)
+    ):
+        return ""
+    return report or "empty pre-handoff mutation report"
+
+
 def _handoff_done(path: Path) -> bool:
-    """Fallback finish seam for #508: a complete handoff has no unverified work."""
+    """Fallback finish seam for #508: no unverified or blocking work remains."""
     if not path.is_file():
         return False
     text = path.read_text()
     sections = []
     for heading in re.finditer(
-        r"(?im)^(#{1,6})[ \t]+(?:Still )?Unverified[ \t]*:?[ \t]*\n", text,
+        r"(?im)^(#{1,6})[ \t]+(?:(?:Still )?Unverified|Blocking[^\n:]*?)[ \t]*:?[ \t]*\n", text,
     ):
         remaining = text[heading.end():]
         end = re.search(rf"(?m)^#{{1,{len(heading[1])}}}[ \t]+", remaining)
         sections.append(remaining[:end.start()] if end else remaining)
-    return bool(sections) and all(
+    return bool(re.search(r"(?im)^#{1,6}[ \t]+(?:Still )?Unverified[ \t]*:?[ \t]*\n", text)) and all(
         re.sub(r"^[ \t]*[-*][ \t]+", "", section.strip()).strip().rstrip(".").casefold()
         in {"", "none", "nothing", "n/a"}
         for section in sections
@@ -4348,9 +4377,15 @@ def worker_round(
         run_options.update(worker=worker, worker_version=worker_version)
     handoff_path = wt / ".factory" / f"handoff-{n}.md"
     handoff_start = handoff_path.stat().st_mtime_ns if handoff_path.exists() else None
+    mutation_path = wt / ".factory" / f"mutation-{n}.md"
+    mutation_path.unlink(missing_ok=True)
     code, fired = run_worker(
         argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
     )
+    mutation_findings = _worker_mutation_findings(wt, n)
+    if mutation_findings:
+        with handoff_path.open("a") as handoff_file:
+            handoff_file.write(f"\n\n## Blocking mutation findings\n\n{mutation_findings}\n")
     # Decide before commit_leftovers: dispatcher commits cannot turn unfinished work into done.
     finished = (
         handoff_path.exists()
@@ -4399,13 +4434,18 @@ def worker_round(
             log=str(logfile), transcript=transcript, head=head, handoff=handoff,
             **identity, **timeout,
         )
-        return False, "budget exceeded before gate", logfile, head
+        return False, "budget exceeded before gate" + (
+            f"\n\n## Blocking mutation findings\n\n{mutation_findings}" if mutation_findings else ""
+        ), logfile, head
     ok, report = run_gate(
         wt, n, **gate_flags(
             sync, labels, body, handoff_path.read_text() if handoff_path.exists() else "",
             comments=comments,
         )
     )
+    if mutation_findings:
+        ok = False
+        report += f"\n\n## Blocking mutation findings\n\n{mutation_findings}"
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:

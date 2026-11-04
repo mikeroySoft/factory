@@ -1,15 +1,17 @@
 """Mutation testing of changed `factory/` files for the pr-tier gate.
 
-Mutates the Python files under `factory/` that changed in `origin/main..HEAD`, runs
-the full discovered unittest suite against each mutant (related tests first,
-stopping at the first failure), and prints
-every survivor as `path:line: <mutation>`. The default report-only mode exits zero
-after a complete trial even when mutants survive. ``--blocking`` exits nonzero for
-completed survivors on changed lines. Tool and baseline failures always exit
-nonzero. Mutants are sampled deterministically (sorted, then shuffled with a fixed
-seed, capped at CAP). One absolute deadline, `[gate].timeout` - 60,
-covers preparation, the baseline and every mutant: each run is bounded by the time
-left, and mutants not started or cut short are reported as incomplete.
+By default, mutates the Python files under `factory/` changed in
+`origin/main..HEAD`. ``--working-tree`` instead selects committed, staged, dirty,
+and untracked changes from the `origin/main` merge base, and fails incomplete
+trials. The full discovered unittest suite runs against each mutant (related tests
+first, stopping at the first failure), and every survivor prints as
+`path:line: <mutation>`. The default report-only mode exits zero after a complete
+trial even when mutants survive. ``--blocking`` exits nonzero for completed
+survivors on changed lines. Tool and baseline failures always exit nonzero.
+``--report`` mirrors stdout to a durable report with a terminal worker status.
+Mutants are sampled deterministically (sorted, then shuffled with a fixed seed,
+capped at CAP). One absolute deadline, `[gate].timeout` - 60, capped by
+`FACTORY_WORKER_DEADLINE`, covers preparation, the baseline and every mutant.
 
 Each worker runs in its own copy of the tree because cosmic-ray mutates files on disk;
 the worktree itself is never touched.
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import os
 import random
 import re
@@ -39,10 +42,12 @@ WORKERS = min(16, os.cpu_count() or 1)
 COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", ".factory", "__pycache__", ".ruff_cache")
 
 
-def changed_lines() -> dict[str, set[int]]:
-    """Changed `factory/*.py` files (added or modified) -> line numbers added or modified."""
+def changed_lines(*, working_tree: bool = False) -> dict[str, set[int]]:
+    """Changed `factory/*.py` files (added or modified) -> added or modified lines."""
+    revision = "origin/main" if working_tree else "origin/main..HEAD"
     out = subprocess.run(
-        ["git", "diff", "--unified=0", "--no-renames", "--diff-filter=AM", "origin/main..HEAD", "--", "factory/*.py"],
+        ["git", "diff", "--src-prefix=a/", "--dst-prefix=b/", "--unified=0",
+         "--no-renames", "--diff-filter=AM", revision, "--", "factory/*.py"],
         capture_output=True, text=True, check=True,
     ).stdout
     lines: dict[str, set[int]] = {}
@@ -53,6 +58,13 @@ def changed_lines() -> dict[str, set[int]]:
         elif line.startswith("@@"):
             start, _, count = line.split()[2].lstrip("+").partition(",")
             lines[path].update(range(int(start), int(start) + int(count or 1)))
+    if working_tree:
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "--", "factory/*.py"],
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        for path in untracked:
+            lines[path] = set(range(1, len(Path(path).read_text().splitlines()) + 1))
     return {path: changed for path, changed in lines.items() if changed}
 
 
@@ -104,8 +116,8 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
 
 def test_command(copy: Path, module: str | None = None) -> str:
     command = [
-        "env", "-C", str(copy), f"PYTHONPATH={copy}", sys.executable,
-        "-m", "scripts.mutation", "--test-module", module or "",
+        "env", "-C", str(copy), f"PYTHONPATH={copy}", "PYTHONDONTWRITEBYTECODE=1",
+        sys.executable, "-m", "scripts.mutation", "--test-module", module or "",
     ]
     return shlex.join(command)
 
@@ -145,14 +157,45 @@ def describe(diff: str) -> str:
     return f"`{old[:80]}` -> `{new[:80]}`"
 
 
+class _Tee:
+    def __init__(self, *streams) -> None:
+        self.streams = streams
+
+    def write(self, text: str) -> int:
+        for stream in self.streams:
+            stream.write(text)
+        self.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--blocking", action="store_true")
+    parser.add_argument("--working-tree", action="store_true")
+    parser.add_argument("--report", type=Path)
     parser.add_argument("--test-module", default=None)
     args = parser.parse_args(argv)
+    if args.report is None:
+        return _run(args)
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    with args.report.open("w") as report, contextlib.redirect_stdout(_Tee(sys.stdout, report)):
+        try:
+            status = _run(args)
+        except Exception as error:
+            print(f"mutation check failed: {type(error).__name__}: {error}")
+            status = 1
+        print(f"worker mutation: {'PASS' if status == 0 else 'FAIL'}")
+        return status
+
+
+def _run(args: argparse.Namespace) -> int:
     if args.test_module is not None:
         return run_tests(args.test_module)
-    lines = changed_lines()
+    lines = changed_lines(working_tree=args.working_tree)
     if not lines:
         print("no mutable files")
         return 0
@@ -160,8 +203,12 @@ def main(argv: list[str] | None = None) -> int:
     from cosmic_ray.mutating import mutate_and_test
     from cosmic_ray.work_item import TestOutcome
     deadline = time.monotonic() + max(1, gate_timeout() - 60)
+    worker_deadline = os.environ.get("FACTORY_WORKER_DEADLINE")
+    if worker_deadline is not None:
+        deadline = min(deadline, float(worker_deadline))
     root = Path.cwd()
     started = time.monotonic()
+    budget = max(0, deadline - started)
     with tempfile.TemporaryDirectory(prefix="factory-mutation-") as tmp:
         scratch = Path(tmp)
         mutations, hot = sample(lines, scratch)
@@ -169,9 +216,9 @@ def main(argv: list[str] | None = None) -> int:
             mutations = mutations[:hot]
 
         def baseline_timed_out() -> int:
-            print(f"baseline suite did not finish before the {deadline - started:.0f}s deadline")
+            print(f"baseline suite did not finish before the {budget:.0f}s deadline")
             print(f"incomplete: {len(mutations)} mutants not started and 0 cut short by the "
-                  f"{deadline - started:.0f}s deadline")
+                  f"{budget:.0f}s deadline")
             return 1
 
         workers = max(1, min(WORKERS, len(mutations)))
@@ -256,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{summary}; {len(survivors)} survived")
     if queue or cut:
         print(f"incomplete: {len(queue)} mutants not started and {len(cut)} cut short by the "
-              f"{deadline - started:.0f}s deadline")
+              f"{budget:.0f}s deadline")
     # cosmic-ray swallows its own failures (a mutation it could not write, a test command it
     # could not launch) into INCOMPETENT results. NO_TEST also leaves the sampled
     # mutation untested; neither is evidence of a killed or surviving mutant.
@@ -268,6 +315,8 @@ def main(argv: list[str] | None = None) -> int:
         mutation, result = broken[0]
         print(f"mutation check broke on {len(broken)} mutants; first at "
               f"{mutation.module_path}:{mutation.start_pos[0]}:\n{(result.output or '')[-3000:]}")
+        return 1
+    if args.working_tree and (queue or cut):
         return 1
     if args.blocking and hot_survivors:
         return 1
