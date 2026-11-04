@@ -499,5 +499,32 @@ elif a[:2] not in (''',
         self.assertEqual([row["comment"] for row in receipts], [99])
 
 
+    def test_owner_hold_during_pr_followup_suppresses_ci_escalation_and_handoff(self):
+        self.seed_approval()
+        self.labels = {"priority"}
+        self.assignees.add("owner")
+
+        def checks_after_owner_hold(_pr):
+            self.held()
+            return [{"name": "gate", "bucket": "fail"}]
+
+        with mock.patch.object(dispatch, "initiative_kind", return_value=None), \
+                mock.patch.object(dispatch, "pr_checks", side_effect=checks_after_owner_hold), \
+                mock.patch("factory.learn.promote_pass"), \
+                mock.patch.object(handoff, "observe") as observe:
+            dispatch.merge_pass_locked(False)
+            handoff.handoff_pass()
+
+        self.assertEqual(self.labels, {"priority", "factory-held"})
+        self.assertEqual(self.assignees, {"owner"})
+        self.assertEqual(self.posted, [])
+        observe.assert_not_called()
+        rows = lifecycle.read_events(dispatch.EVENTS)
+        self.assertFalse(any(row.get("event") == "escalate" for row in rows))
+        results = [row for row in rows if row.get("event") == "pass-result"]
+        self.assertEqual([(row["action"], row["code"], row["owner_state"]) for row in results],
+                         [("escalate", "ci_failed", "factory-held")])
+
+
 if __name__ == "__main__":
     unittest.main()
