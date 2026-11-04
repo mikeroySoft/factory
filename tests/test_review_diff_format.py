@@ -35,6 +35,8 @@ class ReviewDiffFormatTest(unittest.TestCase):
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
         self.git("init", "-q", "-b", "main")
+        self.git("config", "user.name", "Review fixture")
+        self.git("config", "user.email", "review@example.invalid")
         self.git("config", "commit.gpgsign", "false")
         self.original = [f"value_{n} = {n}\n" for n in range(1, 31)]
         (self.repo / "changed.py").write_text("".join(self.original))
