@@ -61,6 +61,15 @@ factory doctor          # tools, auth, remotes, model, dashboard port and .facto
 factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
 ```
 
+`factory install` enables and starts new units. On reinstall it snapshots each
+unit's enabled/active state before rewriting files and running `daemon-reload`.
+Existing stopped or disabled timers and dashboard services stay paused, even
+when their unit files change; enabled, active units retain the usual restart
+behavior when changed. This also applies to the optional probe and eval timers.
+Install lists paused units with a `systemctl --user enable --now <unit>` resume
+command. Use `factory install --enable` (with `--dashboard` when needed) to
+explicitly enable and start all installed units.
+
 `doctor` checks the configured dashboard bind address and port; `install --dashboard`
 refuses a foreign or unidentified holder before writing units. Each factory needs
 its own `[repo."owner/name".dashboard] port` in the host config. The preflight cannot
