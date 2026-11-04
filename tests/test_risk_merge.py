@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from factory import config, dispatch, gate, manage, onboard
+from factory.domain import ReviewVerdict
 from scripts import mutation
 
 HEAD = "a" * 40
@@ -370,8 +371,8 @@ class ReviewPolicyTest(unittest.TestCase):
             ("both-revise-fixes", ("REVISE", True), ("REVISE", True), "REVISE", True),
             ("both-revise-no-fixes", ("REVISE", False), ("REVISE", False), "REVISE", False),
             ("both-approve", ("APPROVE", False), ("APPROVE", False), "APPROVE", True),
-            ("reject-primary", ("REJECT", True), ("APPROVE", False), "REJECT", False),
-            ("reject-second", ("APPROVE", False), ("REJECT", True), "REJECT", False),
+            ("error-primary", ("ERROR", True), ("APPROVE", False), "ERROR", False),
+            ("error-second", ("APPROVE", False), ("ERROR", True), "ERROR", False),
         )
 
         for name, primary, second, expected, actionable in cases:
@@ -384,9 +385,6 @@ class ReviewPolicyTest(unittest.TestCase):
                     }))
                     for verdict, has_fix in (primary, second)
                 )
-                if primary[0] == second[0]:
-                    self.assertIsNot(reviews[0]["verdict"], reviews[1]["verdict"])
-
                 def fake_review(*_args, role="primary", reviews=reviews, **_kwargs):
                     review = reviews[role == "second"]
                     target = (
@@ -394,11 +392,11 @@ class ReviewPolicyTest(unittest.TestCase):
                         if role == "second" else dispatch._PENDING_REVIEWS
                     )
                     target[7] = {
-                        "verdict": review["verdict"],
+                        "verdict": ReviewVerdict(review["verdict"]),
                         "model": f"{role}/model",
                     }
                     findings = f"```json\n{json.dumps(review)}\n```\nVERDICT: {review['verdict']}"
-                    return review["verdict"], findings
+                    return ReviewVerdict(review["verdict"]), findings
 
                 with mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:risk policy"])), \
                         mock.patch.object(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n")), \
@@ -408,7 +406,10 @@ class ReviewPolicyTest(unittest.TestCase):
                     result = dispatch.pr_gate_and_review(Path("."), 7, "attempt", HEAD, {})
 
                 self.assertEqual(result[0], expected)
-                self.assertIs(dispatch._PENDING_RISK[7]["actionable"], actionable)
+                if expected == "ERROR":
+                    self.assertNotIn(7, dispatch._PENDING_RISK)
+                else:
+                    self.assertIs(dispatch._PENDING_RISK[7]["actionable"], actionable)
 
 
 class ConfigTest(unittest.TestCase):

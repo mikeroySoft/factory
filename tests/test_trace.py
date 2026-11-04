@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import cli, config, dispatch, lifecycle, trace, triage
+from factory.domain import ManagerDecision
 
 ACTOR = {"kind": "deterministic", "name": "test", "model": None, "version": "1"}
 
@@ -521,7 +522,7 @@ class TracePartTwoTest(unittest.TestCase):
         self.assertFalse(approval["RESOLVE"]["eligible"])
         self.assertFalse(approval["AUTHORIZE"]["eligible"])
         self.assertFalse(escalation["APPROVE"]["eligible"])
-        self.assertTrue(all(not viability[option]["eligible"] for option in manage.MANAGER_DECISIONS))
+        self.assertTrue(all(not viability[option]["eligible"] for option in ManagerDecision))
         self.assertTrue(viability["BUILD"]["eligible"])
 
     def test_curate_records_each_paths_allowlist_verdict(self):
