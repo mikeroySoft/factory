@@ -23,7 +23,7 @@ import time
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -1364,6 +1364,30 @@ def finished_since_learn() -> int:
                 if r.get("event") in ("merged", "escalate") and type(r.get("ticket")) is int and r["at"] > since})
 
 
+def _learn_wait(pr: dict | None, dry_run: bool) -> None:
+    """Journal blocker transitions, and one alert after each uninterrupted 24-hour wait."""
+    if dry_run:
+        return
+    events = lifecycle.read_events(dispatch.EVENTS)
+    previous = next((r for r in reversed(events) if r.get("event") == "learn-wait"), None)
+    number = pr["number"] if pr else None
+    if previous is None or previous.get("pr") != number:
+        if pr or previous:
+            dispatch.record("learn-wait", pr=number, branch=pr["headRefName"] if pr else None,
+                            at=lifecycle._now())
+        return
+    if number is None:
+        return
+    since = previous["at"]
+    if datetime.fromisoformat(lifecycle._now()) - datetime.fromisoformat(since) <= timedelta(hours=24):
+        return
+    if not any(r.get("event") == "learn-blocked" and r.get("pr") == number
+               and r.get("since") == since for r in events):
+        dispatch.record("learn-blocked", pr=number, branch=pr["headRefName"], since=since,
+                        reason=f"open lessons PR #{number} has blocked learn for over 24 hours",
+                        at=lifecycle._now())
+
+
 def auto_learn(cfg: config.Config, dry_run: bool) -> None:
     count = finished_since_learn()
     if count < AUTO_EVERY:
@@ -1375,12 +1399,13 @@ def auto_learn(cfg: config.Config, dry_run: bool) -> None:
                             "--json", "number,headRefName"])
     if pr := next((p for p in prs if LESSONS_BRANCH.match(p["headRefName"])), None):
         dispatch.log(f"learn: skipped (open lessons PR #{pr['number']})")
+        _learn_wait(pr, dry_run)
         return
+    _learn_wait(None, dry_run)
     if dry_run:
         dispatch.log(f"learn: would run --last {AUTO_EVERY} ({count} tickets finished since the last learn)")
         return
     dispatch.log(f"learn: {count} tickets finished since the last learn; running --last {AUTO_EVERY}")
-    score.run(cfg, AUTO_EVERY)  # unscored attempts of the same tickets, so evidence has session excerpts
     if reverts := decide_promotions(cfg):  # a lessons PR from this pass would conflict with the revert
         dispatch.log(f"learn: skipped (revert PR opened: {', '.join(reverts)})")
         return
@@ -1388,13 +1413,15 @@ def auto_learn(cfg: config.Config, dry_run: bool) -> None:
 
 
 def learn_pass(dry_run: bool = False) -> None:
-    """End of a dispatcher pass: `factory learn --last 10` once 10 tickets finished since the last `learn`,
-    then one keep/revert decision per open promotion (`decide_promotions`).
+    """Score unscored finished attempts every pass, then learn after each batch of 10 tickets
+    and decide open promotions from the recorded scores.
 
     Learn needs a manager (without one, learn only writes an uncommitted file) and no open lessons,
     curate or revert PR (lessons rewrite the whole file). A failure is journaled, never raised."""
     cfg = dispatch.cfg
     try:
+        if not dry_run:
+            score.run(cfg)
         auto_learn(cfg, dry_run)
     except Exception as exc:  # noqa: BLE001 - isolates learn failures from the dispatcher pass
         reason = f"{type(exc).__name__}: {exc}"
@@ -1557,13 +1584,45 @@ def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
             not LESSONS_BRANCH.match(branch)
             or pr["isDraft"]
             or pr["baseRefName"] != cfg.main
-            or pr["reviewDecision"] == "CHANGES_REQUESTED"
         ):
             continue
         try:
             promote(cfg, pr, events, dry_run)
         except Exception as exc:  # noqa: BLE001 - one stuck chore PR never blocks the others
             dispatch.log(f"PR #{n}: {branch} promotion failed ({type(exc).__name__}: {exc})")
+
+
+def _restored_score(cfg: config.Config, pr: dict, events: list[dict]) -> dict | None:
+    """Read a measured rollback's score only if this head restores the measured file versions."""
+    decision = next((r for r in reversed(events)
+                     if r.get("event") == "promotion-revert" and r.get("branch") == pr["headRefName"]), None)
+    if decision is None:
+        return None
+    baseline = decision.get("baseline") or {}
+    if (type(baseline.get("n")) is not int or baseline["n"] <= 0
+            or type(baseline.get("efficiency_mean")) not in (int, float)
+            or not 0 <= baseline["efficiency_mean"] <= 1):
+        return None
+    if not any(r.get("event") == "promotion-open" and r.get("pr") == decision.get("pr")
+               and r.get("head") == decision.get("head") and r.get("baseline") == baseline for r in events):
+        return None
+    merge = dispatch.gh_json([
+        "pr", "view", str(decision["pr"]), "--repo", cfg.repo, "--json", "mergeCommit",
+    ])["mergeCommit"]["oid"]
+    head = pr["headRefOid"]
+    dispatch.run(["git", "fetch", "origin", cfg.main, merge, head], cwd=cfg.root)
+    paths = dispatch.run([
+        "git", "diff", "--name-only", "--no-renames", "-z", f"{merge}^", merge,
+    ], cwd=cfg.root).stdout.rstrip("\0").split("\0")
+    changed = dispatch.run([
+        "git", "diff", "--name-only", "--no-renames", "-z", f"origin/{cfg.main}...{head}",
+    ], cwd=cfg.root).stdout.rstrip("\0").split("\0")
+    if not paths[0] or set(paths) != set(changed):
+        return None
+    restored = dispatch.run([
+        "git", "diff", "--quiet", f"{merge}^", head, "--", *paths,
+    ], cwd=cfg.root, check=False)
+    return baseline if restored.returncode == 0 else None
 
 
 def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> None:
@@ -1573,6 +1632,7 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         for row in events
     ):
         return
+    restored_score = _restored_score(cfg, pr, events)
     reviewed = any(
         row.get("event") == "review-result"
         and row.get("pr") == n
@@ -1580,7 +1640,7 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         and row.get("verdict") == "APPROVE"
         for row in events
     )
-    if not reviewed:
+    if restored_score is None and (not reviewed or pr["reviewDecision"] == "CHANGES_REQUESTED"):
         reason = "review approval missing"
         dispatch.log(f"PR #{n}: {branch} waiting for review at {head[:12]}")
         _promotion_blocked(events, n, branch, head, reason, dry_run)
@@ -1600,7 +1660,7 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         except Exception:
             _promotion_blocked(events, n, branch, head, "gate failed", False)
             raise
-    elif not any(row.get("gate") == "PASS" for row in gates):
+    elif gates[-1].get("gate") != "PASS":
         dispatch.log(f"PR #{n}: {branch} gate failed at {head[:12]}")
         _promotion_blocked(events, n, branch, head, "gate failed", dry_run)
         return
@@ -1626,7 +1686,7 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
     ]
     if (
         cfg.eval_schedule
-        and not branch.startswith(REVERT_BRANCH)
+        and restored_score is None
         and not eval_suite.merge_allowed(paths, head, events)
     ):
         command = (
@@ -1690,7 +1750,9 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
             and row.get("head") == head
             for row in events
         ):
-            dispatch.record("approved", pr=n, head=head, branch=branch, gate_head=head, review_head=head)
+            fields = {"restored_score": restored_score} if restored_score is not None else {}
+            dispatch.record("approved", pr=n, head=head, branch=branch, gate_head=head,
+                            review_head=None if restored_score is not None else head, **fields)
         dispatch.record("merged", pr=n, head=head, branch=branch, method="squash", by="factory")
     events.append({"event": "merged", "pr": n, "head": head, "branch": branch, "method": "squash"})
     dispatch.log(f"PR #{n}: merged {branch} into {cfg.main}")

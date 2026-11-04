@@ -1390,27 +1390,37 @@ branches, or merge state.
   (a `[workers.<label>] usage` profile or `cost_pattern`).
 - **Learning loop**: after a batch of tickets, `factory learn --dry-run`,
   read the proposed lessons, then `factory learn` and commit
-  `.factory-lessons.md`. Workers see it on every ticket. With `[manager]`
-  configured the dispatcher does this itself: at the end of a pass, once 10
-  tickets have finished (latest `merged`/`escalate` row) since the last `learn`
-  event (manual or automatic; from the journal start if none), it runs
-  `factory score --last 10` (so every chosen ticket has session excerpts),
-  decides open promotions on the new scores (below), then, unless that opened a
-  revert (`learn: skipped (revert PR opened: ...)`; a lessons PR would conflict
-  with it), `factory learn --last 10` once and journals `learn` with
-  `trigger: "auto"`.
+  `.factory-lessons.md`. Workers see it on every ticket. At the end of every
+  dispatcher pass, `factory score` scores unscored finished attempts (at most 50),
+  independently of the learning threshold, manager availability, or open proposals.
+  With `[manager]` configured, once 10 tickets have finished (latest
+  `merged`/`escalate` row) since the last successful `learn` event (manual or
+  automatic; from the journal start if none), the dispatcher decides open
+  promotions on the scores (below), then, unless that opened a revert
+  (`learn: skipped (revert PR opened: ...)`; a lessons PR would conflict with it),
+  runs `factory learn --last 10` and journals `learn` with `trigger: "auto"`.
   It skips while an `agent/lessons-*`, `agent/curate-*` or
   `agent/revert-lessons-*` PR is open (`learn:
-  skipped (open lessons PR #N)`; the count is kept), and without a manager logs
-  `learn: skipped (no manager)` and records nothing. A failure is journaled as
-  `learn` with `status: "failed"` and a `reason`, never fails the pass, and
-  keeps the count, so the next pass retries. Lessons, CURATE, and their revert PRs auto-merge:
-  gate, reviewer APPROVE (posted as a GitHub `COMMENT` review, since the
-  dispatcher authored the PR and cannot approve its own; the journaled
-  `review-result` carries the verdict), CI, `factory-approved`, squash (see
-  `factory learn` in the command table). Only same-repository heads are
-  admitted by branch name; a fork PR named `agent/lessons-*` still needs
-  `needs-review`. The guard is measurement, not a person: each merge
+  skipped (open lessons PR #N)`; the count is kept). Blocker changes journal
+  `learn-wait`; the same PR blocking learn for over 24 hours journals exactly one
+  `learn-blocked` per uninterrupted wait, surfaced by `factory watch`. A different
+  PR starts a new clock; clearing the wait clears its watch signal. Without a
+  manager, learn logs `learn: skipped (no manager)`; scoring still runs.
+  A failure is journaled as `learn` with `status: "failed"` and a `reason`, never
+  fails the pass, and keeps the count, so the next pass retries.
+  Lessons and CURATE proposals require gate, reviewer APPROVE (posted as a
+  GitHub `COMMENT` review since the dispatcher cannot approve its own PR;
+  `review-result` carries the verdict), CI, `factory-approved`, and squash.
+  A recorded `promotion-revert` can instead pass on its nonempty measured
+  baseline score: the candidate's changed paths must exactly match the original
+  promotion's, and their contents/modes must equal that merge's parent versions.
+  This is checked against the exact candidate head, not a branch-name exemption.
+  Such restorations need gate and CI, not reviewer APPROVE or a new worker eval;
+  their `approved` row records `restored_score` rather than claiming a review.
+  An unmeasured or modified restoration still needs review and scheduled eval.
+  Only same-repository heads are admitted by branch name; a fork PR named
+  `agent/lessons-*` still needs `needs-review`.
+  The guard is measurement, not a person: each non-revert merge
   journals `promotion-open` with the score means of the 10 attempts before it,
   and once 10 attempts journaled after the merge are scored the same pass journals
   `promotion-keep` or `promotion-revert` (opening `agent/revert-lessons-<pr>`)

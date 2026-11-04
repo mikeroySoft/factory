@@ -164,7 +164,7 @@ class MeasuredRollbackTest(unittest.TestCase):
                      {"event": "promotion-revert", "pr": 431, "head": "a" * 40,
                       "branch": self.branch, "baseline": self.base},
                      {"event": "gate", "branch": self.branch, "head": self.head, "gate": "PASS"},
-                     {"event": "review-result", "pr": 468, "head": self.head, "verdict": "REVISE"})
+                     {"event": "review-result", "pr": 468, "head": self.head, "verdict": "REQUEST_CHANGES"})
 
     def git(self, *args: str) -> str:
         return subprocess.run(["git", "-C", str(self.repo), *args], check=True,
@@ -202,6 +202,8 @@ class MeasuredRollbackTest(unittest.TestCase):
         learn.promote_pass([self.pr])
         self.assertEqual(self.merged(), [])
         self.pr["reviewDecision"] = ""
+        learn.promote_pass([self.pr])
+        self.assertEqual(self.merged(), [])
         self.journal({"event": "review-result", "pr": 468, "head": self.head, "verdict": "APPROVE"})
         learn.promote_pass([self.pr])
         self.assertEqual([r["pr"] for r in self.merged()], [468])
@@ -228,3 +230,21 @@ class MeasuredRollbackTest(unittest.TestCase):
             self.journal({"event": "gate", "branch": branch, "head": self.head, "gate": "PASS"})
             learn.promote_pass([self.pr])
         self.assertEqual(self.merged(), [])
+
+    def test_extra_changes_cannot_reuse_restored_score(self) -> None:
+        (self.repo / "extra.md").write_text("Unmeasured addition\n")
+        self.pr["headRefOid"] = self.commit("extra unmeasured change")
+        self.git("push", "-q", "origin", self.branch)
+        self.journal({"event": "gate", "branch": self.branch, "head": self.pr["headRefOid"], "gate": "PASS"})
+        learn.promote_pass([self.pr])
+        self.assertEqual(self.merged(), [])
+
+    def test_recorded_restoration_does_not_depend_on_revert_prefix(self) -> None:
+        branch = "agent/curate-restoration"
+        self.git("push", "-q", "origin", f"HEAD:{branch}")
+        self.pr["headRefName"] = branch
+        self.journal({"event": "promotion-revert", "pr": 431, "head": "a" * 40,
+                      "branch": branch, "baseline": self.base},
+                     {"event": "gate", "branch": branch, "head": self.head, "gate": "PASS"})
+        learn.promote_pass([self.pr])
+        self.assertEqual([r["pr"] for r in self.merged()], [468])
