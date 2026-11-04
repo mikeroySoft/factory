@@ -2174,7 +2174,8 @@ def run_reviewer(
             raw_output = ""
             try:
                 diff = run(
-                    ["git", "diff", comparison],
+                    ["git", "diff", "--no-color", "--no-ext-diff",
+                     "--src-prefix=a/", "--dst-prefix=b/", comparison],
                     cwd=wt,
                     env=clean,
                 ).stdout
