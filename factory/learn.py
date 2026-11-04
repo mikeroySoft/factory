@@ -1640,7 +1640,7 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         and row.get("verdict") == "APPROVE"
         for row in events
     )
-    if restored_score is None and (not reviewed or pr["reviewDecision"] == "CHANGES_REQUESTED"):
+    if restored_score is None and (not reviewed or pr.get("reviewDecision") == "CHANGES_REQUESTED"):
         reason = "review approval missing"
         dispatch.log(f"PR #{n}: {branch} waiting for review at {head[:12]}")
         _promotion_blocked(events, n, branch, head, reason, dry_run)
