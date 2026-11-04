@@ -14,6 +14,7 @@ import plistlib
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -992,7 +993,7 @@ def launchd_units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
 
 def launchctl(*args: str) -> None:
     proc = sh(["launchctl", *args])
-    if proc.returncode:
+    if proc.returncode and not (args[0] == "bootout" and proc.returncode == errno.ESRCH):
         raise ConfigError(f"launchctl {' '.join(args)}: {proc.stderr.strip() or proc.returncode}")
 
 
@@ -1013,17 +1014,20 @@ def install_launchd(cfg: config.Config, wanted: dict[str, str], host: str, dashb
         name = f"{label}.plist"
         path = directory / name
         body = wanted.get(name)
-        if path.exists():
-            if body is not None and path.read_text() == body:
+        unchanged = path.exists() and body is not None and path.read_text() == body
+        if unchanged:
+            if sh(["launchctl", "print", f"{domain}/{label}"]).returncode == 0:
                 continue
+        elif path.exists():
             launchctl("bootout", f"{domain}/{label}")
             if body is None:
                 path.unlink()
                 print(f"removed {path}")
                 continue
         if body is not None:
-            path.write_text(body)
-            print(f"wrote {path}")
+            if not unchanged:
+                path.write_text(body)
+                print(f"wrote {path}")
             launchctl("bootstrap", domain, str(path))
     return 0
 
@@ -1032,14 +1036,27 @@ def pass_main(argv: list[str]) -> int:
     """A shell-free oneshot: triage is best effort; watch sees dispatch's result."""
     argparse.ArgumentParser(prog="factory pass", description=pass_main.__doc__).parse_args(argv)
     exe = [sys.executable, "-P", "-m", "factory"]
-    subprocess.run([*exe, "triage"], check=False)
     status = 1
+
+    def terminate(signum, _frame):
+        nonlocal status
+        status = -signum
+        # subprocess.run kills/reaps its active child while unwinding.
+        raise SystemExit(128 + signum)
+
+    previous = signal.signal(signal.SIGTERM, terminate)
     try:
-        status = subprocess.run([*exe, "dispatch"], check=False).returncode
+        try:
+            subprocess.run([*exe, "triage"], check=False)
+            status = subprocess.run([*exe, "dispatch"], check=False).returncode
+        finally:
+            # A repeated termination must not interrupt the result handoff.
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            env = {**os.environ, "SERVICE_RESULT": "success" if status == 0 else "signal" if status < 0 else "exit-code",
+                   "EXIT_CODE": "killed" if status < 0 else "exited", "EXIT_STATUS": str(abs(status))}
+            subprocess.run([*exe, "watch"], env=env, check=False)
     finally:
-        env = {**os.environ, "SERVICE_RESULT": "success" if status == 0 else "signal" if status < 0 else "exit-code",
-               "EXIT_CODE": "killed" if status < 0 else "exited", "EXIT_STATUS": str(abs(status))}
-        subprocess.run([*exe, "watch"], env=env, check=False)
+        signal.signal(signal.SIGTERM, previous)
     return 128 - status if status < 0 else status
 
 

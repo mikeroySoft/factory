@@ -74,13 +74,17 @@ The pass agent runs at load and every `[install].every` / `--every` interval
 must be a positive whole number of seconds. `factory pass` runs triage, dispatch,
 then watch without a shell: triage failure does not block dispatch, watch receives
 `SERVICE_RESULT`, `EXIT_CODE`, and `EXIT_STATUS`, and watch failure does not replace
-dispatch's exit status. The dashboard uses KeepAlive and `--host/--port --no-open`.
+dispatch's exit status. SIGTERM of the wrapper stops its active child and runs watch
+with `SERVICE_RESULT=signal`, `EXIT_CODE=killed`, and the signal number in `EXIT_STATUS`.
+The dashboard uses KeepAlive and `--host/--port --no-open`.
 The optional probe runs every 120 seconds; the optional eval runs Monday at 00:00.
 Agent stdout/stderr go to `.factory/logs/<label>.stdout.log` / `.stderr.log`.
-Installation bootstraps new agents; identical plists are untouched. Changed agents
-are booted out before rewriting and bootstrapping. Disabled optional agents are
-booted out before deleting their plists. A hand-made agent with a different label
-is not adopted or removed.
+Installation checks `launchctl print` for identical plists: loaded agents are left
+alone, while unloaded agents are bootstrapped again, including after a failed
+bootstrap. Changed agents are booted out before rewriting and bootstrapping.
+Disabled optional agents are booted out before deleting their plists. Bootout's
+missing-service error is harmless; other errors stop installation without rewriting
+or deleting that plist. A hand-made agent with a different label is not adopted or removed.
 
 `doctor` checks the configured dashboard bind address and port; `install --dashboard`
 refuses a foreign or unidentified holder before writing units. Each factory needs
