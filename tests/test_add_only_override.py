@@ -62,16 +62,6 @@ def run_gate(repo: Path, *args: str) -> tuple[int, str]:
 
 
 class AddOnlyOverrideTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.enterContext(mock.patch.object(
-            dispatch, "owner_state",
-            return_value=({
-                "state": "OPEN",
-                "labels": [{"name": config.LABEL_HUMAN}],
-                "comments": [],
-            }, None),
-        ))
-
     def test_override_allows_existing_test_edit_but_not_protected_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = repository(Path(directory))
