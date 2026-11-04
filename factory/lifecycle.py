@@ -391,7 +391,7 @@ def current():
 
 class Execution:
     def __init__(self, path: Path, stage: str, *, ticket=None, attempt=None,
-                 review_round=None, dispatcher=False, lock=None, lazy=False):
+                 review_round=None, lane=None, dispatcher=False, lock=None, lazy=False):
         parent = current()
         inherited = parent._context() if parent is not None else _inherited()
         self.path = Path(inherited.get("path", path)).absolute()
@@ -402,6 +402,7 @@ class Execution:
         self.ticket = inherited.get("ticket") if ticket is None else ticket
         self.attempt = inherited.get("attempt") if attempt is None else attempt
         self.review_round = inherited.get("review_round") if review_round is None else review_round
+        self.lane = inherited.get("lane") if lane is None else lane
         self.stage = stage
         self.outcome = "completed"
         self.reason = None
@@ -429,6 +430,7 @@ class Execution:
             "root_execution_id": self.root_execution_id,
             "parent_execution_id": self.execution_id,
             "ticket": self.ticket, "attempt": self.attempt, "review_round": self.review_round,
+            "lane": self.lane,
             "execution_ids": self.execution_ids, "locks": self.locks,
         }
 
@@ -450,6 +452,7 @@ class Execution:
                 self.reason = "scope exited before its registered children were reaped"
         row = {
             **fields, **{key: getattr(self, key) for key in _IDENTITY_FIELDS},
+            "lane": self.lane,
             "event": "lifecycle", "schema_version": 1, "event_id": str(uuid.uuid4()),
             "kind": kind, "at": _now(), "outcome": self.outcome if kind == "exit" else None,
             "reason": self.reason if kind == "exit" else None,
@@ -548,9 +551,9 @@ class Execution:
 
 @contextmanager
 def scope(path: Path, stage: str, *, ticket=None, attempt=None, review_round=None,
-          dispatcher=False, lock=None, lazy=False, **enter):
+          lane=None, dispatcher=False, lock=None, lazy=False, **enter):
     execution = Execution(path, stage, ticket=ticket, attempt=attempt, review_round=review_round,
-                          dispatcher=dispatcher, lock=lock, lazy=lazy)
+                          lane=lane, dispatcher=dispatcher, lock=lock, lazy=lazy)
     execution.emit("enter", **enter)
     token = _CURRENT.set(execution)
     try:
@@ -788,6 +791,7 @@ def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[
                 if state == "interrupted":
                     terminal = {
                         **{key: events[-1].get(key) for key in _IDENTITY_FIELDS},
+                        "lane": events[-1].get("lane"),
                         "event": "lifecycle", "schema_version": 1,
                         "event_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory:interrupted:{execution_id}")),
                         "sequence": events[-1]["sequence"] + 1, "kind": "exit", "at": _now(),
@@ -812,6 +816,7 @@ def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[
                         pending_wait = None
             result.append({
                 **{key: events[-1].get(key) for key in _IDENTITY_FIELDS},
+                "lane": events[-1].get("lane"),
                 "state": state, "entered_at": entry.get("at"),
                 "ended_at": terminal.get("at") if terminal else None,
                 "outcome": terminal.get("outcome") if terminal else None,

@@ -306,6 +306,44 @@ with lifecycle.scope(Path(sys.argv[1]), 'worker') as execution:
         lifecycle.append(self.path, {key: value for key, value in entry.items() if key != "stage"})
         self.assertEqual([state["state"] for state in lifecycle.observe(self.path)], ["completed"])
 
+    def test_lane_observation_retains_active_and_reconciled_child_context(self) -> None:
+        with (
+            lifecycle.scope(self.path, "dispatcher", dispatcher=True) as dispatcher,
+            lifecycle.scope(self.path, "ticket", ticket=7, lane=2) as ticket,
+        ):
+            proc = self.spawn("""
+import sys
+from pathlib import Path
+from factory import lifecycle
+with lifecycle.scope(Path('/unused'), 'worker'):
+    print('entered', flush=True)
+    sys.stdin.readline()
+""", env=ticket.env())
+            self.assertEqual(proc.stdout.readline().strip(), "entered")
+            active = next(row for row in lifecycle.observe(self.path) if row["stage"] == "worker")
+            self.assertEqual((active["state"], active["lane"]), ("active", 2))
+            self.assertEqual(active["dispatcher_run_id"], dispatcher.dispatcher_run_id)
+            proc.kill()
+            proc.wait(timeout=10)
+            interrupted = next(row for row in lifecycle.observe(self.path) if row["stage"] == "worker")
+            self.assertEqual((interrupted["state"], interrupted["lane"]), ("interrupted", 2))
+            terminal = interrupted["events"][-1]
+            self.assertEqual((terminal["kind"], terminal["lane"]), ("exit", 2))
+            self.assertTrue(terminal["reconciled"])
+        states = {row["stage"]: row for row in lifecycle.observe(self.path)}
+        self.assertEqual((states["ticket"]["state"], states["ticket"]["lane"]), ("completed", 2))
+        self.assertEqual(states["worker"]["events"][-1], terminal)
+
+    def test_direct_execution_inherits_dispatcher_without_creating_a_new_run(self) -> None:
+        with lifecycle.scope(self.path, "dispatcher", dispatcher=True) as dispatcher:
+            execution = lifecycle.Execution(self.path, "ticket", ticket=7, lane=2)
+            execution.emit("enter")
+            execution.emit("exit")
+        state = next(row for row in lifecycle.observe(self.path) if row["stage"] == "ticket")
+        self.assertEqual(state["dispatcher_run_id"], dispatcher.dispatcher_run_id)
+        self.assertEqual(state["parent_execution_id"], dispatcher.execution_id)
+        self.assertEqual((state["lane"], state["state"]), (2, "completed"))
+
 
 if __name__ == "__main__":
     unittest.main()

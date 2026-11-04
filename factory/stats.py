@@ -433,6 +433,49 @@ def print_workers(rows: list[dict]) -> None:
         print(f"{row['worker']:<{width}}  {rate:>15}  {row['attempts']:>8}{tokens}" + f"  {cost}" * costs)
 
 
+def lane_metrics(
+    audit: dict[int, list[dict]], start: datetime | None = None, end: datetime | None = None,
+) -> list[dict]:
+    """Attribute untagged landing events to the ticket's most recent claim."""
+    rows, outcomes = {}, {}
+    counts = {"claimed": "claims", "attempt": "attempts", "review": "reviews",
+              "merged": "merges", "escalate": "escalations"}
+    for events in audit.values():
+        lane = None
+        for event in events:
+            kind = event.get("event")
+            if kind == "claimed":
+                lane = event.get("lane")
+            if kind not in counts:
+                continue
+            if start is not None and end is not None:
+                at = _timestamp(event.get("at"))
+                if at is None or not start <= at <= end:
+                    continue
+            selected = event.get("lane") or lane
+            selected = selected if type(selected) is int and selected > 0 else None
+            if selected not in rows:
+                rows[selected] = {"lane": selected, "claims": 0, "attempts": 0, "first_pass": None,
+                                  "reviews": 0, "merges": 0, "escalations": 0}
+                outcomes[selected] = []
+            rows[selected][counts[kind]] += 1
+            if kind == "attempt" and event.get("attempt") == 1 and event.get("gate") in {"PASS", "FAIL"}:
+                outcomes[selected].append(event["gate"] == "PASS")
+    for lane, gates in outcomes.items():
+        if gates:
+            rows[lane]["first_pass"] = sum(gates) / len(gates)
+    return [rows[lane] for lane in sorted(rows, key=lambda lane: (lane is None, lane))]
+
+
+def print_lanes(rows: list[dict]) -> None:
+    print("lane     claims  attempts  first-gate pass  reviews  merges  escalations")
+    for row in rows:
+        lane = row["lane"] if row["lane"] is not None else "unknown"
+        rate = "n/a" if row["first_pass"] is None else f"{row['first_pass']:.1%}"
+        print(f"{lane!s:<7}  {row['claims']:>6}  {row['attempts']:>8}  {rate:>15}"
+              f"  {row['reviews']:>7}  {row['merges']:>6}  {row['escalations']:>11}")
+
+
 def brief_metrics(audit: dict[int, list[dict]]) -> list[dict]:
     """First-gate pass rate split by whether attempt 1 carried a brief."""
     outcomes: dict[str, list[bool]] = {"with brief": [], "without brief": []}
@@ -973,6 +1016,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--by-worker", action="store_true",
                         help="split gate pass rate, attempts, reported token usage and known cost by claim label")
     parser.add_argument("--by-brief", action="store_true", help="split first-gate pass rate by tickets with/without a brief")
+    parser.add_argument("--by-lane", action="store_true",
+                        help="split local claim, gate, review and merge metrics by dispatch lane")
     parser.add_argument("--stages", action="store_true",
                         help="last successful triage, dispatch and watch pass for this repository")
     parser.add_argument("--escapes", action="store_true",
@@ -990,6 +1035,15 @@ def main(argv: list[str]) -> int:
     if not args.escapes and not journal.is_file():
         raise SystemExit(f"factory stats: no journal at {journal}; this is not the dispatcher's root. "
                          f'Set [repo."{cfg.repo}"].path in {config.host_config_path()} or pass --repo owner/name')
+    if args.by_lane:
+        audit = audit_by_ticket(journal)
+        end = _now() if args.week else None
+        rows = lane_metrics(audit, end - timedelta(days=7) if end else None, end)
+        if args.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            print_lanes(rows)
+        return 0
     if args.week:
         now = _now()
         start = now - timedelta(days=7)
