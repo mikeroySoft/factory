@@ -380,11 +380,11 @@ class PromoteRegressionTest(unittest.TestCase):
             with self.subTest(refusal=refusal):
                 self.events.unlink(missing_ok=True)
                 self.journal(self.gate(), self.review())
-                self.gh.side_effect = lambda args: (
+                self.gh.side_effect = lambda args, state=state: (
                     self.compare if args[0] == "api" else {"mergeStateStatus": state}
                 )
 
-                def reject_merge(args: list[str], **_kwargs) -> subprocess.CompletedProcess:
+                def reject_merge(args: list[str], refusal=refusal, **_kwargs) -> subprocess.CompletedProcess:
                     if args[:3] == ["gh", "pr", "merge"]:
                         raise subprocess.CalledProcessError(1, args, stderr=refusal)
                     return subprocess.CompletedProcess(args, 0, "", "")
