@@ -63,6 +63,10 @@ class MutationDeadlineTest(unittest.TestCase):
         baseline = mock.Mock(return_value=subprocess.CompletedProcess(
             [], baseline_returncode, "baseline output\n", "",
         ))
+        baseline.side_effect = lambda command, **_kwargs: (
+            subprocess.CompletedProcess(command, 0, "", "")
+            if command[:2] == ["git", "clone"] else baseline.return_value
+        )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "factory").mkdir()

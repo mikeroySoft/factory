@@ -2039,7 +2039,7 @@ class RunnerStorageDispatchTest(unittest.TestCase):
                 dispatch.configure(config.load(self.repo))
                 real_run = dispatch.run
 
-                def run(command, *args, **kwargs):
+                def run(command, *args, storage_tier=storage_tier, real_run=real_run, **kwargs):
                     if command[1:6] == ["-P", "-E", "-m", "factory", "gate"]:
                         tier = "pr" if "--tier" in command else "attempt"
                         storage = tier == storage_tier

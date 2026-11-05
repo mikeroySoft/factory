@@ -184,7 +184,7 @@ def run_cosmic_tests(command: str, timeout: float):
             return TestOutcome.KILLED, "timeout" + (f"\n{output}" if output else "")
         outcome = TestOutcome.SURVIVED if proc.returncode == 0 else TestOutcome.KILLED
         return outcome, _text(stdout, stderr)
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError):
         return TestOutcome.INCOMPETENT, traceback.format_exc()
 
 
@@ -206,8 +206,8 @@ def _main(argv: list[str] | None = None) -> int:
     if not lines:
         print("no mutable files")
         return 0
-    from attrs import evolve
     import cosmic_ray.mutating as cosmic_mutating
+    from attrs import evolve
     from cosmic_ray.work_item import TestOutcome
 
     cosmic_mutating.run_tests = run_cosmic_tests
@@ -237,7 +237,7 @@ def _main(argv: list[str] | None = None) -> int:
                 return baseline_timed_out()
             clone = subprocess.run(
                 ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(copy)],
-                capture_output=True, text=True, timeout=remaining,
+                capture_output=True, text=True, check=False, timeout=remaining,
             )
             clone_output = _text(clone.stdout, clone.stderr)
             if storage_diagnostic(clone_output):
