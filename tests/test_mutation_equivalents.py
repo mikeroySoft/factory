@@ -31,7 +31,7 @@ class MutationEquivalentsTest(unittest.TestCase):
     }
 
     def run_gate(self, entries, *, outcome=TestOutcome.SURVIVED, diff=None, changed=True,
-                 blocking=True):
+                 blocking=True, sampled=True, hot=1, clock=None, output=""):
         spec = SimpleNamespace(
             module_path=Path(self.entry["file"]), operator_name=self.entry["operator"],
             start_pos=(1, 0), end_pos=(1, 9),
@@ -39,6 +39,7 @@ class MutationEquivalentsTest(unittest.TestCase):
         result = SimpleNamespace(
             test_outcome=outcome,
             diff=diff if diff is not None else "--- before\n+++ after\n@@ -1 +1 @@\n-value = 1\n+value = 2\n",
+            output=output,
         )
         modules = {
             "attrs": SimpleNamespace(evolve=lambda value, **kw: SimpleNamespace(**{**vars(value), **kw})),
@@ -48,18 +49,20 @@ class MutationEquivalentsTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory, contextlib.chdir(directory):
             Path("reviewed.json").write_text(json.dumps(entries))
-            output = io.StringIO()
+            report = io.StringIO()
+            timer = mock.patch.object(mutation.time, "monotonic", side_effect=clock) if clock else contextlib.nullcontext()
             with mock.patch.dict(sys.modules, modules), \
                     mock.patch.object(mutation, "changed_lines", return_value={spec.module_path.as_posix(): {1}} if changed else {}), \
-                    mock.patch.object(mutation, "sample", return_value=([spec], 1)), \
+                    mock.patch.object(mutation, "sample", return_value=([spec] if sampled else [], hot)), \
                     mock.patch.object(mutation, "WORKERS", 1), \
                     mock.patch.object(mutation.shutil, "copytree"), \
                     mock.patch.object(mutation.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "")), \
-                    contextlib.redirect_stdout(output):
+                    mock.patch.object(mutation, "gate_timeout", return_value=61), timer, \
+                    contextlib.redirect_stdout(report):
                 status = mutation.main([
                     *(["--blocking"] if blocking else []), "--equivalents", "reviewed.json",
                 ])
-            return status, output.getvalue()
+            return status, report.getvalue()
 
     def test_only_reviewed_equivalent_survives(self):
         status, report = self.run_gate([self.entry])
@@ -75,10 +78,21 @@ class MutationEquivalentsTest(unittest.TestCase):
                 self.assertNotEqual(status, 0, report)
                 self.assertIn("stale equivalent", report)
 
-    def test_stale_entry_fails_without_mutable_files(self):
-        status, report = self.run_gate([self.entry], changed=False)
-        self.assertNotEqual(status, 0, report)
-        self.assertIn("stale equivalent", report)
+    def test_untested_entries_are_not_stale(self):
+        for changes in ({"changed": False}, {"sampled": False}, {"hot": 0},
+                        {"clock": [0, 0, 0, 0.1, 0.2, 2, 2]},
+                        {"clock": [0, 0, 0, 0.1, 0.2, 0.3, 2, 2], "output": "timeout"}):
+            with self.subTest(changes=changes):
+                status, report = self.run_gate([self.entry], **changes)
+                self.assertEqual(status, 0, report)
+                self.assertNotIn("stale equivalent", report)
+
+    def test_unchanged_file_entry_does_not_fail_report_only_run(self):
+        status, report = self.run_gate(
+            [{**self.entry, "file": "factory/unchanged.py"}], blocking=False,
+        )
+        self.assertEqual(status, 0, report)
+        self.assertNotIn("stale equivalent", report)
 
     def test_identity_requires_location_operator_and_exact_untruncated_text(self):
         for field, value in (("file", "factory/other.py"), ("line", 2),
