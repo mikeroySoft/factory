@@ -13,6 +13,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from test_factory import factory, make_repo, stub_bin
 
 from factory import __version__, cli, config, dashboard, dispatch, lifecycle, onboard, stats, triage
