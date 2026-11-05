@@ -1885,11 +1885,14 @@ PY
         for decision, body, expected in cases:
             with self.subTest(decision=decision, body=body):
                 repo, stubs, _ = self.scenario()
-                # Only an installed worker can be routed to (#662).
+                # Only an installed worker whose probe proves its login can be routed to (#662).
                 (Path(stubs) / "droid").write_text("#!/bin/sh\n")
                 (Path(stubs) / "droid").chmod(0o755)
                 command = ["printf", "%s", f"DECISION: {decision}\n{body}"]
                 (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
+                with (repo / config.CONFIG_NAME).open("a") as settings:
+                    settings.write('[workers]\ndefault = ["false"]\n[workers.chore]\ncommand = ["droid"]\n'
+                                   "probe = " + json.dumps([sys.executable, "-c", "pass"]) + "\n")
                 result = factory(repo, "manage", path=stubs)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = (Path(stubs) / "gh.log").read_text()
@@ -1913,6 +1916,7 @@ PY
                 settings = "[manager]\ncommand = " + json.dumps(command) + '\n[workers]\ndefault = ["false"]\n'
                 if configured:
                     settings += '[workers.chore]\ncommand = ["true"]\nwhen = "Mechanical edits only"\n'
+                    settings += "probe = " + json.dumps([sys.executable, "-c", "pass"]) + "\n"  # proves the login (#662)
                 (repo / config.CONFIG_NAME).write_text(settings)
                 result = factory(repo, "manage", path=stubs)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -2164,6 +2168,7 @@ PY
         (repo / config.CONFIG_NAME).write_text(
             "[manager]\ncommand = " + json.dumps(command)
             + '\n[workers]\ndefault = ["false"]\n[workers.ci-fix]\ncommand = ["fix-worker", "{prompt}"]\nwhen = "Red CI"'
+            + "\nprobe = " + json.dumps([sys.executable, "-c", "pass"])  # proves the login (#662)
             + "\n[review]\ncommand = " + json.dumps(["printf", review_output])
             + '\n[[gate.check]]\nname = "unit"\nrun = ["true"]\n[repo]\nslug = "acme/widgets"\n'
         )
@@ -2239,6 +2244,7 @@ esac
                     "[manager]\ncommand = " + json.dumps(command)
                     + '\n[workers]\ndefault = ["false"]\nchore = ["false"]'
                     + f'\n[workers.{worker}]\ncommand = ["fix-worker", "{{prompt}}"]\nwhen = "Red CI"'
+                    + "\nprobe = " + json.dumps([sys.executable, "-c", "pass"])  # proves the login (#662)
                     + "\n[review]\ncommand = " + json.dumps(["printf", review_output])
                     + '\n[[gate.check]]\nname = "unit"\nrun = ["' + ("true" if gate_ok else "false") + '"]\n'
                     + '\n[repo]\nslug = "acme/widgets"\n'

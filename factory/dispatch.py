@@ -68,8 +68,11 @@ _PENDING_SECOND_REVIEWS: dict[int, dict] = {}
 _PENDING_RISK: dict[int, dict] = {}
 _LOW_FALLBACK: set[int] = set()
 _HOST_CLAIMS: dict[int, HostClaim] = {}
-# Worker profile -> why it cannot launch this pass (failed probe or auth failure at launch).
+# Worker profile -> why it cannot launch this pass (failed check, or a launch failure not yet recovered).
 UNAVAILABLE_WORKERS: dict[str, str] = {}
+# Profiles whose `probe` passed this pass: only these prove a login, so only these besides
+# `default` may be chosen by the manager (#662).
+VERIFIED_WORKERS: set[str] = set()
 # Tickets this pass escalated: no owner can have released them yet (see `observe_owner_requeue`).
 _ESCALATED: set[int] = set()
 
@@ -93,6 +96,7 @@ def configure(c: Config) -> None:
     _PENDING_RISK.clear()
     _LOW_FALLBACK.clear()
     UNAVAILABLE_WORKERS.clear()
+    VERIFIED_WORKERS.clear()
     _ESCALATED.clear()
     host_claim_login.cache_clear()
 
@@ -1884,21 +1888,38 @@ def fallback_worker(profile: str) -> str | None:
     return "default"
 
 
-def set_worker_health(profile: str, reason: str | None, *, source: str) -> None:
-    """Mark `profile` available (`reason` None) or unavailable; journal only a change."""
+def last_worker_health(profile: str) -> dict | None:
+    return next((row for row in reversed(lifecycle.read_events(EVENTS))
+                 if row.get("event") == "worker-health" and row.get("worker") == profile), None)
+
+
+def set_worker_health(profile: str, reason: str | None, *, source: str, check: str | None = None) -> None:
+    """Mark `profile` available (`reason` None) or unavailable; journal only a change.
+
+    `check` names the evidence: `probe`, `executable` (PATH only, so the login is unverified)
+    or `launch`."""
     if reason is None:
         UNAVAILABLE_WORKERS.pop(profile, None)
     else:
         UNAVAILABLE_WORKERS[profile] = reason
-    last = next((row for row in reversed(lifecycle.read_events(EVENTS))
-                 if row.get("event") == "worker-health" and row.get("worker") == profile), None)
+    last = last_worker_health(profile)
     available = reason is None
     if (last["available"] if last else True) == available:
         return
+    check = check or source
     fallback = None if available else fallback_worker(profile)
-    record("worker-health", worker=profile, available=available, reason=reason, fallback=fallback, source=source)
+    record("worker-health", worker=profile, available=available, reason=reason, fallback=fallback,
+           source=source, check=check)
     log(f"worker `{profile}` " + ("available again" if available else f"unavailable ({reason})")
+        + (" (executable found; its login is unverified without a probe)" if available and check == "executable" else "")
         + (f"; falling back to `{fallback}`" if fallback else ""))
+
+
+def worker_missing(spec: config.WorkerSpec, env: dict[str, str]) -> str | None:
+    """The host wrapper or the profile's own executable that does not resolve on the worker's
+    PATH, checked independently: a wrapper on PATH says nothing about the worker it runs."""
+    return next((program for program in dict.fromkeys((spec.argv[0], spec.argv[spec.wrap]))
+                 if shutil.which(program, path=env.get("PATH")) is None), None)
 
 
 def _probe(argv: list[str], env: dict[str, str]) -> str | None:
@@ -1924,23 +1945,32 @@ def _probe(argv: list[str], env: dict[str, str]) -> str | None:
 
 def worker_health_pass() -> None:
     """Health-check every configured worker before the pass; a failing profile is not launched
-    this pass (#662). A profile's `probe` decides; without one, the launched executable must
-    resolve on the worker's PATH (an auth check needs a configured probe)."""
+    this pass (#662). The host wrapper and the profile's executable must each resolve on the
+    worker's PATH, then the profile's `probe`, the only check that proves a login, decides.
+    PATH alone never clears a failure seen at launch: that stands until a probe passes or a
+    launch works (`dispatch --ticket` skips this pass)."""
     for profile in cfg.workers:
         env = {**os.environ, **cfg.worker_environment(profile, FACTORY / ".factory-prompt.md", ROOT)}
-        if probe := cfg.worker_probe.get(profile):
-            reason = _probe(config.expand([*cfg.worker_wrap, *probe], root=str(ROOT), repo=REPO,
-                                          home=str(Path.home())), env)
+        probe = cfg.worker_probe.get(profile)
+        last = last_worker_health(profile)
+        if missing := worker_missing(cfg.worker_spec(profile, FACTORY / ".factory-prompt.md", ROOT), env):
+            reason, check = f"executable `{missing}` not found on the worker's PATH", "executable"
+        elif probe:
+            reason, check = _probe(config.expand([*cfg.worker_wrap, *probe], root=str(ROOT), repo=REPO,
+                                                 home=str(Path.home())), env), "probe"
+        elif last and not last["available"] and last.get("source") == "launch":
+            reason, check = last["reason"], "launch"
         else:
-            program = cfg.worker_spec(profile, FACTORY / ".factory-prompt.md", ROOT).argv[0]
-            reason = None if shutil.which(program, path=env.get("PATH")) else (
-                f"executable `{program}` not found on the worker's PATH"
-            )
-        set_worker_health(profile, reason, source="probe")
+            reason, check = None, "executable"
+        if probe and reason is None:
+            VERIFIED_WORKERS.add(profile)
+        set_worker_health(profile, reason, source="probe", check=check)
 
 
-def _launch_failure(wt: Path, logfile: Path, offset: int, launch_head: str) -> str | None:
-    """The auth-failure line of a launch that left no commit and a clean worktree, else None."""
+def _launch_failure(wt: Path, logfile: Path, offset: int, launch_head: str, code: int) -> tuple[str, str] | None:
+    """Why a launch that left no commit and a clean worktree never reached the work, else None:
+    `auth_failed` with its output line, or `executable_missing` for POSIX exit 127, which a
+    wrapper or launcher script returns when the worker it runs was not found."""
     if run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip() != launch_head or run([
         "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
         ":(exclude).factory-prompt.md", ":(exclude).factory",
@@ -1951,9 +1981,10 @@ def _launch_failure(wt: Path, logfile: Path, offset: int, launch_head: str) -> s
         text = stream.read().decode(errors="replace")
     match = WORKER_AUTH_FAILURE.search(text)
     if match is None:
-        return None
+        tail = text.strip().splitlines()[-1:]
+        return ("executable_missing", stderr_tail(tail[0] if tail else "exit 127")[-200:]) if code == 127 else None
     line = text[text.rfind("\n", 0, match.start()) + 1:].split("\n", 1)[0]
-    return stderr_tail(line.strip())[-200:]
+    return "auth_failed", stderr_tail(line.strip())[-200:]
 
 
 def ensure_worktree(n: int) -> Path:
@@ -4546,14 +4577,25 @@ def worker_round(
             run_options.update(worker=worker, worker_version=spec.version)
         launch_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         offset = logfile.stat().st_size if logfile.exists() else 0
-        code, fired = run_worker(argv, wt, logfile, handoff_path, deadline, **run_options)
-        failure = None if code == 0 or fired else _launch_failure(wt, logfile, offset, launch_head)
+        try:
+            code, fired = run_worker(argv, wt, logfile, handoff_path, deadline, **run_options)
+        except FileNotFoundError as exc:
+            # The executable vanished after the pre-pass check (#260): a host defect, so the same
+            # attempt falls back when it can; with no fallback the claim goes back as before.
+            record("worker-infra", ticket=n, attempt=attempt, log=str(logfile), reason="executable_missing",
+                   detail=stderr_tail(str(exc))[-200:], **identity)
+            set_worker_health(worker, f"executable_missing: {exc}", source="launch")
+            if fallback_worker(profile) is None:
+                raise
+            continue
+        failure = None if code == 0 or fired else _launch_failure(wt, logfile, offset, launch_head, code)
         if failure is None:
             break
+        cause, detail = failure
         # Not an attempt: no strike, no gate, not counted toward max_attempts.
         record("worker-infra", ticket=n, attempt=attempt, worker_exit=code, log=str(logfile),
-               reason="auth_failed", detail=failure, **identity)
-        set_worker_health(worker, f"auth_failed: {failure}", source="launch")
+               reason=cause, detail=detail, **identity)
+        set_worker_health(worker, f"{cause}: {detail}", source="launch")
     set_worker_health(worker, None, source="launch")
     worker_version = spec.version
     # Decide before commit_leftovers: dispatcher commits cannot turn unfinished work into done.
@@ -4847,6 +4889,8 @@ def process_ticket(
                 return
             if launch is not None and launch != profile:
                 worker = cfg.worker_command(launch, wt / ".factory-prompt.md", wt)[0]
+            if launch is not None:
+                worker = worker_missing(cfg.worker_spec(launch, wt / ".factory-prompt.md", wt), os.environ) or worker
             if not forced and shutil.which(worker) is None:
                 # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
                 # ponytail: PATH probe only; a binary swapped out between here and Popen still

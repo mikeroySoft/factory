@@ -51,7 +51,8 @@
 # claim, usage, attempt, and lifecycle evidence. Optional `probe = [...]`
 # ({root}, {repo}, {home}) is a health/auth check run before each pass; a nonzero
 # exit keeps the profile from launching and its tickets fall back to `default`.
-# Without a probe, a profile is healthy while its executable is on PATH.
+# Only a passing probe proves a login: without one the manager cannot choose the
+# profile, and a login failure seen at launch stands until a launch works.
 # Commands containing a binary named `omp` default to transcript mode.
 # Array and table forms can coexist; do
 # not define a label twice. The manager lists configured profiles and their rules;

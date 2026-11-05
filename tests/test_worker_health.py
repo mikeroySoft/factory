@@ -197,11 +197,11 @@ class WorkerHealthTest(unittest.TestCase):
         self.assertEqual((up["available"], up["source"], up["check"]), (True, "probe", "probe"))
         self.assertIn("droid", manage.selectable_workers(self.cfg))
 
-    def test_the_manager_may_choose_only_default_or_a_profile_its_probe_verified(self) -> None:
+    def test_the_manager_may_choose_only_a_profile_its_probe_verified(self) -> None:
         self.ticket(droid=PROBE_PASSES, chore=PROBE_PASSES)
         self.cfg.worker_probe = {"droid": PROBE_PASSES}
         dispatch.worker_health_pass()
-        self.assertEqual(set(manage.selectable_workers(self.cfg)), {"default", "droid"})
+        self.assertEqual(set(manage.selectable_workers(self.cfg)), {"droid"})
         route = 'DECISION: ROUTE\n{"add":["chore"],"guidance":"mechanical edits"}'
         self.assertEqual(manage.parse(route, manage.selectable_workers(self.cfg))[0], "HUMAN")
 
@@ -344,7 +344,7 @@ class ManagerFixInfraTest(unittest.TestCase):
         dispatch.configure(self.cfg)
         dispatch.worker_health_pass()
         self.enterContext(mock.patch.object(manage, "human_activity", return_value=False))
-        route = {"status": "routed", "owner": "alice", "candidates": [], "source": "s", "reason": "r", "provenance": []}
+        route = {"status": "selected", "owner": "alice", "candidates": [], "source": "s", "reason": "r", "provenance": []}
         self.enterContext(mock.patch.object(handoff, "observe", return_value={"route": route, "pr_url": None}))
         gone = CalledProcessError(1, ["gh", "issue", "edit"], stderr="HTTP 502")
         with mock.patch.object(manage, "apply", side_effect=[self.down, gone]):

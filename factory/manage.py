@@ -871,10 +871,11 @@ def resume_fix(n: int, issue: dict, pending: dict, **decided: object) -> None:
 
 
 def selectable_workers(cfg: config.Config) -> dict[str, list[str]]:
-    """Profiles the manager may name: not reserved, not label-gated, and available this pass."""
+    """Profiles the manager may name: not reserved, not label-gated, and whose probe proved
+    their login this pass (#662). An executable on PATH is no evidence a worker can run."""
     return {key: command for key, command in cfg.workers.items()
             if key not in RESERVED_LABELS and key not in cfg.worker_select_label
-            and key not in dispatch.UNAVAILABLE_WORKERS}
+            and key not in dispatch.UNAVAILABLE_WORKERS and key in dispatch.VERIFIED_WORKERS}
 
 
 WATERMARK_SOURCES = tuple(sorted(set(ACTIONABLE_SOURCE.values())))
