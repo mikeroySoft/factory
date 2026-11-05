@@ -383,6 +383,8 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
         try:
             listeners = sh(["ss", "-ltnp", f"sport = :{port}"])
         except OSError as exc:
+            if sys.platform != "linux" and not collision:
+                return True, f"available on {host} (bind checked; listener inspection unavailable: ss: {exc})"
             return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {exc})")
         if listeners.returncode != 0:
             detail = listeners.stderr.strip() or str(listeners.returncode)
