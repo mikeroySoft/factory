@@ -370,8 +370,7 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
 
     with probe:
         try:
-            # Darwin permits IPv4 reuse beside a dual-stack wildcard listener.
-            # Probe exclusively so an occupied dashboard port cannot look free.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(target)
             collision = False
         except OSError as exc:
@@ -388,7 +387,9 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
         if listeners.returncode != 0:
             detail = listeners.stderr.strip() or str(listeners.returncode)
             return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {detail})")
-        if not collision:
+        # Darwin allows this IPv4 bind beside a dual-stack wildcard listener;
+        # inspect listener ownership there even when the reusable bind succeeds.
+        if not collision and sys.platform != "darwin":
             return True, f"available on {host}"
 
     holders: list[tuple[str, int]] = []
@@ -400,6 +401,8 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
         found = re.findall(r'\("([^"]+)",pid=(\d+)', line)
         unknown |= not found
         holders.extend((name, int(pid)) for name, pid in found)
+    if not collision and not unknown and not holders:
+        return True, f"available on {host}"
     if unknown or not holders:
         return False, dashboard_port_error(cfg, host, port, "is in use by an unknown process")
 

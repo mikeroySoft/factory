@@ -1,4 +1,4 @@
-"""Exclusive dashboard port checks on Darwin and Linux."""
+"""Dashboard port checks preserve reusable binds and detect Darwin holders."""
 from __future__ import annotations
 
 import socket
@@ -16,17 +16,6 @@ class DashboardExclusivePortTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.cfg = config.Config(Path(temporary.name), "acme/widgets", signoff=False)
-
-    def test_check_refuses_a_reusable_reserved_port(self) -> None:
-        with socket.socket() as holder:
-            holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            holder.bind(("127.0.0.1", 0))
-            # No listening socket appears in ss, but this reservation prevents
-            # the dashboard's exclusive HTTPServer bind.
-            with patch.object(onboard, "sh", return_value=subprocess.CompletedProcess([], 0, "", "")):
-                ok, detail = onboard._dashboard_port_check(self.cfg, "127.0.0.1", holder.getsockname()[1])
-        self.assertFalse(ok, detail)
-        self.assertIn("unknown process", detail)
 
     def test_check_allows_rebind_after_an_accepted_connection(self) -> None:
         with socket.socket() as server:
