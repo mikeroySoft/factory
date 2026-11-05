@@ -208,7 +208,7 @@ class DispatchReleaseTest(unittest.TestCase):
                         "justification": "Existing assertion contradicts the requested behavior"}
                 run = module.run
 
-                def external(cmd, *args, **kwargs):
+                def external(cmd, *args, run=run, **kwargs):
                     if cmd[:3] == ["gh", "issue", "comment"]:
                         return subprocess.CompletedProcess(cmd, 0, "https://example.invalid/comment/1", "")
                     return run(cmd, *args, **kwargs)

@@ -220,6 +220,7 @@ class AddOnlyOverrideTest(unittest.TestCase):
         dispatch.configure(config.Config(Path(root.name), "acme/widgets"))
         result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
         with mock.patch.object(dispatch, "run", return_value=result) as run, \
+                mock.patch.object(dispatch, "gh_json", return_value=[]), \
                 mock.patch.object(dispatch, "comment_receipt"):
             manage.apply(
                 7,

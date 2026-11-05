@@ -240,9 +240,9 @@ class RefreshConflictTest(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, cmd, stderr="closure failed")
             return original(cmd, *args, **kwargs)
 
-        with self.patched(), mock.patch.object(dispatch, "run", side_effect=command):
-            with self.assertRaises(subprocess.CalledProcessError):
-                dispatch.refresh_pr_branch(9, 102, False)
+        with self.patched(), mock.patch.object(dispatch, "run", side_effect=command), \
+                self.assertRaises(subprocess.CalledProcessError):
+            dispatch.refresh_pr_branch(9, 102, False)
         self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
         self.assertFalse(self.github.closed)
         self.assertEqual(self.events("conflict-requeue"), [])

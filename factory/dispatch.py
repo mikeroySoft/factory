@@ -593,7 +593,7 @@ def host_claim_state(n: int) -> tuple[list[dict], str]:
             claim["requeue"] = requeues[claim["nonce"]]
     claims.sort(key=lambda row: (row["created"], row["id"]))
     elected = elected_host_claim(claims)
-    return claims, elected.get("requeue", "") if elected else context
+    return claims, elected.get("requeue", context) if elected else context
 
 
 def host_claims(n: int) -> list[dict]:
@@ -784,10 +784,12 @@ def unclaim(
     if cfg.host_name and any(
         flag == "--add-label" and label == LABEL_AGENT
         for flag, label in zip(label_args[::2], label_args[1::2])
-    ) and (elected := elected_host_claim(claims)):
+    ):
         context = refresh_requeue_context(n)
+        elected = elected_host_claim(claims)
+        nonce = elected["nonce"] if elected else str(uuid.uuid4())
         gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
+                 "-f", f"body=Factory requeue: nonce={nonce}\n{context}"])
     if owned is not None:
         fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,assignees"])
         release_stale_claims(n, fresh, claims, replacement=owned["id"])

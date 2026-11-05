@@ -1361,13 +1361,16 @@ so stale frontier reads cannot replace an approved head.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
-issue comment with the refresh instructions, including when the owner releases
-its claim. The next host can consume that context even after the claim is deleted.
+issue comment with the refresh instructions, even when approval already released
+the claim. Without a claim it uses a fresh nonce; a later expired admission does
+not discard those instructions. Success consumes them before releasing its claim.
 Deferred actionable review rework uses the same ownership-aware release and shares
 its findings. Conflict, gate, risk and deferred-review requeues close their PR
 automatically before releasing readiness, so another host can resume without a
 manual closure once no live claim remains. Publishing reopens the latest closed,
 unmerged agent PR with stale approval removed, retaining human blocking reviews.
+Manager RETRY, REWRITE, ROUTE and AUTHORIZE also close any open agent PR before
+restoring readiness; a failed closure leaves the ticket on the human queue.
 Shared instructions take precedence over this host's local requeue journal. Local
 risk-disagreement history carries forward only when its instructions match the
 selected context; an intervening foreign requeue cannot trigger early escalation.

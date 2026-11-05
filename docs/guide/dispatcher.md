@@ -27,7 +27,7 @@ When `factory dispatch` is invoked without `--ticket` (`factory/dispatch.py` `ma
 
 `process_ticket` re-reads the issue and open PRs before claiming. A stale list must not reclaim an escalated issue or replace an open PR's head. On every exit, including approval, dispatch releases only the assignment it added and journals `assignment-cleared` with ticket, login and exit path. Pre-existing human assignments remain untouched, including on a hand run. Factory issue filing does not assign anyone.
 
-Automatic conflict, gate, risk and deferred-review requeues close the agent PR before returning the ticket to `ready-for-agent`. The next claim remains on the same branch; publishing removes stale approval and reopens the latest closed, unmerged PR rather than discarding its human reviews. A failed closure does not release a ready requeue.
+Automatic conflict, gate, risk and deferred-review requeues, plus manager RETRY, REWRITE, ROUTE and AUTHORIZE, close the agent PR before returning the ticket to `ready-for-agent`. The next claim remains on the same branch; publishing removes stale approval and reopens the latest closed, unmerged PR rather than discarding its human reviews. A failed closure does not release a ready requeue.
 
 ## Where the worker runs
 

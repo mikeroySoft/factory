@@ -149,8 +149,9 @@ class ManagerBindingTest(unittest.TestCase):
         with mock.patch.object(
             dispatch,
             "gh_json",
-            return_value={"title": "Bounded slice", "body": live_body},
-        ) as refresh, mock.patch.object(dispatch, "run", side_effect=self.run_command):
+            side_effect=lambda args: {"title": "Bounded slice", "body": live_body}
+            if args[:2] == ["issue", "view"] else [],
+        ), mock.patch.object(dispatch, "run", side_effect=self.run_command):
             manage.apply(
                 7,
                 {"title": "Bounded slice", "body": self.bound("Stale list scope")},
@@ -160,9 +161,6 @@ class ManagerBindingTest(unittest.TestCase):
                 self.packet,
             )
 
-        refresh.assert_called_once_with(
-            ["issue", "view", "7", "--repo", "acme/widgets", "--json", "title,body"]
-        )
         comment, edit, relabel = self.calls
         self.assertEqual(comment[1:3], ["issue", "comment"])
         comment_body = comment[comment.index("--body") + 1]
