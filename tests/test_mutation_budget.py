@@ -12,10 +12,25 @@ from types import SimpleNamespace
 from unittest import mock
 
 from scripts import mutation
+from tests import test_mutation_deadline
 from tests.test_mutation_deadline import TestOutcome, WorkerOutcome
 
 
 class MutationBudgetTest(unittest.TestCase):
+    def test_deadline_shortened_timeout_stays_cut_not_killed(self) -> None:
+        result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.KILLED,
+            diff="", output="timeout",
+        )
+        status, output, mutate, _ = test_mutation_deadline.MutationDeadlineTest().run_mutation(
+            result, clock=[0, 0, 0, 0.1, 0.2, 0.9, 2, 2],
+        )
+        self.assertEqual(status, 0)
+        self.assertAlmostEqual(mutate.call_args.args[2], 0.1)
+        self.assertIn("ran 0 of 1 mutants", output)
+        self.assertIn("0 timeouts", output)
+        self.assertIn("incomplete: 0 mutants not started and 1 cut short", output)
+
     def test_slow_baseline_caps_hang_and_leaves_budget_for_other_mutants(self) -> None:
         now = [0.0]
         timeouts = []
