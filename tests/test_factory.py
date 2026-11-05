@@ -1885,6 +1885,9 @@ PY
         for decision, body, expected in cases:
             with self.subTest(decision=decision, body=body):
                 repo, stubs, _ = self.scenario()
+                # Only an installed worker can be routed to (#662).
+                (Path(stubs) / "droid").write_text("#!/bin/sh\n")
+                (Path(stubs) / "droid").chmod(0o755)
                 command = ["printf", "%s", f"DECISION: {decision}\n{body}"]
                 (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
                 result = factory(repo, "manage", path=stubs)
