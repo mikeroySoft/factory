@@ -123,7 +123,7 @@ flowchart TB
   EXTPR -->|"review attempts exhausted, new issue: dispatch.review_intake_pass"| RFH
   EXTPR -->|"agent/lessons-*, agent/curate-*, agent/revert-lessons-* (same repository) admitted without a label: dispatch.review_intake_pass"| EXTPR
   EXTPR -->|"gate PASS + APPROVE bound to head, CI green: learn.promote_pass"| MERGED
-  RFH -->|"packet and manager rounds left: manage.escalation_pass"| MGR
+  RFH -->|"non-triage-timeout packet and manager rounds left: manage.escalation_pass"| MGR
   RFH -->|"terminal, routed request published: handoff.handoff_pass"| HUMAN
   MGR -->|"RETRY, REWRITE, or ROUTE: manage.apply"| RFA
   MGR -->|"AUTHORIZE adds add-only authority before requeue: manage.apply"| RFA
@@ -136,6 +136,8 @@ flowchart TB
   MGR -->|"HUMAN or manager failed, label kept: manage.escalation_pass"| HUMAN
   WONT -->|"a human decides: config.LABELS"| HUMAN
   HUMAN -->|"relabel, comment, close, approve: decisions.apply"| RFA
+  TRI -->|"model read timeout, label kept for next-pass retry: triage.execute"| NT
+  TRI -->|"three consecutive timeouts per issue, once per durable streak; human only: triage._report_timeout_streak"| RFH
 
   classDef state fill:#e8f5e9,stroke:#2e7d32
   classDef out fill:#fff3e0,stroke:#e65100
@@ -268,3 +270,4 @@ event. `{}` is a runtime value.
 | `manage.apply` | ``FIX worktree head {} is not the PR head {} plus the worker's own commits; worktree kept at {}`` | manager FIX → escalate (`refresh_head`) |
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
 | `manage.escalation_pass` | ``manager_failed`` | manager decision → human |
+| `triage._report_timeout_streak` | ``triage model timed out on {} consecutive attempts; check the model endpoint. The issue remains needs-triage and will be retried next pass`` | triage → human after three consecutive model read timeouts; failed label delivery retries until success, once per durable streak; `needs-triage` kept; no manager round spent |

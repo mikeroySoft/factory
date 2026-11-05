@@ -41,6 +41,7 @@ LOGIN: str | None = None  # `gh` login this process posts as; read once per proc
 PROBE_FAILURES = 3
 PROBE_COOLDOWN = 15 * 60
 PROBE_TIMEOUT = 3
+TIMEOUT_FAILURES = 3
 
 
 def configure(c: Config) -> None:
@@ -507,6 +508,29 @@ def _report_unparseable_streak(number: int, issue: dict, execution) -> None:
     )
 
 
+def _report_timeout_streak(number: int, *, timed_out: bool = True) -> None:
+    from factory import dispatch
+
+    previous = next((
+        row for row in reversed(lifecycle.read_events(cfg.factory / "events.jsonl"))
+        if row.get("event") == "triage_timeout_streak" and row.get("ticket") == number
+    ), {})
+    failures = previous.get("failures", 0) + 1 if timed_out else 0
+    escalated = timed_out and previous.get("escalated", False)
+    dispatch.configure(cfg)
+    # Ordinary record rows survive retention; closed lifecycle executions do not.
+    dispatch.record("triage_timeout_streak", ticket=number, failures=failures, escalated=escalated)
+    if failures < TIMEOUT_FAILURES or escalated:
+        return
+    if dispatch.escalate(
+        number,
+        f"triage model timed out on {failures} consecutive attempts; check the model endpoint. "
+        "The issue remains needs-triage and will be retried next pass",
+        None,
+        code="triage_endpoint_timeout",
+    ):
+        dispatch.record("triage_timeout_streak", ticket=number, failures=failures, escalated=True)
+
 
 def triage_issue(issue: dict, execution=None) -> dict | None:
     """Choose a deterministic route where possible, otherwise ask the model."""
@@ -763,10 +787,15 @@ def execute(args: argparse.Namespace, execution) -> int:
                             decision = triage_issue(issue, execution=ticket_execution)
                         except EndpointTimeout:
                             outcome, reason = "unknown", "triage_endpoint_timeout"
+                            if ticket_execution:
+                                _report_timeout_streak(number)
+                                ticket_execution.outcome, ticket_execution.reason = outcome, reason
                             print(f"#{number}: model timed out; skipping, tried after untried tickets next pass",
                                   file=sys.stderr)
                             exit_code = 1
                             continue
+                        if ticket_execution:
+                            _report_timeout_streak(number, timed_out=False)
                         if decision is None:
                             if ticket_execution:
                                 ticket_execution.outcome = "unknown"

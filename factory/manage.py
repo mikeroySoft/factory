@@ -1049,6 +1049,8 @@ def escalation_pass(dry_run: bool = False) -> None:
                                    and e.get("reason") != "manager_failed"), None)
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
                     continue
+                if escalation.get("code") == "triage_endpoint_timeout":
+                    continue  # A manager cannot admit an issue that never passed triage.
                 round_number = escalation.get("round", 0)
                 # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.
                 if not 1 <= round_number <= cfg.manager_rounds or any(

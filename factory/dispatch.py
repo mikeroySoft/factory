@@ -772,8 +772,8 @@ def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
     return None
 
 
-def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
-    """Apply lifecycle transitions; release host resources only when this host owns them."""
+def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> bool:
+    """Apply lifecycle transitions; return whether the GitHub edit succeeded."""
     claims = host_claims(n) if cfg.host_name else []
     owned = owned_host_claim(n, claims)
     if cfg.host_name and any(
@@ -791,9 +791,10 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
     assignee = ["--remove-assignee", "@me"] if not claims or owned is not None else []
     args = [*label_args, *assignee] if assignee_last else [*assignee, *label_args]
     if args and run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check).returncode:
-        return
+        return False
     if owned is not None:
         delete_host_claim(n, owned)
+    return True
 
 
 def frontier() -> list[dict]:
@@ -2095,6 +2096,7 @@ def escalation_packet(
     )
     round_number = 1 + sum(
         event.get("event") == "escalate" and event.get("reason") != "manager_failed"
+        and event.get("code") != "triage_endpoint_timeout"
         for event in ticket_events
     )
     return packet, round_number
@@ -2109,6 +2111,7 @@ ESCALATION_CODES = frozenset({
     "refresh_empty", "gh_failed", "review_intake", "manager_failed",
     "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
     "lease_refused", "dispatcher_error", "no_change", "risk_disagreement",
+    "triage_endpoint_timeout",
 })
 
 
@@ -2121,7 +2124,8 @@ def escalate(
     code: str,
     refreshed_head: str | None = None,
     evidence_ref: str | None = None,
-) -> None:
+) -> bool:
+    """Record an escalation attempt; return whether it reached the human gate."""
     assert code in ESCALATION_CODES, code
     assert (refreshed_head is None) == (evidence_ref is None)
     log(f"#{n}: escalating to human ({code}: {reason})")
@@ -2165,7 +2169,8 @@ def escalate(
     )
     claims = host_claims(n) if cfg.host_name else []
     elected = elected_host_claim(claims)
-    unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
+    if not unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN):
+        return False
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if elected:
         first, _, rest = body.partition("\n")
@@ -2177,6 +2182,7 @@ def escalate(
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
     posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
     comment_receipt(n, "escalation", posted.stdout if posted.returncode == 0 else "", round=round_number)
+    return True
 
 
 def _review_plan(n: int) -> str:
