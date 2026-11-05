@@ -93,6 +93,28 @@ class SystemdProbesTest(unittest.TestCase):
             self.assertEqual(cli.main(["dashboard", "--json"]), 0)
         return json.loads(output.getvalue())
 
+    def test_dashboard_failure_count_remains_consumable_without_journal(self):
+        original = self.runner
+        for platform, failure in (
+            ("darwin", FileNotFoundError("journalctl")),
+            ("linux", FileNotFoundError("journalctl")),
+            ("linux", subprocess.CompletedProcess([], 1, "", "journal unavailable")),
+        ):
+            def unavailable(argv, failure=failure, **kwargs):
+                if argv[0] == "journalctl":
+                    if isinstance(failure, OSError):
+                        raise failure
+                    return failure
+                return original(argv, **kwargs)
+
+            with self.subTest(platform=platform, failure=failure), \
+                    patch.object(self, "runner", side_effect=unavailable):
+                data = self.dashboard(platform)
+                count = data["dispatcher"]["consecutive_failures"]
+                self.assertEqual(int(count), 0)  # District apply/status consumes this as an integer.
+                self.assertIs(type(count), int)
+                self.assertEqual(data["dispatcher"]["runs"], [])
+
     def test_dashboard_json_without_systemd_on_darwin(self):
         data = self.dashboard("darwin")
         self.assertEqual(data["version"], __version__)
