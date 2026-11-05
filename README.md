@@ -1114,13 +1114,16 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    section (`Head SHA: <tested commit>`, results and any archive/tree digest), or
    in a worktree-relative proof file cited by that handoff (for example
    `Proof: .factory/macos-proof.txt`, containing
-   `Verified source revision: <tested commit>`). Before each ticket review,
+   `Verified source revision: <tested commit>`). A plain `Native-host proof:`
+   label may also introduce file citations on following lines, up to the next
+   Markdown heading. Before each ticket review,
    including manager FIX and refresh reviews, the dispatcher posts the evidence
    to the PR and supplies the same text inline as untrusted worker evidence.
    Recorded proof SHAs are checked against the gated head; stale/conflicting
    proof shows both revisions, while absent/unbound/unsafe evidence is explicitly
    not supplied as current-head proof. Re-run native proof after a refresh.
-   Reads are bounded to 256 KiB, reject symlinks and worktree escapes, and use
+   Reads are bounded to 256 KiB, reject symlinks, worktree escapes and NUL-containing
+   filenames (reported as unavailable evidence rather than aborting review), and use
    existing credential redaction/withholding rules; excerpts are capped at 4,000
    characters and comments at 20,000, with explicit truncation notices and
    archive/tree digests retained when present. Successful publication is

@@ -2487,7 +2487,7 @@ def _proof_file(wt: Path, name: str) -> str:
     from factory import results
 
     parts = Path(name).parts
-    if not parts or Path(name).is_absolute() or ".." in parts:
+    if not parts or Path(name).is_absolute() or ".." in parts or "\x00" in name:
         raise results._Unsafe
     directory = os.open(wt, results._DIR_FLAGS)
     try:
@@ -2513,9 +2513,9 @@ def _native_proof(wt: Path, n: int, head: str) -> str:
         return "Native-host proof not supplied: handoff unreadable, unsafe or oversized."
     sources = []
     # Only the named section is inline evidence; ordinary handoff prose is not proof.
-    section = re.search(r"(?im)^(#{1,6})[ \t]+(?:native[- ]host|native) proof[ \t]*:?[ \t]*$", handoff)
+    section = re.search(r"(?im)^(?:(#{1,6})[ \t]+)?(?:native[- ]host|native) proof[ \t]*:?[ \t]*$", handoff)
     if section:
-        end = re.search(r"(?m)^#{1," + str(len(section[1])) + r"}[ \t]+", handoff[section.end():])
+        end = re.search(r"(?m)^#{1," + str(len(section[1] or "######")) + r"}[ \t]+", handoff[section.end():])
         text = handoff[section.end():section.end() + end.start() if end else len(handoff)]
         sources.append(("Handoff native-host proof", text))
     paths = dict.fromkeys(
@@ -2546,6 +2546,7 @@ def _native_proof(wt: Path, n: int, head: str) -> str:
                 text = _proof_file(wt, name)
             except (OSError, results._Unsafe, results._TooLarge):
                 text = "Proof not supplied: named file missing, unreadable, unsafe or oversized."
+        name = name.replace("\x00", r"\0")
         text = _TOKEN.sub("[REDACTED]", text).replace("\x00", "")
         if results._CREDENTIAL.search(text.encode()):
             text = "[REDACTED: credential-shaped evidence withheld]"
