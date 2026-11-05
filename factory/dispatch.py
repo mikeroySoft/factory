@@ -4951,15 +4951,33 @@ def process_ticket(
             execution.resource("released", lock_path, scope="repository")
 
 
+def fairness_session() -> dict:
+    """Scope fairness to the engine revision and, when observable, timer activation."""
+    # Passive probe: an idle pass must not commit lifecycle child rows.
+    invocation = None
+    try:
+        timer = subprocess.run(
+            ["systemctl", "--user", "show", "--property=InvocationID", "--value", f"{cfg.unit}.timer"],
+            capture_output=True, text=True, check=False, timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    else:
+        value = timer.stdout.strip()
+        if not timer.returncode and re.fullmatch(r"[0-9a-f]{32}", value) and value != "0" * 32:
+            invocation = value
+    return {"timer_invocation": invocation, "engine_version": __version__, "engine_commit": config.engine_commit()}
+
+
 def ticket_pass(budget_min: int, dry_run: bool) -> None:
     """Claim up to capacity frontier tickets in accepted-priority order and work them concurrently.
 
     The frontier is re-read and re-ranked before each pick, so a Plan baseline re-bound while
     an earlier pick was claimed ranks the next one; each admission decision records the
-    baseline it was ranked against. The fairness streak and experiment slot come from the
-    journal once, then advance by this pass's own picks. Picks are ranked and claimed one at
-    a time, in order; each pipeline then runs in its own thread. Once all have finished, every
-    pipeline exception is logged and the pass raises its own exception, else the first pick's.
+    baseline it was ranked against. The fairness streak comes from this timer/engine session's
+    journal, the experiment slot from all claims; both advance by this pass's own picks.
+    Picks are ranked and claimed one at a time, in order; each pipeline runs in its own thread.
+    Once all finish, every pipeline exception is logged and the pass raises its own, else the first pick's.
     An interrupt (Ctrl-C) stops every in-flight pipeline first, as it stopped the one before #579.
     """
     from factory import schedule
@@ -4979,7 +4997,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
             if row.get("event") == "issue-created" and type(row.get("ticket")) is int
             and type(row.get("parent")) is int
         }
-        streak = schedule.explicit_streak(events)
+        session = fairness_session()
+        streak = schedule.explicit_streak(events, session=session)
         experiments = schedule.active_experiments(events, set(active))
     picked = set()  # a skipped or dry-run pick can still be in the frontier
     pipelines = []
@@ -5009,7 +5028,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
                     for payload in decided["decisions"][:1]:
                         record("decision", **payload)
                         admission = payload["decision_id"]
-                    record("scheduling", capacity=remaining, active=active, explained=decided["explained"])
+                    record("scheduling", capacity=remaining, active=active, explained=decided["explained"],
+                           fairness_session=session)
             if not decided["selected"]:
                 break
             issue = decided["selected"][0]
