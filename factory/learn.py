@@ -1086,6 +1086,8 @@ def refresh(cfg: config.Config, n: int, branch: str, head: str) -> None:
             raise subprocess.CalledProcessError(
                 1, push, stderr=f"[rejected] {branch}: remote head changed since promotion",
             )
+        if new == head:
+            raise ValueError(f"refresh left {branch} unchanged at {head}")
         dispatch.run(push, cwd=wt)
         base = dispatch.run(["git", "rev-parse", f"origin/{cfg.main}"], cwd=wt).stdout.strip()
         dispatch.review_external_pr(n, base, new, branch)
