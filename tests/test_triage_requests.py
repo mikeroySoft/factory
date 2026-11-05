@@ -11,6 +11,7 @@ import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
 
@@ -68,8 +69,8 @@ class TriageRequests(unittest.TestCase):
 
     def test_recorded_request_contract(self):
         for settings, tokens, kwargs in (
-            ('max_tokens = 73\n[defaults.triage.chat_template_kwargs]\n'
-             'enable_thinking = false\ncustom = { modes = ["brief", "json"] }\n',
+            (('max_tokens = 73\n[defaults.triage.chat_template_kwargs]\n'
+              'enable_thinking = false\ncustom = { modes = ["brief", "json"] }\n'),
              73, {"enable_thinking": False, "custom": {"modes": ["brief", "json"]}}),
             ('max_tokens = 29\n[defaults.triage.chat_template_kwargs]\n', 29, {}),
             ('max_tokens = 31\n', 31, None),
@@ -80,7 +81,7 @@ class TriageRequests(unittest.TestCase):
                 self.requests.clear()
                 barrier = threading.Barrier(3)
 
-                def ask(_):
+                def ask(_, barrier=barrier):
                     barrier.wait(timeout=5)
                     return triage.call_llm([{"role": "user", "content": "hi"}])
 
@@ -97,7 +98,7 @@ class TriageRequests(unittest.TestCase):
                     if kwargs is not None:
                         self.assertEqual(row["body"]["chat_template_kwargs"], kwargs)
                 ordered = sorted(self.requests, key=lambda row: row["start"])
-                for before, after in zip(ordered, ordered[1:]):
+                for before, after in pairwise(ordered):
                     self.assertLessEqual(before["end"], after["start"])
 
     def test_same_endpoint_serializes_across_repository_processes(self):
@@ -139,7 +140,7 @@ assert triage.call_llm([{"role": "user", "content": "hi"}]) == "ok"
                 process.communicate()
         self.assertEqual(len(self.requests), 3)
         ordered = sorted(self.requests, key=lambda row: row["start"])
-        for before, after in zip(ordered, ordered[1:]):
+        for before, after in pairwise(ordered):
             self.assertLessEqual(before["end"], after["start"])
         self.assertEqual([row["body"].get("max_tokens") for row in self.requests], [47] * 3)
 
