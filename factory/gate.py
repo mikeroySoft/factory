@@ -31,12 +31,18 @@ TAIL_LINES = 80
 CHECK_TIMEOUT = 1200  # seconds; overridable via --check-timeout
 STORAGE_EXIT = 75
 STORAGE_RE = re.compile(
-    r"^\s*(?:(?:OSError|IOError):\s*)?\[Errno 28\]"
-    r"|^\s*(?:[\w.-]+:\s*)?ENOSPC(?:\s*:|\s*$)"
-    r"|^\s*(?:runner_storage_low|shutil\.Error:[^\n]*\[Errno 28\].*)$"
-    r"|^\s*(?:[\w./-]+:\s*(?:[^\n]*:\s*)?)?"
-    r"(?:no space left on device|disk quota exceeded)\b",
+    r"^\s*(?:E\s+)?(?:"
+    r"(?:(?:OSError|IOError):\s*)?\[Errno 28\]"
+    r"|(?:[\w.-]+:\s*)?ENOSPC(?:\s*:|\s*$)"
+    r"|(?:runner_storage_low|shutil\.Error:[^\n]*\[Errno 28\].*)$"
+    r"|(?:[\w./-]+:\s*(?:[^\n]*:\s*)?)?"
+    r"(?:no space left on device|disk quota exceeded)\b)",
     re.IGNORECASE | re.MULTILINE,
+)
+ASSERTION_RE = re.compile(
+    r"^\s*(?:E\s+)?AssertionError:.*?"
+    r"(?=^(?:[=_-]{3,}|Traceback \(most recent call last\):)|\Z)",
+    re.MULTILINE | re.DOTALL,
 )
 
 
@@ -47,7 +53,8 @@ class RunnerStorageLow(RuntimeError):
 def storage_diagnostic(output: str | bytes | None) -> bool:
     if isinstance(output, bytes):
         output = output.decode("utf-8", errors="replace")
-    return bool(output and STORAGE_RE.search(output))
+    # Assertion messages can quote entire gate reports, including storage diagnostics.
+    return bool(output and STORAGE_RE.search(ASSERTION_RE.sub("", output)))
 
 
 def configure(c: Config) -> None:

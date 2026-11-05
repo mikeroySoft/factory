@@ -3771,7 +3771,15 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         handoff.read_text() if handoff.exists() else "",
         comments=issue.get("comments"),
     )
-    ok, report = run_gate(wt, n, **flags)
+
+    def refresh_gate() -> tuple[bool, str]:
+        try:
+            return run_gate(wt, n, **flags)
+        except RunnerStorageLow:
+            restore_pr_head(head)
+            raise
+
+    ok, report = refresh_gate()
     reports = [report]
     gate_rerun = False
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -3798,7 +3806,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         return False
     if not ok and evidence_clean:
         first_report = report
-        ok, report = run_gate(wt, n, **flags)
+        ok, report = refresh_gate()
         gate_rerun = True
         actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         after_status = run(status_cmd, cwd=wt).stdout.strip()

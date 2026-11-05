@@ -174,9 +174,14 @@ Gate checks reporting ENOSPC / OSError 28 or a no-space diagnostic exit 75 with
 `INFRA (runner_storage_low)`, not FAIL. This includes mutation baseline and mutant
 timeouts retaining storage diagnostics. Those trials are not killed mutants or
 check failures. Ordinary warnings and completed product failures keep their normal
-classification. The dispatcher requeues the ticket to `ready-for-agent`, releases
-its claim, and keeps the worktree; no failure attempt, High-risk disagreement,
-review-rework charge, or human escalation is produced for the storage outage.
+classification: assertion messages quoting storage diagnostics are not runner
+errors; pytest's `E` prefix on an actual storage exception is recognized.
+The dispatcher requeues the ticket to `ready-for-agent`, releases its claim, and
+keeps the worktree; no failure attempt, High-risk disagreement, review-rework
+charge, or human escalation is produced for the storage outage. If refresh has
+not pushed its candidate, it preserves that commit in `refs/factory-evidence/`
+and restores the remote PR head before requeueing, so the next worker's lease
+starts from the live branch. Already-pushed refreshed heads remain in place.
 
 
 ## Gaps

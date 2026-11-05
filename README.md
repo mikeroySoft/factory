@@ -1070,7 +1070,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    deterministic 200-mutant sample uses the gate timeout minus 60 seconds for
    preparation, baseline, and mutants together. Unstarted and deadline-cut
    mutants are reported as incomplete, not survivors or blocking failures;
-   a baseline that never passes within the deadline and tool failures still fail.
+   a baseline that never passes within the deadline and tool failures still fail,
+   except storage exhaustion: ENOSPC diagnostics (including captured timeout
+   output) are `runner_storage_low` infrastructure and requeue the ticket.
    Scratch workers use local shared clones with independent Git metadata and the
    current working files overlaid, so Git-dependent tests run without skips.
    The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
