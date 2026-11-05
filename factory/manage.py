@@ -840,6 +840,36 @@ def feedback_packet(items: list[dict]) -> str:
 CI_KINDS = ("check_run", "commit_status")
 
 
+def apply_fix(n: int, issue: dict, data: dict, packet: Path, **decided: object) -> None:
+    """Execute a journaled FIX. One that finds no healthy worker is a host defect (#662): it
+    stays pending for `resume_fix`, never a spent or failed decision."""
+    try:
+        apply(n, issue, "FIX", "", data, packet)
+    except dispatch.WorkerUnavailable as exc:
+        dispatch.record("manage-pending", ticket=n, decision="FIX", worker=data["worker"],
+                        guidance=data["guidance"], packet=str(packet), reason=str(exc), **decided)
+        raise
+
+
+def pending_fix(rows: list[dict], **decided: object) -> dict | None:
+    """The `manage-pending` FIX of the decision matching `decided` that no resume took up yet."""
+    marks = [row for row in rows if row.get("event") in {"manage-pending", "manage-resume"}
+             and all(row.get(key) == value for key, value in decided.items())]
+    return marks[-1] if marks and marks[-1]["event"] == "manage-pending" else None
+
+
+def resume_fix(n: int, issue: dict, pending: dict, **decided: object) -> None:
+    """Run a pending FIX once a worker can take it, without another manager round or comment.
+    The resume is journaled first: an interrupted resume is a human's call, never replayed."""
+    if dispatch.fallback_worker(pending["worker"]) is None:
+        dispatch.log(f"#{n}: manager FIX still waits for worker `{pending['worker']}`")
+        return
+    dispatch.record("manage-resume", ticket=n, decision="FIX", **decided)
+    dispatch.log(f"#{n}: resuming the manager FIX that waited for a healthy worker")
+    apply_fix(n, issue, {"worker": pending["worker"], "guidance": pending["guidance"]},
+              Path(pending["packet"]), **decided)
+
+
 def selectable_workers(cfg: config.Config) -> dict[str, list[str]]:
     """Profiles the manager may name: not reserved, not label-gated, and available this pass."""
     return {key: command for key, command in cfg.workers.items()
@@ -986,7 +1016,12 @@ def frontier_pass(dry_run: bool = False) -> None:
                     continue
                 decided = [e for e in events if e.get("event") == "manage" and e.get("pr") == number]
                 if any(e.get("head") == head for e in decided):
-                    continue  # one decision per head; a non-APPROVE decision already acted
+                    # One decision per head; a non-APPROVE decision already acted, or waits for a worker.
+                    pending = pending_fix(ticket_generation.rows, pr=number, head=head)
+                    if pending is not None and not dry_run:
+                        execution.commit()
+                        resume_fix(n, issue, pending, pr=number, head=head)
+                    continue
                 spent = [e for e in ticket_generation.rows if e.get("event") == "manage" and e.get("pr") == number]
                 if len(spent) >= cfg.manager_rounds:
                     if dry_run:
@@ -1039,10 +1074,16 @@ def frontier_pass(dry_run: bool = False) -> None:
                     if not dispatch.approve_pr(n, head):
                         dispatch.escalate(n, f"PR #{number}: approval evidence, head, or human review state changed before manager approval", None,
                                           code="approval_drift")
-                elif decision in {"FIX", "CLOSE"}:
+                elif decision == "FIX":
+                    apply_fix(n, issue, data, packet, pr=number, head=head)
+                elif decision == "CLOSE":
                     apply(n, issue, decision, body, data, packet)
                 else:
                     dispatch.escalate(n, f"PR #{number}: manager requires a human: {body}", None, code="manager_human")
+            except dispatch.WorkerUnavailable as exc:
+                if not dry_run:
+                    execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
+                dispatch.log(f"PR #{number}: manager FIX waits for a healthy worker ({exc}); no round is spent")
             except (CalledProcessError, OSError, ValueError) as exc:
                 if not dry_run:
                     execution.outcome, execution.reason = "mechanism_failure", "pr_frontier_failed"
@@ -1094,10 +1135,11 @@ def escalation_pass(dry_run: bool = False) -> None:
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
                     continue
                 round_number = escalation.get("round", 0)
+                pending = pending_fix(events[events.index(escalation):], round=round_number, pr=None)
                 # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.
-                if not 1 <= round_number <= cfg.manager_rounds or any(
+                if not 1 <= round_number <= cfg.manager_rounds or (pending is None and any(
                     e.get("event") == "manage" and e.get("round") == round_number and not e.get("pr") for e in events
-                ):
+                )):
                     continue
                 packet = Path(escalation["packet"])
                 if dispatch.initiative_kind(n):
@@ -1106,7 +1148,20 @@ def escalation_pass(dry_run: bool = False) -> None:
                 if not packet.is_file() or human_activity(n, escalation, events):
                     continue
                 if dry_run:
-                    dispatch.log(f"#{n}: would manage escalation round {round_number}")
+                    dispatch.log(f"#{n}: would " + ("resume the pending manager FIX" if pending else
+                                                     f"manage escalation round {round_number}"))
+                    continue
+                if pending is not None:
+                    execution.commit()
+                    try:
+                        resume_fix(n, issue, pending, round=round_number)
+                    except dispatch.WorkerUnavailable as exc:
+                        execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
+                        dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
+                    except (CalledProcessError, OSError, ValueError) as exc:
+                        execution.outcome, execution.reason = "mechanism_failure", "github_command_failed"
+                        execution.error = dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc))
+                        dispatch.log(f"#{n}: resumed manager FIX failed: {exc}; leaving for human")
                     continue
                 workers = selectable_workers(cfg)
                 parts = [MENU, "Worker labels:\n" + "\n".join(
@@ -1155,7 +1210,13 @@ def escalation_pass(dry_run: bool = False) -> None:
                 dispatch.record("manage", ticket=n, decision=decision, round=round_number,
                                 packet=str(packet), notes=status, rejected=rejected)
                 try:
-                    apply(n, issue, decision, body, data, packet)
+                    if decision == "FIX":
+                        apply_fix(n, issue, data, packet, round=round_number)
+                    else:
+                        apply(n, issue, decision, body, data, packet)
+                except dispatch.WorkerUnavailable as exc:
+                    execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
+                    dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
                 except (CalledProcessError, OSError, ValueError) as exc:
                     # A partial SPLIT or REWRITE must not be replayed automatically.
                     execution.outcome = "mechanism_failure"

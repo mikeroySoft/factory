@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, manage
@@ -194,7 +195,7 @@ class ManagerFixInfraTest(unittest.TestCase):
     read, fake_run = frontier_suite.FrontierTest.read, frontier_suite.FrontierTest.fake_run
     events, escalations = frontier_suite.FrontierTest.events, frontier_suite.FrontierTest.escalations
     approved_head, quiet_provider = frontier_suite.FrontierTest.approved_head, frontier_suite.FrontierTest.quiet_provider
-    FIX = {"worker": "droid", "guidance": "tighten the boundary"}
+    FIX: ClassVar[dict[str, str]] = {"worker": "droid", "guidance": "tighten the boundary"}
 
     def gh_json(self, args):
         if args[:2] == ["issue", "list"]:

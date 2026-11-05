@@ -709,7 +709,11 @@ unavailable for the pass and relaunches the same attempt on the fallback. With
 no fallback the claim is given back. Availability changes are journaled once each
 as `worker-health` rows with `worker`, `available`, `reason`, `fallback` and
 `source` (`probe` or `launch`). The attempt that ran on a fallback records
-`fallback_from`.
+`fallback_from`. A manager FIX that finds no healthy worker keeps its `manage`
+row and records `manage-pending` (worker, guidance, packet) instead of failing;
+once a worker can take it, a later pass journals `manage-resume` and runs that
+same FIX without another manager round or comment. A resume is taken up once,
+so an interrupted one stays with the human.
 `[review].json_mode = true` similarly declares an OMP-compatible reviewer:
 Factory adds or replaces `--mode json` and parses its JSONL verdict and usage.
 It defaults to true only when the reviewer program is named `omp`; set it to
