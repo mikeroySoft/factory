@@ -807,3 +807,37 @@ class TriageExemptionRegateTest(unittest.TestCase):
             self.assertTrue(dispatch.refresh_pr_branch(9, 102, False))
 
         self.assert_triage_flags(gate)
+
+
+class StorageRefreshRecoveryTest(unittest.TestCase):
+    setUp = RefreshGateFailureRecoveryTest.setUp
+    patched = RefreshGateFailureRecoveryTest.patched
+    events = RefreshGateFailureRecoveryTest.events
+
+    def test_runner_storage_low_restores_remote_head_before_refresh_requeue(self) -> None:
+        from factory.gate import RunnerStorageLow
+
+        for failed_run in (1, 2, 3):
+            with self.subTest(failed_run=failed_run):
+                effects = [(False, "ordinary failure")] * (failed_run - 1)
+                effects.append(RunnerStorageLow("No space left on device"))
+                if failed_run == 3:
+                    effects = [(True, "passed")]
+                with self.patched(), \
+                        mock.patch.object(dispatch, "run_gate", side_effect=effects), \
+                        mock.patch.object(
+                            dispatch, "risk_for_head", return_value=("High", ["gate"]),
+                        ), \
+                        mock.patch.object(
+                            dispatch, "pr_gate_and_review",
+                            side_effect=RunnerStorageLow("No space left on device"),
+                        ):
+                    self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+                wt = dispatch.FACTORY / "wt-9"
+                self.assertEqual(git(wt, "rev-parse", "HEAD"), self.github.head())
+                self.assertEqual(self.events("escalate"), [])
+                self.assertEqual(self.events("risk-requeue"), [])
+                self.assertEqual(self.events("gate-requeue"), [])
+                self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+                self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+                self.assertEqual(self.github.assignees, [])

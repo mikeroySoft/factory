@@ -349,3 +349,35 @@ class GateTempdirTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StorageDiagnosticsTest(unittest.TestCase):
+    def test_gate_distinguishes_storage_diagnostics_from_expected_warning_output(self) -> None:
+        import json
+
+        cases = [
+            ("OSError: [Errno 28] No space left on device", 1, 75),
+            ("E       OSError: [Errno 28] No space left on device", 1, 75),
+            ("error: cannot write cache: No space left on device (os error 28)", 1, 75),
+            ("warning: expected ENOSPC while testing the full-disk handler", 0, 0),
+            ("OSError: [Errno 28] No space left on device", 0, 0),
+            ("AssertionError: expected OSError: [Errno 28] No space left on device\n"
+             "FAILED (failures=1)", 1, 1),
+            ("E       OSError: [Errno 28] No space left on device\n"
+             "FAILED tests/test_product.py::test_failure - AssertionError\n"
+             "1 failed in 0.01s", 1, 1),
+        ]
+        for output, status, expected in cases:
+            with self.subTest(output=output, status=status), tempfile.TemporaryDirectory() as d:
+                command = [sys.executable, "-c", f"print({output!r}); raise SystemExit({status})"]
+                toml = TOML + (
+                    '\n[[gate.check]]\nname = "test"\nrun = ' + json.dumps(command) + "\n"
+                )
+                repo = repo_with_test(Path(d), toml)
+                code, out, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+                self.assertEqual(code, expected, report + out)
+                if expected == 75:
+                    self.assertIn("- test: INFRA (runner_storage_low)", report)
+                    self.assertNotIn("- test: FAIL", report)
+                else:
+                    self.assertNotIn("INFRA", report)
