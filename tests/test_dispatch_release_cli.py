@@ -9,32 +9,6 @@ from unittest import mock
 from factory import config, dispatch, lifecycle
 from tests import test_dispatch_lifecycle as fixtures
 
-# Preserve the existing Git/worker/reviewer fixture, but model assignments from actual edits.
-OWNERSHIP = '''import json, os, sys
-from pathlib import Path
-p = Path(os.environ["SMOKE_STATE"])
-s = json.loads(p.read_text())
-a = sys.argv[1:]
-if a[:2] == ["api", "user"]:
-    print(json.dumps({"login": "factory-bot"}))
-    raise SystemExit(0)
-if a[:2] == ["issue", "edit"]:
-    owners = s.setdefault("assignees", [])
-    for flag in ("--add-assignee", "--remove-assignee"):
-        if flag in a:
-            login = a[a.index(flag) + 1]
-            login = "factory-bot" if login == "@me" else login
-            if flag == "--add-assignee" and login not in owners:
-                owners.append(login)
-            elif flag == "--remove-assignee" and login in owners:
-                owners.remove(login)
-    p.write_text(json.dumps(s))
-if a[:2] == ["issue", "create"]:
-    s["filed_assignees"] = [a[i + 1] for i, flag in enumerate(a)
-                            if flag in ("--assignee", "--add-assignee", "-a")]
-    p.write_text(json.dumps(s))
-'''
-
 
 class DispatchReleaseCLI(unittest.TestCase):
     setUp = fixtures.LocalCLI.setUp
@@ -43,13 +17,10 @@ class DispatchReleaseCLI(unittest.TestCase):
     cli = fixtures.LocalCLI.cli
 
     def install_ownership(self):
-        source = fixtures.GH.removeprefix("#!/usr/bin/env python3\n")
-        source = source.replace('if s.get("sync"):',
-                                'issue["assignees"] = [{"login": n} for n in s.get("assignees", [])]\n'
-                                'if s.get("sync"):')
+        source = fixtures.GH
         source = source.replace('if s.get("sync") and not s.get("merged") else "[]"',
                                 'if not s.get("merged") else "[]"')
-        (self.bin / "gh").write_text("#!/usr/bin/env python3\n" + OWNERSHIP + source)
+        (self.bin / "gh").write_text(source)
 
     def test_approved_exit_zero_releases_and_next_pass_does_not_run_worker(self):
         self.install_ownership()

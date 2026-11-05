@@ -1358,12 +1358,12 @@ Shared instructions take precedence over this host's local requeue journal. Loca
 risk-disagreement history carries forward only when its instructions match the
 selected context; an intervening foreign requeue cannot trigger early escalation.
 Successful host dispatch consumes shared rework instructions before releasing its
-host comment and label; completed work is a PR hold, not a live claim. Explicit
-refresh/review requeues may resume an unapproved PR, never an approved one.
+host comment and label; completed work is a PR hold, not a live claim. Requeue
+instructions do not bypass an open PR hold; dispatch resumes only after it closes.
 Escalation comments carry the same nonce marker on their second line, preserving
 the escalation prefix. A later manager/human `ready-for-agent` relabel can resume
-the expired claim's existing PR; its live heartbeat still holds admission.
-Neither transition can release a later worker's claim or its completed-PR hold.
+the ticket after its PR closes; its live heartbeat still holds admission.
+Neither transition can release a later worker's claim or bypass an open PR hold.
 Expired ownership follows election order, not the newest raw comment: a contender
 created during the winner's last live lease cannot supersede its requeue marker
 just because loser cleanup failed. A claim created at or after that lease expires

@@ -820,17 +820,11 @@ def unclaim(
 
 
 def open_agent_pr_hold(n: int) -> str | None:
-    """An existing PR owns delivery, except explicitly requeued, unapproved rework."""
+    """Every open agent PR owns delivery until it merges or closes."""
     prs = gh_json(["pr", "list", "--repo", REPO, "--state", "open",
                    "--head", f"agent/{n}", "--json", "number,labels"])
     for pr in prs:
         approved = any(label["name"] == LABEL_APPROVED for label in pr.get("labels", []))
-        if not approved:
-            context = refresh_requeue_context(n)
-            if cfg.host_name:
-                context = host_claim_state(n)[1] or context
-            if context:
-                continue
         reason = "approved, awaiting merge" if approved else "awaiting merge or closure"
         return f"open agent PR #{pr['number']} ({reason})"
     return None
