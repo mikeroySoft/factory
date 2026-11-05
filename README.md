@@ -1194,7 +1194,7 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
      "operator": "core/NumberReplacer",
      "original": "unused = 1",
      "mutated": "unused = 2",
-     "argument": "The unused value cannot affect observable behavior.",
+     "argument": "Only the integer literal 1 reaches this module-level assignment; no code reads unused, so changing it to 2 cannot affect behavior.",
      "reviewer": "Agreeing reviewer"
    }
    ```
@@ -1203,7 +1203,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    uses the exact operator and the complete removed/added source lines from the
    mutation diff, preserving indentation and joining multiple lines with `\n`;
    it never uses the report's truncated display text. `argument` and `reviewer`
-   must be nonempty single lines. Matching survivors remain in the report as
+   must be nonempty single lines. Each argument must name the input domain and
+   where it is filtered (or why no filtering is needed). The agreeing reviewer
+   must check that assumption against the source at the gated head. A later
+   change widening that domain reopens the mutant, even if its exact mutation
+   identity has not changed. Matching survivors remain in the report as
    **accepted equivalent**, with the argument and reviewer, but do not block.
    Invalid entries or entries without a matching completed survivor fail in both
    blocking and report-only modes, including when no mutable files changed.
