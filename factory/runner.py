@@ -46,7 +46,7 @@ def _users(root: Path, owner: dict) -> bool:
                         continue
                     if target == needle or target.startswith(needle + b"/"):
                         return True
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 continue  # Process or descriptor exited during observation.
     except (OSError, ValueError, IndexError):
         return True

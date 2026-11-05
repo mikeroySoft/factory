@@ -488,9 +488,10 @@ locked owner-identity marker outside their working directory. The next preflight
 can reclaim a crashed owner's root immediately, without an age threshold. Linux
 cleanup requires a dead owner identity and no surviving child references in
 process environments, working directories, or open descriptors; unreadable
-evidence or an unknown owner retains the root. Hosts without `/proc` retain
-abandoned roots rather than guessing. Normal synchronous exits clean their own
-roots. The legacy age-based sweep of unmarked review/gate directories remains.
+evidence or an unknown owner retains the root. A process disappearing during
+observation (`ENOENT` or `ESRCH`) does not block cleanup. Hosts without `/proc`
+retain abandoned roots rather than guessing. Normal synchronous exits clean
+their own roots. The legacy age-based sweep of unmarked review/gate directories remains.
 
 Each non-`chore` attempt tells the existing worker session to write a plan of at
 most 30 lines covering files, order, risks, and proof. Numbered revisions under
