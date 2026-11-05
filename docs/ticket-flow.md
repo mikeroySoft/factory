@@ -70,6 +70,8 @@ flowchart TB
   TRI -->|"triage.apply_decision"| RFA
   TRI -->|"triage.apply_decision"| RFH
   TRI -->|"unparseable twice, label kept: triage.execute"| NT
+  TRI -->|"model read timeout, label kept for next-pass retry: triage.execute"| NT
+  TRI -->|"three consecutive timeouts per issue, once per streak: triage._report_timeout_streak"| ESC
   TRI -->|"triage.apply_decision"| WONT
   NI -->|"question comment: triage.apply_decision"| REPORTER
   REPORTER -.->|"no watcher re-queues needs-info; a human relabels: decisions.apply"| NT
@@ -268,3 +270,4 @@ event. `{}` is a runtime value.
 | `manage.apply` | ``FIX worktree head {} is not the PR head {} plus the worker's own commits; worktree kept at {}`` | manager FIX → escalate (`refresh_head`) |
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
 | `manage.escalation_pass` | ``manager_failed`` | manager decision → human |
+| `triage._report_timeout_streak` | ``triage model timed out on {} consecutive attempts; check the model endpoint. The issue remains needs-triage and will be retried next pass`` | triage → escalate once after three consecutive model read timeouts; `needs-triage` kept for retry |

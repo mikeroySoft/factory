@@ -8,6 +8,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
 
@@ -59,7 +60,7 @@ class TriageTimeoutTest(unittest.TestCase):
                 "updatedAt": "2026-11-04T01:00:00+00:00",
             })
         if args[:2] == ("issue", "edit"):
-            for flag, label in zip(args[3:], args[4:]):
+            for flag, label in pairwise(args[3:]):
                 if flag == "--remove-label":
                     self.labels[n].discard(label)
                 elif flag == "--add-label":
