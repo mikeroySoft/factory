@@ -510,7 +510,7 @@ class _Observation:
         return self.lock_files[path]
 
     def holders(self, lock: dict):
-        if lock["device"] is None or lock["inode"] is None:
+        if not self.proc or lock["device"] is None or lock["inode"] is None:
             return None
         if not self.kernel_read:
             self.kernel_read = True

@@ -2442,9 +2442,11 @@ never establish current execution activity.
 
 The projection's `liveness` is `linux_proc` on Linux and `not_applicable` on
 other platforms, including in the evidence API's `Local runtime observation`
-source. Non-Linux readers do not collect Linux `/proc` identity or synthesize
-configured resource descriptors without host identity; retained resources and
-unterminated executions remain unknown, never inferred free or stopped.
+source. Non-Linux readers do not collect Linux `/proc` identity or lock holders,
+or synthesize configured resource descriptors without host identity; retained
+resources and unterminated executions remain unknown, never inferred free or
+stopped. Unknown executions still make `observe` attention counts unavailable;
+that diagnostic is distinct from a `/proc` collection failure.
 Missing/unreadable Linux `/proc` identity still produces partial-collection errors.
 
 Resources retain the F02 descriptor, `state`, `ownership`, `owner`, `requests`,
