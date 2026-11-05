@@ -715,7 +715,9 @@ def main(argv: list[str]) -> int:
 
 
 def execute(args: argparse.Namespace, execution) -> int:
-    with reads.pass_scope(cfg.factory / "events.jsonl", "triage") as state:
+    with reads.pass_scope(
+        cfg.factory / "events.jsonl", "triage", enabled=not (args.replay or args.dry_run),
+    ) as state:
         result = _execute(args, execution)
     return 1 if state and (state.skipped or state.stopped) else result
 
