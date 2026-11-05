@@ -208,7 +208,31 @@ class RunnerPreflightTest(unittest.TestCase):
                 ))
             return iterdir(path)
 
-        with patch.object(Path, "iterdir", churn):
-            with runner.temporary_directory("factory-review-") as root:
-                (Path(root) / "result").write_text("finished")
+        with patch.object(Path, "iterdir", churn), \
+                runner.temporary_directory("factory-review-") as root:
+            (Path(root) / "result").write_text("finished")
         self.assertFalse(Path(root).exists(), "unrelated processes do not use this scratch root")
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux procfs process exit")
+    def test_process_exit_during_scan_does_not_retain_unused_temp_root(self):
+        from factory import runner
+
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            cwd=self.base, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(lambda: (child.kill(), child.wait(timeout=10)))
+        read_bytes = Path.read_bytes
+
+        for error, retained in ((FileNotFoundError, False), (ProcessLookupError, False),
+                                (PermissionError, True)):
+            with self.subTest(error=error):
+                def exiting(path):
+                    if path == Path(f"/proc/{child.pid}/environ"):
+                        raise error("process observation unavailable")
+                    return read_bytes(path)
+
+                with patch.object(Path, "read_bytes", exiting), \
+                        runner.temporary_directory("factory-review-") as root:
+                    (Path(root) / "result").write_text("finished")
+                self.assertEqual(Path(root).exists(), retained)
