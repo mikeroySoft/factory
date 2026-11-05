@@ -13,7 +13,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import call, patch
 
-from factory import config, lifecycle, triage
+from factory import config, lifecycle, runtime_events, triage
 
 
 class TriageUnavailable(unittest.TestCase):
@@ -119,6 +119,46 @@ class TriageUnavailable(unittest.TestCase):
         requests.assert_not_called()
         sleeps.assert_not_called()
         self.assertEqual([args[2] for args in self.writes if args[:2] == ("issue", "comment")], ["1"])
+
+    def test_outage_remains_readable_without_runtime_history_gaps(self):
+        self.run_pass(urllib.error.URLError(ConnectionRefusedError()))
+        projection = runtime_events.project(self.events)
+        self.assertTrue(projection["history"]["complete"], projection["errors"])
+        self.assertEqual(projection["history"]["gaps"], [])
+        self.assertEqual([row["ticket"] for row in projection["events"]
+                          if row["kind"] == "try_later"], [3])
+        self.assertEqual([(row["stage"], row["state"], row["observation"])
+                          for row in projection["executions"]], [
+            ("triage", "completed", "fresh"),
+            ("triage-ticket", "completed", "fresh"),
+        ])
+
+    def test_persistent_outage_does_not_starve_other_tickets_next_pass(self):
+        answer = json.dumps({"choices": [{"message": {"content": json.dumps({
+            "decision": config.LABEL_AGENT, "rationale": "clear", "question": "", "brief": "fix parser",
+        })}}]}).encode()
+        for failure in (TimeoutError("read timed out"),
+                        urllib.error.HTTPError(triage.LLM_URL, 503, "too large", {}, None)):
+            with self.subTest(failure=failure):
+                self.events.unlink(missing_ok=True)
+                self.views.clear()
+                self.writes.clear()
+                self.assertEqual(self.run_pass(failure)[0], 0)
+                self.assertEqual(self.views, [3])
+                self.views.clear()
+                self.assertEqual(self.run_pass([
+                    io.BytesIO(answer), io.BytesIO(answer), failure, failure, failure,
+                ])[0], 0)
+                self.assertEqual(self.views, [2, 1, 3])
+                self.assertEqual([int(args[2]) for args in self.writes
+                                  if args[:2] == ("issue", "comment")], [2, 1])
+                self.assertEqual(self.issues[3]["labels"], [{"name": config.LABEL_TRIAGE}])
+                self.views.clear()
+                self.assertEqual(self.run_pass([io.BytesIO(answer) for _ in range(3)])[0], 0)
+                self.assertEqual(self.views, [2, 1, 3])
+                self.views.clear()
+                self.assertEqual(self.run_pass([io.BytesIO(answer) for _ in range(3)])[0], 0)
+                self.assertEqual(self.views, [3, 2, 1])
 
     def test_client_error_is_not_retried_or_reported_as_try_later(self):
         with patch.object(triage.urllib.request, "urlopen", side_effect=urllib.error.HTTPError(
