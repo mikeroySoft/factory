@@ -190,8 +190,9 @@ def mutation_key(mutation, result) -> tuple:
             original, mutated)
 
 
-def stale_equivalents(reviewed: dict[tuple, dict], accepted: set[tuple]) -> bool:
-    stale = reviewed.keys() - accepted
+def stale_equivalents(reviewed: dict[tuple, dict], killed: set[tuple]) -> bool:
+    # Absence from this run is not evidence: sampling and deadlines leave entries untested.
+    stale = reviewed.keys() & killed
     for file, line, operator, original, mutated in sorted(stale):
         print(f"stale equivalent: {file}:{line}: {operator} {original!r} -> {mutated!r}")
     return bool(stale)
@@ -213,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     lines = changed_lines()
     if not lines:
         print("no mutable files")
-        return 1 if stale_equivalents(reviewed, set()) else 0
+        return 0
     from attrs import evolve
     from cosmic_ray.mutating import mutate_and_test
     from cosmic_ray.work_item import TestOutcome
@@ -319,7 +320,9 @@ def main(argv: list[str] | None = None) -> int:
     if queue or cut:
         print(f"incomplete: {len(queue)} mutants not started and {len(cut)} cut short by the "
               f"{deadline - started:.0f}s deadline")
-    stale = stale_equivalents(reviewed, accepted)
+    stale = stale_equivalents(reviewed, {
+        mutation_key(m, r) for m, r in results if r.test_outcome == TestOutcome.KILLED
+    })
     # cosmic-ray swallows its own failures (a mutation it could not write, a test command it
     # could not launch) into INCOMPETENT results. NO_TEST also leaves the sampled
     # mutation untested; neither is evidence of a killed or surviving mutant.

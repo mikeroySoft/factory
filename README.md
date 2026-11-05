@@ -1184,8 +1184,7 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Scratch workers use local shared clones with independent Git metadata and the
    current working files overlaid, so Git-dependent tests run without skips.
    This repository's mutation command loads `mutation-equivalents.json` through
-   `--equivalents FILE`. It is a JSON array (initially empty); each reviewed entry
-   has this shape:
+   `--equivalents FILE`. It is a JSON array; each reviewed entry has this shape:
 
    ```json
    {
@@ -1209,10 +1208,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    change widening that domain reopens the mutant, even if its exact mutation
    identity has not changed. Matching survivors remain in the report as
    **accepted equivalent**, with the argument and reviewer, but do not block.
-   Invalid entries or entries without a matching completed survivor fail in both
-   blocking and report-only modes, including when no mutable files changed.
-   An entry outside the current sample (unchanged file, sample cap, or incomplete
-   trial) also fails closed; keep the reviewed registry aligned with the run.
+   Invalid entries fail in both blocking and report-only modes. A reviewed entry
+   is stale and fails either mode only when that exact mutant was tested and
+   killed. Unchanged files, filtered or sampled-out mutants, and unstarted or
+   deadline-cut trials provide no stale evidence and do not fail the gate.
    The registry is in `[gate].protected_paths`: additions, updates and removals
    require the normal human-reviewed configuration/protected-override path, not
    an ordinary worker diff. No survivor is pre-approved by this mechanism.

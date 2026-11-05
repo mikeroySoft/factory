@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -128,6 +129,73 @@ class MutationEquivalentsTest(unittest.TestCase):
                 status, report = self.run_gate([{**self.entry, **change}])
                 self.assertNotEqual(status, 0, report)
                 self.assertIn("invalid equivalents", report)
+
+    def test_real_cli_accepts_survivors_and_rejects_tested_stale_entries(self):
+        repository = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix="mutation-equivalents-cli-") as directory:
+            root = Path(directory)
+            for name in ("factory", "scripts", "tests"):
+                (root / name).mkdir()
+                (root / name / "__init__.py").touch()
+            shutil.copyfile(repository / "scripts/mutation.py", root / "scripts/mutation.py")
+            (root / "factory/example.py").touch()
+            (root / "AGENTS.md").write_text("`factory/example.py` `tests/test_example.py`\n")
+            (root / ".factory.toml").write_text("[gate]\ntimeout = 120\n")
+
+            def git(*args):
+                subprocess.run(
+                    ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                     "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+                    cwd=root, check=True, capture_output=True, text=True,
+                )
+
+            git("init", "-b", "main")
+            git("add", "factory", "scripts", "tests", "AGENTS.md", ".factory.toml")
+            git("commit", "-m", "fixture baseline")
+            git("update-ref", "refs/remotes/origin/main", "HEAD")
+            (root / "factory/example.py").write_text("unused = 1\ndef answer():\n    return True\n")
+            test = (
+                "import unittest\nfrom factory.example import answer\n"
+                "class ExampleTest(unittest.TestCase):\n"
+                "    def test_answer(self):\n        self.assertTrue(answer())\n"
+            )
+            (root / "tests/test_example.py").write_text(test)
+            git("add", "factory/example.py", "tests/test_example.py")
+            git("commit", "-m", "fixture change")
+            entries = [
+                {**self.entry, "operator": "core/NumberReplacer", "original": "unused = 1",
+                 "mutated": f"unused = {value}",
+                 "argument": "Only literal 1 reaches this assignment; unused is not read by the fixture.",
+                 "reviewer": "Synthetic CLI fixture reviewer"}
+                for value in (0, 2)
+            ]
+            command = [
+                "uv", "run", "--project", str(repository), "--frozen", "--no-managed-python",
+                "--group", "mutation", "python", "scripts/mutation.py",
+                "--blocking", "--equivalents", "reviewed.json",
+            ]
+
+            def run(entries, expected, label):
+                (root / "reviewed.json").write_text(json.dumps(entries))
+                result = subprocess.run(
+                    command, cwd=root, capture_output=True, text=True, timeout=90,
+                )
+                report = result.stdout + result.stderr
+                self.assertEqual(result.returncode, expected, report)
+                print(f"real mutation CLI {label}: exit {result.returncode}\n{report}")
+                return report
+
+            self.assertNotIn("accepted equivalent", run([], 1, "unreviewed"))
+            accepted = run(entries, 0, "accepted")
+            self.assertEqual(accepted.count("accepted equivalent:"), 2, accepted)
+            # Widen the fixture's observation domain: the formerly unused value is now read.
+            (root / "tests/test_example.py").write_text(
+                test + "    def test_value(self):\n"
+                "        from factory.example import unused\n        self.assertEqual(unused, 1)\n"
+            )
+            stale = run(entries, 1, "stale")
+            self.assertEqual(stale.count("stale equivalent:"), 2, stale)
+            self.assertNotIn("accepted equivalent", stale)
 
 
 if __name__ == "__main__":
