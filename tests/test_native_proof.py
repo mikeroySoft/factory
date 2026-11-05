@@ -135,3 +135,56 @@ Path(".factory/handoff-7.md").write_text(
         for packet in state["packets"]:
             self.assertIn("Ultron same-head check: PASS", packet["prompt"])
             self.assertIn(proof_comments[0], packet["comments"])
+
+    def test_native_proof_multiline_citation_reaches_review_and_stales(self):
+        self.local.worker.write_text(fixtures.WORKER + '''
+import subprocess
+subprocess.run(["git", "add", "change.txt"], check=True)
+subprocess.run(["git", "commit", "-m", "worker change"], check=True)
+Path(".factory").mkdir(exist_ok=True)
+proof = Path(".factory/macos-run.txt")
+if not proof.exists():
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    proof.write_text("Verified source revision: " + head + "\\nNative multiline smoke: PASS\\n")
+Path(".factory/unrelated.txt").write_text("Unrelated evidence must not be published")
+Path(".factory/handoff-7.md").write_text(
+    "Native-host proof:\\n- `.factory/macos-run.txt`\\n- `.factory/missing.txt`\\n"
+    "\\n## Next steps\\n- `.factory/unrelated.txt`\\n")
+''')
+        self.local.cli("dispatch", "--ticket", "7")
+        state = json.loads(self.local.state.read_text())
+        first, second = state["packets"]
+        text = (self.local.repo / ".factory/wt-7/.factory/macos-run.txt").read_text()
+        head = text.splitlines()[0].split()[-1]
+        for packet in (first, second):
+            self.assertTrue(packet["comments"], "Named multiline proof was not posted before review")
+            comment = packet["comments"][-1]
+            self.assertIn("Native multiline smoke: PASS", comment)
+            self.assertIn(head, comment)
+            self.assertIn("missing, unreadable, unsafe or oversized", comment)
+            self.assertIn(comment, packet["prompt"])
+            self.assertNotIn("Unrelated evidence must not be published", comment)
+        self.assertIn("Current-head proof:", first["prompt"])
+        self.assertNotIn("Current-head proof:", second["prompt"])
+        self.assertIn("STALE / conflicting proof", second["prompt"])
+        new_head = self.local.git("-C", ".factory/wt-7", "rev-parse", "HEAD").stdout.strip()
+        self.assertNotEqual(head, new_head)
+        self.assertIn(new_head, second["prompt"])
+
+    def test_native_proof_nul_filename_is_reported_unavailable(self):
+        self.local.worker.write_text(fixtures.WORKER + '''
+Path(".factory").mkdir(exist_ok=True)
+Path(".factory/native.txt").write_text("NUL-stripped path must not be read")
+Path(".factory/handoff-7.md").write_text("Native-host proof: `.factory/native\\x00.txt`\\n")
+''')
+        self.local.cli("dispatch", "--ticket", "7")
+        state = json.loads(self.local.state.read_text())
+        first, second = state["packets"]
+        for packet in (first, second):
+            comment = packet["comments"][-1]
+            self.assertIn("Proof not supplied", comment)
+            self.assertIn("missing, unreadable, unsafe or oversized", comment)
+            self.assertIn(comment, packet["prompt"])
+            self.assertNotIn("Current-head proof:", comment)
+            self.assertNotIn("NUL-stripped path must not be read", comment)
+            self.assertNotIn("\x00", packet["prompt"])
