@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -132,7 +133,8 @@ class MutationEquivalentsTest(unittest.TestCase):
 
     def test_real_cli_accepts_survivors_and_rejects_tested_stale_entries(self):
         repository = Path(__file__).resolve().parents[1]
-        with tempfile.TemporaryDirectory(prefix="mutation-equivalents-cli-") as directory:
+        with tempfile.TemporaryDirectory(prefix="mutation-equivalents-cli-") as directory, \
+                tempfile.TemporaryDirectory(prefix="mutation-cli-tmp-") as tmp:
             root = Path(directory)
             for name in ("factory", "scripts", "tests"):
                 (root / name).mkdir()
@@ -178,7 +180,8 @@ class MutationEquivalentsTest(unittest.TestCase):
             def run(entries, expected, label):
                 (root / "reviewed.json").write_text(json.dumps(entries))
                 result = subprocess.run(
-                    command, cwd=root, capture_output=True, text=True, timeout=90,
+                    command, cwd=root, env=os.environ | {"TMPDIR": tmp},
+                    capture_output=True, text=True, timeout=90, check=False,
                 )
                 report = result.stdout + result.stderr
                 self.assertEqual(result.returncode, expected, report)

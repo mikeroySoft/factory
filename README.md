@@ -1214,7 +1214,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    deadline-cut trials provide no stale evidence and do not fail the gate.
    The registry is in `[gate].protected_paths`: additions, updates and removals
    require the normal human-reviewed configuration/protected-override path, not
-   an ordinary worker diff. No survivor is pre-approved by this mechanism.
+   an ordinary worker diff. The registry ships empty (`[]`); #541 adds its own
+   reviewed entries pinned to its gated head. No survivor is pre-approved by this
+   mechanism.
    The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
    profiles must also name a model. `factory doctor` warns when any of the
    worker, primary-reviewer, or second-reviewer models is missing or not
