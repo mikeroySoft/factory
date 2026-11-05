@@ -591,7 +591,8 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         if args[:2] == ["issue", "view"]:
             return self.issue
         if args[:2] == ["pr", "list"]:
-            if "--head" in args and (not self.pr_published or self.pr["state"] != "OPEN"):
+            state = args[args.index("--state") + 1].upper() if "--state" in args else "OPEN"
+            if "--head" in args and (not self.pr_published or self.pr["state"] != state):
                 return []
             return [self.pr]
         if args[:2] == ["pr", "view"]:
@@ -604,6 +605,7 @@ class HighPipelineBoundaryTest(unittest.TestCase):
 
     def publish(self, *_args, **_kwargs):
         self.pr_published = True
+        self.pr["state"] = "OPEN"
         return True
 
     def command_result(self, args, **_kwargs):
@@ -612,6 +614,16 @@ class HighPipelineBoundaryTest(unittest.TestCase):
                 self.issue["assignees"] = [{"login": "factory-bot"}]
             elif "--remove-assignee" in args:
                 self.issue["assignees"] = []
+            output = ""
+        elif args[:3] == ["gh", "pr", "close"]:
+            self.pr["state"] = "CLOSED"
+            output = ""
+        elif args[:3] == ["gh", "pr", "edit"]:
+            if "--remove-label" in args:
+                label = args[args.index("--remove-label") + 1]
+                self.pr["labels"] = [row for row in self.pr["labels"] if row["name"] != label]
+            if "--add-label" in args:
+                self.pr["labels"].append({"name": args[args.index("--add-label") + 1]})
             output = ""
         elif args[:3] == ["git", "diff", "--name-status"]:
             output = "M\tfactory/dispatch.py\n"

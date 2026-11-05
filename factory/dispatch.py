@@ -2904,12 +2904,24 @@ def push_and_pr(
     existing = gh_json(
         ["pr", "list", "--repo", REPO, "--head", branch, "--json", "number,baseRefName"]
     )
+    if not existing and ticket is not None:
+        closed = gh_json(
+            ["pr", "list", "--repo", REPO, "--head", branch, "--state", "closed",
+             "--limit", "1", "--json", "number,baseRefName,state"]
+        )
+        if closed and closed[0]["state"] == "CLOSED":
+            existing = closed
     if existing and existing[0].get("baseRefName") != cfg.main:
         log(
             f"{branch}: existing PR #{existing[0]['number']} targets "
             f"{existing[0].get('baseRefName')!r}, not {cfg.main!r}; not pushing"
         )
         return False
+    if existing and existing[0].get("state") == "CLOSED":
+        # Resume the same PR so a human's blocking review cannot be discarded.
+        pr = str(existing[0]["number"])
+        run(["gh", "pr", "edit", pr, "--repo", REPO, "--remove-label", FACTORY_APPROVED])
+        run(["gh", "pr", "reopen", pr, "--repo", REPO])
     if ticket is None or lease is None:
         with _REMOTE_REFS:
             run(["git", "push", "-u", "origin", branch], cwd=wt)
@@ -3572,7 +3584,21 @@ def _review_rounds_used(n: int) -> int:
     )
 
 
+def close_requeue_pr(n: int, pr: int | None = None) -> None:
+    """End the open-PR hold before returning work to the automatic queue."""
+    prs = [{"number": pr}] if pr is not None else gh_json(
+        ["pr", "list", "--repo", REPO, "--state", "open",
+         "--head", f"agent/{n}", "--json", "number"]
+    )
+    for row in prs:
+        number = str(row["number"])
+        run(["gh", "pr", "edit", number, "--repo", REPO, "--remove-label", FACTORY_APPROVED])
+        run(["gh", "pr", "close", number, "--repo", REPO])
+
+
 def _record_rework(n: int, head: str, findings: str, deferred: bool) -> None:
+    if deferred:
+        close_requeue_pr(n)
     record(
         "review-rework", ticket=n, head=head, round=_review_rounds_used(n) + 1,
         findings=findings, deferred=deferred,
@@ -3731,7 +3757,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         unmerged = run(["git", "diff", "--name-only", "-z", "--diff-filter=U"], cwd=wt, check=False).stdout
         conflicts = [path for path in unmerged.split("\0") if path]
         run(["git", verb, "--abort"], cwd=wt, check=False)
-        # Preserve routine worker work (#295) for a later claim after the PR closes,
+        # Preserve routine worker work (#295) for a later claim,
         # bounded by `review_rounds`. Escalate protected paths without authority,
         # exhausted rounds, or a ticket that is no longer open.
         # A manager-FIX-approved PR may still have a ready-for-human issue; restore agent flow.
@@ -3751,6 +3777,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             files = "## Conflicting files\n\n" + ("\n".join(f"- `{path}`" for path in conflicts) or "(none listed)")
             withdraw(f"{verb} onto moved main conflicts ({why}); worktree {wt}", "refresh_conflict", extra=files)
             return False
+        close_requeue_pr(n, pr)
         record_merge_decision(
             n, pr, "conflict-requeue",
             f"{verb} onto moved {cfg.main} conflicted; requeued to a worker",
@@ -3870,6 +3897,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 return False
             evidence_ref = restore_pr_head(head)
             remote_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+            close_requeue_pr(n, pr)
             record_merge_decision(
                 n, pr, "gate-requeue",
                 f"gate failed twice after {verb} onto moved {cfg.main}; requeued to a worker",
@@ -3939,6 +3967,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 event.get("event") == "risk-requeue" and event.get("ticket") == n
                 for event in lifecycle.read_events(EVENTS)
             )
+            close_requeue_pr(n, pr)
             record(
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,

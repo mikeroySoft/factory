@@ -60,6 +60,7 @@ class FakeGitHub:
         self.merged = False
         self.closed = False
         self.pr_number = 102
+        self.review_decision = ""
 
     def head(self) -> str:
         return git(self.origin, "rev-parse", "agent/9")
@@ -67,7 +68,8 @@ class FakeGitHub:
     def pr(self) -> dict:
         state = "MERGED" if self.merged else "CLOSED" if self.closed else "OPEN"
         return {"number": self.pr_number, "state": state, "headRefName": "agent/9",
-                "headRefOid": self.head(), "baseRefName": "main", "isDraft": False, "reviewDecision": "",
+                "headRefOid": self.head(), "baseRefName": "main", "isDraft": False,
+                "reviewDecision": self.review_decision,
                 "labels": [{"name": label} for label in sorted(self.pr_labels)], "title": "agent/9: change"}
 
     def issue(self) -> dict:
@@ -213,6 +215,38 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertEqual(git(self.origin, "show", "main:shared.txt"), "main version\nagent version")
         self.assertEqual(self.events("escalate"), [])
         self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+
+    def test_resumed_pr_keeps_human_review_veto(self) -> None:
+        with self.patched(), mock.patch.object(dispatch, "run_gate", return_value=(True, "gate ok")):
+            dispatch.merge_pass_locked(False)
+            assert_requeue_ready(self, self.github)
+            self.github.review_decision = "CHANGES_REQUESTED"
+            [ready] = dispatch.frontier()
+            dispatch.process_ticket(ready, 30, False)
+            dispatch.merge_pass_locked(False)
+        self.assertEqual(self.github.pr_number, 102)
+        self.assertFalse(self.github.closed)
+        self.assertFalse(self.github.merged)
+        self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+        self.assertEqual([row["code"] for row in self.events("escalate")], ["approval_drift"])
+        self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
+
+    def test_failed_pr_closure_does_not_publish_a_ready_requeue(self) -> None:
+        self.github.issue_labels = {config.LABEL_HUMAN}
+        original = self.github.run
+
+        def command(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "pr", "close"]:
+                raise subprocess.CalledProcessError(1, cmd, stderr="closure failed")
+            return original(cmd, *args, **kwargs)
+
+        with self.patched(), mock.patch.object(dispatch, "run", side_effect=command):
+            with self.assertRaises(subprocess.CalledProcessError):
+                dispatch.refresh_pr_branch(9, 102, False)
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+        self.assertFalse(self.github.closed)
+        self.assertEqual(self.events("conflict-requeue"), [])
+        self.assertEqual(self.github.head(), self.approved_head)
 
     def test_fix_approved_conflict_restores_agent_labels_then_resolves_and_merges(self) -> None:
         # Successful manager FIX approves the PR but leaves the issue ready-for-human.

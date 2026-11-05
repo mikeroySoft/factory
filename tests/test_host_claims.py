@@ -111,6 +111,13 @@ class FakeGitHub:
                         self.issue[key] = [row for row in self.issue[key] if row[field] != value]
                     elif not any(row[field] == value for row in self.issue[key]):
                         self.issue[key].append({field: value})
+            elif cmd[:3] == ["gh", "pr", "edit"]:
+                for pr in self.open_prs:
+                    if str(pr["number"]) == cmd[3] and "--remove-label" in cmd:
+                        label = cmd[cmd.index("--remove-label") + 1]
+                        pr["labels"] = [row for row in pr.get("labels", []) if row["name"] != label]
+            elif cmd[:3] == ["gh", "pr", "close"]:
+                self.open_prs = [pr for pr in self.open_prs if str(pr["number"]) != cmd[3]]
             elif cmd[:2] == ["gh", "api"]:
                 endpoint = next(arg for arg in cmd if arg.startswith("repos/"))
                 comment_id = int(endpoint.rsplit("/", 1)[1])

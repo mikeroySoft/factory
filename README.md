@@ -1098,14 +1098,16 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    rebase (or sync-merge) conflict is routine work: the
    label is withdrawn, a `conflict-requeue` row records the PR, head and
    conflicting files, and run-owned claims are released (`ready-for-human`
-   removed, `ready-for-agent` added, including after a manager `FIX`). The open
-   PR remains a named hold until it merges or closes. After closure, the next
-   claim runs a worker in the same worktree on the same `agent/<n>` branch
+   removed, `ready-for-agent` added, including after a manager `FIX`). The PR
+   is closed automatically before releasing the ticket, ending its admission hold.
+   The next claim runs a worker in the same worktree on the same `agent/<n>` branch
    with a brief to rebase onto current
    `origin/main`, resolve the conflicts, keep the approved intent, and not widen
    scope. That attempt counts as a worker round; the normal gate, push (lease
    on the recorded PR head), independent review, `review_rounds` and
-   `manager.rounds` follow, and only a fresh approval restores the label. The
+   `manager.rounds` follow. Publishing reopens the same closed, unmerged PR after
+   withdrawing stale approval, preserving its human review veto; only fresh
+   approval restores the label. The
    conflict escalates as `refresh_conflict`, with the conflicting files in the
    packet, when it touches `gate.protected_paths` without
    `factory-protected-override`, when `review_rounds` conflict requeues are
@@ -1118,7 +1120,7 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    reports in `gate-rerun`. If the re-run also fails, a `gate-requeue` row records
    both reports, the PR diff paths, whether the failure appears unrelated to those
    paths, and the round; the ticket keeps its existing worker profile and
-   `agent/<n>` branch, but an open PR still holds admission. After closure,
+   `agent/<n>` branch. The PR is closed automatically before releasing the ticket;
    the worker brief includes both reports and the unrelated-failure assessment.
    This repeats for at most `review_rounds` gate
    requeues. A closed ticket, exhausted gate rounds, or a protected/add-only failure
@@ -1355,7 +1357,10 @@ Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
 issue comment with the refresh instructions, including when the owner releases
 its claim. The next host can consume that context even after the claim is deleted.
 Deferred actionable review rework uses the same ownership-aware release and shares
-its findings, so another host can resume after the PR closes and no live claim remains.
+its findings. Conflict, gate, risk and deferred-review requeues close their PR
+automatically before releasing readiness, so another host can resume without a
+manual closure once no live claim remains. Publishing reopens the latest closed,
+unmerged agent PR with stale approval removed, retaining human blocking reviews.
 Shared instructions take precedence over this host's local requeue journal. Local
 risk-disagreement history carries forward only when its instructions match the
 selected context; an intervening foreign requeue cannot trigger early escalation.

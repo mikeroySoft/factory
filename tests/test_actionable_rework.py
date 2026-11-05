@@ -78,10 +78,10 @@ class ActionableReworkTest(unittest.TestCase):
         self.assertIn("Handle the missing branch", rows[0]["findings"])
         self.assertIn("NumberReplacer", rows[0]["findings"])
         self.assertIn("--remove-assignee", self.command.call_args.args[0])
-        # Once the PR closes, the next pass receives the packet without resetting its budget.
+        self.assertEqual(self.pr["state"], "CLOSED")
+        # The next pass resumes automatically without resetting its budget.
         self.clock = 0
         self.expire = False
-        self.pr["state"] = "CLOSED"
         dispatch.process_ticket(self.issue, 1, False, forced=True)
         self.assertIn("Handle the missing branch", self.worker.call_args_list[1].args[4])
         self.assertEqual([row["round"] for row in self.rework_rows()], [1, 2])
