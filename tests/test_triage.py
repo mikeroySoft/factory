@@ -97,7 +97,7 @@ class TriagePass(unittest.TestCase):
         self.failure.clear()
         self.asked.clear()
         self.assertEqual(self.run_pass(), 0)
-        self.assertEqual(self.asked, [4, 3, 2, 1])
+        self.assertEqual(self.asked, [4, 2, 1, 3])
 
     def test_wontfix_proposal_is_labelled_and_not_retriaged(self):
         self.decision[2] = LABEL_WONTFIX

@@ -686,6 +686,17 @@ def list_needs_triage(execution=None) -> list[int]:
     return [item["number"] for item in json.loads(raw)]
 
 
+def deferred_last(numbers: list[int]) -> list[int]:
+    """Try other tickets before recently deferred ones, preserving order among untried peers."""
+    last = {}
+    for position, row in enumerate(lifecycle.read_events(cfg.factory / "events.jsonl")):
+        if row.get("stage") == "triage-ticket" and row.get("kind") == "exit":
+            last[row.get("ticket")] = position if row.get("reason") in {
+                "triage_endpoint_timeout", "triage_endpoint_unavailable",
+            } else -1
+    return sorted(numbers, key=lambda n: last.get(n, -1))
+
+
 def probe_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory triage-probe",
@@ -739,7 +750,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     elif args.issue:
         numbers = [args.issue]
     else:
-        numbers = list_needs_triage(execution=execution)
+        numbers = deferred_last(list_needs_triage(execution=execution))
 
     if not numbers:
         if execution:

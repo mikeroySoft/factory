@@ -65,6 +65,7 @@ class TriageUnavailable(unittest.TestCase):
         original = copy.deepcopy(self.issues)
         for failure in failures:
             with self.subTest(failure=failure):
+                self.events.unlink(missing_ok=True)
                 before = len(lifecycle.read_events(self.events))
                 self.views.clear()
                 result, requests, sleeps = self.run_pass(failure)
@@ -159,6 +160,24 @@ class TriageUnavailable(unittest.TestCase):
                 self.views.clear()
                 self.assertEqual(self.run_pass([io.BytesIO(answer) for _ in range(3)])[0], 0)
                 self.assertEqual(self.views, [3, 2, 1])
+
+    def test_repeated_server_outage_rotates_eligible_tickets(self):
+        failure = urllib.error.URLError(ConnectionRefusedError())
+        for number in (3, 2, 1, 3):
+            self.views.clear()
+            self.assertEqual(self.run_pass(failure)[0], 0)
+            self.assertEqual(self.views, [number])
+        self.assertEqual(self.writes, [])
+
+    def test_legacy_timeout_defers_but_other_stage_failure_does_not(self):
+        for stage, number, reason in (
+            ("triage-ticket", 3, "triage_endpoint_timeout"),
+            ("dispatch", 2, "triage_endpoint_unavailable"),
+        ):
+            with lifecycle.scope(self.events, stage, ticket=number) as execution:
+                execution.outcome, execution.reason = "unknown", reason
+        self.assertEqual(self.run_pass(urllib.error.URLError(ConnectionRefusedError()))[0], 0)
+        self.assertEqual(self.views, [2])
 
     def test_client_error_is_not_retried_or_reported_as_try_later(self):
         with patch.object(triage.urllib.request, "urlopen", side_effect=urllib.error.HTTPError(
