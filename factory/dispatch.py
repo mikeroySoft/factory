@@ -4913,7 +4913,7 @@ def process_ticket(
             )
             if admitted := issue.get("_factory_admitted"):
                 admitted.set()
-            lease = agent_lease(wt, n, preserved=receipt["remote"] if receipt else None)
+            lease = agent_lease(wt, n, preserved=receipt["remote"]) if receipt else agent_lease(wt, n)
             # Until the fresh generation first publishes, the remote still holds the preserved head.
             restart = receipt is not None and lease == receipt["remote"]
             LOGS.mkdir(parents=True, exist_ok=True)
