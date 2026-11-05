@@ -110,6 +110,27 @@ class RunnerRuntimeTest(unittest.TestCase):
                                  ("infra", "runner_storage_low"))
                 self.assertFalse(any(r.get("event") in {"claimed", "attempt", "escalate"} for r in rows))
 
+    def test_unreadable_child_evidence_retains_abandoned_root(self):
+        root, _ = self.owner()
+        observer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        self.addCleanup(self.stop, observer)
+        with patch.object(Path, "read_bytes", side_effect=PermissionError("hidden process")):
+            self.preflight()
+        self.assertEqual((root / "payload").read_text(), "keep me")
+
+    def test_live_owner_retains_root_and_storage_thresholds_are_inclusive(self):
+        from factory import runner
+
+        stats = SimpleNamespace(f_bavail=runner.MIN_FREE_BYTES, f_frsize=1,
+                                f_favail=runner.MIN_FREE_INODES, f_files=1_000_000)
+        with patch.object(tempfile, "tempdir", str(self.root)), runner.temp_root("gate") as root:
+            (root / "payload").write_text("live")
+            os.utime(root.parent, (0, 0))
+            with patch("os.statvfs", return_value=stats):
+                self.assertIsNone(self.preflight())
+            self.assertEqual((root / "payload").read_text(), "live")
+        self.assertFalse(root.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

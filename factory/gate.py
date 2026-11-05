@@ -15,11 +15,10 @@ import re
 import signal
 import subprocess
 import sys
-import tempfile
 import tomllib
 from pathlib import Path
 
-from factory import config, lifecycle
+from factory import config, lifecycle, runner
 from factory.config import CONFIG_NAME, Config
 
 cfg: Config
@@ -649,8 +648,8 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     configure(config.load())
     previous_tmpdir = os.environ.get("TMPDIR")
-    with tempfile.TemporaryDirectory(prefix="factory-gate-") as tmpdir:
-        os.environ["TMPDIR"] = tmpdir
+    with runner.temp_root("gate") as tmpdir:
+        os.environ["TMPDIR"] = str(tmpdir)
         try:
             with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
                 return execute(args, execution)

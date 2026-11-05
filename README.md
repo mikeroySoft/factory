@@ -476,6 +476,22 @@ ticket, cross-ticket nodes for ticket causes, and collapsible groups beginning a
 records carry required findings and model usage; manager, merge, escalation,
 learning and CURATE records retain the alternatives and evidence used.
 
+Before each ticket claim (including `--ticket`), runner preflight reaps abandoned
+owned temp roots, then requires at least 1 GiB available bytes and 10,000 available
+inodes on both the repository and temp filesystems. Filesystems without inode
+accounting are checked for bytes only. A low or unreadable filesystem leaves the
+ticket unclaimed and records `runner_storage_low` with outcome `infra` and a
+`retry_next_pass` wait; no attempt, escalation, or strike is recorded.
+
+Workers, gates, and reviewers use private `factory-runner-*` temp roots with a
+locked owner-identity marker outside their working directory. The next preflight
+can reclaim a crashed owner's root immediately, without an age threshold. Linux
+cleanup requires a dead owner identity and no surviving child references in
+process environments, working directories, or open descriptors; unreadable
+evidence or an unknown owner retains the root. Hosts without `/proc` retain
+abandoned roots rather than guessing. Normal synchronous exits clean their own
+roots. The legacy age-based sweep of unmarked review/gate directories remains.
+
 Each non-`chore` attempt tells the existing worker session to write a plan of at
 most 30 lines covering files, order, risks, and proof. Numbered revisions under
 `.factory/plans/current/` preserve course changes within the attempt. After the

@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 
-from factory import __version__, brief, config, lifecycle, risk
+from factory import __version__, brief, config, lifecycle, risk, runner
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -281,8 +281,8 @@ _REMOTE_REFS = threading.Lock()
 def without_github(env: dict[str, str]):
     """`env` for worker and reviewer agents: no GitHub token, and gh reads a fresh empty
     config dir. The dispatcher's own gh and git push keep the configured identity."""
-    with tempfile.TemporaryDirectory(prefix="factory-no-gh-") as empty:
-        yield {k: v for k, v in env.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")} | {"GH_CONFIG_DIR": empty}
+    with runner.temp_root("no-gh") as empty:
+        yield {k: v for k, v in env.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")} | {"GH_CONFIG_DIR": str(empty)}
 
 
 def _review_command(prompt: str, reviewer: list[str] | None = None) -> tuple[list[str], bool]:
@@ -342,8 +342,8 @@ def _run_reviewer(
     clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     if env_overrides:
         clean.update({key: value for key, value in env_overrides.items() if not key.startswith("GIT_")})
-    with tempfile.TemporaryDirectory(prefix="factory-review-") as tmp, \
-            without_github(clean) as env:
+    with runner.temp_root("review") as tmp, \
+            without_github(clean | {"TMPDIR": str(tmp)}) as env:
         review_dir = Path(tmp)
         try:
             if source is not None:
@@ -1827,7 +1827,8 @@ def run_worker(
             launch.update(env_overrides)
             if context is not None:
                 launch[lifecycle.CONTEXT_ENV] = context
-        with without_github(launch) as isolated:
+        with runner.temp_root("worker") as tmp, \
+                without_github(launch | {"TMPDIR": str(tmp)}) as isolated:
             raise_if_interrupted()
             proc = subprocess.Popen(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT,
                                     env=isolated, start_new_session=True)
@@ -4621,6 +4622,12 @@ def process_ticket(
         return
 
     with lifecycle.scope(EVENTS, "ticket", ticket=n) as execution:
+        if reason := runner.preflight(ROOT):
+            execution.outcome, execution.reason = "infra", "runner_storage_low"
+            execution.wait("runner_storage_low", mode="retry_next_pass", detail=reason)
+            record("runner-preflight", ticket=n, outcome="infra", reason="runner_storage_low", detail=reason)
+            log(f"#{n}: skipped (runner_storage_low: {reason}); retry next pass")
+            return False
         deadline = time.monotonic() + budget_min * 60
         lock_fd = ticket_lock(n).open("w")  # held for the life of this pipeline
         request = execution.resource("requested", lock_path, scope="repository")
@@ -5109,6 +5116,7 @@ def main(argv: list[str]) -> int:
     configure(config.load())  # from the tree now pinned at origin/<main>
     if not args.dry_run:
         _sweep_stale_factory_tempdirs()
+        runner.reap()
     if args.budget_min is None:
         args.budget_min = cfg.budget_min
     installed, target = config.engine_commit(), config.engine_target()
