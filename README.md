@@ -1355,7 +1355,7 @@ Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
 issue comment with the refresh instructions, including when the owner releases
 its claim. The next host can consume that context even after the claim is deleted.
 Deferred actionable review rework uses the same ownership-aware release and shares
-its findings, so another host can resume the existing PR after the lease expires.
+its findings, so another host can resume after the PR closes and no live claim remains.
 Shared instructions take precedence over this host's local requeue journal. Local
 risk-disagreement history carries forward only when its instructions match the
 selected context; an intervening foreign requeue cannot trigger early escalation.
