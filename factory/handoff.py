@@ -2,7 +2,8 @@
 
 A request is published only once automatic manager recovery is terminal for the latest
 escalation (manager `HUMAN`, transport failure, rounds exhausted, or no manager). Its
-identity is `<ticket>/<round>`; intent is journaled before the comment, the comment id
+identity is `<ticket>/<round>` (`<ticket>/g<generation>/<round>` after an owner requeue,
+since rounds restart per generation); intent is journaled before the comment, the comment id
 after. Uncertain publication is reconciled from GitHub before any retry, and a failed
 reconciliation posts nothing. Owners come from the read-only `factory plan route`
 producer; a `**Decision owner**` edit by a human wins and is never written back.
@@ -16,7 +17,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from subprocess import CalledProcessError
 
-from factory import dispatch, lifecycle
+from factory import dispatch, generation, lifecycle
 from factory.config import LABEL_AGENT, LABEL_HUMAN
 
 MARK = "factory-handoff"
@@ -173,7 +174,8 @@ def handoff_pass(dry_run: bool = False) -> None:
                     continue
                 execution.resource("acquired", lock_path, scope="repository")
             try:
-                events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
+                ticket_generation = generation.current(lifecycle.read_events(dispatch.EVENTS), n)
+                events = ticket_generation.rows
                 escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
                 if not escalation or escalation.get("upstream") or not escalation.get("packet"):
@@ -187,7 +189,8 @@ def handoff_pass(dry_run: bool = False) -> None:
                     dispatch.log(f"#{n}: refused (initiative records never receive handoff requests)")
                     continue
                 r = escalation.get("round", 0)
-                request = f"{n}/{r}"
+                # Rounds restart in each owner-requeue generation; legacy generation 0 keeps `<n>/<round>`.
+                request = f"{n}/g{ticket_generation.number}/{r}" if ticket_generation.number else f"{n}/{r}"
                 receipts = [e for e in events if e.get("event") == "comment" and e.get("kind") == "handoff" and e.get("request") == request]
                 intents = [e for e in events if e.get("event") == "handoff" and e.get("request") == request]
                 pending = [i for i in intents if not any(p.get("token") == i["token"] for p in receipts)]

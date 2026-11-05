@@ -14,7 +14,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import binding, config, dispatch, handoff, lifecycle
+from factory import binding, config, dispatch, generation, handoff, lifecycle
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -599,7 +599,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         issue_action("edit", *args)
     else:
         post_comment("issue", n, "Factory manager: " + body)
-    if decision != "HUMAN":
+    if decision in generation.RELEASING_DECISIONS:
         issue_action("edit", "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT)
 
 
@@ -840,6 +840,25 @@ def feedback_packet(items: list[dict]) -> str:
 CI_KINDS = ("check_run", "commit_status")
 
 
+def after_watermark(n: int, rows: list[dict], late: list[dict], head: str, dry_run: bool) -> list[dict]:
+    """Late items newer than the owner's requeue, for a generation still awaiting its first attempt.
+
+    Review feedback carries no release-comparable time the way CI does, so the watermark is the
+    set of items undelivered when the frontier first sees the generation; the first sighting
+    journals it. Those items wait for the fresh attempt; anything newer still escalates (#430).
+    """
+    mark = next((row for row in rows if row.get("event") == "feedback-watermark"), None)
+    pairs = mark["pairs"] if mark else [[item["evidence_id"], item["source_revision"]] for item in late]
+    if mark is None and not dry_run:
+        dispatch.record("feedback-watermark", ticket=n, head=head, pairs=pairs)
+    held = {tuple(pair) for pair in pairs}
+    newer = [item for item in late if (item["evidence_id"], item["source_revision"]) not in held]
+    if len(newer) < len(late):
+        dispatch.log(f"#{n}: {len(late) - len(newer)} feedback item(s) predate the owner's requeue; "
+                     "waiting for the fresh attempt")
+    return newer
+
+
 def released_at(n: int) -> str:
     """When ticket `n` was last labeled ready-for-agent; "" if never."""
     return max((i.get("created_at", "") for i in handoff.timeline(n)
@@ -888,7 +907,10 @@ def frontier_pass(dry_run: bool = False) -> None:
                 if config.LABEL_INITIATIVE in labels:
                     dispatch.log(f"PR #{number}: refused (ticket #{n} is an initiative record)")
                     continue
+                if not dry_run:
+                    dispatch.observe_owner_requeue(n, issue)
                 events = lifecycle.read_events(dispatch.EVENTS)
+                ticket_generation = generation.current(events, n)
                 observation = observe_pr(pr, n, events)
                 if observation["owner"]["relation"] != "factory_issue":
                     dispatch.log(f"PR #{number}: not factory-owned ({observation['owner']['relation']}); not in frontier")
@@ -897,6 +919,8 @@ def frontier_pass(dry_run: bool = False) -> None:
                 checks = dispatch.pr_checks(number)
                 red = [c for c in checks if c["bucket"] in ("fail", "cancel")]
                 late = undelivered(observation, events, n)
+                if ticket_generation.awaiting_attempt:
+                    late = after_watermark(n, ticket_generation.rows, late, head, dry_run)
                 # A release to ready-for-agent (owner decision or manager RETRY) answers the red CI
                 # it followed and restarts the stale clock; only CI newer than it escalates (#188).
                 updated = datetime.fromisoformat(pr["updatedAt"])
@@ -943,7 +967,8 @@ def frontier_pass(dry_run: bool = False) -> None:
                 decided = [e for e in events if e.get("event") == "manage" and e.get("pr") == number]
                 if any(e.get("head") == head for e in decided):
                     continue  # one decision per head; a non-APPROVE decision already acted
-                if len(decided) >= cfg.manager_rounds:
+                spent = [e for e in ticket_generation.rows if e.get("event") == "manage" and e.get("pr") == number]
+                if len(spent) >= cfg.manager_rounds:
                     if dry_run:
                         dispatch.log(f"PR #{number}: would escalate (manager rounds exhausted)")
                     else:
@@ -988,7 +1013,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                     approval=True,
                 )
                 dispatch.record("manage", ticket=n, pr=number, head=head, decision=decision,
-                                round=len(decided) + 1, packet=str(packet))
+                                round=len(spent) + 1, packet=str(packet))
                 if decision != "CLOSE":
                     dispatch.run(["gh", "pr", "comment", str(number), "--repo", cfg.repo, "--body", "Factory manager: " + body])
                 if decision == "APPROVE":
@@ -1044,7 +1069,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                     continue
                 execution.resource("acquired", lock_path, scope="repository")
             try:
-                events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
+                events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
                 escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):

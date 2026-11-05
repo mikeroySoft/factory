@@ -722,6 +722,34 @@ mutation fails, the execution records a terminal failure and the ticket remains
 with the human; other tickets can proceed. The consumed round is not replayed,
 because a partial rewrite or split may already have changed GitHub.
 
+### Owner requeues and ticket generations
+
+A human who moves an escalated ticket back to `ready-for-agent` (by relabeling or with
+the guarded `requeue_agent` action) opens a new **generation** for it. Whichever stage
+first reads the live ticket in that state (land, manager or ticket) journals one
+`generation` row with `generation`, `intent`, `source` (`label` or `requeue_agent`),
+`actor`, `decision` and `escalation_at`. Every round budget counts only the rows after
+it. That covers the escalation and manager rounds, frontier manager rounds,
+review-bounce rounds and conflict, gate and risk requeue rounds, so the ticket gets its
+full budget again. A factory release never opens a generation. The dispatcher and
+manager journal each of their own releases before relabeling: `conflict-requeue`,
+`gate-requeue`, `risk-requeue`, deferred `review-rework`, and RETRY, REWRITE,
+AUTHORIZE or ROUTE `manage` rows. A ticket that is back in `ready-for-agent` and
+unassigned after its latest escalation, with none of those rows after it, was released
+by a human. A journal with no `generation` row is generation 0 and counts exactly as
+before.
+
+`requeue_agent` takes an optional `intent`. With `resume` (the default, and what a
+plain relabel means), the branch, worktree and refresh context are kept. With `fresh`,
+`agent/<n>` is recut from main at the generation's first claim, and the superseded local
+and remote heads stay under `refs/factory-evidence/<n>-generation-<g>-{local,remote}`.
+The first push then replaces the remote branch under the usual lease. The `claimed` row
+records `generation` and `base`. Until the generation's first worker attempt, the PR
+frontier does not re-escalate feedback that was already undelivered when it first saw
+the requeue. That set is journaled once as a `feedback-watermark` row. Any new or edited
+source after it still escalates. Manager decisions stay bound to their exact head
+across generations.
+
 ### Routed human handoffs
 
 Once automatic recovery for an escalation is terminal — the manager returned `HUMAN`,
@@ -730,7 +758,8 @@ diagnosis), `manager.rounds` is exhausted, no manager is configured, or the esca
 loop can never act again (its decision could not be applied to GitHub, its packet is
 gone, or its escalation comment was never receipted so takeover detection cannot clear
 it, as for escalations recorded before this version) — `factory manage`
-publishes **one** request comment for that escalation generation (`<ticket>/<round>`):
+publishes **one** request comment for that escalation generation (`<ticket>/<round>`,
+or `<ticket>/g<generation>/<round>` after an owner requeue):
 a concrete question, bounded public links (PR, the recorded escalation and manager
 comments), a proposed next step, the routed owner or candidates, and the step-by-step
 routing rationale from `factory plan route` (reason `ci` for CI failures, otherwise
@@ -2839,7 +2868,7 @@ two MCP tools call that same function. Nothing else composes these label edits.
 
 | Action | `args` | Preconditions | Effect |
 |---|---|---|---|
-| `requeue_agent` | `number`, `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor |
+| `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
 | `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
 | `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
 

@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 
-from factory import __version__, brief, config, lifecycle, risk
+from factory import __version__, brief, config, generation, lifecycle, risk
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -1874,6 +1874,24 @@ def ensure_worktree(n: int) -> Path:
     return wt
 
 
+def restart_worktree(n: int, number: int) -> Path:
+    """A fresh generation's worktree: `agent/<n>` recut from main. The superseded local and
+    remote branch heads stay reachable under `refs/factory-evidence/`; uncommitted worktree
+    changes are discarded, as the owner's fresh intent asked."""
+    wt, branch = FACTORY / f"wt-{n}", f"agent/{n}"
+    with _REMOTE_REFS:
+        run(["git", "fetch", "origin"], cwd=ROOT)
+    for name, ref in (("local", f"refs/heads/{branch}"), ("remote", f"refs/remotes/origin/{branch}")):
+        head = run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=ROOT, check=False).stdout.strip()
+        if head:
+            run(["git", "update-ref", f"refs/factory-evidence/{n}-generation-{number}-{name}", head], cwd=ROOT)
+    if wt.is_dir():
+        run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT)
+    run(["git", "worktree", "add", "-B", branch, str(wt), f"origin/{cfg.main}"], cwd=ROOT)
+    log(f"#{n}: generation {number} starts fresh from origin/{cfg.main}")
+    return wt
+
+
 def _changed_paths(wt: Path, base: str) -> set[str]:
     changed = run(
         ["git", "diff", "--no-renames", "--name-only", "-z", base, "--"], cwd=wt,
@@ -2095,7 +2113,7 @@ def escalation_packet(
     )
     round_number = 1 + sum(
         event.get("event") == "escalate" and event.get("reason") != "manager_failed"
-        for event in ticket_events
+        for event in generation.current(events, n).rows
     )
     return packet, round_number
 
@@ -2789,10 +2807,15 @@ def _remote_agent_head(wt: Path, n: int, check: bool = True) -> str:
     return "(unavailable)" if found.returncode else (found.stdout.split() or [""])[0]
 
 
-def agent_lease(wt: Path, n: int) -> str:
-    """Read the remote `agent/<n>` sha to lease before the worker runs, or "" when absent."""
+def agent_lease(wt: Path, n: int, *, supersede: bool = False) -> str:
+    """Read the remote `agent/<n>` sha to lease before the worker runs, or "" when absent.
+
+    `supersede`: a fresh generation recut the branch from main by owner decision, so the leased
+    remote head counts as this worktree's starting history and its push may replace it."""
     remote = _remote_agent_head(wt, n)
-    _AGENT_LEASE_BASES[wt, n] = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    _AGENT_LEASE_BASES[wt, n] = remote if supersede and remote else run(
+        ["git", "rev-parse", "HEAD"], cwd=wt,
+    ).stdout.strip()
     return remote
 
 
@@ -3528,11 +3551,34 @@ def _refresh_failure_scope(wt: Path, n: int, reports: list[str]) -> tuple[list[s
     return paths, bool(paths) and not related
 
 
+def _generation_rows(n: int) -> list[dict]:
+    return generation.current(lifecycle.read_events(EVENTS), n).rows
+
+
 def _review_rounds_used(n: int) -> int:
-    return sum(
-        row.get("ticket") == n and row.get("event") in {"review-rework", "risk-requeue"}
-        for row in lifecycle.read_events(EVENTS)
-    )
+    return sum(row.get("event") in {"review-rework", "risk-requeue"} for row in _generation_rows(n))
+
+
+def observe_owner_requeue(n: int, issue: dict) -> None:
+    """Open a generation when a human released `n`'s latest escalation.
+
+    Called wherever a stage first reads the live ticket, before it reads a round budget, so
+    the land, manager and ticket stages all see the fresh budget in the pass that observes it.
+    A ticket still assigned may be a factory escalation whose relabel failed: not a release.
+    """
+    labels = {label["name"] for label in issue.get("labels", [])}
+    if LABEL_AGENT not in labels or LABEL_HUMAN in labels:
+        return
+    opened = generation.owner_requeue(lifecycle.read_events(EVENTS), n)
+    if opened is None:
+        return
+    if "assignees" not in issue:
+        issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "assignees"])
+    if issue.get("assignees") and not cfg.host_name:
+        return
+    record("generation", ticket=n, cause="owner_requeue", **opened)
+    log(f"#{n}: owner requeue opened generation {opened['generation']} ({opened['intent']}); "
+        "round budgets restart")
 
 
 def _record_rework(n: int, head: str, findings: str, deferred: bool) -> None:
@@ -3699,8 +3745,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         # path without authority, rounds used up, or a ticket that is no longer open.
         # A manager-FIX-approved PR may still have a ready-for-human issue; restore agent flow.
         issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels"])
+        observe_owner_requeue(n, issue)
         labels = {label["name"] for label in issue.get("labels", [])}
-        rounds = sum(e.get("event") == "conflict-requeue" and e.get("ticket") == n for e in lifecycle.read_events(EVENTS))
+        rounds = sum(e.get("event") == "conflict-requeue" for e in _generation_rows(n))
         protected = [] if LABEL_PROTECTED_OVERRIDE in labels else [
             path for path in conflicts if any(fnmatch.fnmatchcase(path, glob) for glob in cfg.protected_paths)
         ]
@@ -3740,6 +3787,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     ]
     before_status = run(status_cmd, cwd=wt).stdout.strip()
     issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,body,comments"])
+    observe_owner_requeue(n, issue)
     labels = {label["name"] for label in issue.get("labels", [])}
     handoff = wt / ".factory" / f"handoff-{n}.md"
     flags = gate_flags(
@@ -3812,10 +3860,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             )
             return False
         if not ok:
-            rounds = sum(
-                event.get("event") == "gate-requeue" and event.get("ticket") == n
-                for event in lifecycle.read_events(EVENTS)
-            )
+            rounds = sum(event.get("event") == "gate-requeue" for event in _generation_rows(n))
             issue_state = gh_json(
                 ["issue", "view", str(n), "--repo", REPO, "--json", "state"]
             ).get("state")
@@ -3896,10 +3941,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             return False
         state = _PENDING_RISK.get(n) or {}
         if state.get("head") == head and state.get("disagreement"):
-            rounds = sum(
-                event.get("event") == "risk-requeue" and event.get("ticket") == n
-                for event in lifecycle.read_events(EVENTS)
-            )
+            rounds = sum(event.get("event") == "risk-requeue" for event in _generation_rows(n))
             record(
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,
@@ -4674,6 +4716,7 @@ def process_ticket(
                 execution.reason = "state_changed"
                 return
             labels = {label["name"] for label in fresh["labels"]}
+            observe_owner_requeue(n, fresh)
             if not forced and shutil.which(worker) is None:
                 # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
                 # ponytail: PATH probe only; a binary swapped out between here and Popen still
@@ -4722,24 +4765,26 @@ def process_ticket(
 
             tier, why = schedule.priority(n, fresh.get("body"), REPO)
 
-            wt = ensure_worktree(n)
+            ticket_generation = generation.current(lifecycle.read_events(EVENTS), n)
+            restart = ticket_generation.intent == "fresh" and not ticket_generation.claimed
+            wt = restart_worktree(n, ticket_generation.number) if restart else ensure_worktree(n)
             replay_base = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             record(
                 "claimed", ticket=n, title=title, labels=sorted(labels),
                 worker=worker_key, worker_version=cfg.worker_version.get(worker_key),
                 priority=tier, priority_source=why, experiment=schedule.is_experiment(fresh),
-                base=replay_base,
+                base=replay_base, generation=ticket_generation.number,
                 issue={key: fresh.get(key) for key in ("title", "body", "comments")},
             )
             if admitted := issue.get("_factory_admitted"):
                 admitted.set()
-            lease = agent_lease(wt, n)
+            lease = agent_lease(wt, n, supersede=True) if restart else agent_lease(wt, n)
             LOGS.mkdir(parents=True, exist_ok=True)
 
             # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back. A sync
             # candidate the dispatcher's own gate passed at this exact head needs no worker,
             # unless a refresh conflict or repeated refresh gate failure requeued it.
-            local_context = refresh_requeue_context(n)
+            local_context = "" if restart else refresh_requeue_context(n)
             resolve = shared_context or local_context
             prior_risk_disagreement_head = (
                 pending_risk_requeue_head(n) if resolve == local_context else None
