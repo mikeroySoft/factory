@@ -144,11 +144,10 @@ class RunnerRuntimeTest(unittest.TestCase):
             return read_bytes(path)
 
         with patch.object(tempfile, "tempdir", str(self.root)), \
-                patch.object(Path, "read_bytes", read_environ):
-            with runner.temp_root("review") as root:
-                observer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-                self.addCleanup(self.stop, observer)
-                (root / "payload").write_text("review")
+                patch.object(Path, "read_bytes", read_environ), runner.temp_root("review") as root:
+            observer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+            self.addCleanup(self.stop, observer)
+            (root / "payload").write_text("review")
         self.assertFalse(root.parent.exists())
 
 
