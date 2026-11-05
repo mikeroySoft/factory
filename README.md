@@ -360,6 +360,9 @@ their exit status and stderr, with a bounded `gh api rate_limit` probe recorded
 as evidence. DNS/connection errors remain `gh_read_failed`, even when that probe
 also fails; they get three retries after 5, 15 and 30 seconds plus up to one second
 of jitter. Other read errors are skipped without a quick retry.
+Expected absence (such as a missing agent PR or dependency endpoint) and explicit
+CI verdicts keep their caller's existing handling. `check=False` does not exempt
+authentication, permission or server errors from classification and deferral.
 
 Explicit rate-limit diagnostics (including HTTP 429), or HTTP 403 with an exhausted
 quota, produce `rate_limited`. Permission-denied 403s with quota remaining do not.
@@ -380,6 +383,9 @@ Mutating commands are never replayed by this policy. A failed initial
 `pin_root` fetch uses the same network retries, journals `gh_read_failed` and
 ends dispatch cleanly before any claim or label change. Passes with skipped reads
 do not record stage success.
+Feedback collection propagates classified failures to the manager's item boundary,
+so incomplete feedback cannot authorize an action. Triage `--dry-run` and `--replay`
+do not record read-policy events or persist quota backoff.
 
 ## Commands
 

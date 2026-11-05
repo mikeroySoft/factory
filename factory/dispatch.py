@@ -697,24 +697,32 @@ class HostClaim:
         self.n = n
         self.comment = comment
         self.stopped = threading.Event()
-        self.thread = threading.Thread(target=reads.copy_context().run, args=(self.heartbeat,), daemon=True)
+        self.thread = threading.Thread(target=self.heartbeat, daemon=True)
 
     def body(self) -> str:
         return (f"Factory claim: host={cfg.host_name} nonce={self.comment['nonce']} "
                 f"at={datetime.now(UTC).isoformat()}")
 
     def heartbeat(self) -> None:
+        contextvars.Context().run(self._heartbeat)
+
+    def _heartbeat(self) -> None:
         while not self.stopped.wait(cfg.claim_ttl_seconds / 4):
+            read_failed = False
+            with reads.pass_scope(EVENTS, "claim-heartbeat"):
+                try:
+                    owned = owned_host_claim(self.n)
+                except reads.ReadFailure as exc:
+                    reads.skip(exc, ticket=self.n, operation="claim-heartbeat")
+                    read_failed = True
+            if read_failed:
+                continue
+            if owned is None or owned["nonce"] != self.comment["nonce"]:
+                log(f"#{self.n}: host claim heartbeat stopped (ownership lost)")
+                return
             try:
-                owned = owned_host_claim(self.n)
-                if owned is None or owned["nonce"] != self.comment["nonce"]:
-                    log(f"#{self.n}: host claim heartbeat stopped (ownership lost)")
-                    return
                 run(["gh", "api", f"repos/{REPO}/issues/comments/{self.comment['id']}",
                      "--method", "PATCH", "-f", f"body={self.body()}"])
-            except reads.ReadFailure as exc:
-                reads.skip(exc, ticket=self.n, operation="claim-heartbeat")
-                return
             except (OSError, subprocess.CalledProcessError) as exc:
                 log(f"#{self.n}: host claim heartbeat failed ({exc})")
 
@@ -780,6 +788,55 @@ def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
     return None
 
 
+_READ_FAILURE_CODES = frozenset({"gh_read_failed", "rate_limited"})
+
+
+def _retained_read_claims() -> set[int]:
+    """Claims whose newest completed ticket work only stopped on remote reads."""
+    rows = lifecycle.read_events(EVENTS)
+    claimed = {
+        row.get("execution_id") for row in rows
+        if row.get("event") == "claimed" and isinstance(row.get("execution_id"), str)
+    }
+    retained = set()
+    decided = set()
+    for row in reversed(rows):
+        ticket = row.get("ticket")
+        if (
+            row.get("event") != "lifecycle"
+            or row.get("kind") != "exit"
+            or row.get("stage") != "ticket"
+            or type(ticket) is not int
+            or ticket in decided
+        ):
+            continue
+        if row.get("outcome") == "mechanism_failure" and row.get("reason") in _READ_FAILURE_CODES:
+            if row.get("execution_id") in claimed:
+                retained.add(ticket)
+                decided.add(ticket)
+            # A retry can fail before its fresh ownership read. Keep looking for
+            # the retained claim that admitted the preceding execution.
+            continue
+        decided.add(ticket)
+    return retained
+
+
+def _retained_assignment(
+    n: int, issue: dict, retained: set[int], claims: list[dict],
+) -> bool:
+    """True only while this authenticated dispatcher still owns its retained assignment."""
+    assignees = issue.get("assignees") or []
+    if n not in retained or not assignees:
+        return False
+    login = host_claim_login()
+    if any((row.get("login") or "").casefold() != login for row in assignees):
+        return False
+    if not cfg.host_name:
+        return True
+    owned = owned_host_claim(n, claims)
+    return owned is not None and any(row["id"] == owned["id"] for row in live_host_claims(claims))
+
+
 def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
     """Apply lifecycle transitions; release host resources only when this host owns them."""
     claims = host_claims(n) if cfg.host_name else []
@@ -822,19 +879,25 @@ def frontier() -> list[dict]:
             "number,title,body,labels,assignees,createdAt",
         ]
     )
+    retained = _retained_read_claims()
     for issue in issues:
         n = issue["number"]
         try:
             if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
                 issue["held"] = "initiative record"
-            elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
-                issue["held"] = held
-            elif issue["assignees"] and not (cfg.host_name and claims):
-                issue["held"] = "assigned"
-            elif blockers := open_blockers(n, issue.get("body", "")):
-                issue["held"] = f"blocked by {', '.join(f'#{b}' for b in blockers)}"
             else:
-                continue
+                claims = host_claims(n) if cfg.host_name else []
+                if _retained_assignment(n, issue, retained, claims):
+                    issue["_factory_resume"] = True
+                elif cfg.host_name and (held := host_claim_hold(n, issue, claims)):
+                    issue["held"] = held
+                elif issue["assignees"]:
+                    issue["held"] = "assigned"
+                if "held" not in issue:
+                    if blockers := open_blockers(n, issue.get("body", "")):
+                        issue["held"] = f"blocked by {', '.join(f'#{b}' for b in blockers)}"
+                    else:
+                        continue
         except reads.ReadFailure as exc:
             reads.skip(exc, ticket=n)
             issue["held"] = exc.code
@@ -4662,7 +4725,7 @@ def process_ticket(
             lock_fd.close()
             return
 
-        claimed = False  # once True, nothing may leave this block without releasing the ticket
+        claimed = False  # Unknown crashes escalate only after assignment; read failures retain it.
         host_claim = None
         try:
             execution.resource("acquired", lock_path, scope="repository")
@@ -4691,12 +4754,17 @@ def process_ticket(
             shared_context = ""
             if cfg.host_name:
                 claims, shared_context = host_claim_state(n)
+            resume = (
+                bool(issue.get("_factory_resume"))
+                and _retained_assignment(n, fresh, _retained_read_claims(), claims)
+            )
+            if cfg.host_name and not resume:
                 fresh = release_stale_claims(n, fresh, claims)
             if not forced and (
                 fresh["state"].upper() != "OPEN"
                 # Authenticated claims arbitrate a shared bot assignment below;
                 # stale recovery must not clear a replacement's assignment.
-                or (fresh["assignees"] and not (cfg.host_name and claims))
+                or (fresh["assignees"] and not resume and not (cfg.host_name and claims))
                 or LABEL_AGENT not in {label["name"] for label in fresh["labels"]}
             ):
                 log(f"#{n}: skipped (state changed since frontier query)")
@@ -4728,26 +4796,34 @@ def process_ticket(
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
             if cfg.host_name:
-                host_claim = acquire_host_claim(n, fresh, claims, forced=forced)
-                if host_claim is None:
-                    execution.outcome, execution.reason = "not_admitted", "claim_lost"
+                if resume:
+                    retained_host_claim = owned_host_claim(n, claims)
+                    if retained_host_claim is None:
+                        execution.outcome, execution.reason = "not_admitted", "claim_lost"
+                        return
+                    host_claim = HostClaim(n, retained_host_claim)
+                    _HOST_CLAIMS[n] = host_claim
+                    host_claim.thread.start()
+                else:
+                    host_claim = acquire_host_claim(n, fresh, claims, forced=forced)
+                    if host_claim is None:
+                        execution.outcome, execution.reason = "not_admitted", "claim_lost"
+                        return
+            if not resume:
+                try:
+                    run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
+                except subprocess.CalledProcessError as exc:
+                    if host_claim is not None:
+                        host_claim.release()
+                    # Nothing was claimed: skip this pass; the ticket stays claimable.
+                    log(f"#{n}: skipped (claim failed, exit {exc.returncode}); retry next pass")
+                    record_claim_decision(n, False, admission_id, returncode=exc.returncode)
+                    record("claim-failed", ticket=n, returncode=exc.returncode,
+                           stderr_tail=stderr_tail(exc.stderr))
+                    execution.wait("claim_failed", mode="retry_next_pass")
                     return
-            try:
-                run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
-            except subprocess.CalledProcessError as exc:
-                if host_claim is not None:
-                    host_claim.release()
-                # Nothing was claimed: skip this pass; the ticket stays claimable.
-                log(f"#{n}: skipped (claim failed, exit {exc.returncode}); retry next pass")
-                record_claim_decision(n, False, admission_id, returncode=exc.returncode)
-                record("claim-failed", ticket=n, returncode=exc.returncode,
-                       stderr_tail=stderr_tail(exc.stderr))
-                execution.wait("claim_failed", mode="retry_next_pass")
-                return
             claimed = True
-            if host_claim is not None:
-                fresh = release_stale_claims(n, fresh, claims, replacement=host_claim.comment["id"])
-            record_claim_decision(n, True, admission_id)
+            record_claim_decision(n, True, admission_id, relation="retries" if resume else "follows")
             from factory import schedule
 
             tier, why = schedule.priority(n, fresh.get("body"), REPO)
@@ -4761,6 +4837,8 @@ def process_ticket(
                 base=replay_base,
                 issue={key: fresh.get(key) for key in ("title", "body", "comments")},
             )
+            if host_claim is not None and not resume:
+                fresh = release_stale_claims(n, fresh, claims, replacement=host_claim.comment["id"])
             if admitted := issue.get("_factory_admitted"):
                 admitted.set()
             lease = agent_lease(wt, n)
