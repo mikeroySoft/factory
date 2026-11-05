@@ -1,18 +1,20 @@
 """Bounded, read-only local inputs for the runtime JSON projection.
 
-At most five local commands (two git, three systemctl), each limited to 0.5s
-and 64 KiB of stdout. Configuration reads are limited to 256 KiB per file;
-admission observation examines at most 1024 directory entries and 256 KiB of
-kernel locks. No probes acquire locks, create paths, or read logs.
+At most five local commands (two git, three systemctl or one launchctl), each
+limited to 0.5s and 64 KiB of stdout. Configuration reads are limited to 256 KiB;
+admission examines at most 1024 entries and 256 KiB of kernel locks on Linux,
+or nonblocking flock probes on macOS. No probes create paths or read logs.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import selectors
 import stat
 import subprocess
+import sys
 import time
 import tomllib
 from datetime import UTC, datetime, timedelta
@@ -66,22 +68,28 @@ def _command(operation: str, *, root: Path | None = None, unit: str = "") -> str
     elif operation in {"service", "timer", "schedule"}:
         if not re.fullmatch(r"factory-[A-Za-z0-9_.-]+", unit):
             raise _Unavailable("invalid_unit")
-        argv = ["systemctl", "--user", "--no-pager"]
-        if operation == "schedule":
-            argv += ["list-timers", "--all", "--output=json", "--", f"{unit}.timer"]
+        if sys.platform == "darwin":
+            if operation != "service":
+                raise _Unavailable("not_applicable")
+            argv = ["launchctl", "print", f"gui/{os.getuid()}/{unit}"]
         else:
-            argv += ["show", "--property=LoadState,ActiveState", "--", f"{unit}.{operation}"]
+            argv = ["systemctl", "--user", "--no-pager"]
+            if operation == "schedule":
+                argv += ["list-timers", "--all", "--output=json", "--", f"{unit}.timer"]
+            else:
+                argv += ["show", "--property=LoadState,ActiveState", "--", f"{unit}.{operation}"]
     else:
         raise _Unavailable("unsupported_command")
 
     env = dict(os.environ)
     env.update(LC_ALL="C", TZ="UTC", GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0",
                SYSTEMD_PAGER="cat", SYSTEMD_COLORS="0")
-    # Never let an inherited TCP D-Bus address turn a local probe into networking.
-    runtime = Path(env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
-    if not runtime.is_absolute():
-        runtime = Path(f"/run/user/{os.getuid()}")
-    env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + quote(str(runtime / "bus"), safe="/")
+    if sys.platform != "darwin":
+        # Never let an inherited TCP D-Bus address turn a local probe into networking.
+        runtime = Path(env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+        if not runtime.is_absolute():
+            runtime = Path(f"/run/user/{os.getuid()}")
+        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + quote(str(runtime / "bus"), safe="/")
     deadline = time.monotonic() + COMMAND_TIMEOUT
     proc = None
     try:
@@ -120,6 +128,28 @@ def _command(operation: str, *, root: Path | None = None, unit: str = "") -> str
                 pass  # The observation already failed; cleanup must not expose raw diagnostics.
             if proc.stdout is not None:
                 proc.stdout.close()
+
+
+def _launchd_properties(text: str) -> dict[str, str]:
+    """Read job scalars, not similarly named fields in nested launchctl blocks."""
+    props = {}
+    depth = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if line.endswith("{"):
+            depth += 1
+        elif line == "}":
+            depth -= 1
+            if depth < 0:
+                raise _Unavailable("invalid_properties")
+        elif depth == 1 and " = " in line:
+            key, value = line.split(" = ", 1)
+            if key in props:
+                raise _Unavailable("invalid_properties")
+            props[key] = value
+    if depth or "state" not in props:
+        raise _Unavailable("invalid_properties")
+    return props
 
 
 def _toml(path: Path) -> dict:
@@ -172,6 +202,7 @@ def load(start: Path | None = None) -> Config:
 def _capacity(cfg: Config) -> int:
     """Count actual numeric ticket FLOCKs, never lifecycle stage counts."""
     inodes = set()
+    held = set()
     try:
         with os.scandir(cfg.factory / "locks") as entries:
             for index, entry in enumerate(entries):
@@ -182,7 +213,20 @@ def _capacity(cfg: Config) -> int:
                 info = entry.stat()
                 if not stat.S_ISREG(info.st_mode):
                     raise _Unavailable("unsupported_file")
-                inodes.add((os.major(info.st_dev), os.minor(info.st_dev), info.st_ino))
+                key = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+                inodes.add(key)
+                if sys.platform == "darwin":
+                    fd = os.open(entry.path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+                    with os.fdopen(fd, "rb") as handle:
+                        current = os.fstat(handle.fileno())
+                        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                            raise _Unavailable("changed")
+                        try:
+                            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            held.add(key)
+                        else:
+                            fcntl.flock(handle, fcntl.LOCK_UN)
     except FileNotFoundError:
         # A disappearing entry is not evidence that every claim disappeared.
         if inodes:
@@ -196,10 +240,11 @@ def _capacity(cfg: Config) -> int:
         raise _Unavailable("changed") from None
     except OSError:
         raise _Unavailable("unreadable") from None
+    if sys.platform == "darwin":
+        return len(held)
     if not inodes:
         return 0
 
-    held = set()
     try:
         rows = _read(Path("/proc/locks"), LOCK_BYTE_LIMIT, kernel=True).decode("ascii").splitlines()
         for row in rows:
@@ -247,25 +292,51 @@ def dispatcher(cfg: Config, executions: list[dict], history: dict) -> tuple[dict
             error("systemctl", kind, str(exc))
             return None
 
-    service_active, timer_active = active("service"), active("timer")
     following = None
-    try:
-        rows = json.loads(_command("schedule", unit=cfg.unit))
-        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-            raise ValueError
-        matches = [row for row in rows if row.get("unit") == f"{cfg.unit}.timer"]
-        if len(matches) > 1 or (not matches and timer_active is True):
-            raise ValueError
-        if matches:
-            value = matches[0].get("next")
-            if value is not None and (type(value) is not int or value < 0):
+    launchd = {}
+    if sys.platform == "darwin":
+        service_active = timer_active = None
+        launchd = {"next_at_code": "not_applicable", "last_exit_code": None, "run_interval_seconds": None}
+        try:
+            props = _launchd_properties(_command("service", unit=cfg.unit))
+            state = props["state"]
+            if state not in {"running", "not running", "waiting", "exited", "spawn scheduled"}:
+                raise _Unavailable("invalid_state")
+            service_active = state == "running"
+            interval = props.get("run interval")
+            if interval is not None and not re.fullmatch(r"[0-9]{1,10} seconds", interval):
+                raise _Unavailable("invalid_schedule")
+            seconds = int(interval.split()[0]) if interval is not None else 0
+            timer_active = seconds > 0
+            launchd["run_interval_seconds"] = seconds
+            status = props.get("last exit code")
+            if status is not None:
+                if not re.fullmatch(r"-?[0-9]{1,10}", status):
+                    raise _Unavailable("invalid_exit_code")
+                launchd["last_exit_code"] = int(status)
+                if int(status) != 0:
+                    error("launchctl", "service", "unit_failed")
+        except _Unavailable as exc:
+            error("launchctl", "service", str(exc))
+    else:
+        service_active, timer_active = active("service"), active("timer")
+        try:
+            rows = json.loads(_command("schedule", unit=cfg.unit))
+            if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
                 raise ValueError
-            if value not in (None, 0, 2**64 - 1):
-                following = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=value)
-    except _Unavailable as exc:
-        error("systemctl", "schedule", str(exc))
-    except (ValueError, TypeError, OverflowError, OSError, RecursionError):
-        error("systemctl", "schedule", "invalid_schedule")
+            matches = [row for row in rows if row.get("unit") == f"{cfg.unit}.timer"]
+            if len(matches) > 1 or (not matches and timer_active is True):
+                raise ValueError
+            if matches:
+                value = matches[0].get("next")
+                if value is not None and (type(value) is not int or value < 0):
+                    raise ValueError
+                if value not in (None, 0, 2**64 - 1):
+                    following = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=value)
+        except _Unavailable as exc:
+            error("systemctl", "schedule", str(exc))
+        except (ValueError, TypeError, OverflowError, OSError, RecursionError):
+            error("systemctl", "schedule", "invalid_schedule")
 
     active_count = None
     try:
@@ -283,6 +354,7 @@ def dispatcher(cfg: Config, executions: list[dict], history: dict) -> tuple[dict
     if service_active is None and timer_active is None and active_count is None:
         observation = "unavailable"
     return {
+        **launchd,
         "service_active": service_active, "timer_active": timer_active, "next_at": next_at,
         "paused": None,
         "observed_at": observed.isoformat(timespec="microseconds").replace("+00:00", "Z"),

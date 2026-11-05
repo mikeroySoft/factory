@@ -81,7 +81,8 @@ class LaunchdObserversTest(unittest.TestCase):
         (locks / "merge.lock").touch()
         with (locks / "7.lock").open("w") as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            state, errors = runtime_local.dispatcher(self.cfg, [], {})
+            with patch.object(runtime_local, "_read", side_effect=runtime_local._Unavailable("unreadable")):
+                state, errors = runtime_local.dispatcher(self.cfg, [], {})
         self.assertEqual(state["capacity"], {"configured": self.cfg.max_active, "active": 1, "complete": True})
         self.assertEqual(errors, [])
         state, errors = runtime_local.dispatcher(self.cfg, [], {})
@@ -106,6 +107,32 @@ class LaunchdObserversTest(unittest.TestCase):
         units = watch.failed_units(self.cfg)
         self.assertEqual([name for name, _ in units], [self.cfg.unit + "-dashboard"])
         self.assertIn("2", units[0][1])
+
+    def test_runtime_missing_agent_stays_unknown_without_systemctl_errors(self):
+        state, errors = runtime_local.dispatcher(self.cfg, [], {})
+        self.assertIsNone(state["service_active"])
+        self.assertIsNone(state["timer_active"])
+        self.assertEqual(errors, [{"source": "launchctl", "scope": "service", "code": "command_failed"}])
+
+    def test_runtime_no_interval_is_not_a_timer(self):
+        self.job(interval=0)
+        state, errors = runtime_local.dispatcher(self.cfg, [], {})
+        self.assertIs(state["timer_active"], False)
+        self.assertEqual(state["run_interval_seconds"], 0)
+        self.assertEqual(state["last_exit_code"], 0)
+        self.assertEqual(errors, [])
+
+    def test_port_check_free_lsof_and_query_failure(self):
+        with socket.socket() as available:
+            available.bind(("127.0.0.1", 0))
+            port = available.getsockname()[1]
+        with patch.object(onboard, "sh", return_value=subprocess.CompletedProcess([], 1, "", "")):
+            self.assertEqual(onboard._dashboard_port_check(self.cfg, "127.0.0.1", port),
+                             (True, "available on 127.0.0.1"))
+        with patch.object(onboard, "sh", return_value=subprocess.CompletedProcess([], 1, "", "permission denied")):
+            ok, detail = onboard._dashboard_port_check(self.cfg, "127.0.0.1", port)
+            self.assertFalse(ok)
+            self.assertIn("permission denied", detail)
 
     def test_doctor_accepts_launchd_dashboard_listener_and_rejects_foreign_pid(self):
         listener = socket.socket()
@@ -146,6 +173,37 @@ class LaunchdObserversTest(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("foreign", detail)
         self.assertIn(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], commands)
+
+class LaunchctlParserTest(unittest.TestCase):
+    def test_interval_agent_properties_on_native_launchd(self):
+        """On macOS CI, parse a real job; other hosts check the same scalar shape."""
+        if sys.platform != "darwin":
+            props = runtime_local._launchd_properties(
+                "gui/501/factory-observer = {\n\tstate = not running\n"
+                "\trun interval = 600 seconds\n}\n"
+            )
+        else:
+            import plistlib
+            import uuid
+
+            label = "factory-observer-" + uuid.uuid4().hex
+            domain = f"gui/{os.getuid()}"
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / (label + ".plist")
+                path.write_bytes(plistlib.dumps({
+                    "Label": label, "ProgramArguments": ["/usr/bin/true"],
+                    "StartInterval": 600,
+                }))
+                subprocess.run(["launchctl", "bootstrap", domain, str(path)],
+                               capture_output=True, text=True, check=True, timeout=10)
+                try:
+                    props = runtime_local._launchd_properties(runtime_local._command("service", unit=label))
+                finally:
+                    subprocess.run(["launchctl", "bootout", f"{domain}/{label}"],
+                                   capture_output=True, text=True, check=True, timeout=10)
+        self.assertEqual(props["state"], "not running")
+        self.assertEqual(props["run interval"], "600 seconds")
+
 
 
 if __name__ == "__main__":

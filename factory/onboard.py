@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, config, lifecycle
+from factory import __version__, config, lifecycle, runtime_local
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -361,7 +361,8 @@ def _listener_conflicts(local: str, target: str) -> bool:
 
 
 def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[bool, str]:
-    unit = f"{cfg.unit}-dashboard.service"
+    launchd = sys.platform == "darwin"
+    unit = f"{cfg.unit}-dashboard" + ("" if launchd else ".service")
     try:
         target = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)[0][4]
         probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -378,46 +379,94 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
                 return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
             collision = True
 
-        # Keep a free probe held through `ss`; the later install-to-service bind
-        # remains inherently racy. A collision that vanishes here fails closed.
+        # Keep a free probe held through the listener query; the later
+        # install-to-service bind remains inherently racy.
+        tool = "lsof" if launchd else "ss"
+        argv = (
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"]
+            if launchd
+            else ["ss", "-ltnp", f"sport = :{port}"]
+        )
         try:
-            listeners = sh(["ss", "-ltnp", f"sport = :{port}"])
+            listeners = sh(argv)
         except OSError as exc:
-            return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {exc})")
-        if listeners.returncode != 0:
+            return False, dashboard_port_error(cfg, host, port, f"could not be checked ({tool}: {exc})")
+        no_listeners = (
+            launchd
+            and listeners.returncode == 1
+            and listeners.stdout == ""
+            and listeners.stderr == ""
+        )
+        if listeners.returncode != 0 and not no_listeners:
             detail = listeners.stderr.strip() or str(listeners.returncode)
-            return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {detail})")
+            return False, dashboard_port_error(cfg, host, port, f"could not be checked ({tool}: {detail})")
         if not collision:
             return True, f"available on {host}"
 
     holders: list[tuple[str, int]] = []
     unknown = False
     for line in listeners.stdout.splitlines():
-        fields = line.split(maxsplit=5)
-        if not fields or fields[0] == "State" or len(fields) < 4 or not _listener_conflicts(fields[3], target[0]):
-            continue
-        found = re.findall(r'\("([^"]+)",pid=(\d+)', line)
-        unknown |= not found
-        holders.extend((name, int(pid)) for name, pid in found)
+        if launchd:
+            fields = line.split(maxsplit=8)
+            if fields and fields[0] == "COMMAND":
+                continue
+            if len(fields) < 9:
+                unknown = True
+                continue
+            local = fields[8].removeprefix("TCP ").removesuffix(" (LISTEN)")
+            if not _listener_conflicts(local, target[0]):
+                continue
+            try:
+                pid = int(fields[1])
+            except ValueError:
+                unknown = True
+                continue
+            if pid <= 0:
+                unknown = True
+                continue
+            holders.append((fields[0], pid))
+        else:
+            fields = line.split(maxsplit=5)
+            if not fields or fields[0] == "State" or len(fields) < 4 or not _listener_conflicts(fields[3], target[0]):
+                continue
+            found = re.findall(r'\("([^"]+)",pid=(\d+)', line)
+            unknown |= not found
+            holders.extend((name, int(pid)) for name, pid in found)
     if unknown or not holders:
         return False, dashboard_port_error(cfg, host, port, "is in use by an unknown process")
 
     names = ", ".join(dict.fromkeys(name for name, _ in holders))
-    try:
-        owner = sh(["systemctl", "--user", "show", "-p", "MainPID", "--value", unit])
-    except OSError as exc:
-        return False, dashboard_port_error(
-            cfg, host, port, f"is in use by {names} (could not verify {unit}: {exc})"
-        )
-    try:
-        main_pid = int(owner.stdout.strip())
-    except ValueError:
-        main_pid = -1
-    if owner.returncode != 0 or main_pid < 0:
-        detail = owner.stderr.strip() or owner.stdout.strip() or str(owner.returncode)
-        return False, dashboard_port_error(
-            cfg, host, port, f"is in use by {names} (could not verify {unit}: {detail})"
-        )
+    if launchd:
+        try:
+            properties = runtime_local._launchd_properties(runtime_local._command("service", unit=unit))
+        except runtime_local._Unavailable as exc:
+            return False, dashboard_port_error(
+                cfg, host, port, f"is in use by {names} (could not verify {unit}: {exc})"
+            )
+        try:
+            main_pid = int(properties.get("pid", ""))
+        except ValueError:
+            main_pid = -1
+        if main_pid <= 0:
+            return False, dashboard_port_error(
+                cfg, host, port, f"is in use by {names} (could not verify {unit}: invalid pid)"
+            )
+    else:
+        try:
+            owner = sh(["systemctl", "--user", "show", "-p", "MainPID", "--value", unit])
+        except OSError as exc:
+            return False, dashboard_port_error(
+                cfg, host, port, f"is in use by {names} (could not verify {unit}: {exc})"
+            )
+        try:
+            main_pid = int(owner.stdout.strip())
+        except ValueError:
+            main_pid = -1
+        if owner.returncode != 0 or main_pid < 0:
+            detail = owner.stderr.strip() or owner.stdout.strip() or str(owner.returncode)
+            return False, dashboard_port_error(
+                cfg, host, port, f"is in use by {names} (could not verify {unit}: {detail})"
+            )
     foreign = [name for name, pid in holders if pid != main_pid]
     if foreign or main_pid == 0:
         names = ", ".join(dict.fromkeys(foreign or (name for name, _ in holders)))

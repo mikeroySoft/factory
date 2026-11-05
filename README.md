@@ -66,6 +66,9 @@ refuses a foreign or unidentified holder before writing units. Each factory need
 its own `[repo."owner/name".dashboard] port` in the host config. The preflight cannot
 reserve the port until systemd starts the service: a later bind failure exits 1
 with a one-line diagnostic, and the existing systemd restart policy still applies.
+On macOS, the ownership check uses `lsof -nP -iTCP:<port> -sTCP:LISTEN` and
+the dashboard LaunchAgent's PID from `launchctl print gui/<uid>/factory-<basename>-dashboard`.
+An unknown listener or unavailable agent identity still fails closed.
 
 **District drain (host-wide scheduled-pass admission).** `factory install` puts
 `ExecCondition=<python> -P -m factory drain-check` first in each pass service,
@@ -373,7 +376,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory release [--dry-run]` | Converges a patch release across up to three passes: opens a `release/vX.Y.Z` PR after the ticket, quality-bar, `main` CI, and release-tier gate checks pass; squash-merges it after its CI succeeds; then annotates the merged commit, advances `stable`, and publishes the tag's GitHub Release with its `CHANGELOG.md` section as notes. This respects the required `gate` check on protected `main`; `--dry-run` reports the current state and next action without writing. |
 | `factory dashboard` | Native outcome-control workspace: Overview, Outcomes, live Flow, ticket Decisions, Attention, Success, Codebase, Atlas, System/Ops and Settings, with a persistent contextual FM dock. Defaults to `0.0.0.0`; APIs require the workspace access key. `--json` prints a passive, bounded-window Ops snapshot without journal reconciliation writes. |
 
-| `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
+| `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, or state creation. macOS admission uses transient nonblocking flock probes; Linux reads kernel locks without acquiring locks. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Fixed read-only GitHub requests and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
 | `factory mcp` | Stdio MCP server (protocol `2025-06-18`) exposing the four evidence reads plus host-registry discovery, and two write tools (`factory_prepare_action`, `factory_apply_action`) that run the named human actions through prepare, then confirmation, then apply, to one locally launched MCP client, across every repository registered with a `path` in the host config. Each evidence tool call runs one `factory evidence` subprocess; no resources, prompts, or network transport. See [`factory mcp`](#stdio-mcp-server-factory-mcp). |
 | `factory plan list` / `factory plan inspect N` | Read-only schema 1 JSON over `initiative` issues: declared status/owner, parsed sections, `#N` implementation links (`inspect` also fetches each linked issue's title/state), per-issue `malformed` + `problems` (missing/invalid declared facts, sections cut at 4,000 characters, links beyond the first 20), cited sources with `observed_at`. `list` reads at most 3 pages of 100 and keeps malformed initiatives flagged per row (exit 0); a failed page, or a malformed initiative under `inspect`, yields `coverage.status: partial` and exit 1, never a mutation. |
@@ -2223,6 +2226,16 @@ not false; inactive service evidence alone does not establish unexpected stop.
 `paused` is null because the current producer has no recorded pause intention.
 No scheduled intention is inferred from a configured interval.
 
+On macOS, `launchctl print gui/<uid>/factory-<basename>` supplies the loaded job's
+`service_active` (running), `timer_active` (positive observed run interval),
+`last_exit_code` (integer or null before any exit), and `run_interval_seconds`.
+An unloaded/unreadable job remains unknown, not stopped. Launchd does not expose
+a reliable next fire timestamp: `next_at` is null and the additive `next_at_code`
+is `not_applicable`, not an observation error. A nonzero last exit code reports
+`launchctl` / `service` / `unit_failed`. Watch observes both pass and dashboard
+labels and includes at most 40 lines/64 KiB from the agent's `stderr path`
+(`StandardErrorPath`); missing logs never suppress a failed agent.
+
 Each execution has the eight common F01 identity fields (`dispatcher_run_id`,
 `root_execution_id`, `execution_id`, `parent_execution_id`, `ticket`, `attempt`,
 `review_round`, `stage`) with their types above, plus `state` (`active`,
@@ -2264,16 +2277,20 @@ Each repository/host TOML read is capped at 256 KiB. Invalid runtime configurati
 produces `factory: runtime configuration unavailable or invalid`, without echoing
 the input. Unrelated worker/model/check settings are not evaluated.
 
-Three allowlisted `systemctl --user` queries read service state, timer state,
-and JSON timers. Each local command has a 0.5-second deadline, stdout strictly
+On Linux, three allowlisted `systemctl --user` queries read service state, timer
+state, and JSON timers. On macOS, one allowlisted `launchctl print` query reads
+the pass agent. Each local command has a 0.5-second deadline, stdout strictly
 below 64 KiB, discarded stderr, and at most another 0.5 seconds for reap after
-kill. At most five commands run (four with an explicit slug). The D-Bus address
-is forced to a local Unix socket, never an inherited TCP address. Missing tools,
-unavailable units, invalid output, overflow and timeouts yield partial errors.
-Only explicit `ActiveState=active` is true; transitional states remain unknown.
-`next_at` requires an active timer and an explicitly returned future timestamp.
-Admission scans at most 1024 directory entries and a 256 KiB kernel lock window;
-unreadable/incomplete evidence returns null capacity, not a false zero.
+kill. At most five commands run (four with an explicit slug; macOS uses two
+fewer). Linux's D-Bus address is forced to a local Unix socket, never an inherited
+TCP address. Missing tools, unavailable units, invalid output, overflow and
+timeouts yield partial errors. Only explicit `ActiveState=active` is true on
+Linux; transitional states remain unknown. Linux `next_at` requires an active
+timer and an explicitly returned future timestamp.
+Admission scans at most 1024 directory entries and, on Linux, a 256 KiB kernel
+lock window. macOS instead opens existing ticket lock files read-only and tries
+nonblocking flocks, immediately releasing successful probes without creating
+paths. Unreadable/incomplete evidence returns null capacity, not a false zero.
 
 System query errors use source `systemctl`, scope `service`, `timer`, or
 `schedule`, and codes `invalid_unit`, `timeout`, `output_limit`, `command_failed`,
@@ -2282,6 +2299,9 @@ System query errors use source `systemctl`, scope `service`, `timer`, or
 scope `repository`, with `missing`, `unreadable`, `unsupported_file`, `byte_limit`,
 `entry_limit`, `changed`, or `invalid_kernel_locks`. Errors contain fixed codes
 only; raw stderr and arbitrary stored diagnostic text are never returned.
+macOS service errors use source `launchctl`, scope `service`, with the same
+command-boundary codes plus `invalid_properties`, `invalid_state`,
+`invalid_schedule`, `invalid_exit_code`, or `unit_failed`.
 
 The journal reader performs one `pread` of at most **1,048,576 bytes** at the
 end of the regular file, with no journal lock. It drops the first clipped line,

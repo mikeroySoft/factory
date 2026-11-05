@@ -1,7 +1,7 @@
 """`factory watch`: file engine failures and persistent host conditions in the engine repo.
 
-One pass reads lifecycle failures, host-condition streaks, failed `factory-*` systemd
-units, `dashboard --runtime-json` failures, and escalation codes repeating across
+One pass reads lifecycle failures, host-condition streaks, failed pass/dashboard user
+services, `dashboard --runtime-json` failures, and escalation codes repeating across
 REPEAT_MIN tickets within REPEAT_DAYS days. It fingerprints each by reason, unit,
 journal source or code, not by stage, reader code or install. Engine failures file as
 `bug`; host conditions file as `bug,host` only after their uninterrupted streak reaches
@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 from contextlib import nullcontext
@@ -25,7 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 
-from factory import config, dispatch, lifecycle, runtime_events, stats
+from factory import config, dispatch, lifecycle, runtime_events, runtime_local, stats
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
@@ -34,6 +35,7 @@ QUIET_PERIOD = timedelta(hours=24)
 CLOSABLE = {config.LABEL_TRIAGE, config.LABEL_AGENT}
 MAX_ROWS = 20
 MAX_LOG_LINES = 40
+MAX_LOG_BYTES = 64 * 1024
 UNKNOWN_REASONS = ("check_timeout", "unparseable_decision")
 STREAKED_REASONS = ("unparseable_decision",)
 # Host conditions are ignored until their current uninterrupted failure streak crosses
@@ -117,12 +119,51 @@ def persistent_host_conditions(events: list[dict], minutes: int) -> dict[str, li
     return persistent
 
 
-def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
-    """This repository's failed user units as (name, `systemctl status` excerpt).
+def _bounded_log_tail(path: str | None) -> str | None:
+    """Last bounded lines of a regular file; missing and unsafe paths have no tail."""
+    if not path:
+        return None
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        offset = max(0, info.st_size - MAX_LOG_BYTES)
+        data = os.pread(fd, min(info.st_size, MAX_LOG_BYTES), offset)
+    except (OSError, ValueError):
+        return None
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return "\n".join(data.decode(errors="replace").splitlines()[-MAX_LOG_LINES:])
 
-    The pass unit runs `watch` from ExecStopPost=, so it is never listed as failed while
+
+def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
+    """This repository's failed pass/dashboard user services as (name, excerpt).
+
+    launchd jobs are observed by label and nonzero last exit code. On systemd the
+    pass unit runs `watch` from ExecStopPost=, so it is never listed as failed while
     watch looks; systemd reports its result through $SERVICE_RESULT instead.
     """
+    if sys.platform == "darwin":
+        units = []
+        for label in (cfg.unit, f"{cfg.unit}-dashboard"):
+            try:
+                properties = runtime_local._launchd_properties(
+                    runtime_local._command("service", unit=label)
+                )
+                failed = int(properties["last exit code"])
+            except (runtime_local._Unavailable, KeyError, TypeError, ValueError):
+                continue
+            if not failed:
+                continue
+            excerpt = f"state = {properties['state']}\nlast exit code = {failed}"
+            if tail := _bounded_log_tail(properties.get("stderr path")):
+                excerpt += f"\n{tail}"
+            units.append((label, excerpt))
+        return units
+
     try:
         listed = subprocess.run(
             ["systemctl", "--user", "list-units", "--failed", "--plain", "--no-legend", "factory-*"],
@@ -625,9 +666,11 @@ def signals(
     for name, status in failed_units(cfg):
         # Fingerprint the unit's role, not this install's unit name, so installs share one issue.
         key = fingerprint("unit", name.replace(cfg.unit, "factory-<repo>", 1))
-        found[key] = {"fingerprint": key, "kind": "unit", "stage": "systemd", "key": name, "rows": [],
-                      "excerpt": status, "log": None, "latest": None,
-                      "command": f"systemctl --user status {shlex.quote(name)}"}
+        launchd = sys.platform == "darwin"
+        found[key] = {"fingerprint": key, "kind": "unit", "stage": "launchd" if launchd else "systemd",
+                      "key": name, "rows": [], "excerpt": status, "log": None, "latest": None,
+                      "command": (f"launchctl print gui/{os.getuid()}/{name}" if launchd else
+                                  f"systemctl --user status {shlex.quote(name)}")}
     by_source: dict[str, list[dict]] = {}
     for error in runtime_errors(cfg):
         by_source.setdefault(str(error.get("source")), []).append(error)
