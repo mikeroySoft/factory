@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import copy
 import subprocess
+from types import FunctionType
 import unittest
 from unittest import mock
 
-from factory import lifecycle
+from factory import dispatch, lifecycle
 from tests import test_host_claims
 
 
@@ -153,6 +154,28 @@ class DispatchReleaseTest(unittest.TestCase):
         self.assertEqual(module.host_claim_state(7), ([], ""))
         self.github.open_prs = [{"number": 70, "labels": []}]
         self.assertIn("#70", module.frontier()[0].get("held", ""))
+
+    def test_refresh_rework_after_success_reaches_another_host_without_a_claim(self):
+        tank = self.dispatcher("tank")
+        tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        self.assertEqual(tank.host_claims(7), [])
+        self.github.open_prs = [{"number": 70, "labels": [{"name": "factory-approved"}]}]
+        context = FunctionType(dispatch.refresh_requeue_context.__code__, tank.__dict__)
+        with mock.patch.object(tank, "refresh_requeue_context", context):
+            tank._record_rework(7, "a" * 40, "Resolve shared.py conflict", deferred=True)
+        ultron = self.dispatcher("ultron")
+        received = []
+
+        def worker(*args, **kwargs):
+            received.append(args[4])
+            return self.launch("ultron")
+
+        with mock.patch.object(ultron, "worker_round", side_effect=worker):
+            ultron.process_ticket(ultron.frontier()[0], 1, False)
+        self.assertEqual(self.launched, ["tank", "ultron"])
+        self.assertEqual(len(received), 1)
+        self.assertIn("Resolve shared.py conflict", received[0])
+        self.assertEqual(ultron.host_claim_state(7), ([], ""))
 
     def test_requeue_context_cannot_bypass_an_open_unapproved_pr(self):
         for host in (None, "tank"):
