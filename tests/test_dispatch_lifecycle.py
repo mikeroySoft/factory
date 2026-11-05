@@ -2037,3 +2037,27 @@ class StorageDispatchCLI(unittest.TestCase):
             for row in rows
         ))
         self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+
+class StorageSyncCLI(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+    upstream_fixture = LocalCLI.upstream_fixture
+
+    def test_runner_storage_low_defers_upstream_without_staging_failed_candidate(self):
+        self.upstream_fixture(check=[
+            sys.executable, "-c", "raise OSError(28, 'No space left on device')",
+        ])
+        self.cli("dispatch")
+        rows = lifecycle.read_events(self.events)
+        self.assertTrue(any(
+            row.get("stage") == "upstream-sync" and row.get("kind") == "exit"
+            and row.get("outcome") == "unknown" and row.get("reason") == "runner_storage_low"
+            for row in rows
+        ))
+        self.assertFalse(any(row.get("event") in {"attempt", "escalate"} for row in rows))
+        self.assertNotIn("sync", json.loads(self.state.read_text()))
+        self.assertFalse((self.repo / ".factory" / "wt-upstream").exists())

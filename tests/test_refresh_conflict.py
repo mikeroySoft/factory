@@ -841,3 +841,40 @@ class StorageRefreshRecoveryTest(unittest.TestCase):
                 self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
                 self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
                 self.assertEqual(self.github.assignees, [])
+
+
+class StorageManagerFixTest(unittest.TestCase):
+    setUp = TriageExemptionRegateTest.setUp
+    gh_json = TriageExemptionRegateTest.gh_json
+
+    def test_runner_storage_low_requeues_manager_fix_without_escalation(self) -> None:
+        from factory.gate import RunnerStorageLow
+
+        packet = self.tmp / "packet.md"
+        packet.write_text("manager guidance")
+        for failure_stage in ("attempt", "pr"):
+            with self.subTest(stage=failure_stage), \
+                    mock.patch.object(dispatch, "gh_json", side_effect=self.gh_json), \
+                    mock.patch.object(dispatch, "build_prompt", return_value="fix the bug"), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
+                    mock.patch.object(dispatch, "commit_leftovers"), \
+                    mock.patch.object(
+                        dispatch, "run_gate", side_effect=(
+                            RunnerStorageLow("No space left on device")
+                            if failure_stage == "attempt" else None
+                        ), return_value=(True, "ok"),
+                    ), \
+                    mock.patch.object(dispatch, "push_agent"), \
+                    mock.patch.object(
+                        dispatch, "pr_gate_and_review",
+                        side_effect=RunnerStorageLow("No space left on device"),
+                    ), \
+                    mock.patch.object(dispatch, "pr_comment") as comment, \
+                    mock.patch.object(dispatch, "approve_pr") as approve, \
+                    mock.patch.object(dispatch, "escalate") as escalate, \
+                    mock.patch.object(dispatch, "unclaim") as unclaim:
+                manage.apply(9, self.issue, "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
+                escalate.assert_not_called()
+                approve.assert_not_called()
+                comment.assert_not_called()
+                self.assertIn(config.LABEL_AGENT, unclaim.call_args.args)
