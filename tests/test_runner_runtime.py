@@ -131,6 +131,27 @@ class RunnerRuntimeTest(unittest.TestCase):
             self.assertEqual((root / "payload").read_text(), "live")
         self.assertFalse(root.exists())
 
+    def test_normal_exit_removes_root_when_process_exits_during_observation(self):
+        from factory import runner
+
+        read_bytes = Path.read_bytes
+        observer = None
+
+        def read_environ(path):
+            if observer is not None and path == Path(f"/proc/{observer.pid}/environ"):
+                self.stop(observer)
+                raise ProcessLookupError("process exited during observation")
+            return read_bytes(path)
+
+        with patch.object(tempfile, "tempdir", str(self.root)), \
+                patch.object(Path, "read_bytes", read_environ):
+            with runner.temp_root("review") as root:
+                observer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+                self.addCleanup(self.stop, observer)
+                (root / "payload").write_text("review")
+        self.assertFalse(root.parent.exists())
+
+
 
 if __name__ == "__main__":
     unittest.main()
