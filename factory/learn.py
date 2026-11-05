@@ -17,6 +17,7 @@ import json
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -1072,14 +1073,20 @@ def gate_head(wt: Path, branch: str, protected_override: bool) -> str:
 def refresh(cfg: config.Config, n: int, branch: str, head: str) -> None:
     """Merge main into a behind chore PR, gate and push the new head, then review it.
 
-    A normal push refuses non-fast-forward updates without rewriting published history."""
+    Refuse a changed remote head; normal pushes also reject non-fast-forward races."""
     wt = cfg.factory / f"wt-{branch.removeprefix('agent/')}"
     dispatch.run(["git", "fetch", "origin", cfg.main, branch], cwd=cfg.root)
     dispatch.run(["git", "worktree", "add", "--force", "-B", branch, str(wt), head], cwd=cfg.root)
     try:
         dispatch.run(["git", "merge", "--no-edit", f"origin/{cfg.main}"], cwd=wt)
         new = gate_head(wt, branch, protected_override=True)  # the diff `chore_pr` gated, now on main
-        dispatch.run(["git", "push", "origin", f"HEAD:{branch}"], cwd=wt)
+        push = ["git", "push", "origin", f"HEAD:{branch}"]
+        remote = dispatch.run(["git", "ls-remote", "origin", f"refs/heads/{branch}"], cwd=wt)
+        if (remote.stdout.split() or [""])[0] != head:
+            raise subprocess.CalledProcessError(
+                1, push, stderr=f"[rejected] {branch}: remote head changed since promotion",
+            )
+        dispatch.run(push, cwd=wt)
         base = dispatch.run(["git", "rev-parse", f"origin/{cfg.main}"], cwd=wt).stdout.strip()
         dispatch.review_external_pr(n, base, new, branch)
     finally:
