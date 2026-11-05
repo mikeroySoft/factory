@@ -368,6 +368,25 @@ class ManagerFixInfraTest(unittest.TestCase):
         self.assertIn("@alice", published[-1])
         self.assertIn("could not be applied", published[-1])
 
+    def test_a_fix_pending_after_a_crash_stays_recoverable_until_its_resume_fails(self) -> None:
+        self.cfg.manager = ["manager"]
+        escalation = {"event": "escalate", "ticket": 79, "round": 1, "packet": "p", "at": "2026-11-05T00:00:00Z"}
+        fix = {"ticket": 79, "decision": "FIX", "round": 1}
+        decided, pending = {"event": "manage", **fix, "execution_id": "a"}, {"event": "manage-pending", **fix}
+
+        def ended(execution: str, outcome: str) -> dict:
+            return {"event": "lifecycle", "kind": "exit", "execution_id": execution, "outcome": outcome}
+
+        resume = {"event": "manage-resume", **fix, "execution_id": "b"}
+        # The deciding pass died after journaling its pending FIX; the resume found no worker either.
+        crashed = [escalation, decided, {**pending, "execution_id": "a"}, ended("a", "unknown")]
+        waiting = [*crashed, resume, {**pending, "execution_id": "b"}, ended("b", "completed")]
+        self.assertIsNone(handoff.terminal(self.cfg, waiting, escalation))
+        for outcome in ("mechanism_failure", "interrupted"):
+            with self.subTest(resume=outcome):
+                spent = [*crashed, resume, ended("b", outcome)]
+                self.assertIn("could not be applied", handoff.terminal(self.cfg, spent, escalation))
+
 
 if __name__ == "__main__":
     unittest.main()
