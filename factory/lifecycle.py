@@ -17,6 +17,8 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from factory import platform_identity
+
 CONTEXT_ENV = "FACTORY_LIFECYCLE_CONTEXT"
 _CURRENT = contextvars.ContextVar("factory_execution", default=None)
 _UNKNOWN_HOST = str(uuid.uuid4())
@@ -234,6 +236,8 @@ def journal_snapshot(
 
 
 def _boot_id() -> str | None:
+    if platform_identity.darwin():
+        return platform_identity.boot_id()
     try:
         return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None
     except OSError:
@@ -242,6 +246,8 @@ def _boot_id() -> str | None:
 
 def _process(pid: int) -> dict:
     """Read Linux identity; /proc stat starttime is field 22, not process age."""
+    if platform_identity.darwin():
+        return platform_identity.process(pid)
     directory = Path("/proc") / str(pid)
     text = (directory / "stat").read_text()
     fields = text[text.rfind(")") + 2:].split()
@@ -261,6 +267,8 @@ def _identity(pid: int) -> dict:
 
 
 def _process_state(identity: dict | None) -> str:
+    if platform_identity.darwin():
+        return platform_identity.process_state(identity)
     if not isinstance(identity, dict):
         return "unknown"
     if (type(identity.get("pid")) is not int or identity["pid"] <= 0
@@ -324,6 +332,8 @@ def _lock_state(lock: dict) -> str:
 
 
 def _host_id() -> str | None:
+    if platform_identity.darwin():
+        return platform_identity.host_id()
     try:
         machine = Path("/etc/machine-id").read_text().strip()
     except OSError:
@@ -351,6 +361,8 @@ def _lock_holders(lock: dict) -> list[int] | None:
     """Kernel FLOCK owners, not waiters; None means attribution unavailable."""
     if lock["device"] is None or lock["inode"] is None:
         return None
+    if platform_identity.darwin():
+        return platform_identity.lock_holders(lock)
     try:
         lines = Path("/proc/locks").read_text().splitlines()
     except OSError:
@@ -915,7 +927,8 @@ def resources(path: Path, paths=(), *, rows: list[dict] | None = None, handle=No
                 "resource": resource, "state": lock_state,
                 "ownership": "confirmed" if owner else "none" if lock_state == "free" else "unknown",
                 "owner": owner, "requests": pending,
-                "evidence": {"lock_state": lock_state, "attribution": "proc_locks" if holders is not None else "unavailable",
+                "evidence": {"lock_state": lock_state, "attribution": (
+                    "lsof" if platform_identity.darwin() else "proc_locks") if holders is not None else "unavailable",
                              "holder_pids": holders},
             }
             previous = observations.get(key)

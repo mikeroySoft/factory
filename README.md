@@ -1816,7 +1816,7 @@ applicable or not known; it is not a fabricated ticket, run, round, or result.
 | `at` | string | UTC source timestamp, ISO 8601 with microseconds and `Z`. A reconciled exit uses the time of observation, not an estimated crash time. |
 | `outcome` | string or null | Terminal classification on `exit`; null on other kinds. |
 | `reason` | string or null | Supported terminal reason or diagnostic text, not a closed enumeration; null when no reason is known. |
-| `process` | object or null | Owner identity sampled on entry: `pid` (integer), `boot_id` (string or null), `start_ticks` (integer or null), `pid_namespace` (string or null), `uid` (integer or null), `state` (Linux process-state string or null), `ppid` (integer or null). Factory emits an object; the reader also accepts null as unavailable authority. This cached identity is not a live heartbeat. |
+| `process` | object or null | Owner identity sampled on entry: `pid` (integer), `boot_id` (string or null), `start_ticks` (integer or null), `pid_namespace` (string or null), `uid` (integer or null), `state` (process-state string or null), `ppid` (integer or null). Factory emits an object; the reader also accepts null as unavailable authority. This cached identity is not a live heartbeat. |
 | `locks` | array of objects | Recorded exclusion evidence, possibly empty. Each object has `path` (absolute-path string), `device` (integer or null), and `inode` (integer or null). Null identity fields mean unavailable evidence. |
 
 IDs and sequence numbers survive repeated reads. Sort a single execution by
@@ -1827,6 +1827,21 @@ terminal `exit`; an abrupt death can leave the exit absent until observation
 has enough evidence to reconcile it. Extra keys and evidence kinds may be
 added; consumers should ignore those they do not understand. Unsupported schema
 versions are not interpreted as version 1 by the existing observer.
+
+Linux identity fields retain their procfs values: boot UUID, field-22 start ticks,
+and PID namespace link. On macOS, lifecycle and passive runtime observation share
+`platform_identity`: `kern.bootsessionuuid` identifies the boot, `ps` supplies
+`start_ticks` as UTC Unix start seconds (`lstart`, with one-second resolution),
+and `pid_namespace` is `"darwin"` (no Linux PID namespaces). Host/resource IDs
+hash `ioreg`'s IOPlatformUUID using the same UUIDv5 scheme as Linux machine-id;
+they remain stable across processes and reboots. Probe commands have two-second
+timeouts; unavailable, malformed, or permission-denied evidence remains unknown.
+A missing recorded PID or a changed start time proves the original process dead.
+The existing handoff/descendant safeguards still prevent interruption when child
+absence cannot be established; macOS does not claim a complete procfs scan.
+Darwin lsof versions that omit flock lock fields leave holder attribution
+unavailable even when try-lock proves the file held; open-file PIDs never suffice
+to confirm an owner.
 
 | Stage | Boundary |
 |---|---|
@@ -2039,7 +2054,7 @@ holder identity. `wait_end.wait_event_id` names the ended wait's event UUID.
 | `state`, `ownership` | Independent string enums described above. `none` is supported only by observed free state. |
 | `owner` | Null or object with all common execution identity fields, recorded `process`, `acquisition_id`, and source `acquired_at` timestamp. |
 | `requests` | Array of currently live, unterminated requesters not yet acquired/released: common execution identity fields, `process`, source `event_id`, `requested_at`, and `blocking`. A pending request is not ownership. |
-| `evidence` | Object: `lock_state` (`held`/`free`/`unknown`), `attribution` (`proc_locks`/`unavailable`), `holder_pids` (integer array or null). Kernel PIDs alone are not confirmed execution identity. |
+| `evidence` | Object: `lock_state` (`held`/`free`/`unknown`), `attribution` (`proc_locks`/`lsof`/`unavailable`), `holder_pids` (integer array or null). Linux uses kernel FLOCK owners; macOS uses flock try-lock for availability and lsof's whole-file lock fields for owners, not merely open descriptors. Kernel PIDs alone are not confirmed execution identity. |
 | `event_id`, `at` | Stable identity and source time of the last distinct local resource observation. |
 | `observed_at` | UTC time of this local evidence collection, distinct from transition time. |
 
