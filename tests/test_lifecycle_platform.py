@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -138,7 +139,7 @@ class DarwinLifecycleTest(unittest.TestCase):
             ("", 1, "unknown"),
         ):
             result = subprocess.CompletedProcess([], status, output, "")
-            def probe(args, **kwargs):
+            def probe(args, result=result, **kwargs):
                 return result if args[0].endswith("lsof") else self.probe(args, **kwargs)
 
             with self.subTest(state=state, status=status), \
@@ -232,12 +233,24 @@ sys.stdin.readline()
         hosts = [subprocess.check_output([sys.executable, "-c", "from factory import lifecycle; print(lifecycle._host_id())"], text=True).strip() for _ in range(2)]
         self.assertEqual(hosts, [lifecycle._host_id()] * 2)
 
-    def test_native_linux_identity_fields_are_unchanged(self):
+    def test_native_identity_fields_match_platform(self):
+        pid = os.getpid()
+        identity = lifecycle._identity(pid)
         if sys.platform == "linux":
-            pid = os.getpid()
             text = Path(f"/proc/{pid}/stat").read_text()
             fields = text[text.rfind(")") + 2:].split()
-            identity = lifecycle._identity(pid)
             self.assertEqual(identity["boot_id"], Path("/proc/sys/kernel/random/boot_id").read_text().strip())
             self.assertEqual(identity["start_ticks"], int(fields[19]))
             self.assertEqual(identity["pid_namespace"], os.readlink(f"/proc/{pid}/ns/pid"))
+        elif sys.platform == "darwin":
+            boot = subprocess.check_output(
+                ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"], text=True).strip()
+            start = subprocess.check_output(
+                ["/bin/ps", "-o", "lstart=", "-p", str(pid)], text=True,
+                env={**os.environ, "LC_ALL": "C", "TZ": "UTC"}).strip()
+            expected_start = datetime.strptime(start, "%a %b %d %H:%M:%S %Y").replace(tzinfo=UTC)
+            self.assertEqual(identity["boot_id"], str(uuid.UUID(boot)))
+            self.assertEqual(identity["start_ticks"], int(expected_start.timestamp()))
+            self.assertEqual(identity["pid_namespace"], "darwin")
+        else:
+            self.fail(f"unsupported identity platform: {sys.platform}")

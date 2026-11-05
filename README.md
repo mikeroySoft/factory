@@ -2379,13 +2379,20 @@ missing entry, conflicting identity/sequence, ambiguous suffix or unavailable
 live evidence still makes that record partial/unknown; history gaps remain
 reported even when independent current observations are fresh.
 
-Direct identity checks are cached for at most 128 PIDs, with 4096-byte `/proc`
-stat reads, a 64 KiB mounts read, 128-byte boot/machine identity reads, and at
-most 512 cached lock stats. Resource attribution reads `/proc/locks` once, under
-1 MiB; at most 128 current holder PIDs are returned per resource. Hitting these
-bounds yields unknown/partial evidence. The separate admission query has its
-own smaller kernel bound above. No flock is acquired, no ownership file is
-rewritten, no lock/state directory is created, and no reconciliation is persisted.
+Direct identity checks are cached for at most 128 PIDs, with at most 512 cached
+lock stats and 128 current holder PIDs returned per resource. On Linux, probes
+use 4096-byte `/proc` stat reads, a 64 KiB mounts read, 128-byte boot/machine
+identity reads, and one `/proc/locks` read under 1 MiB. On Darwin, `sysctl`
+supplies the boot-session UUID, `ioreg` supplies the hashed machine UUID, and
+`ps` supplies PID/start-time identity. An absent PID is dead only after a
+successful current-process visibility probe on the same boot. Resource
+attribution uses `lsof` lock fields per resource; missing lock fields remain
+unknown, never proof that a lock is free. Each Darwin command has a two-second
+timeout; its captured output has no byte cap. Hitting identity/lock/holder
+bounds or unavailable probes yields unknown/partial evidence. The separate
+admission query has its own smaller kernel bound above. No flock is acquired,
+no ownership file is rewritten, no lock/state directory is created, and no
+reconciliation is persisted.
 Without host identity, configured descriptors are omitted with an error rather
 than assigning unrelated hosts a fabricated shared identity.
 
@@ -2402,12 +2409,16 @@ unsupported for lifecycle coverage, not an empty valid lifecycle history.
 Known legacy rows cannot hide a lifecycle exit, so they do not independently
 invalidate supported open scopes.
 
-Other source/scope pairs are `proc`/`identity` (`boot_unavailable`,
+Linux source/scope pairs are `proc`/`identity` (`boot_unavailable`,
 `namespace_unavailable`, `process_limit`, `process_unavailable`,
-`absence_unavailable`), `proc`/`executions` (`descendants_not_scanned`),
-`proc/locks`/`resources` (`locks_unavailable`, `holder_limit`),
+`absence_unavailable`) and
+`proc/locks`/`resources` (`locks_unavailable`, `holder_limit`).
+Darwin uses `process`/`identity` (`boot_unavailable`, `process_limit`,
+`process_unavailable`) and `lsof`/`resources` (`locks_unavailable`, `holder_limit`)
+instead of the Linux identity and lock sources. Shared pairs are
+`proc`/`executions` (`descendants_not_scanned`),
 `filesystem`/`resources` (`lock_limit`, `not_regular`, `lock_unavailable`,
-`canonical_path_unavailable`), and `configuration`/`resources`
+`canonical_path_unavailable`) and `configuration`/`resources`
 (`lock_limit`, `invalid_scope`, `host_identity_unavailable`). A lock file that
 does not exist (not yet created, or unlinked by ticket cleanup) is not an error:
 its resource reports state `unknown` with no `lock_unavailable`.

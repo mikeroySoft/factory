@@ -75,6 +75,13 @@ def process_state(identity: dict | None) -> str:
     try:
         current = process(identity["pid"])
     except ProcessLookupError:
+        # Absence is meaningful only when ps can see this observer.
+        try:
+            observer = process(os.getpid())
+        except (OSError, ValueError, IndexError):
+            return "unknown"
+        if observer["boot_id"] != boot:
+            return "unknown"
         return "dead"
     except (OSError, ValueError, IndexError):
         return "unknown"
