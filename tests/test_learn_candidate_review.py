@@ -261,19 +261,44 @@ class LearnCandidateReviewTest(unittest.TestCase):
                 dispatch, "run_gate", side_effect=RunnerStorageLow("No space left on device"),
             ), mock.patch.object(dispatch, "run_reviewer") as reviewer, \
                     mock.patch.object(dispatch, "push_and_pr") as publish:
-                with self.assertRaises(RunnerStorageLow):
-                    self.run_proposal(cfg, case, diff)
+                event = self.run_proposal(cfg, case, diff)
 
             reviewer.assert_not_called()
             publish.assert_not_called()
             self.assertFalse(captured.exists())
+            self.assertEqual(
+                (event["status"], event["reason"]),
+                ("deferred", "runner_storage_low"),
+            )
             rows = lifecycle.read_events(cfg.factory / "events.jsonl")
-            self.assertFalse(any(
-                row.get("event") in ("learn-candidate-review", "learn")
-                for row in rows
-            ))
+            self.assertFalse(any(row.get("event") == "learn-candidate-review" for row in rows))
+            [deferred] = [row for row in rows if row.get("event") == "learn"]
+            self.assertEqual((deferred["status"], deferred["reason"]),
+                             ("deferred", "runner_storage_low"))
             [storage] = [
                 row for row in rows
                 if row.get("kind") == "exit" and row.get("reason") == "runner_storage_low"
             ]
             self.assertEqual((storage["stage"], storage["outcome"]), ("gate", "unknown"))
+
+    def test_storage_blocked_evaluation_defers_without_rejection_and_retries_same_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg, case, diff, _, _ = self.scenario(directory, APPROVE)
+            dispatch.record("merged", ticket=7, at="2026-01-01T00:00:00Z")
+            with mock.patch.object(learn, "evidence", return_value=([7], "incident")), \
+                    mock.patch.object(learn, "replay_cases", return_value=[case]), \
+                    mock.patch.object(learn, "propose", return_value=(["Parser guidance."], diff)), \
+                    mock.patch.object(
+                        learn, "replay_ticket",
+                        side_effect=RunnerStorageLow("No space left on device"),
+                    ), \
+                    mock.patch.object(dispatch, "push_and_pr") as publish:
+                event = learn.run(cfg, evaluate=True)
+            publish.assert_not_called()
+            self.assertEqual((event.get("status"), event.get("reason")),
+                             ("deferred", "runner_storage_low"))
+            self.assertEqual(learn.finished_since_learn(), 1)
+            self.assertFalse(any(
+                row.get("event") == "decision"
+                for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+            ))

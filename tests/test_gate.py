@@ -361,11 +361,11 @@ class StorageDiagnosticsTest(unittest.TestCase):
             ("error: cannot write cache: No space left on device (os error 28)", 1, 75),
             ("warning: expected ENOSPC while testing the full-disk handler", 0, 0),
             ("OSError: [Errno 28] No space left on device", 0, 0),
-            ("AssertionError: expected OSError: [Errno 28] No space left on device\n"
-             "FAILED (failures=1)", 1, 1),
-            ("E       OSError: [Errno 28] No space left on device\n"
-             "FAILED tests/test_product.py::test_failure - AssertionError\n"
-             "1 failed in 0.01s", 1, 1),
+            (("AssertionError: expected OSError: [Errno 28] No space left on device\n"
+              "FAILED (failures=1)"), 1, 1),
+            (("E       OSError: [Errno 28] No space left on device\n"
+              "FAILED tests/test_product.py::test_failure - AssertionError\n"
+              "1 failed in 0.01s"), 1, 1),
         ]
         for output, status, expected in cases:
             with self.subTest(output=output, status=status), tempfile.TemporaryDirectory() as d:

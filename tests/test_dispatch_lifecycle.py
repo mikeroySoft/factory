@@ -2027,7 +2027,7 @@ class StorageDispatchCLI(unittest.TestCase):
             sys.executable, "-c", "raise OSError(28, 'No space left on device')",
         ])
         self.commit_config()
-        self.cli("dispatch", "--ticket", "7", "--budget-min", "1")
+        self.cli("dispatch", "--ticket", "7", "--budget-min", "1", expected=1)
         rows = lifecycle.read_events(self.events)
         self.assertFalse(any(row.get("event") == "escalate" for row in rows))
         self.assertFalse(any(row.get("event") == "attempt" and row.get("gate") == "FAIL" for row in rows))

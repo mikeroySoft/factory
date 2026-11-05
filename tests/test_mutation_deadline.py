@@ -189,6 +189,8 @@ class MutationDeadlineTest(unittest.TestCase):
         mutating.run_tests = cosmic_run_tests
 
         def mutate_and_test(_mutations, command, timeout):
+            if result.test_outcome == TestOutcome.INCOMPETENT and mutation_timeout is None:
+                return result
             outcome, output = mutating.run_tests(command, timeout)
             return SimpleNamespace(
                 worker_outcome=WorkerOutcome.NORMAL,
@@ -212,6 +214,9 @@ class MutationDeadlineTest(unittest.TestCase):
         process = mock.Mock()
         if mutation_timeout is not None:
             process.communicate.side_effect = [mutation_timeout, (b"", b"")]
+        else:
+            process.communicate.return_value = (result.output.encode(), b"")
+            process.returncode = 0 if result.test_outcome == TestOutcome.SURVIVED else 1
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "factory").mkdir()
