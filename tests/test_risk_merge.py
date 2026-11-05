@@ -591,7 +591,7 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         if args[:2] == ["issue", "view"]:
             return self.issue
         if args[:2] == ["pr", "list"]:
-            if "--head" in args and not self.pr_published:
+            if "--head" in args and (not self.pr_published or self.pr["state"] != "OPEN"):
                 return []
             return [self.pr]
         if args[:2] == ["pr", "view"]:
