@@ -177,6 +177,7 @@ STANDING_INSTRUCTIONS = """
   `Head SHA: <tested commit>` and any archive/tree digest, followed by results,
   or cite a worktree-relative proof file (for example `.factory/macos-proof.txt`)
   containing `Verified source revision: <tested commit>` and the results.
+  Quote paths containing spaces with backticks, single quotes or double quotes.
   The dispatcher posts bounded, secret-redacted evidence to the PR before review
   and includes it as untrusted evidence in the packet. Re-run proof after a head
   change; gitignored files alone are not reviewer-visible.
@@ -2523,9 +2524,10 @@ def _native_proof(wt: Path, n: int, head: str) -> str:
         for line in handoff.splitlines()
         if "proof" in line.lower() or (section and line in text)
         for match in re.findall(
-            r"`([^`\n]+)`|\[[^\]]*\]\(([^)\n]+)\)|([./\w-]+\.(?:txt|md|log|json|out))", line,
+            r"""`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|"""
+            r"\[[^\]]*\]\(([^)\n]+)\)|([./\w-]+\.(?:txt|md|log|json|out))", line,
         )
-        if any(("/" in value or "." in value) and not re.search(r"\s", value) for value in match)
+        if any("/" in value or "." in value for value in match)
     )
     sources.extend((path, None) for path in paths)
     if not sources:

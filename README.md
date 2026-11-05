@@ -1116,7 +1116,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `Proof: .factory/macos-proof.txt`, containing
    `Verified source revision: <tested commit>`). A plain `Native-host proof:`
    label may also introduce file citations on following lines, up to the next
-   Markdown heading. Before each ticket review,
+   Markdown heading. Paths containing spaces must be quoted with backticks,
+   single quotes or double quotes. Before each ticket review,
    including manager FIX and refresh reviews, the dispatcher posts the evidence
    to the PR and supplies the same text inline as untrusted worker evidence.
    Recorded proof SHAs are checked against the gated head; stale/conflicting
