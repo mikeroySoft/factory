@@ -1039,6 +1039,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `APPROVE` adds the `factory-approved` label only while the remote PR still
    points to the exact commit that passed the gate and review. The successful
    label operation and gate/review commit are recorded in `.factory/events.jsonl`.
+   Every agent PR verdict comment starts with `Reviewed head: <sha>` naming the
+   full reviewed commit SHA, including after a bounce or refresh/rebase.
    The optional `[review].policy` path defaults to `REVIEW.md`. Factory reads it
    from the base ref, never the worker head, so add that path to
    `[gate].protected_paths`. The policy can define bug/security/spec passes,
