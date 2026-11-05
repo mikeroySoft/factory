@@ -567,7 +567,7 @@ class _Observation:
             return "unknown", None
         if platform_identity.darwin():
             state = lifecycle._lock_state(current)
-            return state, self.holders(current) if state == "held" else [] if state == "free" else None
+            return state, self.holders(current) if state == "held" else None
         holders = self.holders(current)
         return ("unknown", None) if holders is None else ("held" if holders else "free", holders)
 

@@ -107,8 +107,9 @@ class DarwinLifecycleTest(unittest.TestCase):
             observation = runtime_events._Observation([])
             self.assertEqual(observation.lock_state(lock), ("held", [os.getpid()]))
             with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "p123\nf4\nl \n", "")):
-                self.assertEqual(lifecycle._lock_holders(lock), [])
-        self.assertEqual(runtime_events._Observation([]).lock_state(lock), ("free", []))
+                self.assertIsNone(lifecycle._lock_holders(lock))
+                self.assertEqual(runtime_events._Observation([]).lock_state(lock), ("held", None))
+        self.assertEqual(runtime_events._Observation([]).lock_state(lock), ("free", None))
 
     def test_resource_owner_correlates_with_passive_reader(self):
         path = Path(self.tmp.name) / "gpu.lock"

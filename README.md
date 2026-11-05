@@ -1839,6 +1839,9 @@ timeouts; unavailable, malformed, or permission-denied evidence remains unknown.
 A missing recorded PID or a changed start time proves the original process dead.
 The existing handoff/descendant safeguards still prevent interruption when child
 absence cannot be established; macOS does not claim a complete procfs scan.
+Darwin lsof versions that omit flock lock fields leave holder attribution
+unavailable even when try-lock proves the file held; open-file PIDs never suffice
+to confirm an owner.
 
 | Stage | Boundary |
 |---|---|

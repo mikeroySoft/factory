@@ -110,6 +110,7 @@ def lock_holders(lock: dict) -> list[int] | None:
                 if pid is None:
                     return None
                 holders.add(pid)
-        return sorted(holders)
+        # Some Darwin lsof versions emit blank lock fields even for held flocks.
+        return sorted(holders) if holders else None
     except (OSError, ValueError, KeyError, TypeError):
         return None
