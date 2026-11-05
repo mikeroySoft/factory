@@ -10,7 +10,6 @@ from unittest import mock
 
 from factory import config, dispatch, lifecycle, watch
 
-
 REPO = "acme/widgets"
 
 
@@ -190,7 +189,7 @@ class WatchRetryAndClosureTest(unittest.TestCase):
                 "closedAt": None,
                 "body": f"Fingerprint: {fingerprint}\n\n## Observed by\n- `{REPO}`\n",
             },
-        }, {"201": ["connection reset by peer"]})
+        }, {"201": ["error connecting to api.github.com"]})
         signal = WatchReadFailureTest.signal(fingerprint)
 
         with mock.patch.object(watch, "signals", return_value=[signal]), \
@@ -227,3 +226,59 @@ class WatchRetryAndClosureTest(unittest.TestCase):
             ("closure-read", 301, "gh_read_failed"),
         )
         self.assertIsNone(lifecycle.last_successful_passes(dispatch.EVENTS)["watch"])
+
+    def test_unrelated_skip_during_successful_read_does_not_skip_signal(self) -> None:
+        from factory import reads
+
+        fingerprint = "successful-read"
+        self.journal(fingerprint, 401, timedelta(days=2))
+        self.save_state({
+            "401": {
+                "state": "OPEN",
+                "closedAt": None,
+                "body": f"Fingerprint: {fingerprint}\n\n## Observed by\n- `{REPO}`\n",
+            },
+        })
+        signal = WatchReadFailureTest.signal(fingerprint)
+        real_gh_json = dispatch.gh_json
+
+        def gh_json(args, env=None):
+            if args[:3] == ["issue", "view", "401"]:
+                reads.skip(reads.ReadFailure(
+                    "gh_read_failed", mock.Mock(returncode=1, stderr="unrelated read failure"),
+                ), fingerprint="unrelated")
+            return real_gh_json(args, env)
+
+        with mock.patch.object(watch, "signals", return_value=[signal]), \
+                mock.patch.object(dispatch, "gh_json", side_effect=gh_json):
+            self.assertEqual(watch.run_pass(self.cfg), [signal])
+
+        self.assertEqual([call[2] for call in self.gh_calls("issue", "comment")], ["401"])
+        [skip] = self.rows("read-skip")
+        self.assertEqual(skip.get("fingerprint"), "unrelated")
+
+    def test_escape_attribution_read_failure_is_skipped_before_signals(self) -> None:
+        from factory import reads, stats
+
+        self.cfg.watch_bands = [mock.Mock(metric="revert_rate_by_tier")]
+        fingerprint = "after-attribution-failure"
+        self.journal(fingerprint, 501, timedelta(days=2))
+        self.save_state({
+            "501": {
+                "state": "OPEN",
+                "closedAt": None,
+                "body": f"Fingerprint: {fingerprint}\n\n## Observed by\n- `{REPO}`\n",
+            },
+        })
+        signal = WatchReadFailureTest.signal(fingerprint)
+        failure = reads.ReadFailure(
+            "gh_read_failed", mock.Mock(returncode=1, stderr="escape attribution unavailable"),
+        )
+
+        with mock.patch.object(stats, "escapes", side_effect=failure), \
+                mock.patch.object(watch, "signals", return_value=[signal]):
+            self.assertEqual(watch.run_pass(self.cfg), [signal])
+
+        self.assertEqual([call[2] for call in self.gh_calls("issue", "comment")], ["501"])
+        [skip] = self.rows("read-skip")
+        self.assertEqual(skip.get("operation"), "escape-attribution")

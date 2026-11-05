@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from factory import config, lifecycle
+from factory import config, lifecycle, reads
 
 SEMVER = re.compile(r"v(\d+)\.(\d+)\.(\d+)\Z")
 JSON_BAR = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -84,7 +84,12 @@ def next_bar(
 
 
 def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=root, text=True, capture_output=True, check=check)
+    command = ["git", *args]
+    return reads.run(
+        command,
+        lambda: subprocess.run(command, cwd=root, text=True, capture_output=True, check=check),
+        check=check,
+    )
 
 
 def _at(value: str | datetime) -> datetime:
@@ -195,8 +200,6 @@ def _reset_legacy_bar(
 
 
 def _gh(cfg: config.Config, endpoint: str, *args: str) -> Any:
-    from factory import reads
-
     command = ["gh", "api", *args, endpoint]
     proc = reads.run(command, lambda: subprocess.run(
         command, text=True, capture_output=True, check=False))
@@ -304,8 +307,6 @@ def _finish(cfg: config.Config, dry_run: bool, reason: str, metrics: dict[str, f
 
 
 def _gh_release(cfg: config.Config, *args: str, notes: str | None = None) -> subprocess.CompletedProcess[str]:
-    from factory import reads
-
     command = ["gh", "release", *args, "--repo", cfg.repo]
     return reads.run(command, lambda: subprocess.run(
         command, input=notes, text=True, capture_output=True, check=False), check=False)
@@ -325,8 +326,8 @@ def _unpublished(cfg: config.Config, tag: str) -> bool:
 
 
 def _publish(cfg: config.Config, tag: str) -> str:
-    """Create the GitHub Release for a pushed tag unless one exists. A failure is journaled
-    as ``publish_failed`` and retried by the next pass; the tag stays."""
+    """Create the GitHub Release for a pushed tag unless one exists. Publication failures are
+    journaled and retried next pass; read failures propagate to the pass item and the tag stays."""
     try:
         if _gh_release(cfg, "view", tag).returncode == 0:
             reason = f"GitHub Release {tag} already exists"
@@ -336,6 +337,8 @@ def _publish(cfg: config.Config, tag: str) -> str:
             if proc.returncode:
                 raise RuntimeError(proc.stderr.strip() or f"gh release create {tag} failed")
             reason = f"created GitHub Release {tag}"
+    except reads.ReadFailure:
+        raise
     except Exception as exc:  # noqa: BLE001 - journaled and retried next pass
         reason = f"GitHub Release {tag} failed: {type(exc).__name__}: {exc}"
         _record(cfg, "publish_failed", reason, None, None, tag=tag)
@@ -627,6 +630,8 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             if added:
                 _git(cfg.root, "worktree", "remove", "--force", str(worktree), check=False)
             shutil.rmtree(temporary, ignore_errors=True)
+    except reads.ReadFailure:
+        raise
     except Exception as exc:  # noqa: BLE001 - the dispatcher must hold, journal, and retry next pass
         reason = _reason(f"release check failed: {type(exc).__name__}: {exc}", metrics, bar)
         return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)

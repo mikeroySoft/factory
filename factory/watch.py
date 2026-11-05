@@ -757,7 +757,8 @@ def _run_pass(
     if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
         try:
-            events.extend(stats.escape_events(stats.escapes()))
+            with reads.item(operation="escape-attribution"):
+                events.extend(stats.escape_events(stats.escapes()))
         except (
             OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, SystemExit,
         ) as exc:
@@ -823,18 +824,20 @@ def _run_pass(
             filed.append(signal)
             continue
         if read_state is not None and read_state.stopped:
-            with reads.item(fingerprint=fp):
+            try:
                 open_filings(engine)  # policy raises before running gh
-            failed_fingerprints.add(fp)
+            except reads.ReadFailure as exc:
+                reads.skip(exc, fingerprint=fp)
+                failed_fingerprints.add(fp)
             continue
         issue = None
         if previous is not None:
             repo = previous.get("repo", dispatch.REPO)
-            skipped = read_state.skipped
-            with reads.item(fingerprint=fp):
+            try:
                 state = dispatch.gh_json(["issue", "view", str(previous["issue"]), "--repo", repo,
                                           "--json", "state,closedAt,body"])
-            if read_state.skipped != skipped:
+            except reads.ReadFailure as exc:
+                reads.skip(exc, fingerprint=fp)
                 failed_fingerprints.add(fp)
                 continue
             if state["state"].upper() == "OPEN":
@@ -847,10 +850,10 @@ def _run_pass(
                 continue  # closed by its fix or a human; nothing newer since
         if issue is None:
             if listing is None:
-                skipped = read_state.skipped
-                with reads.item(fingerprint=fp):
+                try:
                     listing = open_filings(engine)
-                if read_state.skipped != skipped:
+                except reads.ReadFailure as exc:
+                    reads.skip(exc, fingerprint=fp)
                     failed_fingerprints.add(fp)
                     continue
             issue = listing.get(fp)
@@ -902,14 +905,10 @@ def _run_pass(
             closed += 1
             continue
         try:
-            skipped = read_state.skipped
-            with reads.item(fingerprint=fp, issue=previous["issue"], repo=repo):
-                state = dispatch.gh_json([
-                    "issue", "view", str(previous["issue"]), "--repo", repo,
-                    "--json", "state,assignees,labels,comments",
-                ])
-            if read_state.skipped != skipped:
-                continue
+            state = dispatch.gh_json([
+                "issue", "view", str(previous["issue"]), "--repo", repo,
+                "--json", "state,assignees,labels,comments",
+            ])
             labels = {label["name"] for label in state.get("labels", [])}
             if state["state"].upper() != "OPEN":
                 # Closed by its fix or a human: stop re-checking it every pass.
@@ -934,6 +933,8 @@ def _run_pass(
                             closed=True, at=lifecycle._now())
             dispatch.log(f"watch: closed {repo}#{previous['issue']} for {fp}")
             closed += 1
+        except reads.ReadFailure as exc:
+            reads.skip(exc, fingerprint=fp, issue=previous["issue"], repo=repo)
         except (KeyError, TypeError, ValueError) as exc:
             dispatch.log(f"watch: could not close {repo}#{previous['issue']} for {fp}: {exc}")
     return filed
@@ -944,9 +945,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
-    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
-        with reads.pass_scope(dispatch.EVENTS, "watch", enabled=not args.dry_run) as read_state:
-            run_pass(dispatch.cfg, args.dry_run)
+    with (
+        nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True),
+        reads.pass_scope(dispatch.EVENTS, "watch", enabled=not args.dry_run) as read_state,
+    ):
+        run_pass(dispatch.cfg, args.dry_run)
     if not args.dry_run and not (read_state and (read_state.skipped or read_state.stopped)):
         lifecycle.record_stage_success(dispatch.EVENTS, "watch")
     return 0

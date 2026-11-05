@@ -1068,6 +1068,12 @@ def admit_plan(n: int, issue: dict, *, record_decision: bool = True) -> dict | N
             raise binding.BindingError(
                 "missing baseline for previously bound ticket; human review must retain an explicit revision"
             )
+    except reads.ReadFailure as exc:
+        rationale = f"initiative #{linked} source is unavailable: {exc.code}"
+        if record_decision and lifecycle.current() is not None:
+            record_binding_decision(n, body, linked, "refused", rationale)
+        log(f"#{n}: refused ({rationale})")
+        raise
     except binding.BindingError as exc:
         if record_decision and lifecycle.current() is not None:
             record_binding_decision(n, body, linked, "refused", str(exc))
@@ -4017,6 +4023,8 @@ def merge_pass_locked(dry_run: bool) -> None:
 
     try:
         promote_pass(prs, dry_run)
+    except reads.ReadFailure as exc:
+        reads.skip(exc, operation="promotion")
     except Exception as exc:  # noqa: BLE001 - a lessons merge failure never blocks ticket merges
         log(f"promotion: failed ({type(exc).__name__}: {exc})")
     candidates = []
@@ -4325,6 +4333,9 @@ def merge_pass_locked(dry_run: bool) -> None:
                     ])
                     merge_commit = merged_pr.get("mergeCommit") if isinstance(merged_pr, dict) else None
                     merge_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+                except reads.ReadFailure as exc:
+                    reads.skip(exc, ticket=n, pr=pr_num, operation="merge-commit")
+                    merge_sha = None
                 except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
                     merge_sha = None
                 record(
@@ -5143,24 +5154,26 @@ def _dispatch(args) -> int:
             if maintenance["status"] != "complete":
                 log(f"Accepted-result expiry incomplete ({maintenance.get('reason')}); archive left for inspection")
         if args.ticket and not yield_for_update:
-            if not issue_is_open(args.ticket):
-                log(f"#{args.ticket}: not open, nothing to do")
-                return 1
-            issue = gh_json(
-                [
-                    "issue",
-                    "view",
-                    str(args.ticket),
-                    "--repo",
-                    REPO,
-                    "--json",
-                    "number,title,body,labels,assignees",
-                ]
-            )
-            result = 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
-            if not args.dry_run and result == 0 and not (reads.current() and reads.current().skipped):
-                lifecycle.record_stage_success(EVENTS, "dispatch")
-            return result
+            with reads.item(ticket=args.ticket):
+                if not issue_is_open(args.ticket):
+                    log(f"#{args.ticket}: not open, nothing to do")
+                    return 1
+                issue = gh_json(
+                    [
+                        "issue",
+                        "view",
+                        str(args.ticket),
+                        "--repo",
+                        REPO,
+                        "--json",
+                        "number,title,body,labels,assignees",
+                    ]
+                )
+                result = 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
+                if not args.dry_run and result == 0 and not (reads.current() and reads.current().skipped):
+                    lifecycle.record_stage_success(EVENTS, "dispatch")
+                return result
+            return 0
 
         def release_step(open_pr: bool) -> None:
             if not cfg.release_auto or args.dry_run:

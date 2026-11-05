@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import contextvars
 import argparse
+import contextvars
 import functools
 import json
 import os

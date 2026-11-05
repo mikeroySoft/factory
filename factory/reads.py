@@ -22,10 +22,10 @@ _CURRENT = contextvars.ContextVar("factory_reads", default=None)
 _NETWORK = re.compile(
     r"error connecting to api\.github\.com|could not resolve host(?:name)?|"
     r"connection reset|tls handshake timeout|i/o timeout|connection timed out|"
-    r"temporary failure in name resolution|network is unreachable", re.I,
+    r"temporary failure in name resolution|network is unreachable", re.IGNORECASE,
 )
-_RATE = re.compile(r"api rate limit exceeded|rate_limited|secondary rate limit|http(?:/\S+)?\s+429", re.I)
-_FORBIDDEN = re.compile(r"http(?:/\S+)?\s+403", re.I)
+_RATE = re.compile(r"api rate limit exceeded|rate_limited|secondary rate limit|http(?:/\S+)?\s+429", re.IGNORECASE)
+_FORBIDDEN = re.compile(r"http(?:/\S+)?\s+403", re.IGNORECASE)
 
 
 class ReadFailure(RuntimeError):
@@ -170,14 +170,17 @@ def _classify(command, result, env):
         text = text.decode(errors="replace")
     quota = _quota(env) if command[0] == "gh" else None
     resources = (quota or {}).get("resources", {})
-    resource = "graphql" if command[1] in {"issue", "pr"} or "graphql" in command else "core"
+    graphql = "graphql" in command or (
+        command[1] in {"issue", "pr"} and command[2] != "checks"
+    )
+    resource = "graphql" if graphql else "core"
     bucket = resources.get(resource, {})
     exhausted = bucket.get("remaining") == 0
     limited = bool(_RATE.search(text) or (_FORBIDDEN.search(text) and exhausted))
     until = None
     if limited:
-        reset = re.search(r"x-ratelimit-reset:\s*(\d+)", text, re.I)
-        retry = re.search(r"retry-after:\s*(\d+)", text, re.I)
+        reset = re.search(r"x-ratelimit-reset:\s*(\d+)", text, re.IGNORECASE)
+        retry = re.search(r"retry-after:\s*(\d+)", text, re.IGNORECASE)
         deadline = (float(reset[1]) if reset else
                     time.time() + float(retry[1]) if retry else
                     bucket.get("reset") if exhausted else None)
@@ -190,12 +193,12 @@ def run(command, operation, check=True, env=None):
     state = current()
     if state is None or not is_read(command):
         return operation()
-    with state.lock:
-        if state.stopped:
-            raise ReadFailure(state.code, subprocess.CompletedProcess(command, 0, "", "read circuit open"),
-                              until=state.until)
     failure = None
     for attempt in range(4):
+        with state.lock:
+            if state.stopped:
+                raise ReadFailure(state.code, subprocess.CompletedProcess(command, 0, "", "read circuit open"),
+                                  until=state.until)
         try:
             result = operation()
         except subprocess.CalledProcessError as exc:

@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import json
-import sys
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -42,12 +42,13 @@ class FetchOutageTest(unittest.TestCase):
 
 
 class ReadPolicyTest(unittest.TestCase):
-    command = ["gh", "issue", "view", "7", "--json", "state"]
+    command: list[str]
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        self.command = ["gh", "issue", "view", "7", "--json", "state"]
         self.journal = self.root / ".factory/events.jsonl"
         self.clock = self.enterContext(patch.object(reads.time, "time", return_value=100))
         self.sleep = self.enterContext(patch.object(reads.time, "sleep"))
@@ -78,9 +79,8 @@ class ReadPolicyTest(unittest.TestCase):
         self.probe.assert_called_once()
         self.assertEqual(self.probe.call_args.args[0], ["gh", "api", "rate_limit"])
         self.sleep.assert_not_called()
-        with reads.pass_scope(self.journal, "dispatch"):
-            with reads.item(ticket=10):
-                reads.run(self.command, limited)
+        with reads.pass_scope(self.journal, "dispatch"), reads.item(ticket=10):
+            reads.run(self.command, limited)
         self.assertEqual(calls, [7], "a later CLI pass must honor the same quota deadline")
         self.clock.return_value = 1006
         with reads.pass_scope(self.journal, "watch"):
@@ -90,10 +90,9 @@ class ReadPolicyTest(unittest.TestCase):
     def test_plain_403_with_quota_left_is_not_rate_limited_or_retried(self):
         self.probe.return_value.stdout = json.dumps({"resources": {"graphql": {"remaining": 4999, "reset": 1000}}})
         calls = []
-        with reads.pass_scope(self.journal, "watch"):
-            with reads.item(ticket=7):
-                reads.run(self.command, lambda: calls.append(7) or subprocess.CompletedProcess(
-                    self.command, 1, "", "HTTP 403: Resource not accessible by integration"))
+        with reads.pass_scope(self.journal, "watch"), reads.item(ticket=7):
+            reads.run(self.command, lambda: calls.append(7) or subprocess.CompletedProcess(
+                self.command, 1, "", "HTTP 403: Resource not accessible by integration"))
         self.assertEqual(calls, [7])
         self.assertEqual(self.rows("read-skip")[0]["code"], "gh_read_failed")
         self.assertFalse(self.rows("read-summary")[0]["stopped"])
@@ -104,7 +103,7 @@ class ReadPolicyTest(unittest.TestCase):
         with reads.pass_scope(self.journal, "dispatch"):
             for ticket in range(10):
                 with reads.item(ticket=ticket):
-                    reads.run(self.command, lambda: calls.append(ticket) or subprocess.CompletedProcess(
+                    reads.run(self.command, lambda ticket=ticket: calls.append(ticket) or subprocess.CompletedProcess(
                         self.command, 1, "", "GraphQL: internal server error"))
         self.assertEqual(calls, [0, 1, 2])
         self.assertEqual(self.rows("read-stop")[0]["reason"], "most_reads_failed")
@@ -113,10 +112,9 @@ class ReadPolicyTest(unittest.TestCase):
 
     def test_dns_outage_is_not_rate_limit_even_when_probe_unavailable(self):
         self.probe.return_value = subprocess.CompletedProcess([], 1, "", "error connecting to api.github.com")
-        with reads.pass_scope(self.journal, "watch"):
-            with reads.item(ticket=7):
-                reads.run(self.command, lambda: subprocess.CompletedProcess(
-                    self.command, 1, "", "error connecting to api.github.com"))
+        with reads.pass_scope(self.journal, "watch"), reads.item(ticket=7):
+            reads.run(self.command, lambda: subprocess.CompletedProcess(
+                self.command, 1, "", "error connecting to api.github.com"))
         self.assertEqual(self.rows("read-skip")[0]["code"], "gh_read_failed")
         self.assertEqual(self.rows("read-skip")[0]["quota"], {"available": False, "returncode": 1})
         self.assertEqual([int(call.args[0]) for call in self.sleep.call_args_list], [5, 15, 30])
@@ -130,7 +128,7 @@ class ReadPolicyTest(unittest.TestCase):
         calls = []
         with reads.pass_scope(self.journal, "dispatch"):
             for command in commands:
-                def fail():
+                def fail(command=command):
                     calls.append(command)
                     raise subprocess.CalledProcessError(1, command, stderr="error connecting to api.github.com")
                 with self.assertRaises(subprocess.CalledProcessError):

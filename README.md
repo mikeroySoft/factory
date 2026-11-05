@@ -353,6 +353,34 @@ issue, worker- or human-owned, parks the stage until it closes. A persistent
 conflict therefore delays the whole upstream batch: a staged prefix is not
 landed on its own, and partial progress needs its own reviewed PR.
 
+### Remote read failures
+
+Inside triage, dispatch and watch passes, failed `gh` reads are classified from
+their exit status and stderr, with a bounded `gh api rate_limit` probe recorded
+as evidence. DNS/connection errors remain `gh_read_failed`, even when that probe
+also fails; they get three retries after 5, 15 and 30 seconds plus up to one second
+of jitter. Other read errors are skipped without a quick retry.
+
+Explicit rate-limit diagnostics (including HTTP 429), or HTTP 403 with an exhausted
+quota, produce `rate_limited`. Permission-denied 403s with quota remaining do not.
+A rate limit stops further reads until the reported reset or Retry-After deadline
+plus five seconds; when no deadline is available, the fallback is 65 seconds.
+The journal persists this deadline across CLI stages and subsequent timer passes,
+so the pass exits rather than sleeping until a distant reset. Already-waiting
+network retries also honor the stop. Three failed reads constituting a majority
+of completed reads stop the pass's remaining reads with `most_reads_failed`.
+
+Each deferred item records `read-skip` with its identity, failure code, exit status,
+redacted stderr tail and quota evidence; `read-summary` journals and prints read,
+failure, skip and retry counts plus the stop reason. `read-retry`, `read-backoff`
+and `read-stop` retain retry and circuit evidence. A read failure never authorizes
+a label edit, claim release or escalation; the affected item is left for the next
+pass while unrelated items continue unless the circuit has stopped reads.
+Mutating commands are never replayed by this policy. A failed initial
+`pin_root` fetch uses the same network retries, journals `gh_read_failed` and
+ends dispatch cleanly before any claim or label change. Passes with skipped reads
+do not record stage success.
+
 ## Commands
 
 | Command | What one invocation does |
