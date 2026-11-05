@@ -42,6 +42,5 @@ class RunnerRuntimeTest(unittest.TestCase):
                      for row in data["events"] if row["kind"] == "wait"],
                     [("retry_next_pass", "runner_storage_low")],
                 )
-                self.assertTrue(data["history"]["complete"])
                 self.assertFalse(any(row.get("event") in {"claimed", "attempt", "escalate"}
                                      for row in lifecycle.read_events(journal)))

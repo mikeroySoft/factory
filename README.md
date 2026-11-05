@@ -904,7 +904,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    1 GiB available and 10,000 free inodes on both the checkout and temporary
    filesystems; filesystems reporting no inode limit are checked for bytes only.
    Low storage leaves the ticket unclaimed and journals `infra` with reason
-   `runner_storage_low`, retrying next pass without an attempt or strike.
+   `runner_storage_low`, retrying next pass without an attempt or strike. Runtime
+   projections preserve this infrastructure outcome and reason for observers.
    Preflight also reaps gate/review scratch roots with a dead recorded owner,
    retaining roots referenced by surviving children (inherited environment,
    working directory or open files on Linux). Unknown ownership/visibility is
