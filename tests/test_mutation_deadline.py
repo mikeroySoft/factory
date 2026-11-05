@@ -132,6 +132,17 @@ class MutationDeadlineTest(unittest.TestCase):
         self.assertIn("[Errno 28] No space left on device", output)
         mutate.assert_not_called()
 
+    def test_runner_storage_low_copytree_aggregate_is_infrastructure(self) -> None:
+        error = mutation.shutil.Error([
+            ("source", "copy", "[Errno 28] No space left on device"),
+        ])
+        with mock.patch.object(mutation.shutil, "copytree", side_effect=error):
+            status, output, mutate, _ = self.run_mutation(SimpleNamespace())
+        self.assertEqual(status, 75, output)
+        self.assertIn("runner_storage_low", output)
+        self.assertNotIn("mutation check broke", output)
+        mutate.assert_not_called()
+
     def test_blocking_ignores_mutants_not_started_before_deadline(self) -> None:
         status, output, mutate, _ = self.run_mutation(
             SimpleNamespace(), clock=[0, 0, 0, 0.1, 0.2, 2, 2],
@@ -205,6 +216,34 @@ class MutationDeadlineTest(unittest.TestCase):
         self.assertIn("incomplete: 1 mutants not started and 0 cut short", output)
         baseline.assert_not_called()
         mutate.assert_not_called()
+
+
+class BaselineStorageTimeoutTest(unittest.TestCase):
+    def test_runner_storage_low_baseline_timeout_retains_bytes_before_deadline_return(self):
+        modules = {
+            "attrs": SimpleNamespace(evolve=None),
+            "cosmic_ray": types.ModuleType("cosmic_ray"),
+            "cosmic_ray.mutating": SimpleNamespace(mutate_and_test=mock.Mock()),
+            "cosmic_ray.work_item": SimpleNamespace(TestOutcome=TestOutcome),
+        }
+        output = io.StringIO()
+        timeout = subprocess.TimeoutExpired(
+            "baseline", 1, output=b"baseline output\n",
+            stderr=b"OSError: [Errno 28] No space left on device\n",
+        )
+        with mock.patch.dict(sys.modules, modules), \
+                mock.patch.object(mutation, "changed_lines", return_value={"factory/example.py": {1}}), \
+                mock.patch.object(mutation, "sample", return_value=([], 0)), \
+                mock.patch.object(mutation.shutil, "copytree"), \
+                mock.patch.object(mutation.subprocess, "run", side_effect=[
+                    subprocess.CompletedProcess([], 0, "", ""), timeout,
+                ]), contextlib.redirect_stdout(output):
+            status = mutation.main(["--blocking"])
+        self.assertEqual(status, 75, output.getvalue())
+        self.assertIn("baseline output", output.getvalue())
+        self.assertIn("[Errno 28] No space left on device", output.getvalue())
+        self.assertNotIn("baseline suite did not finish", output.getvalue())
+        modules["cosmic_ray.mutating"].mutate_and_test.assert_not_called()
 
 
 if __name__ == "__main__":

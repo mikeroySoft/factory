@@ -29,9 +29,12 @@ import sys
 import tempfile
 import time
 import tomllib
+import traceback
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+from factory.gate import STORAGE_EXIT, storage_diagnostic
 
 CAP = 200
 SEED = 197
@@ -145,7 +148,54 @@ def describe(diff: str) -> str:
     return f"`{old[:80]}` -> `{new[:80]}`"
 
 
-def main(argv: list[str] | None = None) -> int:
+def _text(*outputs: str | bytes | None) -> str:
+    return "\n".join(
+        output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
+        for output in outputs if output
+    )
+
+
+def _timeout_stream(captured: str | bytes | None, completed: str | bytes | None) -> str:
+    before, after = _text(captured), _text(completed)
+    return after if before and after.startswith(before) else before + after
+
+
+def run_cosmic_tests(command: str, timeout: float):
+    """Cosmic Ray's test runner, retaining output captured when a process times out."""
+    from cosmic_ray.testing import _kill_process_group
+    from cosmic_ray.work_item import TestOutcome
+
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    try:
+        proc = subprocess.Popen(
+            shlex.split(command), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            _kill_process_group(proc)
+            stdout, stderr = proc.communicate()
+            output = _text(
+                _timeout_stream(exc.stdout, stdout),
+                _timeout_stream(exc.stderr, stderr),
+            )
+            return TestOutcome.KILLED, "timeout" + (f"\n{output}" if output else "")
+        outcome = TestOutcome.SURVIVED if proc.returncode == 0 else TestOutcome.KILLED
+        return outcome, _text(stdout, stderr)
+    except Exception:
+        return TestOutcome.INCOMPETENT, traceback.format_exc()
+
+
+def storage_failure(output: str | bytes | None) -> int:
+    print("runner_storage_low")
+    if text := _text(output):
+        print(text)
+    return STORAGE_EXIT
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--blocking", action="store_true")
     parser.add_argument("--test-module", default=None)
@@ -157,8 +207,11 @@ def main(argv: list[str] | None = None) -> int:
         print("no mutable files")
         return 0
     from attrs import evolve
-    from cosmic_ray.mutating import mutate_and_test
+    import cosmic_ray.mutating as cosmic_mutating
     from cosmic_ray.work_item import TestOutcome
+
+    cosmic_mutating.run_tests = run_cosmic_tests
+    mutate_and_test = cosmic_mutating.mutate_and_test
     deadline = time.monotonic() + max(1, gate_timeout() - 60)
     root = Path.cwd()
     started = time.monotonic()
@@ -182,10 +235,14 @@ def main(argv: list[str] | None = None) -> int:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return baseline_timed_out()
-            subprocess.run(
+            clone = subprocess.run(
                 ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(copy)],
-                check=True, timeout=remaining,
+                capture_output=True, text=True, timeout=remaining,
             )
+            clone_output = _text(clone.stdout, clone.stderr)
+            if storage_diagnostic(clone_output):
+                return storage_failure(clone_output)
+            clone.check_returncode()
             shutil.copytree(root, copy, ignore=COPY_IGNORE, dirs_exist_ok=True)
         print(f"files: {', '.join(lines)}")
         print(f"mutants: {len(mutations)} sampled (seed {SEED}, cap {CAP}), "
@@ -202,8 +259,13 @@ def main(argv: list[str] | None = None) -> int:
             proc = subprocess.run(shlex.split(test_command(copies[0])), stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True, check=False,
                                   timeout=remaining)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            output = _text(exc.stdout, exc.stderr)
+            if storage_diagnostic(output):
+                return storage_failure(output)
             return baseline_timed_out()
+        if storage_diagnostic(proc.stdout):
+            return storage_failure(proc.stdout)
         baseline_finished = time.monotonic()
         if baseline_finished >= deadline:
             return baseline_timed_out()
@@ -231,13 +293,24 @@ def main(argv: list[str] | None = None) -> int:
                 result = mutate_and_test(
                     [local], test_command(copy, str(mutation.module_path)), min(timeout, left),
                 )
-                if left < timeout and result.output == "timeout":
+                if storage_diagnostic(result.output):
+                    results.append((mutation, result))
+                    queue.clear()
+                    return
+                elif left < timeout and (result.output or "").startswith("timeout"):
                     cut.append(mutation)
                 else:
                     results.append((mutation, result))
 
         with ThreadPoolExecutor(workers) as pool:
             list(pool.map(worker, copies))
+
+    storage = next(
+        (_text(result.output) for _, result in results if storage_diagnostic(result.output)),
+        None,
+    )
+    if storage is not None:
+        return storage_failure(storage)
 
     survivors = [(m, r) for m, r in results if r.test_outcome == TestOutcome.SURVIVED]
     hot_survivors = [
@@ -272,6 +345,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.blocking and hot_survivors:
         return 1
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        output = _text(exc.stdout, exc.stderr)
+        if storage_diagnostic(output):
+            return storage_failure(output)
+        raise
+    except OSError:
+        output = traceback.format_exc()
+        if storage_diagnostic(output):
+            return storage_failure(output)
+        raise
 
 
 if __name__ == "__main__":

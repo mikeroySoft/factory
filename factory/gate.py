@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import errno
 import fcntl
 import fnmatch
 import os
@@ -28,6 +29,25 @@ LEAK_RE: re.Pattern[str] | None = None
 GPU_CHECKS: set[str] = set()
 TAIL_LINES = 80
 CHECK_TIMEOUT = 1200  # seconds; overridable via --check-timeout
+STORAGE_EXIT = 75
+STORAGE_RE = re.compile(
+    r"^\s*(?:(?:OSError|IOError):\s*)?\[Errno 28\]"
+    r"|^\s*(?:[\w.-]+:\s*)?ENOSPC(?:\s*:|\s*$)"
+    r"|^\s*(?:runner_storage_low|shutil\.Error:[^\n]*\[Errno 28\].*)$"
+    r"|^\s*(?:[\w./-]+:\s*(?:[^\n]*:\s*)?)?"
+    r"(?:no space left on device|disk quota exceeded)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+class RunnerStorageLow(RuntimeError):
+    """The runner cannot produce gate evidence; retry without product feedback."""
+
+
+def storage_diagnostic(output: str | bytes | None) -> bool:
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    return bool(output and STORAGE_RE.search(output))
 
 
 def configure(c: Config) -> None:
@@ -68,6 +88,10 @@ def timed(
             if proc.returncode < 0:
                 execution.outcome = "unknown"
                 execution.reason = "check_terminated_by_signal"
+        if proc.returncode and storage_diagnostic(out):
+            if execution:
+                execution.outcome, execution.reason = "mechanism_failure", "runner_storage_low"
+            raise RunnerStorageLow(out)
         return subprocess.CompletedProcess(cmd, proc.returncode, out, "")
     except subprocess.TimeoutExpired:
         if execution:
@@ -78,6 +102,10 @@ def timed(
         out, _ = proc.communicate()
         if execution:
             execution.emit("result", command=cmd, returncode=proc.returncode, timed_out=True)
+        if storage_diagnostic(out):
+            if execution:
+                execution.outcome, execution.reason = "mechanism_failure", "runner_storage_low"
+            raise RunnerStorageLow(out)
         return subprocess.CompletedProcess(
             cmd, 124, f"{out}\ncheck timed out after {CHECK_TIMEOUT}s", ""
         )
@@ -90,10 +118,13 @@ def run(cmd: list[str]) -> tuple[bool, str]:
     """Run a command, return (passed, combined output)."""
     proc = timed(cmd)
     execution = lifecycle.current()
-    if execution and proc.returncode != 0 and execution.outcome == "completed":
+    output = proc.stdout + proc.stderr
+    if execution and storage_diagnostic(output):
+        execution.outcome, execution.reason = "mechanism_failure", "runner_storage_low"
+    elif execution and proc.returncode != 0 and execution.outcome == "completed":
         execution.outcome = "product_feedback"
         execution.reason = "configured_check_failed"
-    return proc.returncode == 0, proc.stdout + proc.stderr
+    return proc.returncode == 0, output
 
 def _check_status(name: str, passed: bool, output: str, blocking_mutation: bool) -> str:
     if (
@@ -653,7 +684,18 @@ def main(argv: list[str]) -> int:
         os.environ["TMPDIR"] = tmpdir
         try:
             with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
-                return execute(args, execution)
+                try:
+                    return execute(args, execution)
+                except (RunnerStorageLow, OSError) as exc:
+                    if isinstance(exc, OSError) and exc.errno != errno.ENOSPC:
+                        raise
+                    execution.outcome, execution.reason = "mechanism_failure", "runner_storage_low"
+                    text = f"# Gate report\n\n- runner: INFRA (runner_storage_low)\n\n{exc}\n"
+                    print(text)
+                    report = Path(args.report)
+                    report.parent.mkdir(parents=True, exist_ok=True)
+                    report.write_text(text)
+                    return STORAGE_EXIT
         finally:
             if previous_tmpdir is None:
                 os.environ.pop("TMPDIR", None)
@@ -764,16 +806,32 @@ def execute(args: argparse.Namespace, execution) -> int:
                 cfg.factory / "events.jsonl", "gate-check", lock=GPU_LOCK if gpu_lock else None
             ) as check:
                 check.emit("check", check=name)
-                passed, output = fn()
-                if not passed and check.outcome == "completed":
+                try:
+                    passed, output = fn()
+                except RunnerStorageLow as exc:
+                    passed, output = False, str(exc)
+                except OSError as exc:
+                    if exc.errno != errno.ENOSPC:
+                        raise
+                    passed, output = False, str(exc)
+                storage = storage_diagnostic(output)
+                if storage:
+                    check.outcome, check.reason = "mechanism_failure", "runner_storage_low"
+                elif not passed and check.outcome == "completed":
                     check.outcome = "product_feedback"
                     check.reason = "check_failed"
-                fields = {"failed_tests": failed_test_ids(output)} if not passed else {}
+                fields = {"failed_tests": failed_test_ids(output)} if not passed and not storage else {}
                 if fields.get("failed_tests"):
                     fields["changed_paths"] = changed_paths(args.base)
-                check.emit("result", check=name, passed=passed, **fields)
-                status = _check_status(name, passed, output, args.blocking_mutation)
+                check.emit("result", check=name, passed=None if storage else passed, **fields)
+                status = (
+                    "INFRA (runner_storage_low)" if storage
+                    else _check_status(name, passed, output, args.blocking_mutation)
+                )
                 results.append((name, status, output))
+            if storage:
+                outcome, reason = check.outcome, check.reason
+                break
             if not passed and (outcome == "completed" or check.outcome == "unknown"):
                 outcome, reason = check.outcome, check.reason
     finally:
@@ -789,16 +847,24 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, output in results:
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
         # them only through this report, so keep their output when they pass too.
-        if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
+        if status == "FAIL" or status.startswith("INFRA") or (
+            args.tier == "pr" and status == "PASS" and output.strip()
+        ):
             tail = "\n".join(output.splitlines()[-TAIL_LINES:])
+            if status.startswith("INFRA"):
+                diagnostics = "\n".join(line for line in output.splitlines() if storage_diagnostic(line))
+                tail = f"{diagnostics}\n{tail}"
             lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", tail, "```"]
     report = Path(args.report)
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text("\n".join(lines) + "\n")
 
     failed = [name for name, status, _ in results if status == "FAIL"]
-    summary = "gate FAIL: " + ", ".join(failed) if failed else "gate PASS"
+    storage = reason == "runner_storage_low"
+    summary = "gate INFRA: runner_storage_low" if storage else (
+        "gate FAIL: " + ", ".join(failed) if failed else "gate PASS"
+    )
     print(f"report: {report}")
     print(summary)
     execution.outcome, execution.reason = outcome, reason
-    return 1 if failed else 0
+    return STORAGE_EXIT if storage else 1 if failed else 0

@@ -2033,7 +2033,9 @@ class RunnerStorageDispatchTest(unittest.TestCase):
         ))
         self.commit_config()
         for storage_tier in ("attempt", "pr"):
-            with self.subTest(tier=storage_tier), chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            with self.subTest(tier=storage_tier), chdir(self.repo), mock.patch.dict(
+                os.environ, self.env, clear=True,
+            ):
                 dispatch.configure(config.load(self.repo))
                 real_run = dispatch.run
 

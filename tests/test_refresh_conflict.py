@@ -807,3 +807,37 @@ class TriageExemptionRegateTest(unittest.TestCase):
             self.assertTrue(dispatch.refresh_pr_branch(9, 102, False))
 
         self.assert_triage_flags(gate)
+
+
+class RunnerStorageRefreshTest(unittest.TestCase):
+    setUp = RefreshGateFailureTest.setUp
+    patched = RefreshGateFailureTest.patched
+    events = RefreshGateFailureTest.events
+
+    def test_runner_storage_low_refresh_requeues_without_failure_round(self):
+        with self.patched(), mock.patch.object(
+            dispatch, "run_gate", side_effect=dispatch.RunnerStorageLow("ENOSPC"),
+        ) as gate, mock.patch.object(dispatch, "review") as review:
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+        gate.assert_called_once()
+        review.assert_not_called()
+        self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+        self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertEqual(self.events("escalate"), [])
+        self.assertEqual(self.events("gate-requeue"), [])
+        self.assertEqual(self.events("risk-requeue"), [])
+        self.assertEqual(git(self.origin, "rev-parse", "agent/9"), self.approved_head)
+        self.assertEqual(self.events("infra-requeue")[0]["reason"], "runner_storage_low")
+
+    def test_runner_storage_low_refresh_high_risk_gate_never_becomes_disagreement(self):
+        with self.patched(), mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["fixture"])), \
+                mock.patch.object(
+                    dispatch, "pr_gate_and_review", side_effect=dispatch.RunnerStorageLow("ENOSPC"),
+                ):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+        self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
+        self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertEqual(self.events("escalate"), [])
+        self.assertEqual(self.events("risk-requeue"), [])
+        self.assertEqual(self.events("review-rework"), [])

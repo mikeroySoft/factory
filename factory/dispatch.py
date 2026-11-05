@@ -51,6 +51,7 @@ from factory.config import (
     USAGE_FIELDS,
     Config,
 )
+from factory.gate import STORAGE_EXIT, RunnerStorageLow, storage_diagnostic
 
 cfg: Config
 ROOT: Path
@@ -1980,6 +1981,16 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
         run(["git", "commit", *flags, "-m", f"agent/{n}: {title}"], cwd=wt)
 
 
+def requeue_storage(n: int, error: RunnerStorageLow) -> None:
+    execution = lifecycle.current()
+    if execution is not None:
+        execution.outcome, execution.reason = "mechanism_failure", "runner_storage_low"
+    record("infra-requeue", ticket=n, reason="runner_storage_low", detail=str(error)[-2000:])
+    unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+            assignee_last=True, check=True)
+    log(f"#{n}: runner_storage_low; worktree kept, requeued for the next pass")
+
+
 def run_gate(
     wt: Path, n: int | str, skip: str = "", protected_override: bool = False,
     test_override: bool = False, add_only_override: bool = False,
@@ -2029,8 +2040,13 @@ def run_gate(
     if blocking_mutation:
         cmd.append("--blocking-mutation")
     proc = run(cmd, cwd=wt, check=False, timeout=timeout)
+    if proc.returncode == STORAGE_EXIT or storage_diagnostic(proc.stdout + proc.stderr):
+        detail = report.read_text() if report.exists() else proc.stdout + proc.stderr
+        raise RunnerStorageLow(detail)
     if report.exists():
         text = report.read_text()
+        if re.search(r"(?m)^- [\w-]+: INFRA \(runner_storage_low\)$", text):
+            raise RunnerStorageLow(text)
         ok = proc.returncode == 0
     else:
         output = (proc.stdout + proc.stderr).strip()
@@ -3620,6 +3636,14 @@ def refresh_requeue_context(n: int) -> str:
 
 def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     """Refresh, gate, push, and independently review the resulting immutable head."""
+    try:
+        return _refresh_pr_branch(n, pr, carries_upstream)
+    except RunnerStorageLow as exc:
+        requeue_storage(n, exc)
+        return False
+
+
+def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     target = gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "baseRefName"])
     if target.get("baseRefName") != cfg.main:
         log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
@@ -4923,6 +4947,9 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except RunnerStorageLow as exc:
+            requeue_storage(n, exc)
+            return False
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except FileNotFoundError as exc:
