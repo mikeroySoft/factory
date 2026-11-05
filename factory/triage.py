@@ -788,6 +788,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                             outcome, reason = "unknown", "triage_endpoint_timeout"
                             if ticket_execution:
                                 _report_timeout_streak(number)
+                                ticket_execution.outcome, ticket_execution.reason = outcome, reason
                             print(f"#{number}: model timed out; skipping, tried after untried tickets next pass",
                                   file=sys.stderr)
                             exit_code = 1

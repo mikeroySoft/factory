@@ -70,8 +70,6 @@ flowchart TB
   TRI -->|"triage.apply_decision"| RFA
   TRI -->|"triage.apply_decision"| RFH
   TRI -->|"unparseable twice, label kept: triage.execute"| NT
-  TRI -->|"model read timeout, label kept for next-pass retry: triage.execute"| NT
-  TRI -->|"three consecutive timeouts per issue, once per streak: triage._report_timeout_streak"| ESC
   TRI -->|"triage.apply_decision"| WONT
   NI -->|"question comment: triage.apply_decision"| REPORTER
   REPORTER -.->|"no watcher re-queues needs-info; a human relabels: decisions.apply"| NT
@@ -138,6 +136,8 @@ flowchart TB
   MGR -->|"HUMAN or manager failed, label kept: manage.escalation_pass"| HUMAN
   WONT -->|"a human decides: config.LABELS"| HUMAN
   HUMAN -->|"relabel, comment, close, approve: decisions.apply"| RFA
+  TRI -->|"model read timeout, label kept for next-pass retry: triage.execute"| NT
+  TRI -->|"three consecutive timeouts per issue, once per streak: triage._report_timeout_streak"| ESC
 
   classDef state fill:#e8f5e9,stroke:#2e7d32
   classDef out fill:#fff3e0,stroke:#e65100
