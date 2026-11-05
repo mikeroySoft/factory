@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 
-from factory import config, dispatch, lifecycle, runtime_events, stats
+from factory import config, dispatch, lifecycle, reads, runtime_events, stats
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
@@ -746,11 +746,19 @@ def run_pass(
     cfg: config.Config, dry_run: bool = False, now: datetime | None = None,
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
+    with reads.pass_scope(dispatch.EVENTS, "watch", enabled=not dry_run):
+        return _run_pass(cfg, dry_run, now)
+
+
+def _run_pass(
+    cfg: config.Config, dry_run: bool = False, now: datetime | None = None,
+) -> list[dict]:
     events = lifecycle.read_events(dispatch.EVENTS)
     if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
         try:
-            events.extend(stats.escape_events(stats.escapes()))
+            with reads.item(operation="escape-attribution"):
+                events.extend(stats.escape_events(stats.escapes()))
         except (
             OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, SystemExit,
         ) as exc:
@@ -800,6 +808,8 @@ def run_pass(
     }
     listing = None
     filed = []
+    read_state = reads.current()
+    failed_fingerprints = set()
     for signal in actionable:
         fp = signal["fingerprint"]
         if len(filed) >= MAX_ISSUES:
@@ -813,11 +823,23 @@ def run_pass(
             print(f"[watch] {verb} {fp} in {engine}: {title(signal)}")
             filed.append(signal)
             continue
+        if read_state is not None and read_state.stopped:
+            try:
+                open_filings(engine)  # policy raises before running gh
+            except reads.ReadFailure as exc:
+                reads.skip(exc, fingerprint=fp)
+                failed_fingerprints.add(fp)
+            continue
         issue = None
         if previous is not None:
             repo = previous.get("repo", dispatch.REPO)
-            state = dispatch.gh_json(["issue", "view", str(previous["issue"]), "--repo", repo,
-                                      "--json", "state,closedAt,body"])
+            try:
+                state = dispatch.gh_json(["issue", "view", str(previous["issue"]), "--repo", repo,
+                                          "--json", "state,closedAt,body"])
+            except reads.ReadFailure as exc:
+                reads.skip(exc, fingerprint=fp)
+                failed_fingerprints.add(fp)
+                continue
             if state["state"].upper() == "OPEN":
                 if repo != engine:
                     continue  # a filing from before routing covers it until it closes
@@ -827,7 +849,13 @@ def run_pass(
                     datetime.fromisoformat(signal["latest"]) <= datetime.fromisoformat(state["closedAt"])):
                 continue  # closed by its fix or a human; nothing newer since
         if issue is None:
-            listing = open_filings(engine) if listing is None else listing
+            if listing is None:
+                try:
+                    listing = open_filings(engine)
+                except reads.ReadFailure as exc:
+                    reads.skip(exc, fingerprint=fp)
+                    failed_fingerprints.add(fp)
+                    continue
             issue = listing.get(fp)
         if issue is None:
             url = dispatch.run([
@@ -861,6 +889,8 @@ def run_pass(
             break
         repo = previous.get("repo", dispatch.REPO)
         if previous.get("closed") or (fp, previous["issue"], repo) not in opened:
+            continue
+        if fp in failed_fingerprints:
             continue
         # A signal stays in the journal window long after it stops happening, so judge by the
         # newest evidence, not presence; `latest is None` means it is failing right now.
@@ -903,6 +933,8 @@ def run_pass(
                             closed=True, at=lifecycle._now())
             dispatch.log(f"watch: closed {repo}#{previous['issue']} for {fp}")
             closed += 1
+        except reads.ReadFailure as exc:
+            reads.skip(exc, fingerprint=fp, issue=previous["issue"], repo=repo)
         except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
             dispatch.log(f"watch: could not close {repo}#{previous['issue']} for {fp}: {exc}")
     return filed
@@ -913,8 +945,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
-    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
+    with (
+        nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True),
+        reads.pass_scope(dispatch.EVENTS, "watch", enabled=not args.dry_run) as read_state,
+    ):
         run_pass(dispatch.cfg, args.dry_run)
-    if not args.dry_run:
+    if not args.dry_run and not (read_state and (read_state.skipped or read_state.stopped)):
         lifecycle.record_stage_success(dispatch.EVENTS, "watch")
     return 0

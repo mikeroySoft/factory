@@ -346,6 +346,16 @@ def github_read(endpoint: str, deadline: float, *, text: bool = False) -> tuple[
 
 
 def _github_read(command: list[str], endpoint: str, deadline: float, *, text: bool = False) -> tuple[object, bool]:
+    from factory import reads
+
+    if reads.current() is not None:
+        return reads.run(command, lambda: subprocess.CompletedProcess(
+            command, 0, _github_read_once(command, endpoint, deadline, text=text), "",
+        )).stdout
+    return _github_read_once(command, endpoint, deadline, text=text)
+
+
+def _github_read_once(command: list[str], endpoint: str, deadline: float, *, text: bool = False) -> tuple[object, bool]:
     """Bound both pipes and kill the gh session on clipping or timeout."""
     stop = min(deadline, time.monotonic() + COMMAND_SECONDS)
     if stop <= time.monotonic():
@@ -393,6 +403,10 @@ def _github_read(command: list[str], endpoint: str, deadline: float, *, text: bo
         if not truncated:
             status = proc.wait(timeout=max(0.001, stop - time.monotonic()))
             if status:
+                from factory import reads
+
+                if reads.current() is not None:
+                    raise subprocess.CalledProcessError(status, command, stderr=bytes(diagnostic))
                 match = re.search(rb"HTTP[ /](\d{3})", diagnostic)
                 code = {b"401": "github_authentication", b"403": "github_forbidden", b"404": "github_not_found", b"429": "github_rate_limited"}.get(match[1] if match else b"", "github_unavailable")
                 raise EvidenceError(code, "GitHub source is unavailable; access failures do not establish absence. Raw diagnostics withheld.", endpoint)

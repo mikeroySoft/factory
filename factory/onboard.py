@@ -44,7 +44,11 @@ def sh(
 
 def gh_login(env: dict[str, str]) -> str:
     """`gh api user` login under `env`; empty when gh cannot authenticate."""
-    proc = subprocess.run(["gh", "api", "user", "--jq", ".login"], env=env, capture_output=True, text=True, check=False)
+    from factory import reads
+
+    command = ["gh", "api", "user", "--jq", ".login"]
+    proc = reads.run(command, lambda: subprocess.run(
+        command, env=env, capture_output=True, text=True, check=False), env=env)
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 

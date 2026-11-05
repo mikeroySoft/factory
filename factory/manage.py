@@ -14,7 +14,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import binding, config, dispatch, handoff, lifecycle
+from factory import binding, config, dispatch, handoff, lifecycle, reads
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -680,6 +680,7 @@ def viability_pass(dry_run: bool = False) -> None:
                 (nullcontext() if dry_run else lifecycle.scope(
                     dispatch.EVENTS, "manage", ticket=n, lazy=True
                 )) as execution,
+                reads.item(**identity),
                 (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
             ):
                 if not dry_run:
@@ -871,6 +872,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                 dispatch.EVENTS, "manage", ticket=n, lazy=True
             )) as execution,
             (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
+            reads.item(ticket=n, pr=number),
         ):
             if not dry_run:
                 request = execution.resource("requested", lock_path, scope="repository")
@@ -1034,6 +1036,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                 dispatch.EVENTS, "manage", ticket=n, lazy=True
             )) as execution,
             (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
+            reads.item(ticket=n),
         ):
             if not dry_run:
                 request = execution.resource("requested", lock_path, scope="repository")

@@ -13,7 +13,7 @@ import unicodedata
 from datetime import UTC, datetime
 from urllib.parse import quote
 
-from factory import lifecycle
+from factory import lifecycle, reads
 
 ITEM_LIMIT = 100
 PAGE_LIMIT = 2
@@ -139,6 +139,8 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
             if not isinstance(value, (dict, list)):
                 raise ValueError  # noqa: TRY004 — malformed provider response
             return value
+        except reads.ReadFailure:
+            raise
         except (TimeoutError, subprocess.TimeoutExpired):
             gap(source, 'timeout', 'Feedback detail group reached its 30-second limit.')
         except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError):

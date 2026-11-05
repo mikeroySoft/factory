@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from factory import config, dispatch, lifecycle, manage, promotion, score, stats, triage
+from factory import config, dispatch, lifecycle, manage, promotion, reads, score, stats, triage
 from factory.config import LABEL_CHORE, LESSONS_NAME
 
 MAX_LESSONS = 10
@@ -1417,12 +1417,14 @@ def learn_pass(dry_run: bool = False) -> None:
     and decide open promotions from the recorded scores.
 
     Learn needs a manager (without one, learn only writes an uncommitted file) and no open lessons,
-    curate or revert PR (lessons rewrite the whole file). A failure is journaled, never raised."""
+    curate or revert PR. Non-read failures are journaled; read failures remain pass-item skips."""
     cfg = dispatch.cfg
     try:
         if not dry_run:
             score.run(cfg)
         auto_learn(cfg, dry_run)
+    except reads.ReadFailure:
+        raise
     except Exception as exc:  # noqa: BLE001 - isolates learn failures from the dispatcher pass
         reason = f"{type(exc).__name__}: {exc}"
         dispatch.log(f"learn: failed ({reason})")
@@ -1532,6 +1534,9 @@ def _reconcile_human_merges(
                 "pr", "view", str(n), "--repo", cfg.repo,
                 "--json", "state,mergedBy,headRefName,headRefOid",
             ])
+        except reads.ReadFailure as exc:
+            reads.skip(exc, pr=n, operation="promotion-reconcile")
+            continue
         except Exception as exc:  # noqa: BLE001 - reconciliation never blocks the merge stage
             dispatch.log(f"PR #{n}: could not reconcile promotion state ({type(exc).__name__}: {exc})")
             continue
@@ -1588,6 +1593,8 @@ def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
             continue
         try:
             promote(cfg, pr, events, dry_run)
+        except reads.ReadFailure as exc:
+            reads.skip(exc, pr=n, operation="promotion")
         except Exception as exc:  # noqa: BLE001 - one stuck chore PR never blocks the others
             dispatch.log(f"PR #{n}: {branch} promotion failed ({type(exc).__name__}: {exc})")
 
@@ -1657,6 +1664,8 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
             return
         try:
             _gate_pr_head(cfg, branch, head)
+        except reads.ReadFailure:
+            raise
         except Exception:
             _promotion_blocked(events, n, branch, head, "gate failed", False)
             raise
@@ -1731,6 +1740,8 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
                 "gh", "pr", "merge", str(n), "--repo", cfg.repo,
                 "--squash", "--match-head-commit", head,
             ])
+        except reads.ReadFailure:
+            raise
         except Exception as exc:
             detail = _error_text(exc)
             if "not up to date" in detail.casefold():
@@ -1738,6 +1749,8 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
                 dispatch.log(f"PR #{n}: refreshing {branch} after strict-base merge refusal")
                 try:
                     refresh(cfg, n, branch, head)
+                except reads.ReadFailure:
+                    raise
                 except Exception:
                     _promotion_blocked(events, n, branch, head, reason, False)
                     raise
@@ -1789,6 +1802,9 @@ def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
             if verdict == "revert":
                 fields["branch"] = revert(cfg, opened, reason, candidate)
                 reverts.append(fields["branch"])
+        except reads.ReadFailure as exc:
+            reads.skip(exc, pr=opened["pr"], operation="promotion-decision")
+            continue
         except Exception as exc:  # noqa: BLE001 - e.g. a conflicting revert; never blocks later promotions
             dispatch.log(f"promotion #{opened['pr']}: failed ({type(exc).__name__}: {exc})")
             continue

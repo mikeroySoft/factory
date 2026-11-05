@@ -204,7 +204,10 @@ def github(*, endpoint: str | None = None, query: str | None = None,
         for key, value in (variables or {}).items():
             if value is not None:
                 cmd += ["-F" if type(value) is int else "-f", f"{key}={value}"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+    from factory import reads
+
+    proc = reads.run(cmd, lambda: subprocess.run(
+        cmd, capture_output=True, text=True, check=False, timeout=timeout))
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or "gh api graphql failed")
     value = json.loads(proc.stdout)

@@ -114,8 +114,8 @@ flowchart TB
   CI -->|"pass, up to date, no human CHANGES_REQUESTED: dispatch.merge_pass_locked"| MERGE
   MERGE -->|"dispatch.cleanup_after_merge"| MERGED
   TRI -->|"bug filed by factory watch (journaled issue, fingerprint, runtime title), no model, fixed investigation brief: triage.triage_issue"| RFA
-  RFA -->|"unclaimed watch issue, newest evidence 24 hours old, issue closed completed: watch.run_pass"| HUMAN
-  NT -->|"untriaged watch issue, newest evidence 24 hours old, issue closed completed: watch.run_pass"| HUMAN
+  RFA -->|"unclaimed watch issue, newest evidence 24 hours old, issue closed completed: watch._run_pass"| HUMAN
+  NT -->|"untriaged watch issue, newest evidence 24 hours old, issue closed completed: watch._run_pass"| HUMAN
 
   %% Recovery
   ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
@@ -204,7 +204,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `manage.apply` | `ready-for-human`, `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority and requeues; RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |
 | `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, `ready-for-human`, or `wontfix-proposal` |
-| `watch.run_pass` | — | `*` | New `bug` + `needs-triage` issue per runtime-failure fingerprint (`watch.LABELS`) |
+| `watch._run_pass` | — | `*` | New `bug` + `needs-triage` issue per runtime-failure fingerprint (`watch.LABELS`); `watch.run_pass` supplies read-failure isolation |
 
 ## Escalate reasons
 

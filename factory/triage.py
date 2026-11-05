@@ -21,7 +21,7 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from factory import config, lifecycle, onboard
+from factory import config, lifecycle, onboard, reads
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -166,6 +166,7 @@ def run_probe(c: Config, *, now: float | None = None) -> int:
         return 1
 
 
+
 def login() -> str:
     global LOGIN
     if LOGIN is None:
@@ -273,32 +274,39 @@ def deterministic_needs_info(body: str, comments: str) -> str | None:
 
 def gh(*args: str, execution=None) -> str:
     command = ["gh", *args, "--repo", cfg.repo]
-    if execution:
-        with subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=execution.env()
-        ) as proc:
-            try:
-                execution.child(proc.pid)
-                out, err = proc.communicate()
-            except BaseException:
-                proc.kill()
-                proc.wait()
-                raise
-            finally:
-                if proc.poll() is not None:
-                    execution.child_done(proc.pid)
-    else:
-        proc = subprocess.run(command, capture_output=True, text=True, check=False)
-        out, err = proc.stdout, proc.stderr
-    if execution:
-        execution.emit("result", command="gh", returncode=proc.returncode)
+    env = {}
+
+    def operation() -> subprocess.CompletedProcess:
+        if execution:
+            child_env = execution.env()
+            env.clear()
+            env.update(child_env)
+            with subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=child_env
+            ) as child:
+                try:
+                    execution.child(child.pid)
+                    out, err = child.communicate()
+                except BaseException:
+                    child.kill()
+                    child.wait()
+                    raise
+                finally:
+                    if child.poll() is not None:
+                        execution.child_done(child.pid)
+            proc = subprocess.CompletedProcess(command, child.returncode, out, err)
+            execution.emit("result", command="gh", returncode=proc.returncode)
+            return proc
+        return subprocess.run(command, capture_output=True, text=True, check=False)
+
+    proc = reads.run(command, operation, env=env if execution else None)
     if proc.returncode != 0:
         if execution:
             execution.outcome = "unknown"
             execution.reason = "github_command_failed"
-        print(f"gh {' '.join(args)} failed: {err.strip()}", file=sys.stderr)
+        print(f"gh {' '.join(args)} failed: {proc.stderr.strip()}", file=sys.stderr)
         raise SystemExit(1)
-    return out
+    return proc.stdout
 
 
 def system_prompt() -> str:
@@ -707,6 +715,14 @@ def main(argv: list[str]) -> int:
 
 
 def execute(args: argparse.Namespace, execution) -> int:
+    with reads.pass_scope(
+        cfg.factory / "events.jsonl", "triage", enabled=not (args.replay or args.dry_run),
+    ) as state:
+        result = _execute(args, execution)
+    return 1 if state and (state.skipped or state.stopped) else result
+
+
+def _execute(args: argparse.Namespace, execution) -> int:
     replay = bool(args.replay)
     from factory.plan import is_initiative  # plan -> evidence -> dashboard: import lazily
 
@@ -746,7 +762,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                         lifecycle.scope(
                             cfg.factory / "events.jsonl", "triage-ticket", ticket=number, lock=cfg.lock
                         ) if execution else nullcontext()
-                    ) as ticket_execution:
+                    ) as ticket_execution, reads.item(ticket=number):
                         issue = fetch_issue(number, execution=ticket_execution)
                         if is_initiative(issue):
                             print(f"#{number}: initiative record; triage refused (never promoted to {LABEL_AGENT})")
