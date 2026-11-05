@@ -226,6 +226,62 @@ class TriageTimeoutTest(unittest.TestCase):
         self.assertEqual(cli.main(["triage"]), 1)
         self.assertEqual(len(self.rows("escalate")), 2)
 
+    def test_triage_timeout_does_not_spend_manager_round(self):
+        for _ in range(3):
+            self.assertEqual(cli.main(["triage"]), 1)
+        self.timeouts.clear()
+        self.assertEqual(cli.main(["triage"]), 0)
+        self.cfg.manager = ["manager", "{prompt}"]
+        self.cfg.manager_rounds = 1
+        dispatch.escalate(1, "worker gate failed", None, code="gate_failed")
+        issue = json.loads(self.gh("issue", "view", "1"))
+        escalation = self.rows("escalate")[-1]
+        self.assertIsNone(handoff.terminal(
+            self.cfg, lifecycle.read_events(dispatch.EVENTS), escalation,
+        ), "a recovered ticket must retain its manager recovery")
+        manager_calls = []
+
+        def run(command, **kwargs):
+            if command[0] == "gh":
+                return self.run_command(command, **kwargs)
+            manager_calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "DECISION: RETRY\nTry again.", "")
+
+        with patch.object(dispatch, "gh_json", return_value=[issue]), \
+                patch.object(dispatch, "initiative_kind", return_value=None), \
+                patch.object(manage, "human_activity", return_value=False), \
+                patch.object(dispatch, "run", side_effect=run):
+            manage.escalation_pass()
+        self.assertEqual(len(manager_calls), 1)
+        self.assertEqual([(row["round"], row["decision"]) for row in self.rows("manage")],
+                         [(1, "RETRY")])
+        self.assertIn(LABEL_AGENT, self.labels[1])
+        self.assertNotIn(LABEL_HUMAN, self.labels[1])
+
+    def test_triage_timeout_retries_failed_human_gate_delivery(self):
+        for _ in range(2):
+            self.assertEqual(cli.main(["triage"]), 1)
+        self.labels[2] = {LABEL_TRIAGE}
+        self.comments[2] = []
+
+        def fail_edit(command, **kwargs):
+            if command[:4] == ["gh", "issue", "edit", "1"]:
+                return subprocess.CompletedProcess(command, 1, "", "GitHub unavailable")
+            return self.run_command(command, **kwargs)
+
+        with patch.object(dispatch, "run", side_effect=fail_edit):
+            self.assertEqual(cli.main(["triage"]), 1)
+        self.assertEqual(self.labels, {1: {LABEL_TRIAGE}, 2: {LABEL_AGENT}})
+        self.assertEqual(self.comments[1], [], "failed delivery must not post an escalation")
+        self.expire_lifecycle_history()
+        self.assertEqual(cli.main(["triage"]), 1)
+        self.assertEqual(self.labels[1], {LABEL_TRIAGE, LABEL_HUMAN})
+        self.assertEqual(len(self.comments[1]), 1)
+        self.expire_lifecycle_history()
+        for _ in range(3):
+            self.assertEqual(cli.main(["triage"]), 1)
+        self.assertEqual(len(self.comments[1]), 1, "successful delivery must not repeat")
+
 
 if __name__ == "__main__":
     unittest.main()
