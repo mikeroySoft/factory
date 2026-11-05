@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from factory import cli, config, dispatch, lifecycle, triage
+from factory import handoff, manage
 from factory.config import LABEL_AGENT, LABEL_HUMAN, LABEL_TRIAGE
 
 
@@ -162,6 +163,69 @@ class TriageTimeoutTest(unittest.TestCase):
                  and row.get("ticket") == 1]
         self.assertEqual([row["reason"] for row in exits], ["triage_endpoint_timeout"] * 7)
         self.assertEqual(self.labels[1], {LABEL_TRIAGE, LABEL_HUMAN})
+
+    def test_triage_timeout_never_reaches_manager(self):
+        for _ in range(3):
+            self.assertEqual(cli.main(["triage"]), 1)
+        self.cfg.manager = ["manager", "{prompt}"]
+        self.cfg.manager_rounds = 4
+        issue = json.loads(self.gh("issue", "view", "1"))
+        manager_calls = []
+
+        def run(command, **kwargs):
+            if command[0] == "gh":
+                return self.run_command(command, **kwargs)
+            manager_calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "DECISION: RETRY\nTry again.", "")
+
+        with patch.object(dispatch, "gh_json", return_value=[issue]), \
+                patch.object(dispatch, "initiative_kind", return_value=None), \
+                patch.object(manage, "human_activity", return_value=False), \
+                patch.object(dispatch, "run", side_effect=run):
+            manage.escalation_pass()
+        self.assertEqual(manager_calls, [], "a timeout must reach a human, never a manager")
+        self.assertEqual(self.labels[1], {LABEL_TRIAGE, LABEL_HUMAN})
+        self.assertIsNotNone(handoff.terminal(
+            self.cfg, lifecycle.read_events(dispatch.EVENTS), self.rows("escalate")[-1],
+        ))
+
+    def expire_lifecycle_history(self):
+        with patch.object(lifecycle, "MAX_BYTES", 1024), \
+                patch.object(lifecycle, "RETENTION", 1):
+            for _ in range(3):
+                dispatch.record("rotation_churn", padding="x" * 2048)
+        self.assertFalse(any(
+            row.get("event") == "lifecycle" and row.get("kind") == "exit"
+            and row.get("ticket") == 1
+            for row in lifecycle.read_events(dispatch.EVENTS)
+        ))
+
+    def test_triage_timeout_retention_does_not_repeat_escalation(self):
+        for _ in range(3):
+            self.assertEqual(cli.main(["triage"]), 1)
+        self.expire_lifecycle_history()
+        for _ in range(3):
+            self.assertEqual(cli.main(["triage"]), 1)
+        self.assertEqual(len(self.rows("escalate")), 1)
+        self.assertEqual(len(self.comments[1]), 1)
+        self.assertEqual(self.labels[1], {LABEL_TRIAGE, LABEL_HUMAN})
+
+    def test_triage_timeout_retention_preserves_count_and_reset(self):
+        for _ in range(2):
+            self.assertEqual(cli.main(["triage"]), 1)
+        self.expire_lifecycle_history()
+        self.assertEqual(cli.main(["triage"]), 1)
+        self.assertEqual(len(self.rows("escalate")), 1)
+        self.timeouts.clear()
+        self.assertEqual(cli.main(["triage"]), 0)
+        self.expire_lifecycle_history()
+        self.labels[1] = {LABEL_TRIAGE}
+        self.timeouts = {1}
+        for _ in range(2):
+            self.assertEqual(cli.main(["triage"]), 1)
+        self.assertEqual(len(self.rows("escalate")), 1)
+        self.assertEqual(cli.main(["triage"]), 1)
+        self.assertEqual(len(self.rows("escalate")), 2)
 
 
 if __name__ == "__main__":
