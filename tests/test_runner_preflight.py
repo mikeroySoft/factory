@@ -109,7 +109,7 @@ class RunnerPreflightTest(unittest.TestCase):
         for field in ("f_bavail", "f_favail"):
             for forced in (False, True):
                 with self.subTest(field=field, forced=forced):
-                    values = dict(f_bavail=10**12, f_frsize=4096, f_favail=10**9, f_files=10**9)
+                    values = {"f_bavail": 10**12, "f_frsize": 4096, "f_favail": 10**9, "f_files": 10**9}
                     values[field] = 0
                     with patch("os.statvfs", return_value=SimpleNamespace(**values)), \
                             patch.object(dispatch, "gh_json") as query, \
@@ -177,7 +177,7 @@ class RunnerPreflightTest(unittest.TestCase):
             [sys.executable, "-c", owner], cwd=self.base, timeout=20,
             env=os.environ | {"TMPDIR": str(self.scratch),
                               "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+            capture_output=True, text=True, check=True,
         )
         pid = int(proc.stdout)
         self.addCleanup(self.kill_child, pid)
@@ -191,3 +191,24 @@ class RunnerPreflightTest(unittest.TestCase):
         self.until(lambda: lifecycle._process_state(lifecycle._identity(pid)) != "alive")
         dispatch._sweep_stale_factory_tempdirs()
         self.assertFalse(root.exists())
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux process snapshot churn")
+    def test_unrelated_process_churn_does_not_retain_unused_temp_root(self):
+        from factory import runner
+
+        children = []
+        self.addCleanup(lambda: [(child.kill(), child.wait(timeout=10)) for child in children])
+        iterdir = Path.iterdir
+
+        def churn(path):
+            if path == Path("/proc"):
+                children.append(subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(60)"],
+                    cwd=self.base, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                ))
+            return iterdir(path)
+
+        with patch.object(Path, "iterdir", churn):
+            with runner.temporary_directory("factory-review-") as root:
+                (Path(root) / "result").write_text("finished")
+        self.assertFalse(Path(root).exists(), "unrelated processes do not use this scratch root")
