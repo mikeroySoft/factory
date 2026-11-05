@@ -6,10 +6,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from subprocess import CalledProcessError
 from typing import ClassVar
 from unittest import mock
 
-from factory import config, dispatch, lifecycle, manage
+from factory import config, dispatch, handoff, lifecycle, manage
 from tests import test_frontier as frontier_suite
 from tests import test_refresh_conflict as refresh_suite
 from tests.test_settings import isolated_xdg, make_repo, snapshot, write_host
@@ -139,9 +140,10 @@ class WorkerHealthTest(unittest.TestCase):
     def test_probe_journals_only_transitions_and_the_manager_cannot_pick_an_unavailable_worker(self) -> None:
         self.ticket(droid=[sys.executable, "-c", ""])
         fix = 'DECISION: FIX\n{"worker": "droid", "guidance": "retry"}'
-        self.assertEqual(manage.parse(fix, manage.selectable_workers(self.cfg), approval=True)[0], "FIX")
+        self.cfg.worker_probe = {"droid": PROBE_PASSES}
         dispatch.worker_health_pass()
-        self.assertEqual(self.events("worker-health"), [])  # no probe configured: nothing runs or journals
+        self.assertEqual(manage.parse(fix, manage.selectable_workers(self.cfg), approval=True)[0], "FIX")
+        self.assertEqual(self.events("worker-health"), [])  # healthy from the start: nothing to journal
         self.cfg.worker_probe = {"droid": PROBE_FAILS}
         for _ in range(2):
             dispatch.worker_health_pass()
@@ -179,6 +181,88 @@ class WorkerHealthTest(unittest.TestCase):
         self.assertEqual(self.events("worker-infra"), [])
         self.assertTrue(all(call.args[0][0] != "factory-test-missing-worker" for call in self.launches.call_args_list))
 
+    def test_a_launch_auth_failure_is_not_cleared_by_an_unchanged_host_without_a_probe(self) -> None:
+        self.ticket("droid", droid=AUTH_FAILED)
+        self.process()  # the login fails at launch; the attempt runs on `default`
+        for _ in range(2):
+            dispatch.configure(self.cfg)  # every pass is a new process that starts from the journal
+            dispatch.worker_health_pass()
+            self.assertIn("droid", dispatch.UNAVAILABLE_WORKERS)
+            self.assertNotIn("droid", manage.selectable_workers(self.cfg))
+        self.assertEqual([row["available"] for row in self.events("worker-health")], [False])
+        self.cfg.worker_probe = {"droid": PROBE_PASSES}  # only an auth check shows the login is back
+        dispatch.configure(self.cfg)
+        dispatch.worker_health_pass()
+        up = self.events("worker-health")[-1]
+        self.assertEqual((up["available"], up["source"], up["check"]), (True, "probe", "probe"))
+        self.assertIn("droid", manage.selectable_workers(self.cfg))
+
+    def test_the_manager_may_choose_only_default_or_a_profile_its_probe_verified(self) -> None:
+        self.ticket(droid=PROBE_PASSES, chore=PROBE_PASSES)
+        self.cfg.worker_probe = {"droid": PROBE_PASSES}
+        dispatch.worker_health_pass()
+        self.assertEqual(set(manage.selectable_workers(self.cfg)), {"default", "droid"})
+        route = 'DECISION: ROUTE\n{"add":["chore"],"guidance":"mechanical edits"}'
+        self.assertEqual(manage.parse(route, manage.selectable_workers(self.cfg))[0], "HUMAN")
+
+    def test_an_executable_back_on_path_is_launchable_but_not_auth_verified(self) -> None:
+        self.ticket(droid=["factory-test-missing-worker", "exec"])
+        dispatch.worker_health_pass()
+        self.cfg.workers["droid"] = PROBE_PASSES
+        dispatch.configure(self.cfg)
+        dispatch.worker_health_pass()
+        up = self.events("worker-health")[-1]
+        self.assertEqual((up["available"], up["check"]), (True, "executable"))
+        self.assertNotIn("droid", dispatch.UNAVAILABLE_WORKERS)
+        self.assertNotIn("droid", manage.selectable_workers(self.cfg))
+
+    def test_a_wrapper_on_path_does_not_mask_a_missing_profile_executable(self) -> None:
+        self.ticket("droid", droid=["factory-test-missing-worker", "exec"])
+        self.cfg.worker_wrap = ["env"]
+        dispatch.worker_health_pass()
+        [down] = self.events("worker-health")
+        self.assertEqual((down["worker"], down["available"], down["fallback"]), ("droid", False, "default"))
+        self.assertIn("factory-test-missing-worker", down["reason"])
+        self.process()
+        [attempt] = self.events("attempt")
+        self.assertEqual((attempt["worker"], attempt["fallback_from"], attempt["gate"]), ("default", "droid", "PASS"))
+        self.assertTrue(all(call.args[0][1] != "factory-test-missing-worker" for call in self.launches.call_args_list))
+
+    def test_a_missing_wrapper_makes_every_profile_unavailable(self) -> None:
+        self.ticket()
+        self.cfg.worker_wrap = ["factory-test-missing-wrapper"]
+        dispatch.worker_health_pass()
+        [down] = self.events("worker-health")
+        self.assertEqual((down["worker"], down["available"], down["fallback"]), ("default", False, None))
+        self.assertIn("factory-test-missing-wrapper", down["reason"])
+
+    def test_a_launcher_whose_worker_is_missing_is_infrastructure_and_falls_back(self) -> None:
+        # The launched program starts, but the worker it runs is gone: POSIX exit 127.
+        self.ticket("droid", droid=["sh", "-c", "exec factory-test-missing-worker"])
+        self.process()
+        [infra] = self.events("worker-infra")
+        self.assertEqual((infra["worker"], infra["reason"], infra["worker_exit"]), ("droid", "executable_missing", 127))
+        [attempt] = self.events("attempt")
+        self.assertEqual((attempt["worker"], attempt["fallback_from"], attempt["gate"]), ("default", "droid", "PASS"))
+        self.assertEqual(self.events("escalate"), [])
+
+    def test_a_profile_executable_gone_at_launch_falls_back_without_a_strike(self) -> None:
+        self.ticket("droid", droid=[sys.executable, "-c", "pass"])
+        real = dispatch.run_worker
+
+        def launch(argv, *args, **kwargs):
+            if argv[-2:] == ["-c", "pass"]:
+                raise FileNotFoundError(2, "No such file or directory", argv[0])
+            return real(argv, *args, **kwargs)
+
+        with mock.patch.object(dispatch, "run_worker", side_effect=launch):
+            self.process()
+        [infra] = self.events("worker-infra")
+        self.assertEqual((infra["worker"], infra["reason"]), ("droid", "executable_missing"))
+        [attempt] = self.events("attempt")
+        self.assertEqual((attempt["worker"], attempt["fallback_from"], attempt["gate"]), ("default", "droid", "PASS"))
+        self.assertEqual(self.events("escalate"), [])
+
     def test_probe_output_is_bounded_and_its_last_line_is_the_reason(self) -> None:
         noisy = [sys.executable, "-c", "import sys; sys.stderr.write('x' * 300000 + '\\nlogin expired\\n'); sys.exit(3)"]
         self.ticket(droid=[sys.executable, "-c", ""])
@@ -203,9 +287,14 @@ class ManagerFixInfraTest(unittest.TestCase):
         return frontier_suite.FrontierTest.gh_json(self, args)
 
     def fix_decided(self) -> None:
-        self.cfg.workers = {"default": ["omp"], "droid": ["droid", "exec"]}
+        self.cfg.workers = {"default": PROBE_PASSES, "droid": PROBE_PASSES}
+        self.cfg.worker_probe = {"droid": PROBE_PASSES}
+        dispatch.worker_health_pass()
         self.manager_output = "DECISION: FIX\n" + json.dumps(self.FIX)
         self.down = dispatch.WorkerUnavailable("worker `droid` is unavailable: auth_failed: Authentication failed")
+
+    def handoffs(self) -> list[list[str]]:
+        return [cmd for cmd in self.mutations if cmd[1:3] == ["issue", "comment"] and "Factory handoff" in cmd[-1]]
 
     def manage_rows(self) -> list[tuple]:
         return [(e.get("head"), e["decision"], e["round"]) for e in self.events() if e.get("event") == "manage"]
@@ -240,12 +329,44 @@ class ManagerFixInfraTest(unittest.TestCase):
         dispatch.record("claimed", ticket=79)
         dispatch.escalate(79, "gate failed", None, code="gate_failed")
         dispatch.configure(self.cfg)
+        dispatch.worker_health_pass()
         self.enterContext(mock.patch.object(manage, "human_activity", return_value=False))
         with mock.patch.object(manage, "apply", side_effect=[self.down, None]) as apply:
             manage.escalation_pass()
             self.assert_resumes_once_the_worker_is_healthy(manage.escalation_pass, apply)
         self.assertEqual(self.manage_rows(), [(None, "FIX", 1)])
         self.assertEqual(len(self.escalations()), 1)
+
+    def test_a_pending_fix_is_handed_to_a_human_only_once_its_resume_really_fails(self) -> None:
+        self.fix_decided()
+        dispatch.record("claimed", ticket=79)
+        dispatch.escalate(79, "gate failed", None, code="gate_failed")
+        dispatch.configure(self.cfg)
+        dispatch.worker_health_pass()
+        self.enterContext(mock.patch.object(manage, "human_activity", return_value=False))
+        route = {"status": "routed", "owner": "alice", "candidates": [], "source": "s", "reason": "r", "provenance": []}
+        self.enterContext(mock.patch.object(handoff, "observe", return_value={"route": route, "pr_url": None}))
+        gone = CalledProcessError(1, ["gh", "issue", "edit"], stderr="HTTP 502")
+        with mock.patch.object(manage, "apply", side_effect=[self.down, gone]):
+            manage.escalation_pass()  # FIX decided; no healthy worker: it waits
+            handoff.handoff_pass()
+            dispatch.configure(self.cfg)
+            dispatch.UNAVAILABLE_WORKERS.update(droid="auth_failed", default="auth_failed")
+            manage.escalation_pass()  # the resume finds no healthy worker either: still recoverable
+            handoff.handoff_pass()
+            self.assertEqual(self.handoffs(), [])
+            waits = [row["wait"]["reason"] for row in lifecycle.read_events(dispatch.EVENTS)
+                     if row.get("event") == "lifecycle" and row.get("kind") == "wait" and row.get("stage") == "manage"]
+            self.assertEqual(waits, ["worker_unavailable", "worker_unavailable"])
+            self.assertFalse(any(row.get("event") == "lifecycle" and row.get("stage") == "manage"
+                                 and row.get("outcome") == "mechanism_failure"
+                                 for row in lifecycle.read_events(dispatch.EVENTS)))
+            dispatch.configure(self.cfg)  # the host was fixed, but the resumed FIX fails on GitHub
+            manage.escalation_pass()
+            handoff.handoff_pass()
+        [published] = self.handoffs()
+        self.assertIn("@alice", published[-1])
+        self.assertIn("could not be applied", published[-1])
 
 
 if __name__ == "__main__":
