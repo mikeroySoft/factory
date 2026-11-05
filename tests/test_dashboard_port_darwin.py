@@ -28,6 +28,26 @@ class DashboardExclusivePortTest(unittest.TestCase):
         self.assertFalse(ok, detail)
         self.assertIn("unknown process", detail)
 
+    def test_check_allows_rebind_after_an_accepted_connection(self) -> None:
+        with socket.socket() as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(("127.0.0.1", 0))
+            server.listen()
+            port = server.getsockname()[1]
+            with socket.create_connection(("127.0.0.1", port)) as client:
+                connection, _ = server.accept()
+                # The server closes first, leaving its port in TIME_WAIT.
+                connection.close()
+                self.assertEqual(client.recv(1), b"")
+        # The real dashboard can rebind; doctor must not report a false conflict.
+        with socket.socket() as replacement:
+            replacement.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            replacement.bind(("127.0.0.1", port))
+            replacement.listen()
+        with patch.object(onboard, "sh", return_value=subprocess.CompletedProcess([], 0, "", "")):
+            ok, detail = onboard._dashboard_port_check(self.cfg, "127.0.0.1", port)
+        self.assertTrue(ok, detail)
+
     def test_check_refuses_a_dual_stack_wildcard_holder(self) -> None:
         with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as holder:
             holder.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
