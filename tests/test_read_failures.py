@@ -160,5 +160,37 @@ class ReadPolicyTest(unittest.TestCase):
         self.assertEqual(self.rows("claimed") + self.rows("escalate"), [])
 
 
+    def test_rest_pr_checks_use_core_quota_for_403_reset(self):
+        self.probe.return_value.stdout = json.dumps({"resources": {
+            "core": {"remaining": 0, "reset": 700},
+            "graphql": {"remaining": 4999, "reset": 1000},
+        }})
+        command = ["gh", "pr", "checks", "7"]
+        with reads.pass_scope(self.journal, "dispatch"), reads.item(ticket=7):
+            reads.run(command, lambda: subprocess.CompletedProcess(
+                command, 1, "", "HTTP 403: rate quota unavailable"))
+        self.assertEqual(self.rows("read-skip")[0]["code"], "rate_limited")
+        self.assertEqual(self.rows("read-backoff")[0]["until"], 705)
+
+    def test_rate_limit_in_another_item_stops_pending_network_retry(self):
+        calls = []
+
+        def network():
+            calls.append(7)
+            return subprocess.CompletedProcess(
+                self.command, 1, "", "error connecting to api.github.com")
+
+        def limited_during_backoff(delay):
+            with reads.item(ticket=8):
+                reads.run(self.command, lambda: subprocess.CompletedProcess(
+                    self.command, 1, "", "GraphQL: API rate limit exceeded"))
+
+        self.sleep.side_effect = limited_during_backoff
+        with reads.pass_scope(self.journal, "dispatch"), reads.item(ticket=7):
+            reads.run(self.command, network)
+        self.assertEqual(calls, [7])
+        self.assertEqual([row["code"] for row in self.rows("read-skip")],
+                         ["rate_limited", "rate_limited"])
+
 if __name__ == "__main__":
     unittest.main()
