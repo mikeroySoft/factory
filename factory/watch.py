@@ -935,7 +935,7 @@ def _run_pass(
             closed += 1
         except reads.ReadFailure as exc:
             reads.skip(exc, fingerprint=fp, issue=previous["issue"], repo=repo)
-        except (KeyError, TypeError, ValueError) as exc:
+        except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
             dispatch.log(f"watch: could not close {repo}#{previous['issue']} for {fp}: {exc}")
     return filed
 

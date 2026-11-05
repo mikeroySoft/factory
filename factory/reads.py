@@ -188,8 +188,39 @@ def _classify(command, result, env):
     return ReadFailure("rate_limited" if limited else "gh_read_failed", result, quota=quota, until=until)
 
 
+def _expected_response(command, result, text, check):
+    """Keep documented absence and CI verdicts in their existing caller's hands."""
+    if command[:3] == ["gh", "pr", "view"] and "no pull requests found" in text.lower():
+        return True
+    if command[:3] == ["gh", "release", "view"] and "release not found" in text.lower():
+        return True
+    if command[:2] == ["gh", "api"] and re.search(r"\bHTTP 404\b", text, re.IGNORECASE):
+        endpoints = [arg for arg in command[2:] if arg.startswith("repos/")]
+        return any(
+            "/compare/" in endpoint or (
+                not check and re.search(
+                    r"/(?:dependencies/blocked_by|actions/jobs/\d+|actions/runs/\d+|check-runs/\d+/annotations)$",
+                    endpoint,
+                )
+            ) for endpoint in endpoints
+        )
+    if command[:3] == ["gh", "pr", "checks"] and not check and result.returncode in {1, 8}:
+        if text.lower().startswith("no checks reported"):
+            return True
+        if not text.strip():
+            try:
+                rows = json.loads(result.stdout)
+                return isinstance(rows, list) and bool(rows) and all(
+                    isinstance(row, dict) and row.get("bucket") in {"pass", "fail", "pending", "skipping", "cancel"}
+                    for row in rows
+                )
+            except (ValueError, TypeError):
+                pass
+    return False
+
+
 def run(command, operation, check=True, env=None):
-    """Run a remote read within a pass. Optional non-transient responses retain caller handling."""
+    """Run a remote read within a pass; only recognized absence/verdicts bypass failure accounting."""
     state = current()
     if state is None or not is_read(command):
         return operation()
@@ -211,8 +242,10 @@ def run(command, operation, check=True, env=None):
         if isinstance(text, bytes):
             text = text.decode(errors="replace")
         transient = bool(_NETWORK.search(text))
-        if not check and not transient and not (_RATE.search(text) or _FORBIDDEN.search(text)):
-            return result  # e.g. a missing optional API or failing CI checks, not a transport failure
+        if _expected_response(command, result, text, check):
+            if check:
+                result.check_returncode()
+            return result
         if failure is None or failure.result.stderr != result.stderr:
             failure = _classify(command, result, env)
         else:
