@@ -363,8 +363,12 @@ def _record_usage(execution, usage: dict | None) -> None:
     )
 
 
-class EndpointTimeout(SystemExit):
-    """The model timed out on one request; the endpoint is up, so the pass can go on."""
+class EndpointUnavailable(SystemExit):
+    """The completion server remained unavailable after bounded serial retries."""
+
+
+class EndpointTimeout(EndpointUnavailable):
+    """The completion request timed out while waiting for the model response."""
 
 
 def call_llm(messages: list[dict], execution=None) -> str:
@@ -383,38 +387,52 @@ def call_llm(messages: list[dict], execution=None) -> str:
         data=payload,
         headers={"Content-Type": "application/json"},
     )
-    try:
-        state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
-        lock_path = state_home / "factory" / "triage-requests" / hashlib.sha256(LLM_URL.encode()).hexdigest()
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        # Shared across repos and processes, including callers outside a triage pass.
-        with lock_path.open("a+b") as endpoint_lock:
-            fcntl.flock(endpoint_lock, fcntl.LOCK_EX)
-            with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
-                body = json.load(resp)
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        timed_out = isinstance(exc, TimeoutError) or (
-            isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
-        )
-        if execution:
-            execution.outcome = "unknown" if timed_out else "mechanism_failure"
-            execution.reason = "triage_endpoint_timeout" if timed_out else "triage_endpoint_unavailable"
-            execution.emit("result", timed_out=timed_out, timeout_seconds=cfg.triage_timeout)
-        if timed_out:
-            where = "connecting to" if isinstance(exc, urllib.error.URLError) else "at"
-            print(
-                f"local model request timed out after {cfg.triage_timeout}s {where} {LLM_URL}\n"
-                "The model server may be busy or the request too large; raise [triage].timeout if this persists.",
-                file=sys.stderr,
+    for attempt in range(1, 4):
+        try:
+            state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+            lock_path = state_home / "factory" / "triage-requests" / hashlib.sha256(LLM_URL.encode()).hexdigest()
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            # Shared across repos and processes, including callers outside a triage pass.
+            with lock_path.open("a+b") as endpoint_lock:
+                fcntl.flock(endpoint_lock, fcntl.LOCK_EX)
+                with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
+                    body = json.load(resp)
+            break
+        except (urllib.error.URLError, OSError) as exc:
+            cause = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            timed_out = isinstance(cause, TimeoutError)
+            unavailable = (
+                isinstance(cause, (ConnectionRefusedError, TimeoutError))
+                or isinstance(exc, urllib.error.HTTPError) and 500 <= exc.code < 600
             )
-        else:
-            print(
-                f"cannot reach local model at {LLM_URL}: {exc}\n"
-                "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
-                file=sys.stderr,
-            )
-        # URLError(TimeoutError) is a connect timeout (endpoint unreachable); a bare one is a slow model.
-        raise (EndpointTimeout if isinstance(exc, TimeoutError) else SystemExit)(2) from exc
+            if isinstance(exc, urllib.error.HTTPError):
+                exc.close()
+            if unavailable and attempt < 3:
+                time.sleep(min(2 ** (attempt - 1), cfg.triage_retry_cap))
+                continue
+            if execution:
+                execution.outcome = "not_admitted" if unavailable else "mechanism_failure"
+                execution.reason = "triage_endpoint_unavailable"
+                execution.emit(
+                    "try_later" if unavailable else "result",
+                    endpoint=LLM_URL, attempts=attempt,
+                    timed_out=timed_out, timeout_seconds=cfg.triage_timeout,
+                )
+            if timed_out:
+                where = "connecting to" if isinstance(exc, urllib.error.URLError) else "at"
+                print(
+                    f"local model request timed out after {cfg.triage_timeout}s {where} {LLM_URL}\n"
+                    "The model server may be busy or the request too large; raise [triage].timeout if this persists.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"cannot reach local model at {LLM_URL}: {exc}\n"
+                    "Is the model server running? Set [triage].url in .factory.toml if the endpoint differs.",
+                    file=sys.stderr,
+                )
+            error = EndpointTimeout if isinstance(exc, TimeoutError) else EndpointUnavailable
+            raise (error if unavailable else SystemExit)(2) from exc
     usage = _usage_fields(body)
     _record_usage(execution, usage)
     cost = None
@@ -769,12 +787,10 @@ def execute(args: argparse.Namespace, execution) -> int:
                             continue
                         try:
                             decision = triage_issue(issue, execution=ticket_execution)
-                        except EndpointTimeout:
-                            outcome, reason = "unknown", "triage_endpoint_timeout"
-                            print(f"#{number}: model timed out; skipping, tried after untried tickets next pass",
-                                  file=sys.stderr)
-                            exit_code = 1
-                            continue
+                        except EndpointUnavailable:
+                            outcome, reason = "not_admitted", "triage_endpoint_unavailable"
+                            print(f"#{number}: model unavailable; try later, stopping batch", file=sys.stderr)
+                            break
                         if decision is None:
                             if ticket_execution:
                                 ticket_execution.outcome = "unknown"
