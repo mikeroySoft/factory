@@ -111,6 +111,27 @@ class DarwinLifecycleTest(unittest.TestCase):
                 self.assertEqual(runtime_events._Observation([]).lock_state(lock), ("held", None))
         self.assertEqual(runtime_events._Observation([]).lock_state(lock), ("free", None))
 
+    def test_passive_projection_never_acquires_flocks(self):
+        path = Path(self.tmp.name) / "gpu.lock"
+        path.touch()
+        execution = lifecycle.Execution(self.path, "gate")
+        execution.emit("enter")
+        execution.resource("acquired", path, scope="host")
+        for output, status, state in (
+            (f"p{os.getpid()}\nf3\nlW\n", 0, "held"),
+            (f"p{os.getpid()}\nf3\nl \n", 0, "unknown"),
+            ("", 1, "unknown"),
+        ):
+            result = subprocess.CompletedProcess([], status, output, "")
+            def probe(args, **kwargs):
+                return result if args[0].endswith("lsof") else self.probe(args, **kwargs)
+
+            with self.subTest(state=state, status=status), \
+                    patch("subprocess.run", side_effect=probe), \
+                    patch("fcntl.flock", side_effect=AssertionError("passive reader acquired flock")):
+                projected = runtime_events.project(self.path, [(path, "host")])
+                self.assertEqual(projected["resources"][0]["state"], state)
+
     def test_resource_owner_correlates_with_passive_reader(self):
         path = Path(self.tmp.name) / "gpu.lock"
         with path.open("w") as handle:
