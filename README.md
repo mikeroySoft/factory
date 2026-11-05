@@ -1110,6 +1110,24 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    out (or the head came from a manager FIX) the ticket escalates with `pr checks failed`. Otherwise
    the reviewer runs the diff itself and gets the gate report and issue snapshot
    inline, including every comment (the triage brief, approved scope changes).
+   Native-host acceptance belongs in the worker handoff's `## Native-host proof`
+   section (`Head SHA: <tested commit>`, results and any archive/tree digest), or
+   in a worktree-relative proof file cited by that handoff (for example
+   `Proof: .factory/macos-proof.txt`, containing
+   `Verified source revision: <tested commit>`). Before each ticket review,
+   including manager FIX and refresh reviews, the dispatcher posts the evidence
+   to the PR and supplies the same text inline as untrusted worker evidence.
+   Recorded proof SHAs are checked against the gated head; stale/conflicting
+   proof shows both revisions, while absent/unbound/unsafe evidence is explicitly
+   not supplied as current-head proof. Re-run native proof after a refresh.
+   Reads are bounded to 256 KiB, reject symlinks and worktree escapes, and use
+   existing credential redaction/withholding rules; excerpts are capped at 4,000
+   characters and comments at 20,000, with explicit truncation notices and
+   archive/tree digests retained when present. Successful publication is
+   journaled by head and content hash to avoid duplicate comments on same-head
+   retries or second reviews. Failed publication is stated in the packet and
+   retried at the next review; it introduces no human gate. A reviewer never
+   needs to open the gitignored worktree proof file.
    Every finding cites `path:line`; a required fix also cites an acceptance
    criterion, a documented rule with its source, or a concrete correctness/security
    defect with its trigger and impact — preferences and hypothetical extensibility

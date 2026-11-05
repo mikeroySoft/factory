@@ -1,5 +1,6 @@
 """Native-host evidence must reach the PR and isolated reviewer, not just the worktree."""
 import json
+import sys
 import unittest
 
 import test_dispatch_lifecycle as fixtures
@@ -26,6 +27,8 @@ class NativeProofTest(unittest.TestCase):
             's["reviews"] =',
             1,
         ))
+        self.local.write_config(reviewer=[sys.executable, str(self.local.reviewer), "{prompt}"])
+        self.local.commit_config()
 
     def test_native_proof_file_is_posted_before_review_and_stales_on_new_head(self):
         self.local.worker.write_text(fixtures.WORKER + '''
@@ -50,6 +53,8 @@ Path(".factory/handoff-7.md").write_text("Native-host proof: `.factory/macos-pro
         new_head = self.local.git("-C", ".factory/wt-7", "rev-parse", "HEAD").stdout.strip()
         self.assertNotEqual(head, new_head)
         posted = "\n".join(first["comments"])
+        self.assertIn("Current-head proof:", posted)
+        self.assertNotIn("Current-head proof:", second["prompt"])
         for expected in (head, "a" * 64, "Ultron native import and publication: PASS"):
             self.assertIn(expected, posted)
             self.assertIn(expected, first["prompt"])
@@ -58,3 +63,75 @@ Path(".factory/handoff-7.md").write_text("Native-host proof: `.factory/macos-pro
         self.assertIn(head, second["prompt"])
         self.assertIn(new_head, second["prompt"])
         self.assertEqual(self.local.git("-C", ".factory/wt-7", "check-ignore", ".factory/macos-proof.txt").stdout.strip(), ".factory/macos-proof.txt")
+
+    def test_native_proof_inline_section_is_bounded_and_secret_redacted(self):
+        secret = "ghp_" + "x" * 25
+        self.local.worker.write_text(fixtures.WORKER + '''
+import subprocess
+subprocess.run(["git", "add", "change.txt"], check=True)
+subprocess.run(["git", "commit", "-m", "worker change"], check=True)
+head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+Path(".factory").mkdir(exist_ok=True)
+Path(".factory/handoff-7.md").write_text(
+    "## Native-host proof\\nHead SHA: " + head + "\\nNative launchd smoke: PASS\\n"
+    + "ghp_" + "x" * 25 + "\\n" + "z" * 6000 + "\\nTree digest SHA-256: " + "b" * 64
+    + "\\n## Still unverified\\nNot part of native evidence\\n")
+''')
+        self.local.cli("dispatch", "--ticket", "7")
+        state = json.loads(self.local.state.read_text())
+        for packet in state["packets"]:
+            comment = packet["comments"][-1]
+            self.assertIn("Current-head proof:", comment)
+            self.assertIn("Native launchd smoke: PASS", comment)
+            self.assertIn("b" * 64, comment)
+            self.assertIn("[REDACTED]", comment)
+            self.assertIn("truncated", comment)
+            self.assertNotIn(secret, comment)
+            self.assertNotIn(secret, packet["prompt"])
+            self.assertNotIn("Not part of native evidence", comment)
+            self.assertLessEqual(len(comment), 20_000)
+            self.assertIn(comment.strip(), packet["prompt"])
+
+    def test_native_proof_missing_unsafe_and_unbound_are_explicit(self):
+        outside = self.local.base / "private.txt"
+        outside.write_text("Private file must not be published")
+        self.local.worker.write_text(fixtures.WORKER + f'''
+Path(".factory").mkdir(exist_ok=True)
+link = Path(".factory/unsafe.txt")
+if not link.exists():
+    link.symlink_to({str(outside)!r})
+Path(".factory/unbound.txt").write_text("Native unbound result: PASS")
+Path(".factory/handoff-7.md").write_text(
+    "Proof: `.factory/missing.txt`\\nProof: `.factory/unsafe.txt`\\nProof: `.factory/unbound.txt`\\n")
+''')
+        self.local.cli("dispatch", "--ticket", "7")
+        state = json.loads(self.local.state.read_text())
+        for packet in state["packets"]:
+            comment = packet["comments"][-1]
+            self.assertIn("Proof not supplied", comment)
+            self.assertIn("missing, unreadable, unsafe or oversized", comment)
+            self.assertIn("no usable recorded head SHA", comment)
+            self.assertNotIn("Current-head proof:", comment)
+            self.assertNotIn(outside.read_text(), comment)
+            self.assertNotIn(outside.read_text(), packet["prompt"])
+
+    def test_native_proof_same_head_retry_posts_once(self):
+        self.local.worker.write_text('''
+import subprocess
+from pathlib import Path
+if not Path("change.txt").exists():
+    Path("change.txt").write_text("change\\n")
+    subprocess.run(["git", "add", "change.txt"], check=True)
+    subprocess.run(["git", "commit", "-m", "worker change"], check=True)
+head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+Path(".factory").mkdir(exist_ok=True)
+Path(".factory/handoff-7.md").write_text(
+    "## Native-host proof\\nHead SHA: " + head + "\\nUltron same-head check: PASS\\n")
+''')
+        self.local.cli("dispatch", "--ticket", "7")
+        state = json.loads(self.local.state.read_text())
+        proof_comments = [body for body in state["pr_comments"] if "## Native-host proof" in body]
+        self.assertEqual(len(proof_comments), 1)
+        for packet in state["packets"]:
+            self.assertIn("Ultron same-head check: PASS", packet["prompt"])
+            self.assertIn(proof_comments[0], packet["comments"])
