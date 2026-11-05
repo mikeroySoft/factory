@@ -270,4 +270,4 @@ event. `{}` is a runtime value.
 | `manage.apply` | ``FIX worktree head {} is not the PR head {} plus the worker's own commits; worktree kept at {}`` | manager FIX → escalate (`refresh_head`) |
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
 | `manage.escalation_pass` | ``manager_failed`` | manager decision → human |
-| `triage._report_timeout_streak` | ``triage model timed out on {} consecutive attempts; check the model endpoint. The issue remains needs-triage and will be retried next pass`` | triage → escalate once after three consecutive model read timeouts; `needs-triage` kept for retry |
+| `triage._report_timeout_streak` | ``triage model timed out on {} consecutive attempts; check the model endpoint. The issue remains needs-triage and will be retried next pass`` | triage → human after three consecutive model read timeouts; failed label delivery retries until success, once per durable streak; `needs-triage` kept; no manager round spent |

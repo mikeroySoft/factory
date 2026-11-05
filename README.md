@@ -893,9 +893,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    attempts on one issue add `ready-for-human` through the normal escalation
    packet/comment path, without removing `needs-triage`. Timeout escalations go
    directly to a human, never the manager: manager recovery cannot bypass triage.
-   The same uninterrupted streak escalates only once; a non-timeout model outcome
-   resets it. Durable `triage_timeout_streak` records preserve the count and reset
-   across lifecycle journal retention. Dry-run and replay never record or escalate failures.
+   Timeout escalations do not spend a manager round; worker failures after triage
+   recovery still get normal manager recovery. The same uninterrupted streak
+   escalates only once after the human-gate label edit succeeds; a failed edit
+   is retried on subsequent timeout passes without posting a duplicate comment.
+   A non-timeout model outcome resets the streak. Durable `triage_timeout_streak`
+   records preserve the count, delivery status, and reset across lifecycle journal
+   retention. Dry-run and replay never record or escalate failures.
    With `[install].dispatch_env` set, triage refuses to post (exit 1, reason
    `identity_mismatch`) unless `gh` authenticates as the login that environment
    selects, so a shell or unit without the dispatcher's `GH_CONFIG_DIR` cannot

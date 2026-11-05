@@ -512,22 +512,24 @@ def _report_timeout_streak(number: int, *, timed_out: bool = True) -> None:
     from factory import dispatch
 
     previous = next((
-        row["failures"] for row in reversed(lifecycle.read_events(cfg.factory / "events.jsonl"))
+        row for row in reversed(lifecycle.read_events(cfg.factory / "events.jsonl"))
         if row.get("event") == "triage_timeout_streak" and row.get("ticket") == number
-    ), 0)
-    failures = previous + 1 if timed_out else 0
+    ), {})
+    failures = previous.get("failures", 0) + 1 if timed_out else 0
+    escalated = timed_out and previous.get("escalated", False)
     dispatch.configure(cfg)
     # Ordinary record rows survive retention; closed lifecycle executions do not.
-    dispatch.record("triage_timeout_streak", ticket=number, failures=failures)
-    if failures != TIMEOUT_FAILURES:
+    dispatch.record("triage_timeout_streak", ticket=number, failures=failures, escalated=escalated)
+    if failures < TIMEOUT_FAILURES or escalated:
         return
-    dispatch.escalate(
+    if dispatch.escalate(
         number,
         f"triage model timed out on {failures} consecutive attempts; check the model endpoint. "
         "The issue remains needs-triage and will be retried next pass",
         None,
         code="triage_endpoint_timeout",
-    )
+    ):
+        dispatch.record("triage_timeout_streak", ticket=number, failures=failures, escalated=True)
 
 
 def triage_issue(issue: dict, execution=None) -> dict | None:
