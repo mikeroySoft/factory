@@ -761,6 +761,29 @@ os.readlink = no_proc_readlink
         self.assertEqual(runtime["liveness"], "not_applicable")
         self.assertEqual(runtime["resources"], [])
 
+    def test_non_linux_running_lock_supports_successful_observe(self):
+        import fcntl
+
+        self.without_proc_identity("darwin")
+        lock = self.journal.parent / "locks/merge.lock"
+        with lock.open("r") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            execution = lifecycle.Execution(self.journal, "dispatch", ticket=7, lock=lock)
+            execution.emit("enter")
+            observed = self.invoke("observe")
+        self.assertNotEqual(observed["coverage"]["status"], "partial")
+        self.assertFalse(any(error["source"] in {"proc", "proc/locks"}
+                             for error in observed["errors"]))
+        runtime = next(json.loads(row["text"]) for row in observed["sources"]
+                       if row["label"] == "Local runtime observation")
+        self.assertEqual(runtime["liveness"], "not_applicable")
+        running = next(row for row in runtime["executions"]
+                       if row["execution_id"] == execution.execution_id)
+        self.assertEqual(running["state"], "unknown")
+        self.assertIsNone(running["ended_at"])
+        self.assertEqual(running["evidence"]["locks"],
+                         [{**lifecycle._lock(lock), "state": "unknown"}])
+
     def test_unavailable_github_is_unknown_attention_not_empty_success(self):
         self.responses[PREFIX + "issues"] = {"exit": 1, "stderr": "PRIVATE_TOKEN denied"}
         data = self.invoke("observe", code=1)
