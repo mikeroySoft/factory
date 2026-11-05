@@ -460,6 +460,15 @@ def second_reviewer_problem(cfg: config.Config, which) -> str | None:
     return None
 
 
+def _systemd_timer_status(unit: str) -> str:
+    if sys.platform != "linux":
+        return f"not applicable (systemd unavailable on {sys.platform})"
+    try:
+        return sh(["systemctl", "--user", "is-active", unit]).stdout.strip()
+    except OSError as exc:
+        return f"unavailable: {exc}"
+
+
 def doctor(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory doctor", description="Check tools, auth, remotes, config drift, and the triage model."
@@ -653,11 +662,11 @@ def doctor(argv: list[str]) -> int:
         f"{cfg.llm_url} ({detail})" if alive else f"{cfg.llm_url} ({detail}); `factory triage` will not run",
     )
 
-    timer = sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).stdout.strip()
+    timer = _systemd_timer_status(f"{cfg.unit}.timer")
     report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
     if cfg.triage_service:
         probe_timer = f"{cfg.unit}-triage-probe.timer"
-        active = sh(["systemctl", "--user", "is-active", probe_timer]).stdout.strip()
+        active = _systemd_timer_status(probe_timer)
         report(
             True if active == "active" else None,
             "triage liveness probe",

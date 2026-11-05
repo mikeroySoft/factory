@@ -124,6 +124,37 @@ class SystemdProbesTest(unittest.TestCase):
         with patch.object(subprocess, "run", side_effect=FileNotFoundError("journalctl")):
             self.assertEqual(dashboard.sh(["journalctl", "--user"]), "")
 
+    def test_linux_missing_systemctl_reports_unavailable(self):
+        original = self.runner
+
+        def missing(argv, **kwargs):
+            if argv[0] == "systemctl":
+                raise FileNotFoundError(2, "No such file or directory", "systemctl")
+            return original(argv, **kwargs)
+
+        with patch.object(self, "runner", side_effect=missing):
+            data = self.doctor("linux")
+        rows = {row["label"]: row for row in data["rows"]}
+        for label in (f"systemd timer {self.cfg.unit}.timer", "triage liveness probe"):
+            self.assertEqual(rows[label]["status"], "WARN")
+            self.assertIn("unavailable:", rows[label]["detail"])
+
+    def test_linux_restart_keeps_success_failure_and_missing_binary_behavior(self):
+        for result, expected, message in (
+            (subprocess.CompletedProcess([], 0, "", ""), True, ""),
+            (subprocess.CompletedProcess([], 1, "", "permission denied"), False, "permission denied"),
+            (FileNotFoundError("systemctl"), False, "systemctl"),
+        ):
+            with self.subTest(result=result), patch.object(sys, "platform", "linux"), \
+                    patch.object(subprocess, "run") as run, redirect_stderr(io.StringIO()) as errors:
+                if isinstance(result, OSError):
+                    run.side_effect = result
+                else:
+                    run.return_value = result
+                self.assertIs(triage._restart_service(self.cfg.triage_service), expected)
+                self.assertEqual(run.call_args.args[0], ["systemctl", "--user", "restart", "model.service"])
+                self.assertIn(message, errors.getvalue())
+
     def test_linux_timer_and_journal_output_is_unchanged(self):
         data = self.doctor("linux")
         rows = {row["label"]: row for row in data["rows"]}
