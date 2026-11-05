@@ -1,6 +1,7 @@
 """#662: one resolved worker spec for launch, and unavailable or auth-failed workers are host defects."""
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -8,9 +9,11 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, manage
+from tests import test_frontier as frontier_suite
 from tests import test_refresh_conflict as refresh_suite
 from tests.test_settings import isolated_xdg, make_repo, snapshot, write_host
 
+H = frontier_suite.H
 AUTH_FAILED = [sys.executable, "-c", "print('Error during droid execution: Authentication failed'); raise SystemExit(1)"]
 PROBE_FAILS = [sys.executable, "-c", "import sys; print('not logged in', file=sys.stderr); sys.exit(2)"]
 PROBE_PASSES = [sys.executable, "-c", ""]
@@ -49,6 +52,22 @@ class WorkerSpecTest(unittest.TestCase):
             write_host(xdg, '[defaults.workers]\ndroid = { command = ["droid"], probe = [] }\n')
             with self.assertRaisesRegex(config.ConfigError, "probe"):
                 config.load(repo)
+
+    def test_spec_model_and_source_follow_the_effective_launched_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, isolated_xdg(Path(directory)) as xdg:
+            repo = make_repo(Path(directory), '[workers]\ndefault = { probe = ["true"] }\n'
+                                              'scoped = ["worker", "--model", "{repo}", "{prompt}"]\n')
+            write_host(xdg, '[defaults.workers]\ndefault = { command = ["host-worker", "--model", "host/model", "{prompt}"] }\n')
+            cfg = config.load(repo)
+            scoped = cfg.worker_spec("scoped", Path("/p"), Path("/w"))
+            self.assertEqual(scoped.argv, ["worker", "--model", "acme/widgets", "/p"])
+            self.assertEqual((scoped.model, cfg.worker_model("scoped")), ("acme/widgets", "acme/widgets"))
+            # The repository only adds a probe; the launched command and its model are the host's.
+            default = cfg.worker_spec("default", Path("/p"), Path("/w"))
+            self.assertEqual((default.argv[0], default.model, default.source), ("host-worker", "host/model", "Host default"))
+            self.assertEqual(cfg.worker_probe, {"default": ["true"]})
+            shown = {w["label"]: (w["model"], w["source"]) for w in snapshot(repo)["agents"]["workers"]}
+            self.assertEqual(shown, {"default": ("host/model", "Host default"), "scoped": ("acme/widgets", "Repository")})
 
 
 class WorkerHealthTest(unittest.TestCase):
@@ -144,6 +163,88 @@ class WorkerHealthTest(unittest.TestCase):
         self.assertEqual([(a["worker"], a["worker_exit"]) for a in self.events("attempt")], [("droid", 1)])
         self.assertNotIn("droid", dispatch.UNAVAILABLE_WORKERS)
         self.assertTrue(all(row.get("event") != "worker-health" for row in lifecycle.read_events(dispatch.EVENTS)))
+
+    def test_every_profile_is_health_checked_before_the_pass_even_without_a_probe(self) -> None:
+        self.ticket("droid", droid=["factory-test-missing-worker", "exec"])
+        dispatch.worker_health_pass()
+        [down] = self.events("worker-health")
+        self.assertEqual((down["worker"], down["available"], down["fallback"], down["source"]),
+                         ("droid", False, "default", "probe"))
+        self.assertIn("factory-test-missing-worker", down["reason"])
+        self.assertNotIn("droid", manage.selectable_workers(self.cfg))
+        self.process()
+        [attempt] = self.events("attempt")
+        self.assertEqual((attempt["worker"], attempt["fallback_from"], attempt["gate"]), ("default", "droid", "PASS"))
+        self.assertEqual(self.events("worker-infra"), [])
+        self.assertTrue(all(call.args[0][0] != "factory-test-missing-worker" for call in self.launches.call_args_list))
+
+    def test_probe_output_is_bounded_and_its_last_line_is_the_reason(self) -> None:
+        noisy = [sys.executable, "-c", "import sys; sys.stderr.write('x' * 300000 + '\\nlogin expired\\n'); sys.exit(3)"]
+        self.ticket(droid=[sys.executable, "-c", ""])
+        self.cfg.worker_probe = {"droid": noisy}
+        dispatch.worker_health_pass()
+        [down] = self.events("worker-health")
+        self.assertEqual(down["reason"], "probe exited 3: login expired")
+
+
+class ManagerFixInfraTest(unittest.TestCase):
+    """The frontier fixture of `test_frontier`, borrowed without re-running its tests."""
+
+    setUp = frontier_suite.FrontierTest.setUp
+    read, fake_run = frontier_suite.FrontierTest.read, frontier_suite.FrontierTest.fake_run
+    events, escalations = frontier_suite.FrontierTest.events, frontier_suite.FrontierTest.escalations
+    approved_head, quiet_provider = frontier_suite.FrontierTest.approved_head, frontier_suite.FrontierTest.quiet_provider
+    FIX = {"worker": "droid", "guidance": "tighten the boundary"}
+
+    def gh_json(self, args):
+        if args[:2] == ["issue", "list"]:
+            return [{"number": 79, "title": "Ticket", "body": "Scope", "labels": [{"name": "ready-for-human"}]}]
+        return frontier_suite.FrontierTest.gh_json(self, args)
+
+    def fix_decided(self) -> None:
+        self.cfg.workers = {"default": ["omp"], "droid": ["droid", "exec"]}
+        self.manager_output = "DECISION: FIX\n" + json.dumps(self.FIX)
+        self.down = dispatch.WorkerUnavailable("worker `droid` is unavailable: auth_failed: Authentication failed")
+
+    def manage_rows(self) -> list[tuple]:
+        return [(e.get("head"), e["decision"], e["round"]) for e in self.events() if e.get("event") == "manage"]
+
+    def assert_resumes_once_the_worker_is_healthy(self, run_pass, apply) -> None:
+        self.assertEqual(apply.call_count, 1)
+        dispatch.configure(self.cfg)
+        dispatch.UNAVAILABLE_WORKERS.update(droid="auth_failed", default="auth_failed")
+        run_pass()  # still no healthy worker: the FIX waits; nothing is re-applied
+        self.assertEqual(apply.call_count, 1)
+        dispatch.configure(self.cfg)  # the host was fixed
+        run_pass()
+        self.assertEqual(apply.call_count, 2)
+        self.assertEqual(apply.call_args_list[1].args[2:5], ("FIX", apply.call_args_list[0].args[3], self.FIX))
+        run_pass()  # a resumed FIX is taken up once
+        self.assertEqual(apply.call_count, 2)
+
+    def test_frontier_fix_that_found_no_healthy_worker_resumes_without_another_manager_round(self) -> None:
+        self.fix_decided()
+        self.cfg.manager_review = "all"
+        self.quiet_provider()
+        self.approved_head(H)
+        with mock.patch.object(manage, "apply", side_effect=[self.down, None]) as apply:
+            manage.frontier_pass()
+            self.assert_resumes_once_the_worker_is_healthy(manage.frontier_pass, apply)
+        self.assertEqual(self.manage_rows(), [(H, "FIX", 1)])
+        self.assertEqual(len([cmd for cmd in self.mutations if cmd[1:3] == ["pr", "comment"]]), 1)
+        self.assertEqual(self.escalations(), [])
+
+    def test_escalation_fix_that_found_no_healthy_worker_resumes_without_another_manager_round(self) -> None:
+        self.fix_decided()
+        dispatch.record("claimed", ticket=79)
+        dispatch.escalate(79, "gate failed", None, code="gate_failed")
+        dispatch.configure(self.cfg)
+        self.enterContext(mock.patch.object(manage, "human_activity", return_value=False))
+        with mock.patch.object(manage, "apply", side_effect=[self.down, None]) as apply:
+            manage.escalation_pass()
+            self.assert_resumes_once_the_worker_is_healthy(manage.escalation_pass, apply)
+        self.assertEqual(self.manage_rows(), [(None, "FIX", 1)])
+        self.assertEqual(len(self.escalations()), 1)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,37 @@ class FrontierGenerationTest(unittest.TestCase):
         self.assertEqual([e["code"] for e in self.escalations()], ["gate_failed", "pr_feedback"])
         self.assertIn("3 unresolved feedback item(s)", self.escalations()[-1]["reason"])
 
+    def test_a_source_unavailable_at_the_watermark_is_judged_by_the_release_time(self) -> None:
+        self.escalated_then_released()
+        self.timeline = [{"event": "labeled", "label": {"name": "ready-for-agent"}, "created_at": "2026-09-11T00:00:00Z"}]
+        self.provider.fail = "threads"
+        manage.frontier_pass()
+        [mark] = [e for e in self.events() if e.get("event") == "feedback-watermark"]
+        self.assertEqual(len(mark["pairs"]), 2)
+        self.provider.fail = None
+        for _ in range(2):  # the unchanged thread predates the owner's release
+            manage.frontier_pass()
+            self.assertEqual([e["code"] for e in self.escalations()], ["gate_failed"])
+        # A thread comment written after the release is new feedback: it still escalates.
+        self.provider.comments.append({**self.provider.comments[0], "id": "RC_2", "body": "One more",
+                                       "updatedAt": "2026-09-12T00:00:00Z"})
+        manage.frontier_pass()
+        self.assertEqual([e["code"] for e in self.escalations()], ["gate_failed", "pr_feedback"])
+        [delivered] = [e for e in self.events() if e.get("event") == "feedback-delivered"]
+        self.assertEqual([pair[0].rsplit(":", 1)[1] for pair in delivered["pairs"]], ["RC_2"])
+
+    def test_a_source_unavailable_at_the_watermark_without_a_known_release_waits(self) -> None:
+        self.escalated_then_released()
+        self.provider.fail = "threads"
+        manage.frontier_pass()
+        self.provider.fail = None
+        manage.frontier_pass()
+        self.assertEqual([e["code"] for e in self.escalations()], ["gate_failed"])
+        # Once taken, the late source's watermark is final: an edit after it is a new revision.
+        self.provider.comments[0]["body"] = "Edited after the watermark"
+        manage.frontier_pass()
+        self.assertEqual([e["code"] for e in self.escalations()], ["gate_failed", "pr_feedback"])
+
     def manager_said_human_on(self, head: str) -> None:
         self.cfg.manager_review = "all"
         self.quiet_provider()
@@ -202,6 +233,134 @@ class RefreshGenerationTest(unittest.TestCase):
         self.assertEqual((claimed["generation"], claimed["base"]), (1, main))
         self.assertEqual(self.events("escalate")[1:], [])
         self.assertFalse((dispatch.FACTORY / "wt-9" / "leftover.txt").exists())
+
+    def fresh_requeue(self, worker: list[str]) -> str:
+        """Ticket 9 escalated, then released by its owner with fresh intent; returns the old remote head."""
+        self.cfg.workers["default"] = worker
+        self.github.assignees = []
+        self.github.pr_labels = set()
+        for row in ({"event": "escalate", "ticket": 9, "code": "gate_failed", "reason": "x", "round": 1},
+                    {"event": "human-decision", "ticket": 9, "status": "success", "actor": "alice",
+                     "action": {"name": "requeue_agent", "args": {"number": 9, "intent": "fresh"}}}):
+            lifecycle.append(dispatch.EVENTS, row)
+        return self.github.head()
+
+    def committing_worker(self) -> list[str]:
+        worker = self.tmp / "append_worker.py"
+        worker.write_text(
+            "import subprocess\nfrom pathlib import Path\n"
+            "path = Path('work.txt')\n"
+            "path.write_text((path.read_text() if path.exists() else '') + 'x\\n')\n"
+            "subprocess.run(['git', 'add', 'work.txt'], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'work'], check=True)\n"
+        )
+        return [sys.executable, str(worker)]
+
+    def process(self) -> bool | None:
+        with self.patched(), mock.patch.object(dispatch, "run_gate", return_value=(True, "gate ok")):
+            [ready] = dispatch.frontier()
+            return dispatch.process_ticket(ready, 30, False)
+
+    def concurrent_push(self) -> str:
+        """Someone else's commit lands on `origin/agent/9` on top of its current head."""
+        head = self.github.head()
+        tree = refresh_suite.git(self.origin, "rev-parse", f"{head}^{{tree}}")
+        pushed = refresh_suite.git(self.origin, "commit-tree", tree, "-p", head, "-m", "owner commit")
+        refresh_suite.git(self.origin, "update-ref", "refs/heads/agent/9", pushed)
+        return pushed
+
+    def evidence(self, sha: str) -> list[str]:
+        return refresh_suite.git(self.root, "for-each-ref", "--contains", sha, "--format=%(refname)",
+                                 "refs/factory-evidence/").split()
+
+    def test_a_remote_commit_pushed_after_the_fresh_restart_preserved_the_branch_is_never_overwritten(self) -> None:
+        old_head = self.fresh_requeue(self.committing_worker())
+        record, pushed = dispatch.record, []
+
+        def push_once_claimed(kind: str, **fields) -> dict:
+            if kind == "claimed" and not pushed:  # after the restart fetched and preserved the branch
+                pushed.append(self.concurrent_push())
+            return record(kind, **fields)
+
+        with mock.patch.object(dispatch, "record", side_effect=push_once_claimed):
+            self.process()
+        self.assertEqual(self.github.head(), pushed[0])
+        self.assertEqual([e["code"] for e in self.events("escalate")][1:], ["lease_refused"])
+        self.assertTrue(self.evidence(old_head))
+
+    def test_replaying_an_interrupted_fresh_restart_keeps_the_heads_it_first_preserved(self) -> None:
+        old_head = self.fresh_requeue(self.committing_worker())
+        wt = dispatch.ensure_worktree(9)
+        (wt / "unpublished.txt").write_text("local only\n")
+        refresh_suite.git(wt, "add", "unpublished.txt")
+        refresh_suite.git(wt, "commit", "-qm", "unpublished")
+        unpublished = refresh_suite.git(wt, "rev-parse", "HEAD")
+        journal = dispatch.EVENTS.read_text()
+        dispatch.restart_worktree(9, 1)
+        dispatch.EVENTS.write_text(journal)  # interrupted before anything after the restart was journaled
+        dispatch.restart_worktree(9, 1)
+        self.assertTrue(self.evidence(unpublished))
+        self.assertTrue(self.evidence(old_head))
+        main = refresh_suite.git(self.origin, "rev-parse", "main")
+        self.assertEqual(refresh_suite.git(dispatch.FACTORY / "wt-9", "rev-parse", "HEAD"), main)
+
+    def test_a_healthy_retry_after_an_infra_only_fresh_claim_publishes_the_fresh_start(self) -> None:
+        old_head = self.fresh_requeue([sys.executable, "-c", "print('Authentication failed'); raise SystemExit(1)"])
+        self.assertIs(self.process(), False)
+        self.assertEqual((self.events("attempt"), len(self.events("worker-infra"))), ([], 1))
+        dispatch.configure(self.cfg)
+        self.cfg.workers["default"] = self.committing_worker()
+        self.process()
+        self.assertEqual(self.events("escalate")[1:], [])
+        main = refresh_suite.git(self.origin, "rev-parse", "main")
+        self.assertEqual(refresh_suite.git(self.origin, "rev-parse", f"{self.github.head()}^"), main)
+        self.assertTrue(self.evidence(old_head))
+        self.assertEqual([claim["base"] for claim in self.events("claimed")], [main, main])
+
+    def test_a_remote_commit_pushed_between_an_infra_only_claim_and_its_retry_is_never_overwritten(self) -> None:
+        self.fresh_requeue([sys.executable, "-c", "print('Authentication failed'); raise SystemExit(1)"])
+        self.assertIs(self.process(), False)
+        pushed = self.concurrent_push()
+        dispatch.configure(self.cfg)
+        self.cfg.workers["default"] = self.committing_worker()
+        self.process()
+        self.assertEqual(self.github.head(), pushed)
+        self.assertEqual([e["code"] for e in self.events("escalate")][1:], ["lease_refused"])
+
+    def test_after_its_first_publication_a_fresh_generation_leases_like_any_other(self) -> None:
+        self.fresh_requeue(self.committing_worker())
+        with self.patched(), mock.patch.object(dispatch, "run_gate", return_value=(True, "gate ok")):
+            [ready] = dispatch.frontier()
+            dispatch.process_ticket(ready, 30, False)
+            published = self.github.head()
+            pushed = self.concurrent_push()
+            wt = dispatch.FACTORY / "wt-9"
+            self.assertEqual(dispatch.agent_lease(wt, 9), pushed)
+            refresh_suite.git(wt, "commit", "-q", "--allow-empty", "-m", "next round")
+            with self.assertRaises(dispatch.LeaseRefused):
+                dispatch.push_agent(wt, 9, pushed)
+        self.assertEqual(self.github.head(), pushed)
+        self.assertEqual(refresh_suite.git(self.origin, "rev-parse", f"{pushed}^"), published)
+
+    def test_owner_requeue_restarts_the_review_bounce_budget(self) -> None:
+        finding = {"severity": "important", "pass": "bug", "path": "work.txt", "line": 1, "summary": "Not yet."}
+        self.cfg.reviewer = [sys.executable, "-c", "import json; print('- work.txt:1: Not yet.\\n```json\\n' + "
+                             f"json.dumps({{'verdict': 'REVISE', 'findings': [{finding!r}]}}) + '\\n```\\nVERDICT: REVISE')"]
+        self.cfg.review_rounds = 2
+        self.cfg.workers["default"] = self.committing_worker()
+        self.github.assignees, self.github.pr_labels = [], set()
+        lifecycle.append(dispatch.EVENTS, {"event": "escalate", "ticket": 9, "code": "gate_failed", "reason": "x", "round": 1})
+        self.process()
+        rounds = [(e["round"], e["deferred"]) for e in self.events("review-rework")]
+        self.assertEqual(rounds, [(1, False), (2, False)])
+        self.assertEqual([e["code"] for e in self.events("escalate")][1:], ["review_revise"])
+        dispatch.configure(self.cfg)
+        self.github.issue_labels, self.github.assignees = {config.LABEL_AGENT}, []
+        self.process()  # observes the owner's release: generation 2 gets its own review bounces
+        self.assertEqual([e["generation"] for e in self.events("generation")], [1, 2])
+        rounds = [(e["round"], e["deferred"]) for e in self.events("review-rework")]
+        self.assertEqual(rounds, [(1, False), (2, False)] * 2)
+        self.assertEqual([e["code"] for e in self.events("escalate")][1:], ["review_revise", "review_revise"])
 
 
 class HandoffGenerationTest(unittest.TestCase):
