@@ -1208,10 +1208,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    change widening that domain reopens the mutant, even if its exact mutation
    identity has not changed. Matching survivors remain in the report as
    **accepted equivalent**, with the argument and reviewer, but do not block.
-   Invalid entries fail in both blocking and report-only modes. A reviewed entry
-   is stale and fails either mode only when that exact mutant was tested and
-   killed. Unchanged files, filtered or sampled-out mutants, and unstarted or
-   deadline-cut trials provide no stale evidence and do not fail the gate.
+   Invalid entries fail in both blocking and report-only modes. Before selecting
+   mutants, every entry's complete `original` source must still match at its
+   recorded `file:line`; rewritten, moved, deleted or unreadable source makes the
+   entry stale and fails either mode, even with no changed mutable files.
+   An exact reviewed mutant that was tested and killed also fails either mode.
+   With matching source, unchanged files, filtered or sampled-out mutants, and
+   unstarted or deadline-cut trials provide no stale evidence.
    The registry is in `[gate].protected_paths`: additions, updates and removals
    require the normal human-reviewed configuration/protected-override path, not
    an ordinary worker diff. The registry ships empty (`[]`); #541 adds its own

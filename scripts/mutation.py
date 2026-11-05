@@ -191,8 +191,19 @@ def mutation_key(mutation, result) -> tuple:
 
 
 def stale_equivalents(reviewed: dict[tuple, dict], killed: set[tuple]) -> bool:
-    # Absence from this run is not evidence: sampling and deadlines leave entries untested.
+    # Sampling/deadlines leave entries untested, but source invalidation is deterministic.
     stale = reviewed.keys() & killed
+    sources = {}
+    for key in reviewed:
+        file, line, _, original, _ = key
+        if file not in sources:
+            try:
+                sources[file] = Path(file).read_text().splitlines()
+            except (OSError, UnicodeError):
+                sources[file] = []
+        expected = original.split("\n")
+        if sources[file][line - 1:line - 1 + len(expected)] != expected:
+            stale.add(key)
     for file, line, operator, original, mutated in sorted(stale):
         print(f"stale equivalent: {file}:{line}: {operator} {original!r} -> {mutated!r}")
     return bool(stale)
@@ -210,6 +221,8 @@ def main(argv: list[str] | None = None) -> int:
         reviewed = load_equivalents(args.equivalents)
     except (OSError, ValueError, TypeError) as exc:
         print(f"invalid equivalents: {exc}")
+        return 1
+    if stale_equivalents(reviewed, set()):
         return 1
     lines = changed_lines()
     if not lines:
