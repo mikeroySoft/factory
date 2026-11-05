@@ -840,6 +840,13 @@ def feedback_packet(items: list[dict]) -> str:
 CI_KINDS = ("check_run", "commit_status")
 
 
+def selectable_workers(cfg: config.Config) -> dict[str, list[str]]:
+    """Profiles the manager may name: not reserved, not label-gated, and available this pass."""
+    return {key: command for key, command in cfg.workers.items()
+            if key not in RESERVED_LABELS and key not in cfg.worker_select_label
+            and key not in dispatch.UNAVAILABLE_WORKERS}
+
+
 def after_watermark(n: int, rows: list[dict], late: list[dict], head: str, dry_run: bool) -> list[dict]:
     """Late items newer than the owner's requeue, for a generation still awaiting its first attempt.
 
@@ -980,8 +987,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                     continue
                 wt = cfg.factory / f"wt-{n}"
                 packet, _ = dispatch.escalation_packet(n, "Manager final review (manager.review = all)", None, wt)
-                workers = {k: v for k, v in cfg.workers.items()
-                           if k not in RESERVED_LABELS and k not in cfg.worker_select_label}
+                workers = selectable_workers(cfg)
                 parts = [APPROVAL_MENU, "Worker labels:\n" + "\n".join(
                     f"- {k}: {cfg.worker_when.get(k) or '(no when rule)'}" for k in workers),
                          f"PR #{number} head {head}\n\n{json.dumps(pr)}",
@@ -1089,8 +1095,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                 if dry_run:
                     dispatch.log(f"#{n}: would manage escalation round {round_number}")
                     continue
-                workers = {k: v for k, v in cfg.workers.items()
-                           if k not in RESERVED_LABELS and k not in cfg.worker_select_label}
+                workers = selectable_workers(cfg)
                 parts = [MENU, "Worker labels:\n" + "\n".join(
                     f"- {k}: {cfg.worker_when.get(k) or '(no when rule)'}" for k in workers),
                          f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}", packet.read_text()]
@@ -1155,5 +1160,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="list eligible viability requests and escalations without running the manager")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
+    if not args.dry_run:
+        dispatch.worker_health_pass()
     manage_pass(args.dry_run)
     return 0

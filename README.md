@@ -674,6 +674,29 @@ Factory restores its lifecycle context and strips GitHub credentials. A pinned
 `version = "..."` is recorded with the claim, usage, attempt, and worker
 lifecycle entry. The prompt lists routable profiles with their `when` rules;
 neither ROUTE nor FIX accepts unlisted profiles.
+
+Each launch resolves one worker spec (`Config.worker_spec`): the host wrapper,
+the profile command, its model, version, environment, transcript mode and
+provenance (`Repository`, `Host repository override`, `Host default` or
+`Built-in default`). The built-in OMP default carries its pinned `--model`.
+Dispatch, `factory learn` replays, dry runs and the settings view all use that
+same value. A table may set `probe = [...]`, a health or auth check whose argv
+takes `{root}`, `{repo}` and `{home}`. Each dispatcher and `factory manage` pass
+runs it once under the host wrapper and the profile's environment, without
+GitHub credentials, before any stage; exit 0 means available. A failing profile
+is not launched that pass and is not offered to the manager. A ticket that
+profile owns runs on `default` instead, unless the profile is chosen by a
+`when = { label = ... }` selector or `default` is down too. In that case the
+ticket waits unclaimed (`worker_unavailable`). A launch that exits nonzero
+without a timeout, makes no commit, leaves a clean worktree and logs an
+authentication failure is an infrastructure outcome. Factory records a
+`worker-infra` row, not an `attempt`, so it is not a strike, never reaches the
+gate and does not count toward `max_attempts`. It then marks the profile
+unavailable for the pass and relaunches the same attempt on the fallback. With
+no fallback the claim is given back. Availability changes are journaled once each
+as `worker-health` rows with `worker`, `available`, `reason`, `fallback` and
+`source` (`probe` or `launch`). The attempt that ran on a fallback records
+`fallback_from`.
 `[review].json_mode = true` similarly declares an OMP-compatible reviewer:
 Factory adds or replaces `--mode json` and parses its JSONL verdict and usage.
 It defaults to true only when the reviewer program is named `omp`; set it to

@@ -166,6 +166,18 @@ class Band:
     rules: tuple[BandRule, ...]
 
 
+@dataclass(frozen=True)
+class WorkerSpec:
+    profile: str
+    argv: list[str]  # host `worker_wrap` first, then the launched profile command, expanded
+    model: str | None
+    version: str | None
+    env: dict[str, str]
+    transcript: str | None
+    wrap: int  # leading `argv` entries that are the host wrapper
+    source: str  # config layer that defined the profile; never a value from it
+
+
 @dataclass
 class Config:
     root: Path  # main checkout of the target repository (never a worktree)
@@ -195,6 +207,10 @@ class Config:
     worker_usage: dict[str, dict] = field(default_factory=dict)
     # Per worker label: compatible persisted transcript format; absent defaults by executable.
     worker_transcript: dict[str, str] = field(default_factory=dict)
+    # Per worker label: health/auth probe argv run before each pass; absent = no probe.
+    worker_probe: dict[str, list[str]] = field(default_factory=dict)
+    # Per worker label: the config layer that defined it; absent = built-in default.
+    worker_source: dict[str, str] = field(default_factory=dict)
     # Host `[prices."<model>"]`: USD per million prompt/completion/cached tokens; empty = no priced dollars.
     prices: dict[str, dict] = field(default_factory=dict)
     # Host-only argv prefix for every worker launch: a trusted operator executable, not a sandbox.
@@ -294,17 +310,33 @@ class Config:
         return self.worker_command(self.worker_key(labels), prompt, cwd)
 
     def worker_command(self, worker: str, prompt: Path, cwd: Path) -> list[str]:
-        """Expanded argv for an already selected worker profile."""
+        """Expanded configured argv for a worker profile; `worker_spec` is what launch runs."""
         return expand([*self.worker_wrap, *self.workers[worker]], prompt=str(prompt), cwd=str(cwd),
                       root=str(self.root), repo=self.repo, home=str(Path.home()))
 
-    def worker_model(self, worker: str) -> str | None:
-        """Explicit worker model, including the code-pinned built-in OMP default."""
+    def launch_command(self, worker: str) -> list[str]:
+        """The profile's command as launched: the built-in OMP default carries its pinned model."""
         command = self.workers[worker]
-        return (
-            DEFAULT_WORKER_MODEL
-            if command == DEFAULT_WORKER
-            else command_model(command)
+        if command == DEFAULT_WORKER:
+            return [*command[:2], "--model", DEFAULT_WORKER_MODEL, *command[2:]]
+        return list(command)
+
+    def worker_model(self, worker: str) -> str | None:
+        """Explicit model of the launched command, or None when the command leaves it implicit."""
+        return command_model(self.launch_command(worker))
+
+    def worker_spec(self, worker: str, prompt: Path, cwd: Path) -> WorkerSpec:
+        """Everything one launch of `worker` uses; selection, audit and launch read this value."""
+        return WorkerSpec(
+            profile=worker,
+            argv=expand([*self.worker_wrap, *self.launch_command(worker)], prompt=str(prompt), cwd=str(cwd),
+                        root=str(self.root), repo=self.repo, home=str(Path.home())),
+            model=self.worker_model(worker),
+            version=self.worker_version.get(worker),
+            env=self.worker_environment(worker, prompt, cwd),
+            transcript=self.worker_transcript.get(worker),
+            wrap=len(self.worker_wrap),
+            source=self.worker_source.get(worker, "Built-in default"),
         )
 
     def worker_environment(self, worker: str, prompt: Path, cwd: Path) -> dict[str, str]:
@@ -763,8 +795,20 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
                 if transcript != "omp-session":
                     raise ConfigError(f"workers.{label}.transcript must be \"omp-session\"")
                 cfg.worker_transcript[label] = transcript
+            if isinstance(entry, dict) and "probe" in entry:
+                probe = entry["probe"]
+                if not isinstance(probe, list) or not probe or any(not isinstance(arg, str) or not arg for arg in probe):
+                    raise ConfigError(f"{path}: workers.{label}.probe needs a non-empty argv array of strings")
+                cfg.worker_probe[label] = probe
             if when:
                 cfg.worker_when[label] = when
+    for label in cfg.workers:
+        cfg.worker_source[label] = next(
+            (name for name, layer in (("Repository", raw_repo), ("Host repository override", host_sections[1]),
+                                      ("Host default", host_sections[0]))
+             if isinstance(layer.get("workers"), dict) and label in layer["workers"]),
+            "Built-in default",
+        )
     if "worker_wrap" in raw_repo:
         raise ConfigError(f"{path}: [worker_wrap] is host-only; set it in {host_config_path()} "
                           "[defaults.worker_wrap] or [repo.\"<slug>\".worker_wrap]")

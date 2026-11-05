@@ -48,8 +48,11 @@
 # `when = { label = "name" }` directly selects this profile for that ticket label.
 # Optional `env = { NAME = "value" }` applies only to that worker and expands
 # command placeholders; `version = "..."` records a pinned worker release in
-# claim, usage, attempt, and lifecycle evidence. Commands containing a binary
-# named `omp` default to transcript mode. Array and table forms can coexist; do
+# claim, usage, attempt, and lifecycle evidence. Optional `probe = [...]`
+# ({root}, {repo}, {home}) is a health/auth check run before each pass; a nonzero
+# exit keeps the profile from launching and its tickets fall back to `default`.
+# Commands containing a binary named `omp` default to transcript mode.
+# Array and table forms can coexist; do
 # not define a label twice. The manager lists configured profiles and their rules;
 # ROUTE and FIX cannot invent profiles or write host config. FIX uses
 # {"worker": "ci-fix", "guidance": "..."}.

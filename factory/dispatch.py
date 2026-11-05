@@ -68,6 +68,8 @@ _PENDING_SECOND_REVIEWS: dict[int, dict] = {}
 _PENDING_RISK: dict[int, dict] = {}
 _LOW_FALLBACK: set[int] = set()
 _HOST_CLAIMS: dict[int, HostClaim] = {}
+# Worker profile -> why it cannot launch this pass (failed probe or auth failure at launch).
+UNAVAILABLE_WORKERS: dict[str, str] = {}
 
 
 def configure(c: Config) -> None:
@@ -88,6 +90,7 @@ def configure(c: Config) -> None:
     _PENDING_SECOND_REVIEWS.clear()
     _PENDING_RISK.clear()
     _LOW_FALLBACK.clear()
+    UNAVAILABLE_WORKERS.clear()
     host_claim_login.cache_clear()
 
 
@@ -1853,6 +1856,83 @@ def run_worker(
     log(f"worker exited {code} after {int(time.monotonic() - started)}s"
         + (f" ({fired} fired: {TIMEOUT_REASONS[fired]})" if fired else ""))
     return code, fired
+
+
+# A worker that failed like this with no commit and a clean worktree never reached the work.
+WORKER_AUTH_FAILURE = re.compile(
+    r"authentication failed|not logged in|invalid api key|401 unauthorized", re.IGNORECASE,
+)
+WORKER_PROBE_TIMEOUT = 60  # seconds per `[workers.<label>] probe`
+
+
+class WorkerUnavailable(OSError):
+    """No available worker profile can run the ticket: a host defect, never a ticket strike."""
+
+
+def fallback_worker(profile: str) -> str | None:
+    """The profile to launch for `profile`: itself while available, else `default`, else None.
+
+    A profile chosen by a structured `when` label is a required capability; it waits for its
+    own worker instead of falling back."""
+    if profile not in UNAVAILABLE_WORKERS:
+        return profile
+    if profile == "default" or profile in cfg.worker_select_label or "default" in UNAVAILABLE_WORKERS:
+        return None
+    return "default"
+
+
+def set_worker_health(profile: str, reason: str | None, *, source: str) -> None:
+    """Mark `profile` available (`reason` None) or unavailable; journal only a change."""
+    if reason is None:
+        UNAVAILABLE_WORKERS.pop(profile, None)
+    else:
+        UNAVAILABLE_WORKERS[profile] = reason
+    last = next((row for row in reversed(lifecycle.read_events(EVENTS))
+                 if row.get("event") == "worker-health" and row.get("worker") == profile), None)
+    available = reason is None
+    if (last["available"] if last else True) == available:
+        return
+    fallback = None if available else fallback_worker(profile)
+    record("worker-health", worker=profile, available=available, reason=reason, fallback=fallback, source=source)
+    log(f"worker `{profile}` " + ("available again" if available else f"unavailable ({reason})")
+        + (f"; falling back to `{fallback}`" if fallback else ""))
+
+
+def worker_health_pass() -> None:
+    """Run each configured worker probe; a failing profile is not launched this pass (#662)."""
+    for profile, probe in cfg.worker_probe.items():
+        argv = config.expand([*cfg.worker_wrap, *probe], root=str(ROOT), repo=REPO, home=str(Path.home()))
+        env = {**os.environ, **cfg.worker_environment(profile, FACTORY / ".factory-prompt.md", ROOT)}
+        try:
+            with without_github(env) as isolated:
+                proc = subprocess.run(argv, cwd=ROOT, env=isolated, capture_output=True, text=True,
+                                      errors="replace", timeout=WORKER_PROBE_TIMEOUT, check=False)
+            detail = (proc.stderr.strip() or proc.stdout.strip()).splitlines()[-1:]
+            reason = None if proc.returncode == 0 else (
+                f"probe exited {proc.returncode}" + "".join(f": {stderr_tail(line)[-200:]}" for line in detail)
+            )
+        except subprocess.TimeoutExpired:
+            reason = f"probe timed out after {WORKER_PROBE_TIMEOUT}s"
+        except OSError as exc:
+            reason = f"probe could not start: {exc}"
+        set_worker_health(profile, reason, source="probe")
+
+
+def _launch_failure(wt: Path, logfile: Path, offset: int, launch_head: str) -> str | None:
+    """The auth-failure line of a launch that left no commit and a clean worktree, else None."""
+    if run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip() != launch_head or run([
+        "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+        ":(exclude).factory-prompt.md", ":(exclude).factory",
+    ], cwd=wt).stdout.strip():
+        return None
+    with logfile.open("rb") as stream:
+        stream.seek(max(offset, logfile.stat().st_size - 64 * 1024))
+        text = stream.read().decode(errors="replace")
+    match = WORKER_AUTH_FAILURE.search(text)
+    if match is None:
+        return None
+    line = text[text.rfind("\n", 0, match.start()) + 1:].split("\n", 1)[0]
+    return stderr_tail(line.strip())[-200:]
 
 
 def ensure_worktree(n: int) -> Path:
@@ -4408,34 +4488,40 @@ def worker_round(
     started = time.monotonic()
     wall = time.time()
     if selected_worker is None:
-        worker = cfg.worker_key(labels)
+        profile = cfg.worker_key(labels)
     else:
-        worker = record_worker_selection(n, labels, selected_worker=selected_worker)
-    worker_version = cfg.worker_version.get(worker)
-    worker_model = cfg.worker_model(worker)
-    command = cfg.worker_command(worker, promptfile, wt)
-    if cfg.workers[worker] == config.DEFAULT_WORKER:
-        command[len(cfg.worker_wrap) + 2:len(cfg.worker_wrap) + 2] = [
-            "--model", config.DEFAULT_WORKER_MODEL,
-        ]
-    identity = {
-        "worker": worker, "worker_version": worker_version,
-        "worker_model": worker_model,
-    }
-    transcript_mode = cfg.worker_transcript.get(worker)
-    argv, session_dir = _with_transcript(
-        command, n, transcript_mode, len(cfg.worker_wrap) if transcript_mode else None,
-    )
-    run_options = {}
-    if environment := cfg.worker_environment(worker, promptfile, wt):
-        run_options["env_overrides"] = environment
-    if worker_version:
-        run_options.update(worker=worker, worker_version=worker_version)
+        profile = record_worker_selection(n, labels, selected_worker=selected_worker)
     handoff_path = wt / ".factory" / f"handoff-{n}.md"
     handoff_start = handoff_path.stat().st_mtime_ns if handoff_path.exists() else None
-    code, fired = run_worker(
-        argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
-    )
+    while True:
+        worker = fallback_worker(profile)
+        if worker is None:
+            raise WorkerUnavailable(f"worker `{profile}` is unavailable: {UNAVAILABLE_WORKERS[profile]}")
+        spec = cfg.worker_spec(worker, promptfile, wt)
+        identity = {
+            "worker": worker, "worker_version": spec.version, "worker_model": spec.model,
+            **({"fallback_from": profile} if worker != profile else {}),
+        }
+        argv, session_dir = _with_transcript(
+            spec.argv, n, spec.transcript, spec.wrap if spec.transcript else None,
+        )
+        run_options = {}
+        if spec.env:
+            run_options["env_overrides"] = spec.env
+        if spec.version:
+            run_options.update(worker=worker, worker_version=spec.version)
+        launch_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        offset = logfile.stat().st_size if logfile.exists() else 0
+        code, fired = run_worker(argv, wt, logfile, handoff_path, deadline, **run_options)
+        failure = None if code == 0 or fired else _launch_failure(wt, logfile, offset, launch_head)
+        if failure is None:
+            break
+        # Not an attempt: no strike, no gate, not counted toward max_attempts.
+        record("worker-infra", ticket=n, attempt=attempt, worker_exit=code, log=str(logfile),
+               reason="auth_failed", detail=failure, **identity)
+        set_worker_health(worker, f"auth_failed: {failure}", source="launch")
+    set_worker_health(worker, None, source="launch")
+    worker_version = spec.version
     # Decide before commit_leftovers: dispatcher commits cannot turn unfinished work into done.
     finished = (
         handoff_path.exists()
@@ -4656,9 +4742,11 @@ def process_ticket(
         except binding.BindingError as exc:
             log(f"#{n}: refused ({exc})")
             return
+        spec = cfg.worker_spec(worker_key, wt / ".factory-prompt.md", wt)
         log(
             f"#{n}: would claim (assign @me), create worktree {wt} on branch agent/{n}, "
-            f"run {worker} worker, gate, push, open PR, review"
+            f"run worker `{spec.profile}` ({spec.source}; model {spec.model or 'implicit'}: "
+            f"{' '.join(spec.argv)}), gate, push, open PR, review"
         )
         return
 
@@ -4717,6 +4805,14 @@ def process_ticket(
                 return
             labels = {label["name"] for label in fresh["labels"]}
             observe_owner_requeue(n, fresh)
+            profile = cfg.worker_key(labels)
+            launch = fallback_worker(profile)
+            if not forced and launch is None:
+                log(f"#{n}: skipped (worker `{profile}` unavailable: {UNAVAILABLE_WORKERS[profile]}); retry next pass")
+                execution.wait("worker_unavailable", mode="retry_next_pass", worker=profile)
+                return
+            if launch is not None and launch != profile:
+                worker = cfg.worker_command(launch, wt / ".factory-prompt.md", wt)[0]
             if not forced and shutil.which(worker) is None:
                 # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
                 # ponytail: PATH probe only; a binary swapped out between here and Popen still
@@ -4970,6 +5066,12 @@ def process_ticket(
                          code="approval_drift")
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
+        except WorkerUnavailable as exc:
+            # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.
+            execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
+            log(f"#{n}: {exc}; unclaimed, retry once the worker is healthy")
+            unclaim(n)
+            return False
         except FileNotFoundError as exc:
             # Host defect (worker executable not on PATH, #260), not a ticket defect: give the
             # claim back so the frontier retries once the host is fixed; the pass goes on.
@@ -5176,6 +5278,7 @@ def main(argv: list[str]) -> int:
             maintenance = results.prune(cfg)
             if maintenance["status"] != "complete":
                 log(f"Accepted-result expiry incomplete ({maintenance.get('reason')}); archive left for inspection")
+            worker_health_pass()
         if args.ticket and not yield_for_update:
             if not issue_is_open(args.ticket):
                 log(f"#{args.ticket}: not open, nothing to do")
