@@ -30,6 +30,7 @@ class DispatchReleaseTest(unittest.TestCase):
         run = module.run
 
         def external(cmd, *args, **kwargs):
+            module.raise_if_interrupted()
             if cmd[:3] == ["gh", "issue", "comment"]:
                 return subprocess.CompletedProcess(cmd, 0, "https://example.invalid/comment/1", "")
             result = run(cmd, *args, **kwargs)
@@ -44,6 +45,7 @@ class DispatchReleaseTest(unittest.TestCase):
             if path == "crash":
                 raise RuntimeError("worker crashed")
             if path == "interrupt":
+                module._CANCEL.set()
                 raise KeyboardInterrupt
             if path == "worker_unavailable":
                 raise FileNotFoundError("worker vanished")
@@ -98,10 +100,12 @@ class DispatchReleaseTest(unittest.TestCase):
                     self.assertEqual(self.github.issue["assignees"], expected)
                     rows = [row for row in lifecycle.read_events(module.EVENTS)
                             if row.get("event") == "assignment-cleared"]
-                    self.assertEqual((rows[-1]["ticket"], rows[-1]["login"], rows[-1]["exit_path"]),
-                                     (7, "@me", path))
+                    self.assertEqual(len(rows), 1, rows)
+                    exit_path = {"escalation": "review_revise", "crash": "dispatcher_error"}.get(path, path)
+                    self.assertEqual((rows[0]["ticket"], rows[0]["login"], rows[0]["exit_path"]),
+                                     (7, "@me", exit_path))
                     self.assertFalse(module.lock_held(module.ticket_lock(7)))
-                    self.assertFalse(self.github.comments, "a completed run is not a live host claim")
+                    self.assertFalse(module.host_claims(7), "a completed run is not a live host claim")
 
     def test_closed_agent_pr_becomes_eligible_again(self):
         module = self.dispatcher(None)
@@ -120,12 +124,54 @@ class DispatchReleaseTest(unittest.TestCase):
                 self.assertEqual(module.frontier()[0].get("held"), "assigned")
                 module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
                 self.assertEqual(self.launched, [])
-                self.run_exit("done", forced=True, assignees=(login,))
+                module = self.run_exit("done", forced=True, assignees=(login,))
                 self.assertIn({"login": login}, self.github.issue["assignees"])
                 if login == "@me":
                     self.assertFalse(any(row.get("event") == "assignment-cleared"
                                          for row in lifecycle.read_events(module.EVENTS)))
                 self.github.open_prs.clear()
+
+    def test_preexisting_own_login_is_preserved_on_failure(self):
+        for path in ("escalation", "gate_failed", "budget", "crash",
+                     "worker_unavailable", "interrupt"):
+            for host in (None, "tank"):
+                with self.subTest(path=path, host=host):
+                    self.github.comments.clear()
+                    self.github.issue["labels"] = [{"name": "ready-for-agent"}]
+                    module = self.run_exit(path, host=host, forced=True, assignees=("@me",))
+                    self.assertIn({"login": "@me"}, self.github.issue["assignees"])
+                    self.assertFalse(any(row.get("event") == "assignment-cleared"
+                                         for row in lifecycle.read_events(module.EVENTS)))
+
+    def test_success_consumes_shared_rework_without_retaining_a_claim(self):
+        module = self.dispatcher("tank")
+        self.github.comments.append({
+            "id": 100, "user": {"login": "@me"},
+            "body": "Factory requeue: nonce=old\nFix the previous review findings",
+        })
+        module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        self.assertEqual(module.host_claim_state(7), ([], ""))
+        self.github.open_prs = [{"number": 70, "labels": []}]
+        self.assertIn("#70", module.frontier()[0].get("held", ""))
+
+    def test_approved_pr_is_a_hold_without_a_live_claim_or_lock(self):
+        module = self.dispatcher("tank")
+        self.github.open_prs = [{"number": 70, "labels": [{"name": "factory-approved"}]}]
+        self.github.comments.append({
+            "id": 100, "user": {"login": "@me"},
+            "body": "Factory requeue: nonce=old\nEarlier unapproved rework",
+        })
+        self.assertFalse(module.lock_held(module.ticket_lock(7)))
+        self.assertEqual(module.host_claims(7), [])
+        [issue] = module.frontier()
+        self.assertEqual(issue.get("held"), "open agent PR #70 (approved, awaiting merge)")
+        with mock.patch.object(module, "worker_round") as worker:
+            module.process_ticket(copy.deepcopy(self.github.issue), 1, False, forced=True)
+            module.process_ticket(copy.deepcopy(self.github.issue), 1, True, forced=True)
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertFalse(any(row.get("event") == "claimed"
+                             for row in lifecycle.read_events(module.EVENTS)))
+        worker.assert_not_called()
 
 
 if __name__ == "__main__":

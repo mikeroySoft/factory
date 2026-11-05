@@ -1331,8 +1331,11 @@ and removes its own comment and label without assigning or launching a worker.
 The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
 pipeline runs. Unclaim always applies escalation/requeue labels; only the owning
 host can remove an existing claim's `@me`, host label and comment, even after expiry.
-An in-process claim must also match the elected nonce before cleanup. Tickets
-assigned before host claims were enabled retain the original `@me` release path.
+An in-process claim must also match the elected nonce before cleanup. Dispatch
+releases assignments it added on every exit, including approval, failed claim responses,
+and interruption; pre-existing assignments (including the authenticated login on a hand
+run) remain human holds. Each removal journals `assignment-cleared` with `ticket`,
+`login`, and `exit_path`. Assignments without run/host ownership evidence are never cleared.
 If the label/assignee edit fails, unclaim retains its comment and host label so
 another host can recover the assignment after TTL expiry. Successful host-label
 removals journal `claim-label-removed` receipts. The manager ignores those exact
@@ -1340,8 +1343,10 @@ labels from the authenticated dispatcher only before the recorded escalation
 comment; human removals and later edits still hold automatic management.
 
 Expired claims are admitted through the frontier only when no other hold exists.
-A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
-hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
+An open `agent/<ticket>` PR is an explicit hold naming its PR number, independently
+of assignees or host claims. A `factory-approved` PR is held as `approved, awaiting merge`;
+closing or merging it releases that hold. Admission rechecks the PR even for `--ticket`,
+so stale frontier reads cannot replace an approved head.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
@@ -1352,6 +1357,9 @@ its findings, so another host can resume the existing PR after the lease expires
 Shared instructions take precedence over this host's local requeue journal. Local
 risk-disagreement history carries forward only when its instructions match the
 selected context; an intervening foreign requeue cannot trigger early escalation.
+Successful host dispatch consumes shared rework instructions before releasing its
+host comment and label; completed work is a PR hold, not a live claim. Explicit
+refresh/review requeues may resume an unapproved PR, never an approved one.
 Escalation comments carry the same nonce marker on their second line, preserving
 the escalation prefix. A later manager/human `ready-for-agent` relabel can resume
 the expired claim's existing PR; its live heartbeat still holds admission.
