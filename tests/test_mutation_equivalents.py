@@ -226,6 +226,12 @@ class MutationEquivalentsTest(unittest.TestCase):
             stale = run(entries, 1, "stale")
             self.assertEqual(stale.count("stale equivalent:"), 2, stale)
             self.assertNotIn("accepted equivalent", stale)
+            for field, obsolete in (("operator", "core/ObsoleteReplacer"),
+                                    ("mutated", "unused = 99")):
+                with self.subTest(field=field):
+                    missing = run([{**entries[0], field: obsolete}], 1, "missing identity")
+                    self.assertIn("3 killed; 0 survived", missing)
+                    self.assertEqual(missing.count("stale equivalent:"), 1, missing)
             for source in ("unused = 3\ndef answer():\n    return True\n",
                            "# inserted\nunused = 1\ndef answer():\n    return True\n",
                            "def answer():\n    return True\n", None):
@@ -237,6 +243,29 @@ class MutationEquivalentsTest(unittest.TestCase):
                     report = run(entries, 1, "source stale")
                     self.assertEqual(report.count("stale equivalent:"), 2, report)
                     self.assertNotIn("accepted equivalent", report)
+
+    def test_missing_identity_is_stale_after_complete_killed_trial(self):
+        for field, obsolete in (("operator", "ObsoleteReplacer"), ("mutated", "value = 99")):
+            for blocking in (False, True):
+                with self.subTest(field=field, blocking=blocking):
+                    status, report = self.run_gate(
+                        [{**self.entry, field: obsolete}],
+                        outcome=TestOutcome.KILLED, blocking=blocking,
+                    )
+                    self.assertIn("1 killed; 0 survived", report)
+                    self.assertNotEqual(status, 0, report)
+                    self.assertIn("stale equivalent", report)
+
+    def test_missing_identity_is_not_stale_without_complete_coverage(self):
+        entry = {**self.entry, "operator": "ObsoleteReplacer"}
+        for changes in ({"changed": False}, {"sampled": False}, {"hot": 0},
+                        {"hot": 2},
+                        {"clock": [0, 0, 0, 0.1, 0.2, 2, 2]},
+                        {"clock": [0, 0, 0, 0.1, 0.2, 0.3, 2, 2], "output": "timeout"}):
+            with self.subTest(changes=changes):
+                status, report = self.run_gate([entry], outcome=TestOutcome.KILLED, **changes)
+                self.assertEqual(status, 0, report)
+                self.assertNotIn("stale equivalent", report)
 
 
 if __name__ == "__main__":
