@@ -98,6 +98,18 @@ class DarwinLifecycleTest(unittest.TestCase):
         with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "denied")):
             self.assertEqual(lifecycle._process_state(identity), "unknown")
 
+    def test_hidden_processes_do_not_persist_interruption(self):
+        identity = self.recorded()
+        before = self.path.read_bytes()
+        self.processes.clear()
+        observed = lifecycle.observe(self.path)[0]
+        self.assertEqual(observed["state"], "unknown")
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(lifecycle._process_state(identity), "unknown")
+        self.assertEqual(runtime_events._Observation([]).process_state(identity), "unknown")
+        self.processes[os.getpid()] = START
+        self.assertEqual(lifecycle.observe(self.path)[0]["state"], "interrupted")
+
     def test_lock_evidence_uses_locked_descriptor_not_every_open_file(self):
         path = Path(self.tmp.name) / "held.lock"
         with path.open("w") as handle:
