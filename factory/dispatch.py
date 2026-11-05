@@ -1959,18 +1959,27 @@ def ensure_worktree(n: int) -> Path:
 
 def restart_worktree(n: int, number: int) -> Path:
     """A fresh generation's worktree: `agent/<n>` recut from main. The superseded local and
-    remote branch heads stay reachable under `refs/factory-evidence/`; uncommitted worktree
-    changes are discarded, as the owner's fresh intent asked."""
+    remote branch heads stay reachable under create-only, sha-named `refs/factory-evidence/`
+    refs, so replaying an interrupted restart never replaces what it preserved; uncommitted
+    worktree changes are discarded, as the owner's fresh intent asked. The journaled
+    `generation-restart` receipt names the preserved remote head, the only one a fresh
+    publication may replace (`agent_lease`)."""
     wt, branch = FACTORY / f"wt-{n}", f"agent/{n}"
     with _REMOTE_REFS:
         run(["git", "fetch", "origin"], cwd=ROOT)
+    preserved = {}
     for name, ref in (("local", f"refs/heads/{branch}"), ("remote", f"refs/remotes/origin/{branch}")):
         head = run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=ROOT, check=False).stdout.strip()
-        if head:
-            run(["git", "update-ref", f"refs/factory-evidence/{n}-generation-{number}-{name}", head], cwd=ROOT)
+        preserved[name] = head
+        evidence = f"refs/factory-evidence/{n}-generation-{number}-{name}-{head[:12]}"
+        if head and run(["git", "rev-parse", "--verify", "--quiet", evidence], cwd=ROOT, check=False).returncode:
+            run(["git", "update-ref", evidence, head, ""], cwd=ROOT)
     if wt.is_dir():
         run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT)
     run(["git", "worktree", "add", "-B", branch, str(wt), f"origin/{cfg.main}"], cwd=ROOT)
+    base = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    record("generation-restart", ticket=n, generation=number, local=preserved["local"] or None,
+           remote=preserved["remote"], base=base)
     log(f"#{n}: generation {number} starts fresh from origin/{cfg.main}")
     return wt
 
@@ -2891,13 +2900,15 @@ def _remote_agent_head(wt: Path, n: int, check: bool = True) -> str:
     return "(unavailable)" if found.returncode else (found.stdout.split() or [""])[0]
 
 
-def agent_lease(wt: Path, n: int, *, supersede: bool = False) -> str:
+def agent_lease(wt: Path, n: int, *, preserved: str | None = None) -> str:
     """Read the remote `agent/<n>` sha to lease before the worker runs, or "" when absent.
 
-    `supersede`: a fresh generation recut the branch from main by owner decision, so the leased
-    remote head counts as this worktree's starting history and its push may replace it."""
+    `preserved`: the remote head a fresh generation's restart preserved as evidence before it
+    recut the branch from main by owner decision. While the remote still holds exactly that
+    sha, it counts as this worktree's starting history and the push may replace it; any other
+    remote head (a later push, or this generation's own publication) is leased as usual."""
     remote = _remote_agent_head(wt, n)
-    _AGENT_LEASE_BASES[wt, n] = remote if supersede and remote else run(
+    _AGENT_LEASE_BASES[wt, n] = remote if remote and remote == preserved else run(
         ["git", "rev-parse", "HEAD"], cwd=wt,
     ).stdout.strip()
     return remote
@@ -4867,8 +4878,13 @@ def process_ticket(
             tier, why = schedule.priority(n, fresh.get("body"), REPO)
 
             ticket_generation = generation.current(lifecycle.read_events(EVENTS), n)
-            restart = ticket_generation.intent == "fresh" and not ticket_generation.claimed
-            wt = restart_worktree(n, ticket_generation.number) if restart else ensure_worktree(n)
+            receipt = ticket_generation.restart
+            # A claim journaled with no receipt predates receipts: that generation already restarted.
+            if ticket_generation.intent == "fresh" and receipt is None and not ticket_generation.claimed:
+                wt = restart_worktree(n, ticket_generation.number)
+                receipt = generation.current(lifecycle.read_events(EVENTS), n).restart
+            else:
+                wt = ensure_worktree(n)
             replay_base = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             record(
                 "claimed", ticket=n, title=title, labels=sorted(labels),
@@ -4879,7 +4895,9 @@ def process_ticket(
             )
             if admitted := issue.get("_factory_admitted"):
                 admitted.set()
-            lease = agent_lease(wt, n, supersede=True) if restart else agent_lease(wt, n)
+            lease = agent_lease(wt, n, preserved=receipt["remote"] if receipt else None)
+            # Until the fresh generation first publishes, the remote still holds the preserved head.
+            restart = receipt is not None and lease == receipt["remote"]
             LOGS.mkdir(parents=True, exist_ok=True)
 
             # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back. A sync

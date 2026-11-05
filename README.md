@@ -770,13 +770,20 @@ before.
 `requeue_agent` takes an optional `intent`. With `resume` (the default, and what a
 plain relabel means), the branch, worktree and refresh context are kept. With `fresh`,
 `agent/<n>` is recut from main at the generation's first claim, and the superseded local
-and remote heads stay under `refs/factory-evidence/<n>-generation-<g>-{local,remote}`.
-The first push then replaces the remote branch under the usual lease. The `claimed` row
-records `generation` and `base`. Until the generation's first worker attempt, the PR
-frontier does not re-escalate feedback that was already undelivered when it first saw
-the requeue. That set is journaled once as a `feedback-watermark` row. Any new or edited
-source after it still escalates. Manager decisions stay bound to their exact head
-across generations.
+and remote heads stay under create-only
+`refs/factory-evidence/<n>-generation-<g>-{local,remote}-<sha12>` refs, so replaying an
+interrupted restart never replaces them. A `generation-restart` row (`local`, `remote`,
+`base`) is the receipt: later claims of the generation reuse the recut worktree instead
+of recutting it, and until the generation first publishes, its push may replace exactly
+the preserved `remote` sha and nothing else. A remote that moved after the restart is
+leased as usual, so the push is refused (`lease_refused`) and the newer commit stays.
+The `claimed` row records `generation` and `base`. Until the generation's first worker
+attempt, the PR frontier does not re-escalate feedback that was already undelivered when
+it first saw the requeue. That set is journaled as a `feedback-watermark` row with the
+`sources` it covered completely. A source that was unreadable then is watermarked when
+first seen complete, holding only its items no newer than the owner's release (all of
+them while the release time is unknown). Any newer or edited source after its watermark
+still escalates. Manager decisions stay bound to their exact head across generations.
 
 ### Routed human handoffs
 

@@ -847,18 +847,31 @@ def selectable_workers(cfg: config.Config) -> dict[str, list[str]]:
             and key not in dispatch.UNAVAILABLE_WORKERS}
 
 
-def after_watermark(n: int, rows: list[dict], late: list[dict], head: str, dry_run: bool) -> list[dict]:
+WATERMARK_SOURCES = tuple(sorted(set(ACTIONABLE_SOURCE.values())))
+
+
+def after_watermark(n: int, rows: list[dict], observation: dict, late: list[dict], head: str,
+                    dry_run: bool) -> list[dict]:
     """Late items newer than the owner's requeue, for a generation still awaiting its first attempt.
 
-    Review feedback carries no release-comparable time the way CI does, so the watermark is the
-    set of items undelivered when the frontier first sees the generation; the first sighting
-    journals it. Those items wait for the fresh attempt; anything newer still escalates (#430).
+    The watermark is the set of items undelivered when the frontier first sees the generation,
+    journaled with the sources it covered completely. A source incomplete then is watermarked
+    when first seen complete, with only its items no newer than the owner's release (all of
+    them while the release time is unknown): being unreadable earlier never makes an item new.
+    Held items wait for the fresh attempt; anything newer, or edited, still escalates (#430).
     """
-    mark = next((row for row in rows if row.get("event") == "feedback-watermark"), None)
-    pairs = mark["pairs"] if mark else [[item["evidence_id"], item["source_revision"]] for item in late]
-    if mark is None and not dry_run:
-        dispatch.record("feedback-watermark", ticket=n, head=head, pairs=pairs)
-    held = {tuple(pair) for pair in pairs}
+    marks = [row for row in rows if row.get("event") == "feedback-watermark"]
+    # A mark journaled without `sources` covered every source.
+    settled = {source for mark in marks for source in mark.get("sources", WATERMARK_SOURCES)}
+    complete = {source for source in WATERMARK_SOURCES
+                if observation.get("coverage", {}).get(source, {}).get("status") == "complete"}
+    opening = [item for item in late if ACTIONABLE_SOURCE[item["kind"]] in complete - settled]
+    released = released_at(n) if marks and opening else ""
+    pairs = [[item["evidence_id"], item["source_revision"]] for item in opening
+             if not released or not item["source_updated_at"] or item["source_updated_at"] <= released]
+    if (not marks or complete - settled) and not dry_run:
+        dispatch.record("feedback-watermark", ticket=n, head=head, pairs=pairs, sources=sorted(complete - settled))
+    held = {tuple(pair) for pair in [*pairs, *(pair for mark in marks for pair in mark["pairs"])]}
     newer = [item for item in late if (item["evidence_id"], item["source_revision"]) not in held]
     if len(newer) < len(late):
         dispatch.log(f"#{n}: {len(late) - len(newer)} feedback item(s) predate the owner's requeue; "
@@ -927,7 +940,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                 red = [c for c in checks if c["bucket"] in ("fail", "cancel")]
                 late = undelivered(observation, events, n)
                 if ticket_generation.awaiting_attempt:
-                    late = after_watermark(n, ticket_generation.rows, late, head, dry_run)
+                    late = after_watermark(n, ticket_generation.rows, observation, late, head, dry_run)
                 # A release to ready-for-agent (owner decision or manager RETRY) answers the red CI
                 # it followed and restarts the stale clock; only CI newer than it escalates (#188).
                 updated = datetime.fromisoformat(pr["updatedAt"])

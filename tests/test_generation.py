@@ -120,6 +120,21 @@ class FrontierGenerationTest(unittest.TestCase):
         [delivered] = [e for e in self.events() if e.get("event") == "feedback-delivered"]
         self.assertEqual([pair[0].rsplit(":", 1)[1] for pair in delivered["pairs"]], ["RC_2"])
 
+    def test_feedback_newer_than_the_release_in_a_late_source_escalates_alone(self) -> None:
+        self.escalated_then_released()
+        self.timeline = [{"event": "labeled", "label": {"name": "ready-for-agent"}, "created_at": "2026-09-11T00:00:00Z"}]
+        self.provider.fail = "threads"
+        manage.frontier_pass()
+        self.provider.fail = None
+        self.provider.comments.append({**self.provider.comments[0], "id": "RC_2", "body": "One more",
+                                       "updatedAt": "2026-09-12T00:00:00Z"})
+        manage.frontier_pass()
+        self.assertEqual([e["code"] for e in self.escalations()], ["gate_failed", "pr_feedback"])
+        [delivered] = [e for e in self.events() if e.get("event") == "feedback-delivered"]
+        self.assertEqual([pair[0].rsplit(":", 1)[1] for pair in delivered["pairs"]], ["RC_2"])
+        marks = [(len(e["pairs"]), e["sources"]) for e in self.events() if e.get("event") == "feedback-watermark"]
+        self.assertEqual(marks, [(2, ["checks", "reviews"]), (1, ["threads"])])
+
     def test_a_source_unavailable_at_the_watermark_without_a_known_release_waits(self) -> None:
         self.escalated_then_released()
         self.provider.fail = "threads"
@@ -228,7 +243,10 @@ class RefreshGenerationTest(unittest.TestCase):
             dispatch.process_ticket(ready, 30, False)
         pushed = self.github.head()
         self.assertEqual(refresh_suite.git(self.origin, "rev-parse", f"{pushed}^"), main)
-        self.assertEqual(refresh_suite.git(self.root, "rev-parse", "refs/factory-evidence/9-generation-1-remote"), old_head)
+        self.assertEqual(refresh_suite.git(self.root, "rev-parse", f"refs/factory-evidence/9-generation-1-remote-{old_head[:12]}"),
+                         old_head)
+        [receipt] = self.events("generation-restart")
+        self.assertEqual((receipt["remote"], receipt["base"]), (old_head, main))
         [claimed] = self.events("claimed")
         self.assertEqual((claimed["generation"], claimed["base"]), (1, main))
         self.assertEqual(self.events("escalate")[1:], [])
@@ -344,8 +362,9 @@ class RefreshGenerationTest(unittest.TestCase):
 
     def test_owner_requeue_restarts_the_review_bounce_budget(self) -> None:
         finding = {"severity": "important", "pass": "bug", "path": "work.txt", "line": 1, "summary": "Not yet."}
-        self.cfg.reviewer = [sys.executable, "-c", "import json; print('- work.txt:1: Not yet.\\n```json\\n' + "
-                             f"json.dumps({{'verdict': 'REVISE', 'findings': [{finding!r}]}}) + '\\n```\\nVERDICT: REVISE')"]
+        self.cfg.reviewer = [sys.executable, "-c", (
+            "import json; print('- work.txt:1: Not yet.\\n```json\\n' + "
+            f"json.dumps({{'verdict': 'REVISE', 'findings': [{finding!r}]}}) + '\\n```\\nVERDICT: REVISE')")]
         self.cfg.review_rounds = 2
         self.cfg.workers["default"] = self.committing_worker()
         self.github.assignees, self.github.pr_labels = [], set()

@@ -36,6 +36,11 @@ class Generation:
         return any(row.get("event") == "claimed" for row in self.rows)
 
     @property
+    def restart(self) -> dict | None:
+        """The `generation-restart` receipt of a fresh generation's recut branch, once journaled."""
+        return next((row for row in reversed(self.rows) if row.get("event") == "generation-restart"), None)
+
+    @property
     def awaiting_attempt(self) -> bool:
         """An owner requeue with no worker attempt yet: everything observed so far predates it."""
         return self.number > 0 and not any(row.get("event") == "attempt" for row in self.rows)
