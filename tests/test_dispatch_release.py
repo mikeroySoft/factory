@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import subprocess
+from datetime import UTC, datetime, timedelta
 from types import FunctionType
 import unittest
 from unittest import mock
@@ -173,6 +174,26 @@ class DispatchReleaseTest(unittest.TestCase):
         with mock.patch.object(ultron, "worker_round", side_effect=worker):
             ultron.process_ticket(ultron.frontier()[0], 1, False)
         self.assertEqual(self.launched, ["tank", "ultron"])
+        self.assertEqual(len(received), 1)
+        self.assertIn("Resolve shared.py conflict", received[0])
+        self.assertEqual(ultron.host_claim_state(7), ([], ""))
+
+    def test_claim_free_rework_survives_a_crashed_admission_on_another_host(self):
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        context = FunctionType(dispatch.refresh_requeue_context.__code__, tank.__dict__)
+        with mock.patch.object(tank, "refresh_requeue_context", context):
+            tank._record_rework(7, "a" * 40, "Resolve shared.py conflict", deferred=True)
+        # A host reads the shared findings, then dies after claiming, before any attempt.
+        self.github.add_claim("crashed", datetime.now(UTC) - timedelta(hours=3))
+        received = []
+
+        def worker(*args, **kwargs):
+            received.append(args[4])
+            return self.launch("ultron")
+
+        with mock.patch.object(ultron, "worker_round", side_effect=worker):
+            ultron.process_ticket(ultron.frontier()[0], 1, False)
+        self.assertEqual(self.launched, ["ultron"])
         self.assertEqual(len(received), 1)
         self.assertIn("Resolve shared.py conflict", received[0])
         self.assertEqual(ultron.host_claim_state(7), ([], ""))
