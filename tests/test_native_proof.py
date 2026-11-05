@@ -217,3 +217,42 @@ Path(".factory/handoff-7.md").write_text("\\n".join(citations))
         self.assertIn("Current-head proof:", first["prompt"])
         self.assertNotIn("Current-head proof:", second["prompt"])
         self.assertIn("STALE / conflicting proof", second["prompt"])
+
+    def test_native_proof_prose_apostrophes_preserve_citation_and_stale_binding(self):
+        self.local.worker.write_text(fixtures.WORKER + '''
+import subprocess
+subprocess.run(["git", "add", "change.txt"], check=True)
+subprocess.run(["git", "commit", "-m", "worker change"], check=True)
+Path(".factory").mkdir(exist_ok=True)
+proof = Path(".factory/macos-proof-532-current.txt")
+if not proof.exists():
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    proof.write_text("Verified source revision: " + head + "\\nArchive SHA-256: " + "c" * 64
+                     + "\\nUltron possessive citation smoke: PASS\\n")
+Path(".factory/handoff-7.md").write_text(
+    "Ultron's native proof: `.factory/macos-proof-532-current.txt` (doesn't cover CI)\\n")
+''')
+        self.local.cli("dispatch", "--ticket", "7")
+        state = json.loads(self.local.state.read_text())
+        first, second = state["packets"]
+        path = ".factory/macos-proof-532-current.txt"
+        text = (self.local.repo / ".factory/wt-7" / path).read_text()
+        head = text.splitlines()[0].split()[-1]
+        new_head = self.local.git("-C", ".factory/wt-7", "rev-parse", "HEAD").stdout.strip()
+        self.assertNotEqual(head, new_head)
+        self.assertEqual(
+            self.local.git("-C", ".factory/wt-7", "check-ignore", path).stdout.strip(), path,
+        )
+        for packet in (first, second):
+            self.assertTrue(packet["comments"], "Proof must be published before reviewer invocation")
+            comment = packet["comments"][-1]
+            for expected in (head, "c" * 64, "Ultron possessive citation smoke: PASS"):
+                self.assertIn(expected, comment)
+                self.assertIn(expected, packet["prompt"])
+            self.assertIn(comment, packet["prompt"])
+            self.assertIn("UNTRUSTED NATIVE-HOST EVIDENCE", packet["prompt"])
+        self.assertIn(f"Current-head proof: `{head}`.", first["comments"][-1])
+        self.assertIn(f"Current-head proof: `{head}`.", first["prompt"])
+        for evidence in (second["comments"][-1], second["prompt"]):
+            self.assertIn(f"STALE / conflicting proof for `{head}`; gated head is `{new_head}`.", evidence)
+            self.assertNotIn("Current-head proof:", evidence)
