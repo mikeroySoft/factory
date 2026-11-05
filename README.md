@@ -61,6 +61,18 @@ factory doctor          # tools, auth, remotes, model, dashboard port and .facto
 factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
 ```
 
+`factory install` enables and starts new units. On reinstall it snapshots each
+unit's enabled/active state before rewriting files and running `daemon-reload`.
+Existing stopped or disabled timers and dashboard services stay paused, even
+when their unit files change; enabled, active units retain the usual restart
+behavior when changed. This also applies to the optional probe and eval timers.
+Install lists paused units with a `systemctl --user enable --now <unit>` resume
+command. Use `factory install --enable` (with `--dashboard` when needed) to
+explicitly enable and start all installed units.
+If `is-enabled` fails without stdout (as on older systemd versions), install
+checks `LoadState` to confirm a missing unit. An inconclusive query aborts before
+unit files are changed, rather than treating a query failure as a fresh install.
+
 `doctor` checks the configured dashboard bind address and port; `install --dashboard`
 refuses a foreign or unidentified holder before writing units. Each factory needs
 its own `[repo."owner/name".dashboard] port` in the host config. The preflight cannot
@@ -899,9 +911,16 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `NOW`/`NEXT`/`THEN`/`LATER` line of the ticket's own pinned Plan baseline that
    names it, tiers in that order, then unknown priority (no baseline or no tier
    line), oldest ticket first within a class. After three consecutive
-   explicit-priority claims (`claimed` rows carry `priority`) the oldest
-   eligible unknown-priority ticket is admitted instead. Triage briefs, manager
-   recommendations and experiment results never set priority. A pass re-reads
+   explicit-priority claims (`claimed` rows carry `priority`), the oldest
+   eligible unknown-priority ticket is admitted instead only when no eligible,
+   unclaimed NOW ticket remains. The streak carries across ordinary passes of
+   the same active timer and engine revision, but resets after timer pause/resume
+   (a new systemd timer `InvocationID`) or an engine version/commit change.
+   Without a usable timer identity, the streak carries across passes of the same
+   engine version/commit; a transition to or from an observable timer also resets it.
+   Journals predating session tracking are not reused. Each `scheduling` row
+   records its `fairness_session`. Triage briefs, manager recommendations and
+   experiment results never set priority. A pass re-reads
    and re-ranks the frontier before each pick, so a Plan baseline re-bound while
    an earlier pick was claimed is honored. Each pick with eligible work and spare
    capacity logs one line per frontier ticket (`selected`, `deferred`, `held`,

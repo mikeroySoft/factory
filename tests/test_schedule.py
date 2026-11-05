@@ -86,12 +86,16 @@ class PolicyTest(unittest.TestCase):
                       next(row["reason"] for row in decided["explained"] if row["ticket"] == 1))
 
     def test_bounded_starvation_carries_over_from_the_journal_and_never_bypasses_the_slot(self):
-        # Three explicit admissions in earlier passes: the oldest unknown-priority ticket goes first now.
+        # No claimable NOW: #3 is already claimed, #5 is held by the experiment slot.
+        # Three explicit admissions let the oldest eligible unknown-priority ticket go first.
         # #8 is older still, but admission would refuse it, so fairness never picks it.
-        decided = schedule.plan(QUEUE, 2, repo=REPO, streak=3, experiments=1)
-        self.assertEqual([row["number"] for row in decided["selected"]], [1, 3])
+        rows = [{**row, "held": "already claimed"} if row["number"] == 3 else row for row in QUEUE]
+        decided = schedule.plan(rows, 2, repo=REPO, streak=3, experiments=1)
+        self.assertEqual([row["number"] for row in decided["selected"]], [1, 2])
+        self.assertEqual(decisions(decided)[3], "held")
+        self.assertEqual(decisions(decided)[5], "deferred")
         self.assertEqual(decisions(decided)[8], "held")
-        # #7 is the oldest unknown-priority ticket by age but the experiment slot holds; #1 is next oldest.
+        # #7 is an unknown-priority experiment, so fairness cannot bypass its full slot either.
         self.assertEqual(decisions(decided)[7], "deferred")
         # Without any explicit-priority candidate, unknown-priority work is admitted oldest first.
         decided = schedule.plan([QUEUE[1], QUEUE[3]], 2, repo=REPO, streak=0, experiments=0)
@@ -131,18 +135,29 @@ class DispatcherPassTest(unittest.TestCase):
         ))
 
     def test_ticket_pass_claims_in_policy_order_and_journals_the_explanation(self):
+        # Keep the fairness/experiment scenario, but with NEXT rather than claimable NOW work.
+        parent = issue(50, initiative_body(PLAN.replace("NOW #3 and #5", "NEXT #3 and #5")),
+                       labels=("initiative",), title="Roadmap")
+        bound = binding.render(binding.from_issue(self.cfg, 50, parent))
+        rows = [{**row, "body": bound} if row["number"] in (3, 5) else row for row in QUEUE]
+        session = {"timer_invocation": "a" * 32, "engine_version": dispatch.__version__, "engine_commit": "engine-a"}
+        dispatch.record("scheduling", fairness_session=session)
         for n in (10, 11, 12):
             dispatch.record("claimed", ticket=n, priority="NOW")
-        with patch.object(dispatch, "frontier", return_value=QUEUE), \
+        with patch.object(dispatch, "fairness_session", return_value=session), \
+                patch.object(dispatch, "frontier", return_value=rows), \
                 patch.object(dispatch, "process_ticket") as process:
             dispatch.ticket_pass(1, False)
         self.assertEqual([call.args[0]["number"] for call in process.call_args_list], [1, 5, 3])
-        row = next(e for e in lifecycle.read_events(self.events) if e.get("event") == "scheduling")
+        row = next(e for e in lifecycle.read_events(self.events) if e.get("event") == "scheduling" and "explained" in e)
         self.assertEqual((row["capacity"], row["active"]), (3, []))
         self.assertEqual([(e["ticket"], e["decision"]) for e in row["explained"]],
                          [(1, "selected"), (5, "selected"), (3, "selected"), (2, "deferred"), (4, "deferred"),
                           (7, "deferred"), (8, "held"), (6, "held")])
         self.assertIn("fairness after 3 consecutive", row["explained"][0]["reason"])
+        by = {e["ticket"]: e for e in row["explained"]}
+        self.assertIn("admission would refuse it", by[8]["reason"])
+        self.assertIn("experiment slot full", by[7]["reason"])
 
     def test_dry_run_explains_without_journaling_and_held_only_frontier_is_idle(self):
         with patch.object(dispatch, "frontier", return_value=QUEUE), \
