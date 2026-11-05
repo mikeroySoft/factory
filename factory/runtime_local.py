@@ -152,6 +152,16 @@ def _launchd_properties(text: str) -> dict[str, str]:
     return props
 
 
+def _launchd_exit_code(props: dict[str, str]) -> int | None:
+    status = props.get("last exit code")
+    if status is None or status == "(never exited)":
+        return None
+    code = status.partition(":")[0]
+    if not re.fullmatch(r"-?[0-9]{1,10}", code):
+        raise _Unavailable("invalid_exit_code")
+    return int(code)
+
+
 def _toml(path: Path) -> dict:
     try:
         return tomllib.loads(_read(path, CONFIG_BYTE_LIMIT).decode("utf-8"))
@@ -309,13 +319,10 @@ def dispatcher(cfg: Config, executions: list[dict], history: dict) -> tuple[dict
             seconds = int(interval.split()[0]) if interval is not None else 0
             timer_active = seconds > 0
             launchd["run_interval_seconds"] = seconds
-            status = props.get("last exit code")
-            if status is not None:
-                if not re.fullmatch(r"-?[0-9]{1,10}", status):
-                    raise _Unavailable("invalid_exit_code")
-                launchd["last_exit_code"] = int(status)
-                if int(status) != 0:
-                    error("launchctl", "service", "unit_failed")
+            status = _launchd_exit_code(props)
+            launchd["last_exit_code"] = status
+            if status not in (None, 0):
+                error("launchctl", "service", "unit_failed")
         except _Unavailable as exc:
             error("launchctl", "service", str(exc))
     else:

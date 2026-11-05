@@ -2231,10 +2231,12 @@ On macOS, `launchctl print gui/<uid>/factory-<basename>` supplies the loaded job
 `last_exit_code` (integer or null before any exit), and `run_interval_seconds`.
 An unloaded/unreadable job remains unknown, not stopped. Launchd does not expose
 a reliable next fire timestamp: `next_at` is null and the additive `next_at_code`
-is `not_applicable`, not an observation error. A nonzero last exit code reports
-`launchctl` / `service` / `unit_failed`. Watch observes both pass and dashboard
-labels and includes at most 40 lines/64 KiB from the agent's `stderr path`
-(`StandardErrorPath`); missing logs never suppress a failed agent.
+is `not_applicable`, not an observation error. A nonzero last exit code, including
+named values such as `78: EX_CONFIG`, reports `launchctl` / `service` / `unit_failed`;
+`(never exited)` is null, not an observation error. Watch observes both pass and
+dashboard labels and includes at most 40 lines/64 KiB from the agent's `stderr path`
+(`StandardErrorPath`); missing logs never suppress a failed agent. Launchd labels
+use the existing systemd service-role fingerprints so hosts share one failure issue.
 
 Each execution has the eight common F01 identity fields (`dispatcher_run_id`,
 `root_execution_id`, `execution_id`, `parent_execution_id`, `ticket`, `attempt`,

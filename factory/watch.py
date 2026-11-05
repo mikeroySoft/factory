@@ -153,8 +153,8 @@ def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
                 properties = runtime_local._launchd_properties(
                     runtime_local._command("service", unit=label)
                 )
-                failed = int(properties["last exit code"])
-            except (runtime_local._Unavailable, KeyError, TypeError, ValueError):
+                failed = runtime_local._launchd_exit_code(properties)
+            except runtime_local._Unavailable:
                 continue
             if not failed:
                 continue
@@ -665,8 +665,9 @@ def signals(
         }
     for name, status in failed_units(cfg):
         # Fingerprint the unit's role, not this install's unit name, so installs share one issue.
-        key = fingerprint("unit", name.replace(cfg.unit, "factory-<repo>", 1))
         launchd = sys.platform == "darwin"
+        role = name.replace(cfg.unit, "factory-<repo>", 1) + (".service" if launchd else "")
+        key = fingerprint("unit", role)
         found[key] = {"fingerprint": key, "kind": "unit", "stage": "launchd" if launchd else "systemd",
                       "key": name, "rows": [], "excerpt": status, "log": None, "latest": None,
                       "command": (f"launchctl print gui/{os.getuid()}/{name}" if launchd else
