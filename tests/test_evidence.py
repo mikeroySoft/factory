@@ -761,7 +761,7 @@ os.readlink = no_proc_readlink
         self.assertEqual(runtime["liveness"], "not_applicable")
         self.assertEqual(runtime["resources"], [])
 
-    def test_non_linux_running_lock_supports_successful_observe(self):
+    def test_non_linux_running_lock_has_no_proc_collection_error(self):
         import fcntl
 
         self.without_proc_identity("darwin")
@@ -770,8 +770,10 @@ os.readlink = no_proc_readlink
             fcntl.flock(held, fcntl.LOCK_EX)
             execution = lifecycle.Execution(self.journal, "dispatch", ticket=7, lock=lock)
             execution.emit("enter")
-            observed = self.invoke("observe")
-        self.assertNotEqual(observed["coverage"]["status"], "partial")
+            observed = self.invoke("observe", code=1)
+        self.assertIsNone(observed["attention_count"])
+        self.count_diagnostic(observed, "runtime_unknown")
+        self.assertEqual({error["code"] for error in observed["errors"]}, {"runtime_unknown"})
         self.assertFalse(any(error["source"] in {"proc", "proc/locks"}
                              for error in observed["errors"]))
         runtime = next(json.loads(row["text"]) for row in observed["sources"]
