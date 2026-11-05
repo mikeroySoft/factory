@@ -123,7 +123,7 @@ flowchart TB
   EXTPR -->|"review attempts exhausted, new issue: dispatch.review_intake_pass"| RFH
   EXTPR -->|"agent/lessons-*, agent/curate-*, agent/revert-lessons-* (same repository) admitted without a label: dispatch.review_intake_pass"| EXTPR
   EXTPR -->|"gate PASS + APPROVE bound to head, CI green: learn.promote_pass"| MERGED
-  RFH -->|"packet and manager rounds left: manage.escalation_pass"| MGR
+  RFH -->|"non-triage-timeout packet and manager rounds left: manage.escalation_pass"| MGR
   RFH -->|"terminal, routed request published: handoff.handoff_pass"| HUMAN
   MGR -->|"RETRY, REWRITE, or ROUTE: manage.apply"| RFA
   MGR -->|"AUTHORIZE adds add-only authority before requeue: manage.apply"| RFA
@@ -137,7 +137,7 @@ flowchart TB
   WONT -->|"a human decides: config.LABELS"| HUMAN
   HUMAN -->|"relabel, comment, close, approve: decisions.apply"| RFA
   TRI -->|"model read timeout, label kept for next-pass retry: triage.execute"| NT
-  TRI -->|"three consecutive timeouts per issue, once per streak: triage._report_timeout_streak"| ESC
+  TRI -->|"three consecutive timeouts per issue, once per durable streak; human only: triage._report_timeout_streak"| RFH
 
   classDef state fill:#e8f5e9,stroke:#2e7d32
   classDef out fill:#fff3e0,stroke:#e65100

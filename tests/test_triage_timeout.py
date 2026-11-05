@@ -12,8 +12,7 @@ from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
 
-from factory import cli, config, dispatch, lifecycle, triage
-from factory import handoff, manage
+from factory import cli, config, dispatch, handoff, lifecycle, manage, triage
 from factory.config import LABEL_AGENT, LABEL_HUMAN, LABEL_TRIAGE
 
 

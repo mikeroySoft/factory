@@ -508,20 +508,19 @@ def _report_unparseable_streak(number: int, issue: dict, execution) -> None:
     )
 
 
-def _report_timeout_streak(number: int) -> None:
-    failures = 1  # The current ticket scope has not written its exit yet.
-    for row in reversed(lifecycle.read_events(cfg.factory / "events.jsonl")):
-        if (row.get("event") != "lifecycle" or row.get("kind") != "exit"
-                or row.get("stage") != "triage-ticket" or row.get("ticket") != number):
-            continue
-        if row.get("reason") != "triage_endpoint_timeout":
-            break
-        failures += 1
-    if failures != TIMEOUT_FAILURES:
-        return
+def _report_timeout_streak(number: int, *, timed_out: bool = True) -> None:
     from factory import dispatch
 
+    previous = next((
+        row["failures"] for row in reversed(lifecycle.read_events(cfg.factory / "events.jsonl"))
+        if row.get("event") == "triage_timeout_streak" and row.get("ticket") == number
+    ), 0)
+    failures = previous + 1 if timed_out else 0
     dispatch.configure(cfg)
+    # Ordinary record rows survive retention; closed lifecycle executions do not.
+    dispatch.record("triage_timeout_streak", ticket=number, failures=failures)
+    if failures != TIMEOUT_FAILURES:
+        return
     dispatch.escalate(
         number,
         f"triage model timed out on {failures} consecutive attempts; check the model endpoint. "
@@ -793,6 +792,8 @@ def execute(args: argparse.Namespace, execution) -> int:
                                   file=sys.stderr)
                             exit_code = 1
                             continue
+                        if ticket_execution:
+                            _report_timeout_streak(number, timed_out=False)
                         if decision is None:
                             if ticket_execution:
                                 ticket_execution.outcome = "unknown"

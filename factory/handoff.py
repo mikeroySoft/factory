@@ -44,6 +44,8 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     r = escalation.get("round", 0)
     if not cfg.manager:
         return "no manager is configured, so nothing recovers automatically"
+    if escalation.get("code") == "triage_endpoint_timeout":
+        return "triage model timeouts require a human; manager recovery cannot bypass triage"
     if escalation.get("pr"):
         return "review-intake escalations are never managed; the opted-in PR needs a human review decision"
     if not 1 <= r <= cfg.manager_rounds:
