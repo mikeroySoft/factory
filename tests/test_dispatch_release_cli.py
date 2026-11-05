@@ -54,10 +54,10 @@ class DispatchReleaseCLI(unittest.TestCase):
     def test_approved_exit_zero_releases_and_next_pass_does_not_run_worker(self):
         self.install_ownership()
         self.state.write_text(json.dumps({"reviews": 1}))
-        self.cli("dispatch", "--ticket", "7")
+        result = self.cli("dispatch", "--ticket", "7")
         state = json.loads(self.state.read_text())
         self.assertEqual(state["assignees"], [])
-        self.assertTrue(state["pr"])
+        self.assertTrue(state.get("pr"), result.stdout + result.stderr)
         wt = self.repo / ".factory" / "wt-7"
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=wt, env=self.env,
                               check=True, capture_output=True, text=True).stdout
