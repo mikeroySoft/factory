@@ -347,5 +347,41 @@ class GateTempdirTest(unittest.TestCase):
                 self.assertEqual(code, expected, report + out)
                 self.assertFalse(Path(marker.read_text()).exists())
 
+
+class RunnerStorageTest(unittest.TestCase):
+    def test_gate_distinguishes_storage_diagnostics_from_expected_warning_output(self):
+        import json
+
+        from factory import lifecycle
+
+        cases = [
+            ("OSError: [Errno 28] No space left on device", 1, True),
+            ("error: ENOSPC: no space left on device, write", 0, True),
+            ("cp: cannot create file: No space left on device", 1, True),
+            ("ResourceWarning: unclosed file", 0, False),
+            ("UserWarning: expected ENOSPC in storage regression", 0, False),
+            ("AssertionError: wrong result", 1, False),
+        ]
+        for diagnostic, exit_code, storage in cases:
+            with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as d:
+                script = f"print({diagnostic!r}); print('noise\\n' * 100); raise SystemExit({exit_code})"
+                toml = TOML + (
+                    '\n[[gate.check]]\nname = "storage"\nrun = '
+                    + json.dumps([sys.executable, "-c", script]) + "\n"
+                )
+                repo = repo_with_test(Path(d), toml)
+                code, out, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+                self.assertEqual(code, 75 if storage else exit_code, out + report)
+                status = "INFRA (runner_storage_low)" if storage else "FAIL" if exit_code else "PASS"
+                self.assertIn(f"- storage: {status}", report)
+                exits = [r for r in lifecycle.read_events(repo / ".factory/events.jsonl")
+                         if r.get("stage") in {"gate", "gate-check"} and r.get("kind") == "exit"]
+                expected = "mechanism_failure" if storage else "product_feedback" if exit_code else "completed"
+                self.assertTrue(exits)
+                self.assertTrue(all(r["outcome"] == expected for r in exits), exits)
+                if storage:
+                    self.assertTrue(all(r["reason"] == "runner_storage_low" for r in exits), exits)
+                    self.assertNotIn("gate FAIL", out)
+
 if __name__ == "__main__":
     unittest.main()

@@ -2013,3 +2013,59 @@ class WorkerCompletionBoundaryLifecycleTest(unittest.TestCase):
             "```text\n- protected-paths: FAIL (add-only existing file modified)\n```"
         )
         self.assertIsNone(dispatch._protected_gate_guidance(report, set()))
+
+
+class RunnerStorageDispatchTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+
+    def test_runner_storage_low_requeues_before_gate_failure_or_high_risk_review(self):
+        from contextlib import chdir
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        self.write_config(extra=(
+            '\n[[gate.check]]\nname = "mutation"\nwhen = "pr"\n'
+            'run = ["unused"]\n'
+        ))
+        self.commit_config()
+        for storage_tier in ("attempt", "pr"):
+            with self.subTest(tier=storage_tier), chdir(self.repo), mock.patch.dict(os.environ, self.env):
+                dispatch.configure(config.load(self.repo))
+                real_run = dispatch.run
+
+                def run(command, *args, **kwargs):
+                    if command[1:6] == ["-P", "-E", "-m", "factory", "gate"]:
+                        tier = "pr" if "--tier" in command else "attempt"
+                        storage = tier == storage_tier
+                        report = (
+                            "# Gate report\n- mutation: INFRA (runner_storage_low)\n"
+                            if storage else "# Gate report\n- code: PASS\n"
+                        )
+                        (kwargs["cwd"] / command[command.index("--report") + 1]).write_text(report)
+                        return subprocess.CompletedProcess(command, 75 if storage else 0, "", "")
+                    return real_run(command, *args, **kwargs)
+
+                with mock.patch.object(dispatch, "run", side_effect=run), \
+                        mock.patch.object(dispatch.risk, "classify", return_value=("High", ["fixture"])), \
+                        mock.patch.object(dispatch, "unclaim", wraps=dispatch.unclaim) as unclaim, \
+                        mock.patch.object(dispatch, "review") as review:
+                    issue = dispatch.gh_json(["issue", "view", "7"])
+                    dispatch.process_ticket(issue, 5, False, forced=True)
+
+                unclaim.assert_called_once_with(
+                    7, "--remove-label", "ready-for-human", "--add-label", "ready-for-agent",
+                    assignee_last=True, check=True,
+                )
+                review.assert_not_called()
+                events = list(lifecycle.read_events(self.events))
+                self.assertFalse(any(r.get("event") in {"escalate", "risk-check", "review-rework"}
+                                     for r in events), events)
+                self.assertFalse(any(r.get("event") == "attempt" and r.get("gate") == "FAIL"
+                                     for r in events), events)
+                self.assertTrue(any(r.get("stage") == "ticket" and r.get("kind") == "exit"
+                                    and r.get("reason") == "runner_storage_low"
+                                    and r.get("outcome") == "mechanism_failure" for r in events), events)
