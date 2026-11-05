@@ -41,21 +41,28 @@ def storage_diagnostic(output: str | bytes | None) -> bool:
         output = output.decode("utf-8", errors="replace")
     if not output:
         return False
-    # Finished test reports can quote expected exceptions or assertion operands.
-    # They are product evidence, not evidence that the runner ran out of storage.
-    if re.search(
-        r"(?m)^(?:FAILED \((?:failures|errors)=|test result: FAILED|"
-        r"(?:=+\s*)?\d+ (?:failed|errors?)\b)", output,
-    ):
-        return False
-    return bool(re.search(
-        r"(?im)^(?:E\s+)?(?:"
-        r"(?:OSError|IOError):\s*(?:\[Errno 28\]|\bENOSPC\b)|"
-        r"(?:error|fatal|[^\n:]+(?:Error|Exception)):\s*[^\n]*"
-        r"(?:No space left on device|\bENOSPC\b)|"
-        r"[^\n:]+:\s*[^\n]*:\s*No space left on device\b"
-        r")", output,
-    ))
+    # Assertion reports may quote storage exceptions. Exclude those reports,
+    # not the entire test run: another test can have a genuine storage error.
+    reports = re.split(
+        r"(?m)(?=^(?:FAIL|ERROR): |^_{5,}.*_{5,}$|^={5,}|^Ran \d+ tests?\b)",
+        output,
+    )
+    for report in reports:
+        if report.startswith("FAIL: ") or re.search(
+            r"(?m)^(?:(?:E\s+)?AssertionError\b|[^\n]+:\d+: AssertionError\b|"
+            r"FAILED \S+ - AssertionError\b)", report,
+        ):
+            continue
+        if re.search(
+            r"(?im)^(?:E\s+)?(?:"
+            r"(?:OSError|IOError):\s*(?:\[Errno 28\]|\bENOSPC\b)|"
+            r"(?:error|fatal|[^\n:]+(?:Error|Exception)):\s*[^\n]*"
+            r"(?:No space left on device|\bENOSPC\b)|"
+            r"[^\n:]+:\s*[^\n]*:\s*No space left on device\b"
+            r")", report,
+        ):
+            return True
+    return False
 
 
 def configure(c: Config) -> None:
@@ -96,7 +103,7 @@ def timed(
             if proc.returncode < 0:
                 execution.outcome = "unknown"
                 execution.reason = "check_terminated_by_signal"
-        return subprocess.CompletedProcess(cmd, proc.returncode, out, "")
+        result = subprocess.CompletedProcess(cmd, proc.returncode, out, "")
     except subprocess.TimeoutExpired:
         if execution:
             execution.outcome = "unknown"
@@ -106,20 +113,21 @@ def timed(
         out, _ = proc.communicate()
         if execution:
             execution.emit("result", command=cmd, returncode=proc.returncode, timed_out=True)
-        return subprocess.CompletedProcess(
+        result = subprocess.CompletedProcess(
             cmd, 124, f"{out}\ncheck timed out after {CHECK_TIMEOUT}s", ""
         )
     finally:
         if execution and proc.poll() is not None:
             execution.child_done(proc.pid)
+    if result.returncode and (result.returncode == STORAGE_EXIT or storage_diagnostic(result.stdout)):
+        raise RunnerStorageLow(result.stdout)
+    return result
 
 
 def run(cmd: list[str]) -> tuple[bool, str]:
     """Run a command, return (passed, combined output)."""
     proc = timed(cmd)
     output = proc.stdout + proc.stderr
-    if proc.returncode != 0 and (proc.returncode == STORAGE_EXIT or storage_diagnostic(output)):
-        raise RunnerStorageLow(output)
     execution = lifecycle.current()
     if execution and proc.returncode != 0 and execution.outcome == "completed":
         execution.outcome = "product_feedback"
@@ -694,7 +702,20 @@ def _main(argv: list[str]) -> int:
         os.environ["TMPDIR"] = tmpdir
         try:
             with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
-                return execute(args, execution)
+                try:
+                    return execute(args, execution)
+                except (RunnerStorageLow, OSError) as exc:
+                    if isinstance(exc, OSError) and exc.errno != errno.ENOSPC:
+                        raise
+                    execution.outcome, execution.reason = "unknown", "runner_storage_low"
+                    report = Path(args.report)
+                    report.parent.mkdir(parents=True, exist_ok=True)
+                    report.write_text(
+                        "# Gate report\n\n- gate: INFRA (runner_storage_low)\n\n"
+                        f"## gate output\n\n```\n{exc}\n```\n"
+                    )
+                    print(f"report: {report}\ngate INFRA: runner_storage_low\n{exc}")
+                    return STORAGE_EXIT
         finally:
             if previous_tmpdir is None:
                 os.environ.pop("TMPDIR", None)

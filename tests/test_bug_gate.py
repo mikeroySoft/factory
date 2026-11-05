@@ -949,7 +949,9 @@ class BuiltinStorageGateTest(unittest.TestCase):
                         ]
                     return popen(command, *args, **kwargs)
 
+                env = {key: value for key, value in os.environ.items() if key != lifecycle.CONTEXT_ENV}
                 with contextlib.chdir(repo), contextlib.redirect_stdout(io.StringIO()) as output, \
+                        mock.patch.dict(os.environ, env, clear=True), \
                         mock.patch.object(gate_module.subprocess, "Popen", side_effect=storage_command):
                     code = gate_module.main([
                         "--bug", "--repro-test", TEST_ID, "--check-timeout", "1", "--skip", "test",
@@ -957,6 +959,6 @@ class BuiltinStorageGateTest(unittest.TestCase):
                 self.assertEqual(code, 75, output.getvalue())
                 self.assertIn("gate INFRA: runner_storage_low", output.getvalue())
                 rows = [json.loads(line) for line in (repo / ".factory/events.jsonl").read_text().splitlines()]
-                exits = [row for row in rows if row.get("stage") == "gate" and row.get("event") == "exit"]
+                exits = [row for row in rows if row.get("stage") == "gate" and row.get("kind") == "exit"]
                 self.assertEqual(exits[-1]["reason"], "runner_storage_low")
                 self.assertEqual(exits[-1]["outcome"], "unknown")
