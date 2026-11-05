@@ -227,7 +227,7 @@ class RunnerPreflightTest(unittest.TestCase):
         for error, retained in ((FileNotFoundError, False), (ProcessLookupError, False),
                                 (PermissionError, True)):
             with self.subTest(error=error):
-                def exiting(path):
+                def exiting(path, error=error):
                     if path == Path(f"/proc/{child.pid}/environ"):
                         raise error("process observation unavailable")
                     return read_bytes(path)

@@ -838,8 +838,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Preflight also reaps gate/review scratch roots with a dead recorded owner,
    retaining roots referenced by surviving children (inherited environment,
    working directory or open files on Linux). Unknown ownership/visibility is
-   retained; legacy unmarked roots keep their 24-hour age floor and a process
-   environment check. Non-Linux hosts use `ps` environment observations.
+   retained; unrelated process churn alone does not retain unused roots. Legacy
+   unmarked roots keep their 24-hour age floor and a process environment check.
+   Non-Linux hosts use `ps` environment observations.
    Dry runs neither reap nor write admission records.
    Capacity, locks and
    dependencies are never overridden. The dispatcher then re-reads the issue

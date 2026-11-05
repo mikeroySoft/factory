@@ -61,8 +61,8 @@ def _has_users(root: Path, *, exclude: int | None = None) -> bool:
             return True
         boot = lifecycle._boot_id()
         seen = set()
-        # ponytail: three snapshots bound process churn; retry next preflight
-        # rather than deleting against an incomplete view of forked children.
+        # Follow newly forked/reparented children across bounded snapshots.
+        # Unrelated process churn alone is not evidence that this root is used.
         for _ in range(3):
             processes = {p for p in Path("/proc").iterdir() if p.name.isdigit()} - seen
             if not processes:
@@ -83,13 +83,13 @@ def _has_users(root: Path, *, exclude: int | None = None) -> bool:
                     for reference in references:
                         try:
                             target = Path(os.readlink(reference))
-                        except FileNotFoundError:
+                        except (FileNotFoundError, ProcessLookupError):
                             continue
                         if target == root or root in target.parents:
                             return True
-                except FileNotFoundError:
+                except (FileNotFoundError, ProcessLookupError):
                     continue  # exited while inspecting
-        return True
+        return False
     except (OSError, ValueError, IndexError):
         return True
 
