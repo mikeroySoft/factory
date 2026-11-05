@@ -77,24 +77,27 @@ class TriagePass(unittest.TestCase):
         return {row["ticket"]: row["reason"] for row in lifecycle.read_events(self.events)
                 if row.get("stage") == "triage-ticket" and row.get("kind") == "exit"}
 
-    def test_timeout_skips_only_that_ticket(self):
+    def test_timeout_defers_the_batch_without_a_verdict(self):
         self.failure[3] = TimeoutError("timed out")
-        self.assertEqual(self.run_pass(), 1)
-        self.assertEqual(self.asked, [3, 2, 1])
-        self.assertEqual(self.labels, {3: {LABEL_TRIAGE}, 2: {LABEL_AGENT}, 1: {LABEL_AGENT}})
-        self.assertEqual(self.ticket_exits(), {3: "triage_endpoint_timeout", 2: LABEL_AGENT, 1: LABEL_AGENT})
+        with patch.object(triage.time, "sleep"):
+            self.assertEqual(self.run_pass(), 0)
+        self.assertEqual(self.asked, [3, 3, 3])
+        self.assertEqual(self.labels, {n: {LABEL_TRIAGE} for n in self.listed})
+        self.assertEqual(self.ticket_exits(), {3: "triage_endpoint_unavailable"})
         results = [row for row in lifecycle.read_events(self.events)
-                   if row.get("kind") == "result" and row.get("ticket") == 3]
-        self.assertEqual([row["timed_out"] for row in results], [True])
+                   if row.get("kind") == "try_later" and row.get("ticket") == 3]
+        self.assertEqual([(row["timed_out"], row["attempts"]) for row in results], [(True, 3)])
 
-    def test_previously_timed_out_ticket_goes_after_untried_ones(self):
+    def test_previously_unavailable_ticket_stays_eligible_on_next_pass(self):
         self.failure[3] = TimeoutError("timed out")
-        self.run_pass()
+        with patch.object(triage.time, "sleep"):
+            self.assertEqual(self.run_pass(), 0)
         self.listed = [4, 3, 2, 1]
         self.labels.update({4: {LABEL_TRIAGE}, 2: {LABEL_TRIAGE}, 1: {LABEL_TRIAGE}})
+        self.failure.clear()
         self.asked.clear()
-        self.run_pass()
-        self.assertEqual(self.asked, [4, 2, 1, 3])
+        self.assertEqual(self.run_pass(), 0)
+        self.assertEqual(self.asked, [4, 3, 2, 1])
 
     def test_wontfix_proposal_is_labelled_and_not_retriaged(self):
         self.decision[2] = LABEL_WONTFIX
@@ -104,23 +107,21 @@ class TriagePass(unittest.TestCase):
         self.run_pass()
         self.assertEqual(self.asked, [])
 
-    def test_connection_refused_ends_the_pass_after_one_attempt(self):
+    def test_connection_refused_defers_the_pass_after_three_attempts(self):
         refused = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
         self.failure.update(dict.fromkeys(self.listed, refused))
-        with self.assertRaises(SystemExit) as ended:
-            self.run_pass()
-        self.assertEqual(ended.exception.code, 2)
-        self.assertEqual(self.asked, [3])
+        with patch.object(triage.time, "sleep"):
+            self.assertEqual(self.run_pass(), 0)
+        self.assertEqual(self.asked, [3, 3, 3])
         self.assertEqual(self.labels, {n: {LABEL_TRIAGE} for n in self.listed})
         self.assertEqual(self.ticket_exits(), {3: "triage_endpoint_unavailable"})
 
-    def test_connect_timeout_ends_the_pass_after_one_attempt(self):
+    def test_connect_timeout_defers_the_pass_after_three_attempts(self):
         self.failure.update(dict.fromkeys(self.listed, urllib.error.URLError(TimeoutError("timed out"))))
-        with self.assertRaises(SystemExit) as ended:
-            self.run_pass()
-        self.assertNotIsInstance(ended.exception, triage.EndpointTimeout)
-        self.assertEqual(self.asked, [3])
-        self.assertEqual(self.ticket_exits(), {3: "triage_endpoint_timeout"})
+        with patch.object(triage.time, "sleep"):
+            self.assertEqual(self.run_pass(), 0)
+        self.assertEqual(self.asked, [3, 3, 3])
+        self.assertEqual(self.ticket_exits(), {3: "triage_endpoint_unavailable"})
 
 
 class Reproposal(unittest.TestCase):
