@@ -188,3 +188,32 @@ Path(".factory/handoff-7.md").write_text("Native-host proof: `.factory/native\\x
             self.assertNotIn("Current-head proof:", comment)
             self.assertNotIn("NUL-stripped path must not be read", comment)
             self.assertNotIn("\x00", packet["prompt"])
+
+    def test_native_proof_quoted_paths_with_spaces_reach_review(self):
+        self.local.worker.write_text(fixtures.WORKER + '''
+import subprocess
+subprocess.run(["git", "add", "change.txt"], check=True)
+subprocess.run(["git", "commit", "-m", "worker change"], check=True)
+Path(".factory").mkdir(exist_ok=True)
+citations = []
+for label, quote in (("backtick", "`"), ("double", chr(34)), ("single", chr(39))):
+    proof = Path(".factory/" + label + " native proof.txt")
+    if not proof.exists():
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        proof.write_text("Verified source revision: " + head + "\\nNative " + label + " smoke: PASS\\n")
+    citations.append("Proof: " + quote + str(proof) + quote)
+Path(".factory/handoff-7.md").write_text("\\n".join(citations))
+''')
+        self.local.cli("dispatch", "--ticket", "7")
+        state = json.loads(self.local.state.read_text())
+        first, second = state["packets"]
+        for packet in (first, second):
+            self.assertTrue(packet["comments"], "Quoted proof was not posted before review")
+            comment = packet["comments"][-1]
+            for label in ("backtick", "double", "single"):
+                with self.subTest(label=label):
+                    self.assertIn("Native " + label + " smoke: PASS", comment)
+            self.assertIn(comment, packet["prompt"])
+        self.assertIn("Current-head proof:", first["prompt"])
+        self.assertNotIn("Current-head proof:", second["prompt"])
+        self.assertIn("STALE / conflicting proof", second["prompt"])
