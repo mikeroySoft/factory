@@ -1,6 +1,6 @@
 """Mutation testing of changed `factory/` files for the pr-tier gate.
 
-Mutates the Python files under `factory/` that changed in `origin/main..HEAD`, runs
+Mutates the Python files under `factory/` that changed in `origin/main...HEAD`, runs
 the full discovered unittest suite against each mutant (related tests first,
 stopping at the first failure), and prints
 every survivor as `path:line: <mutation>`. The default report-only mode exits zero
@@ -42,7 +42,7 @@ COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", ".factory", "__pycache__",
 def changed_lines() -> dict[str, set[int]]:
     """Changed `factory/*.py` files (added or modified) -> line numbers added or modified."""
     out = subprocess.run(
-        ["git", "diff", "--unified=0", "--no-renames", "--diff-filter=AM", "origin/main..HEAD", "--", "factory/*.py"],
+        ["git", "diff", "--unified=0", "--no-renames", "--diff-filter=AM", "origin/main...HEAD", "--", "factory/*.py"],
         capture_output=True, text=True, check=True,
     ).stdout
     lines: dict[str, set[int]] = {}
