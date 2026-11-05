@@ -152,6 +152,17 @@ class TriageTimeoutTest(unittest.TestCase):
         self.assertEqual(self.comments[1], [])
         self.assertEqual(self.labels[1], {LABEL_TRIAGE})
 
+    def test_triage_timeout_escalation_preserves_uninterrupted_streak(self):
+        for _ in range(7):
+            self.assertEqual(cli.main(["triage"]), 1)
+        self.assertEqual(len(self.rows("escalate")), 1)
+        self.assertEqual(len(self.comments[1]), 1)
+        exits = [row for row in self.rows("lifecycle")
+                 if row.get("kind") == "exit" and row.get("stage") == "triage-ticket"
+                 and row.get("ticket") == 1]
+        self.assertEqual([row["reason"] for row in exits], ["triage_endpoint_timeout"] * 7)
+        self.assertEqual(self.labels[1], {LABEL_TRIAGE, LABEL_HUMAN})
+
 
 if __name__ == "__main__":
     unittest.main()
