@@ -21,8 +21,8 @@ class DashboardExclusivePortTest(unittest.TestCase):
         with socket.socket() as holder:
             holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             holder.bind(("127.0.0.1", 0))
-            # No listening socket appears in ss, but this reservation prevents
-            # the dashboard's exclusive HTTPServer bind.
+            # No listening socket appears in ss. The port is still reserved;
+            # address reuse must not make it appear available.
             with patch.object(onboard, "sh", return_value=subprocess.CompletedProcess([], 0, "", "")):
                 ok, detail = onboard._dashboard_port_check(self.cfg, "127.0.0.1", holder.getsockname()[1])
         self.assertFalse(ok, detail)

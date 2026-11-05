@@ -370,7 +370,8 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
 
     with probe:
         try:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Darwin permits IPv4 reuse beside a dual-stack wildcard listener.
+            # Probe exclusively so an occupied dashboard port cannot look free.
             probe.bind(target)
             collision = False
         except OSError as exc:
