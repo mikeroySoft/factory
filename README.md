@@ -821,6 +821,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    under 80 characters or without acceptance criteria (`needs-info` with a
    specific question); the model then decides between the four labels, and
    `wontfix` is only ever proposed.
+   A model read timeout records `triage_endpoint_timeout` for the ticket and
+   pass; other issues continue. The timed-out issue keeps `needs-triage` and is
+   retried after untried tickets on the next pass. Three consecutive timeout
+   attempts on one issue add `ready-for-human` through the normal escalation
+   packet/comment path, without removing `needs-triage`. The same uninterrupted
+   streak escalates only once; a non-timeout ticket outcome resets the streak.
+   Dry-run and replay never record or escalate failures.
    With `[install].dispatch_env` set, triage refuses to post (exit 1, reason
    `identity_mismatch`) unless `gh` authenticates as the login that environment
    selects, so a shell or unit without the dispatcher's `GH_CONFIG_DIR` cannot

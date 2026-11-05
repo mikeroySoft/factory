@@ -41,6 +41,7 @@ LOGIN: str | None = None  # `gh` login this process posts as; read once per proc
 PROBE_FAILURES = 3
 PROBE_COOLDOWN = 15 * 60
 PROBE_TIMEOUT = 3
+TIMEOUT_FAILURES = 3
 
 
 def configure(c: Config) -> None:
@@ -507,6 +508,28 @@ def _report_unparseable_streak(number: int, issue: dict, execution) -> None:
     )
 
 
+def _report_timeout_streak(number: int) -> None:
+    failures = 1  # The current ticket scope has not written its exit yet.
+    for row in reversed(lifecycle.read_events(cfg.factory / "events.jsonl")):
+        if (row.get("event") != "lifecycle" or row.get("kind") != "exit"
+                or row.get("stage") != "triage-ticket" or row.get("ticket") != number):
+            continue
+        if row.get("reason") != "triage_endpoint_timeout":
+            break
+        failures += 1
+    if failures != TIMEOUT_FAILURES:
+        return
+    from factory import dispatch
+
+    dispatch.configure(cfg)
+    dispatch.escalate(
+        number,
+        f"triage model timed out on {failures} consecutive attempts; check the model endpoint. "
+        "The issue remains needs-triage and will be retried next pass",
+        None,
+        code="triage_endpoint_timeout",
+    )
+
 
 def triage_issue(issue: dict, execution=None) -> dict | None:
     """Choose a deterministic route where possible, otherwise ask the model."""
@@ -763,6 +786,8 @@ def execute(args: argparse.Namespace, execution) -> int:
                             decision = triage_issue(issue, execution=ticket_execution)
                         except EndpointTimeout:
                             outcome, reason = "unknown", "triage_endpoint_timeout"
+                            if ticket_execution:
+                                _report_timeout_streak(number)
                             print(f"#{number}: model timed out; skipping, tried after untried tickets next pass",
                                   file=sys.stderr)
                             exit_code = 1

@@ -2109,6 +2109,7 @@ ESCALATION_CODES = frozenset({
     "refresh_empty", "gh_failed", "review_intake", "manager_failed",
     "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
     "lease_refused", "dispatcher_error", "no_change", "risk_disagreement",
+    "triage_endpoint_timeout",
 })
 
 
