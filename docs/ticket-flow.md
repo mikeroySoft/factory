@@ -94,11 +94,11 @@ flowchart TB
   %% Approval and merge
   MAPP -->|"manager APPROVE: manage.frontier_pass"| FA
   MAPP -->|"CI fail, late feedback, stale, rounds exhausted, HUMAN: manage.frontier_pass"| ESC
-  FA -->|"late feedback or stale past stale_days, any manager.review mode: manage.frontier_pass"| ESC
   MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
   PUSH -->|"agent/<n> push refused, remote moved since the lease was read or leased head absent from starting and final history while starting head remains an ancestor of final: dispatch.push_agent"| ESC
   CLAIM -->|"any other dispatcher exception after the claim, then re-raised: dispatch.process_ticket"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
+  FA -->|"late feedback or stale past stale_days, any manager.review mode: manage.frontier_pass"| ESC
   FA -->|"dispatch.pr_checks"| CI
   CI -->|"pending: dispatch.merge_pass_locked waits"| FA
   CI -->|"fail or cancel after steps ran, approval removed: dispatch.merge_pass_locked"| ESC
