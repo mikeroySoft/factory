@@ -43,6 +43,8 @@ class SystemdProbesTest(unittest.TestCase):
         self.enterContext(patch.object(config, "host_config", return_value={}))
         self.enterContext(patch.object(config, "engine_drift", return_value=None))
         self.enterContext(patch.object(onboard, "unit_dir", return_value=self.root / "units"))
+        self.cfg.dashboard_port = port
+        self.port_check = onboard._dashboard_port_check
         self.enterContext(patch.object(onboard, "_dashboard_port_check", return_value=(True, "available")))
         self.enterContext(patch.object(triage, "probe_endpoint", return_value=(True, "ready")))
         self.calls: list[list[str]] = []
@@ -195,6 +197,85 @@ class SystemdProbesTest(unittest.TestCase):
                     self.assertIn("consecutive_failures", data["dispatcher"])
                 else:
                     self.assertTrue(data["ok"])
+
+    def test_linux_unavailable_journal_is_not_zero_failures(self):
+        original = self.runner
+        for failure in (FileNotFoundError("journalctl"),
+                        subprocess.CompletedProcess([], 1, "", "journal unavailable")):
+            def unavailable(argv, **kwargs):
+                if argv[0] == "journalctl":
+                    if isinstance(failure, OSError):
+                        raise failure
+                    return failure
+                return original(argv, **kwargs)
+
+            with self.subTest(failure=failure), patch.object(self, "runner", side_effect=unavailable):
+                data = self.dashboard("linux")
+            self.assertIsNone(data["dispatcher"]["consecutive_failures"])
+            self.assertEqual(data["dispatcher"]["runs"], [])
+
+    def test_linux_empty_observed_journal_has_zero_failures(self):
+        original = self.runner
+
+        def empty(argv, **kwargs):
+            if argv[0] == "journalctl":
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return original(argv, **kwargs)
+
+        with patch.object(self, "runner", side_effect=empty):
+            data = self.dashboard("linux")
+        self.assertEqual(data["dispatcher"]["consecutive_failures"], 0)
+
+    def test_darwin_doctor_checks_real_free_port_without_ss(self):
+        original = self.runner
+
+        def missing_ss(argv, **kwargs):
+            if argv[0] == "ss":
+                raise FileNotFoundError("ss")
+            return original(argv, **kwargs)
+
+        with patch.object(onboard, "_dashboard_port_check", side_effect=self.port_check), \
+                patch.object(self, "runner", side_effect=missing_ss):
+            data = self.doctor("darwin")
+        rows = {row["label"]: row for row in data["rows"]}
+        self.assertTrue(data["ok"])
+        self.assertEqual(rows[f"dashboard port {self.cfg.dashboard_port}"]["status"], "PASS")
+
+    def test_unidentified_busy_port_still_fails_without_ss(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            for platform in ("linux", "darwin"):
+                with self.subTest(platform=platform), patch.object(sys, "platform", platform), \
+                        patch.object(onboard, "sh", side_effect=FileNotFoundError("ss")):
+                    ok, _ = self.port_check(self.cfg, "127.0.0.1", listener.getsockname()[1])
+                self.assertFalse(ok)
+
+    def test_doctor_does_not_require_linux_renameat2(self):
+        stubs = stub_bin(self.root, gh='echo ADMIN\nexit 0', droid="exit 0", omp="exit 0")
+        script = """
+import ctypes
+import runpy
+import sys
+original = ctypes.CDLL
+class WithoutRename:
+    def __init__(self, *args, **kwargs):
+        self.library = original(*args, **kwargs)
+    def __getattr__(self, name):
+        if name == "renameat2":
+            raise AttributeError(name)
+        return getattr(self.library, name)
+ctypes.CDLL = WithoutRename
+sys.argv = ["factory", "doctor", "--json"]
+runpy.run_module("factory", run_name="__main__")
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script], cwd=self.repo, capture_output=True, text=True,
+            env={**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}",
+                 "PYTHONPATH": str(Path(__file__).resolve().parents[1])}, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(json.loads(result.stdout)["ok"])
 
 
 if __name__ == "__main__":
