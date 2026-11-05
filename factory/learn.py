@@ -17,6 +17,7 @@ import json
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -1070,19 +1071,28 @@ def gate_head(wt: Path, branch: str, protected_override: bool) -> str:
 
 
 def refresh(cfg: config.Config, n: int, branch: str, head: str) -> None:
-    """Rebase a chore PR that is behind main onto it, gate the new head, push it with a lease on `head`,
-    and review it: the evidence `promote_pass` reads is then bound to a head containing the main tip."""
+    """Merge main into a behind chore PR, gate and push the new head, then review it.
+
+    Refuse a changed remote head; normal pushes also reject non-fast-forward races."""
     wt = cfg.factory / f"wt-{branch.removeprefix('agent/')}"
     dispatch.run(["git", "fetch", "origin", cfg.main, branch], cwd=cfg.root)
     dispatch.run(["git", "worktree", "add", "--force", "-B", branch, str(wt), head], cwd=cfg.root)
     try:
-        dispatch.run(["git", "rebase", f"origin/{cfg.main}"], cwd=wt)
+        dispatch.run(["git", "merge", "--no-edit", f"origin/{cfg.main}"], cwd=wt)
         new = gate_head(wt, branch, protected_override=True)  # the diff `chore_pr` gated, now on main
-        dispatch.run(["git", "push", f"--force-with-lease={branch}:{head}", "origin", f"HEAD:{branch}"], cwd=wt)
+        push = ["git", "push", "origin", f"HEAD:{branch}"]
+        remote = dispatch.run(["git", "ls-remote", "origin", f"refs/heads/{branch}"], cwd=wt)
+        if (remote.stdout.split() or [""])[0] != head:
+            raise subprocess.CalledProcessError(
+                1, push, stderr=f"[rejected] {branch}: remote head changed since promotion",
+            )
+        if new == head:
+            raise ValueError(f"refresh left {branch} unchanged at {head}")
+        dispatch.run(push, cwd=wt)
         base = dispatch.run(["git", "rev-parse", f"origin/{cfg.main}"], cwd=wt).stdout.strip()
         dispatch.review_external_pr(n, base, new, branch)
     finally:
-        dispatch.run(["git", "rebase", "--abort"], cwd=wt, check=False)
+        dispatch.run(["git", "merge", "--abort"], cwd=wt, check=False)
         dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
 
 
@@ -1493,6 +1503,10 @@ def _error_text(exc: Exception) -> str:
     )
 
 
+def _strict_base_refusal(detail: str) -> bool:
+    return any(text in detail.casefold() for text in ("not up to date", "is expected"))
+
+
 def _reconcile_human_merges(
     cfg: config.Config,
     open_prs: set[int],
@@ -1671,12 +1685,33 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         _promotion_blocked(events, n, branch, head, reason, dry_run)
         return
     compare = dispatch.gh_json(["api", f"repos/{cfg.repo}/compare/{cfg.main}...{head}"])
-    if compare["behind_by"] and {
-        item["filename"] for item in compare["files"]
-    } - {LESSONS_NAME}:
+    blockers = [
+        row for row in events
+        if row.get("event") == "promotion-blocked"
+        and row.get("pr") == n
+        and row.get("head") == head
+        and isinstance(row.get("reason"), str)
+        and (row["reason"] == "refresh failed" or row["reason"].startswith("merge failed:"))
+    ]
+    blocker = next((row for row in blockers if row["reason"] == "refresh failed"), None)
+    if blocker:
+        dispatch.log(
+            f"PR #{n}: {branch} blocked at {head[:12]} ({blocker['reason']}); "
+            "resolve the blocker and push a new head to retry promotion"
+        )
+        return
+    if (
+        compare["behind_by"]
+        or pr.get("mergeStateStatus") == "BEHIND"
+        or any(_strict_base_refusal(row["reason"]) for row in blockers)
+    ):
         dispatch.log(f"PR #{n}: {'would refresh' if dry_run else 'refreshing'} {branch} (behind {cfg.main})")
         if not dry_run:
-            refresh(cfg, n, branch, head)
+            try:
+                refresh(cfg, n, branch, head)
+            except Exception:
+                _promotion_blocked(events, n, branch, head, "refresh failed", False)
+                raise
         return
     from factory import eval as eval_suite
 
@@ -1704,14 +1739,7 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         )
         _promotion_blocked(events, n, branch, head, "worker eval keep evidence missing", dry_run)
         return
-    blocker = next((
-        row for row in events
-        if row.get("event") == "promotion-blocked"
-        and row.get("pr") == n
-        and row.get("head") == head
-        and isinstance(row.get("reason"), str)
-        and (row["reason"] == "refresh failed" or row["reason"].startswith("merge failed:"))
-    ), None)
+    blocker = next(iter(blockers), None)
     if blocker:
         dispatch.log(
             f"PR #{n}: {branch} blocked at {head[:12]} ({blocker['reason']}); "
@@ -1733,7 +1761,16 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
             ])
         except Exception as exc:
             detail = _error_text(exc)
-            if "not up to date" in detail.casefold():
+            needs_refresh = _strict_base_refusal(detail)
+            if not needs_refresh:
+                try:
+                    state = dispatch.gh_json([
+                        "pr", "view", str(n), "--repo", cfg.repo, "--json", "mergeStateStatus",
+                    ])
+                    needs_refresh = state.get("mergeStateStatus") == "BEHIND"
+                except Exception as state_exc:  # noqa: BLE001 - retain the original merge failure
+                    dispatch.log(f"PR #{n}: could not read merge state ({state_exc})")
+            if needs_refresh:
                 reason = "refresh failed"
                 dispatch.log(f"PR #{n}: refreshing {branch} after strict-base merge refusal")
                 try:
