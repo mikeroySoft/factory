@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import argparse
 import functools
 import json
@@ -16,7 +17,7 @@ from pathlib import Path
 from statistics import pstdev
 from typing import Any
 
-from factory import config, feedback, lifecycle, onboard, risk
+from factory import config, feedback, lifecycle, onboard, reads, risk
 from factory.config import LABEL_AGENT, LABEL_HUMAN, USAGE_FIELDS, Config
 
 cfg: Config
@@ -37,12 +38,9 @@ def configure(c: Config) -> None:
 
 def gh(*args: str) -> Any:
     """Run gh and decode its JSON output."""
-    completed = subprocess.run(
-        ["gh", *args, *([] if args[0] == "api" else ["--repo", REPOSITORY])],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    command = ["gh", *args, *([] if args[0] == "api" else ["--repo", REPOSITORY])]
+    completed = reads.run(command, lambda: subprocess.run(
+        command, text=True, capture_output=True, check=False))
     if completed.returncode:
         print(completed.stderr.strip() or "gh command failed", file=sys.stderr)
         raise SystemExit(completed.returncode)
@@ -652,7 +650,7 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
 
     fetched = {}
     with ThreadPoolExecutor(WORKERS) as pool:
-        futures = {pool.submit(read, number): number for number in listed}
+        futures = {pool.submit(contextvars.copy_context().run, read, number): number for number in listed}
         try:
             for done, future in enumerate(as_completed(futures), 1):
                 fetched[futures[future]] = future.result()

@@ -195,7 +195,11 @@ def _reset_legacy_bar(
 
 
 def _gh(cfg: config.Config, endpoint: str, *args: str) -> Any:
-    proc = subprocess.run(["gh", "api", *args, endpoint], text=True, capture_output=True, check=False)
+    from factory import reads
+
+    command = ["gh", "api", *args, endpoint]
+    proc = reads.run(command, lambda: subprocess.run(
+        command, text=True, capture_output=True, check=False))
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or f"gh api {endpoint} failed")
     return json.loads(proc.stdout) if proc.stdout.strip() else None
@@ -300,8 +304,11 @@ def _finish(cfg: config.Config, dry_run: bool, reason: str, metrics: dict[str, f
 
 
 def _gh_release(cfg: config.Config, *args: str, notes: str | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["gh", "release", *args, "--repo", cfg.repo], input=notes,
-                          text=True, capture_output=True, check=False)
+    from factory import reads
+
+    command = ["gh", "release", *args, "--repo", cfg.repo]
+    return reads.run(command, lambda: subprocess.run(
+        command, input=notes, text=True, capture_output=True, check=False), check=False)
 
 
 def _notes(cfg: config.Config, tag: str) -> str:

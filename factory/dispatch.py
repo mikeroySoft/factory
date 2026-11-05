@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 
-from factory import __version__, brief, config, lifecycle, risk
+from factory import __version__, brief, config, lifecycle, reads, risk
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -209,7 +209,8 @@ def run(
     A failed checked command logs its redacted stderr tail, then raises as before.
     """
     try:
-        return _run(cmd, cwd, check, stdout, stderr, env, timeout)
+        return reads.run(cmd, lambda: _run(cmd, cwd, check, stdout, stderr, env, timeout),
+                         check=check, env=env)
     except subprocess.CalledProcessError as exc:
         tail = stderr_tail(exc.stderr)
         if tail:
@@ -696,7 +697,7 @@ class HostClaim:
         self.n = n
         self.comment = comment
         self.stopped = threading.Event()
-        self.thread = threading.Thread(target=self.heartbeat, daemon=True)
+        self.thread = threading.Thread(target=reads.copy_context().run, args=(self.heartbeat,), daemon=True)
 
     def body(self) -> str:
         return (f"Factory claim: host={cfg.host_name} nonce={self.comment['nonce']} "
@@ -711,6 +712,9 @@ class HostClaim:
                     return
                 run(["gh", "api", f"repos/{REPO}/issues/comments/{self.comment['id']}",
                      "--method", "PATCH", "-f", f"body={self.body()}"])
+            except reads.ReadFailure as exc:
+                reads.skip(exc, ticket=self.n, operation="claim-heartbeat")
+                return
             except (OSError, subprocess.CalledProcessError) as exc:
                 log(f"#{self.n}: host claim heartbeat failed ({exc})")
 
@@ -750,6 +754,10 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
             record("claim_lost", ticket=n, host=cfg.host_name,
                    winner=elected[0]["host"] if elected else None)
             return None
+    except reads.ReadFailure:
+        # Election reads are not evidence that this claim lost. Leave it for TTL recovery.
+        claim.stop()
+        raise
     except BaseException:
         claim.release()
         raise
@@ -816,16 +824,20 @@ def frontier() -> list[dict]:
     )
     for issue in issues:
         n = issue["number"]
-        if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
-            issue["held"] = "initiative record"
-        elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
-            issue["held"] = held
-        elif issue["assignees"] and not (cfg.host_name and claims):
-            issue["held"] = "assigned"
-        elif blockers := open_blockers(n, issue.get("body", "")):
-            issue["held"] = f"blocked by {', '.join(f'#{b}' for b in blockers)}"
-        else:
-            continue
+        try:
+            if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
+                issue["held"] = "initiative record"
+            elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
+                issue["held"] = held
+            elif issue["assignees"] and not (cfg.host_name and claims):
+                issue["held"] = "assigned"
+            elif blockers := open_blockers(n, issue.get("body", "")):
+                issue["held"] = f"blocked by {', '.join(f'#{b}' for b in blockers)}"
+            else:
+                continue
+        except reads.ReadFailure as exc:
+            reads.skip(exc, ticket=n)
+            issue["held"] = exc.code
         log(f"#{n}: skipped ({issue['held']})")
     return issues
 
@@ -848,9 +860,13 @@ def review_intake_pass(dry_run: bool) -> None:
             if login is None:
                 # The dispatcher's login, plus the human's (dashboard identity) when
                 # `[install].dispatch_env` runs the dispatcher as a separate account.
-                login = {gh_json(["api", "user"])["login"].casefold()}
-                if cfg.install.get("dispatch_env"):
-                    login.add(gh_json(["api", "user"], env=config.dashboard_env(cfg))["login"].casefold())
+                try:
+                    login = {gh_json(["api", "user"])["login"].casefold()}
+                    if cfg.install.get("dispatch_env"):
+                        login.add(gh_json(["api", "user"], env=config.dashboard_env(cfg))["login"].casefold())
+                except reads.ReadFailure as exc:
+                    reads.skip(exc, pr=pr["number"])
+                    continue
             opted_in = any(request.get("login", "").casefold() in login for request in requests)
         # GitHub consumes review requests on submission; keep tracking admitted PRs.
         if not opted_in and not any(
@@ -860,7 +876,7 @@ def review_intake_pass(dry_run: bool) -> None:
         ):
             continue
         n, head = pr["number"], pr["headRefOid"]
-        with nullcontext() if dry_run else ticket_lock(n).open("w") as lock:
+        with reads.item(pr=n), (nullcontext() if dry_run else ticket_lock(n).open("w")) as lock:
             if not dry_run:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -4018,9 +4034,12 @@ def merge_pass_locked(dry_run: bool) -> None:
             continue
         candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
     for pr_num, n, listed_head in sorted(candidates):
-        with nullcontext() if dry_run else lifecycle.scope(
-            EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
-        ) as execution:
+        with (
+            (nullcontext() if dry_run else lifecycle.scope(
+                EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
+            )) as execution,
+            reads.item(ticket=n, pr=pr_num),
+        ):
             if initiative_kind(n):
                 log(f"PR #{pr_num}: refused (ticket #{n} is an initiative record); not merging")
                 if execution:
@@ -4923,6 +4942,11 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except reads.ReadFailure as exc:
+            # A transport failure is not a ticket defect and must not escalate/unclaim it.
+            reads.skip(exc, ticket=n)
+            execution.outcome, execution.reason = "mechanism_failure", exc.code
+            return
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except FileNotFoundError as exc:
@@ -5076,6 +5100,13 @@ def main(argv: list[str]) -> int:
         "--dry-run", action="store_true", help="print planned actions; no side effects"
     )
     args = parser.parse_args(argv)
+    with reads.pass_scope(config.repo_root() / ".factory" / "events.jsonl", "dispatch",
+                          enabled=not args.dry_run):
+        return _dispatch(args)
+    return 0  # a failed pass-level read is journaled and deferred, not a traceback
+
+
+def _dispatch(args) -> int:
     if not args.dry_run:
         dirty = pin_root()
         if dirty:
@@ -5127,7 +5158,7 @@ def main(argv: list[str]) -> int:
                 ]
             )
             result = 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
-            if not args.dry_run and result == 0:
+            if not args.dry_run and result == 0 and not (reads.current() and reads.current().skipped):
                 lifecycle.record_stage_success(EVENTS, "dispatch")
             return result
 
@@ -5137,27 +5168,33 @@ def main(argv: list[str]) -> int:
             try:
                 from factory import release
 
-                log(f"release: {release.run(cfg, open_pr=open_pr)}")
+                with reads.item(operation="release"):
+                    log(f"release: {release.run(cfg, open_pr=open_pr)}")
             except Exception as exc:  # noqa: BLE001 - release failure never fails the dispatcher pass
                 log(f"release: failed ({type(exc).__name__}: {exc})")
 
         # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
         # which GitHub cannot union-merge), and a new one opens only after landing.
         release_step(open_pr=False)
-        land_pass(args.dry_run)
-        review_intake_pass(args.dry_run)
+        with reads.item(operation="landing"):
+            land_pass(args.dry_run)
+        with reads.item(operation="review-intake"):
+            review_intake_pass(args.dry_run)
         if yield_for_update:
             log("engine-stale: yielding after land and review intake; no new tickets")
-            if not args.dry_run:
+            if not args.dry_run and not (reads.current() and reads.current().skipped):
                 lifecycle.record_stage_success(EVENTS, "dispatch")
             return 0
         from factory.learn import learn_pass
         from factory.manage import manage_pass
 
-        manage_pass(args.dry_run)
-        ticket_pass(args.budget_min, args.dry_run)
-        learn_pass(args.dry_run)
+        with reads.item(operation="manage"):
+            manage_pass(args.dry_run)
+        with reads.item(operation="tickets"):
+            ticket_pass(args.budget_min, args.dry_run)
+        with reads.item(operation="learn"):
+            learn_pass(args.dry_run)
         release_step(open_pr=True)
-        if not args.dry_run:
+        if not args.dry_run and not (reads.current() and reads.current().skipped):
             lifecycle.record_stage_success(EVENTS, "dispatch")
         return 0

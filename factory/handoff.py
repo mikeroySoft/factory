@@ -163,6 +163,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                 dispatch.EVENTS, "manage", ticket=n, lazy=True
             )) as execution,
             (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
+            dispatch.reads.item(ticket=n),
         ):
             if not dry_run:
                 request = execution.resource("requested", lock_path, scope="repository")

@@ -31,7 +31,7 @@ class Process:
     def __exit__(self, *exc):
         return False
 
-    def communicate(self):
+    def communicate(self, input=None, timeout=None):
         return self.stdout, self.stderr
 
     def poll(self):
@@ -40,7 +40,7 @@ class Process:
     def kill(self):
         self.returncode = -9
 
-    def wait(self):
+    def wait(self, timeout=None):
         return self.returncode
 
 
@@ -58,6 +58,7 @@ class TriageReadFailures(unittest.TestCase):
         self.read_failures: dict[int, list[str]] = {}
         self.mutation_failure: tuple[int, str] | None = None
         self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        triage.configure(self.cfg)
         self.enterContext(mock.patch.object(config, "load", return_value=self.cfg))
         self.enterContext(mock.patch.object(triage, "identity_mismatch", return_value=None))
         self.enterContext(mock.patch.object(triage, "triage_issue", return_value={
@@ -76,6 +77,9 @@ class TriageReadFailures(unittest.TestCase):
     def popen(self, command: list[str], **kwargs) -> Process:
         self.calls.append(command)
         operation = command[1:3]
+        if operation == ["api", "rate_limit"]:
+            quota = {"resources": {"graphql": {"remaining": 100}}}
+            return Process(self.completed(command, stdout=json.dumps(quota)))
         if operation == ["issue", "list"]:
             listed = [{"number": number} for number in (3, 2, 1)
                       if LABEL_TRIAGE in self.labels[number]]
