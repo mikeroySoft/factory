@@ -49,7 +49,7 @@ class ReviewedHeadTest(unittest.TestCase):
                 fixture.setUp()
                 bodies = []
 
-                def capture_comment(cmd, *args, **kwargs):
+                def capture_comment(cmd, *args, bodies=bodies, fixture=fixture, **kwargs):
                     if cmd[:3] == ["gh", "pr", "comment"]:
                         bodies.append(Path(cmd[cmd.index("--body-file") + 1]).read_text())
                     return fixture.github.run(cmd, *args, **kwargs)
