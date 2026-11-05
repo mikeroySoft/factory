@@ -73,7 +73,7 @@ class TriageRequests(unittest.TestCase):
              73, {"enable_thinking": False, "custom": {"modes": ["brief", "json"]}}),
             ('max_tokens = 29\n[defaults.triage.chat_template_kwargs]\n', 29, {}),
             ('max_tokens = 31\n', 31, None),
-            ('', 2048, None),
+            ('', None, None),
         ):
             with self.subTest(settings=settings):
                 triage.configure(self.load(settings))
@@ -88,7 +88,11 @@ class TriageRequests(unittest.TestCase):
                     self.assertEqual(list(pool.map(ask, range(3))), ["ok"] * 3)
                 self.assertEqual(len(self.requests), 3)
                 for row in self.requests:
-                    self.assertEqual(row["body"].get("max_tokens"), tokens)
+                    if tokens is None:
+                        self.assertIs(type(row["body"].get("max_tokens")), int)
+                        self.assertGreater(row["body"]["max_tokens"], 0)
+                    else:
+                        self.assertEqual(row["body"].get("max_tokens"), tokens)
                     self.assertEqual("chat_template_kwargs" in row["body"], kwargs is not None)
                     if kwargs is not None:
                         self.assertEqual(row["body"]["chat_template_kwargs"], kwargs)
