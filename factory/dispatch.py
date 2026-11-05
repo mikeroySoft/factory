@@ -2524,7 +2524,7 @@ def _native_proof(wt: Path, n: int, head: str) -> str:
         for line in handoff.splitlines()
         if "proof" in line.lower() or (section and line in text)
         for match in re.findall(
-            r"""`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'|"""
+            r"""`([^`\n]+)`|"([^"\n]+)"|(?<!\w)'([^'\n]+)'(?!\w)|"""
             r"\[[^\]]*\]\(([^)\n]+)\)|([./\w-]+\.(?:txt|md|log|json|out))", line,
         )
         if any("/" in value or "." in value for value in match)
