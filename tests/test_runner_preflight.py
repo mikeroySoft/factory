@@ -138,3 +138,56 @@ class RunnerPreflightTest(unittest.TestCase):
         self.assertTrue(unknown.exists())
         self.assertTrue(link.is_symlink())
         self.assertTrue(target.exists())
+
+    def test_storage_thresholds_check_each_filesystem_and_unlimited_inodes(self):
+        from factory import runner
+
+        enough = SimpleNamespace(f_bavail=runner.MIN_FREE_BYTES, f_frsize=1,
+                                 f_favail=runner.MIN_FREE_INODES, f_files=10**9)
+        low = SimpleNamespace(f_bavail=runner.MIN_FREE_BYTES - 1, f_frsize=1,
+                              f_favail=runner.MIN_FREE_INODES, f_files=10**9)
+        for statuses, expected in (([low, enough], self.base), ([enough, low], self.scratch)):
+            with self.subTest(expected=expected), patch("os.statvfs", side_effect=statuses):
+                self.assertEqual([item["path"] for item in runner.storage_low(self.base)], [str(expected)])
+        unlimited = SimpleNamespace(f_bavail=runner.MIN_FREE_BYTES, f_frsize=1,
+                                    f_favail=0, f_files=0)
+        with patch("os.statvfs", side_effect=[enough, unlimited]):
+            self.assertEqual(runner.storage_low(self.base), [])
+
+    def test_normal_owner_exit_keeps_detached_child_until_it_exits(self):
+        ready, go, done = (self.base / name for name in ("ready", "go", "done"))
+        child = (
+            "import os, time; from pathlib import Path; "
+            "root = Path(os.environ['FACTORY_TEMP_ROOT']); "
+            f"Path({str(ready)!r}).write_text(str(root)); "
+            "deadline = time.monotonic() + 30\n"
+            f"while not Path({str(go)!r}).exists() and time.monotonic() < deadline: time.sleep(.01)\n"
+            f"(root / 'result').write_text('detached'); Path({str(done)!r}).touch()"
+        )
+        owner = (
+            "import os, subprocess, sys, time; from factory import runner\n"
+            "with runner.temporary_directory('factory-review-') as root:\n"
+            f" child = subprocess.Popen([sys.executable, '-c', {child!r}], "
+            "env=os.environ | {'FACTORY_TEMP_ROOT': root}, start_new_session=True, "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+            " print(child.pid, flush=True)\n"
+            f" while not __import__('pathlib').Path({str(ready)!r}).exists(): time.sleep(.01)\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", owner], cwd=self.base, timeout=20,
+            env=os.environ | {"TMPDIR": str(self.scratch),
+                              "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+        )
+        pid = int(proc.stdout)
+        self.addCleanup(self.kill_child, pid)
+        root = Path(ready.read_text())
+        self.assertTrue(root.exists(), "normal cleanup must also respect surviving descendants")
+        dispatch._sweep_stale_factory_tempdirs()
+        self.assertTrue(root.exists())
+        go.touch()
+        self.until(done.exists)
+        self.assertEqual((root / "result").read_text(), "detached")
+        self.until(lambda: lifecycle._process_state(lifecycle._identity(pid)) != "alive")
+        dispatch._sweep_stale_factory_tempdirs()
+        self.assertFalse(root.exists())

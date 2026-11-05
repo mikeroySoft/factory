@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 
-from factory import __version__, brief, config, lifecycle, risk
+from factory import __version__, brief, config, lifecycle, risk, runner
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -315,17 +315,9 @@ def _make_tree_writable(root: Path) -> None:
 
 
 def _sweep_stale_factory_tempdirs() -> None:
-    cutoff = time.time() - 24 * 60 * 60
-    root = Path(tempfile.gettempdir())
-    for pattern in ("factory-review-*", "factory-gate-*"):
-        for path in root.glob(pattern):
-            try:
-                stale = not path.is_symlink() and path.is_dir() and path.stat().st_mtime < cutoff
-            except OSError:
-                continue
-            if stale:
-                _make_tree_writable(path)
-                shutil.rmtree(path, ignore_errors=True)
+    for path in runner.abandoned_temporary_roots():
+        _make_tree_writable(path)
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _run_reviewer(
@@ -341,9 +333,11 @@ def _run_reviewer(
     clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     if env_overrides:
         clean.update({key: value for key, value in env_overrides.items() if not key.startswith("GIT_")})
-    with tempfile.TemporaryDirectory(prefix="factory-review-") as tmp, \
+    with runner.temporary_directory(prefix="factory-review-") as tmp, \
             without_github(clean) as env:
         review_dir = Path(tmp)
+        clean[runner.TEMP_ENV] = tmp
+        env[runner.TEMP_ENV] = tmp
         try:
             if source is not None:
                 snapshot = review_dir / "snapshot"
@@ -4578,6 +4572,13 @@ def process_ticket(
         return
 
     with lifecycle.scope(EVENTS, "ticket", ticket=n) as execution:
+        _sweep_stale_factory_tempdirs()
+        if low := runner.storage_low(ROOT):
+            execution.outcome, execution.reason = "infra", "runner_storage_low"
+            record("infra", ticket=n, reason="runner_storage_low", storage=low)
+            execution.wait("runner_storage_low", mode="retry_next_pass", storage=low)
+            log(f"#{n}: refused (runner_storage_low: {low}); retry next pass")
+            return
         deadline = time.monotonic() + budget_min * 60
         lock_fd = ticket_lock(n).open("w")  # held for the life of this pipeline
         request = execution.resource("requested", lock_path, scope="repository")

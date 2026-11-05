@@ -830,6 +830,17 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `capacity` is the slots left for that pick; its admission `decision` row
    names the Plan baseline sha256 it was ranked against.
    `--dry-run` logs the same plan and writes nothing.
+   Before claiming (including `--ticket`), runner preflight requires at least
+   1 GiB available and 10,000 free inodes on both the checkout and temporary
+   filesystems; filesystems reporting no inode limit are checked for bytes only.
+   Low storage leaves the ticket unclaimed and journals `infra` with reason
+   `runner_storage_low`, retrying next pass without an attempt or strike.
+   Preflight also reaps gate/review scratch roots with a dead recorded owner,
+   retaining roots referenced by surviving children (inherited environment,
+   working directory or open files on Linux). Unknown ownership/visibility is
+   retained; legacy unmarked roots keep their 24-hour age floor and a process
+   environment check. Non-Linux hosts use `ps` environment observations.
+   Dry runs neither reap nor write admission records.
    Capacity, locks and
    dependencies are never overridden. The dispatcher then re-reads the issue
    (search-backed listings lag), assigns itself, takes a per-ticket `flock`,
