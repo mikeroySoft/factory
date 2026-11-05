@@ -532,6 +532,52 @@ class MergeRefreshTest(unittest.TestCase):
                 [row] = [r for r in lifecycle.read_events(dispatch.EVENTS) if r.get("event") == "gate"]
                 self.assertEqual((row["head"], row["gate"]), (new, "PASS"))
 
+                # A missing required check cannot be repaired by merging the same main again.
+                real_run = dispatch.run
+
+                def required_check_refusal(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+                    if args[:3] == ["gh", "pr", "merge"]:
+                        raise subprocess.CalledProcessError(
+                            1, args,
+                            stderr='Repository rule violations found: Required status check "gate" is expected.',
+                        )
+                    if args[:3] == ["gh", "pr", "edit"]:
+                        return subprocess.CompletedProcess(args, 0, "", "")
+                    return real_run(args, **kwargs)
+
+                pr = {
+                    "number": 42, "headRefName": branch, "headRefOid": new,
+                    "baseRefName": "main", "isDraft": False,
+                }
+                for legacy in (False, True):
+                    with self.subTest(legacy=legacy):
+                        dispatch.EVENTS.write_text("")
+                        dispatch.record("gate", branch=branch, head=new, gate="PASS")
+                        dispatch.record("review-result", pr=42, head=new, verdict="APPROVE")
+                        if legacy:
+                            dispatch.record(
+                                "promotion-blocked", pr=42, head=new,
+                                reason='merge failed: Required status check "gate" is expected.',
+                            )
+                        gates_before, reviews_before = gate.call_count, review.call_count
+                        with mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}), \
+                                mock.patch.object(dispatch, "run", side_effect=required_check_refusal), \
+                                mock.patch.object(dispatch, "pr_checks", return_value=[{"bucket": "pass"}]), \
+                                mock.patch.object(dispatch, "gh_json", return_value={
+                                    "behind_by": 0, "files": [{"filename": config.LESSONS_NAME}],
+                                }):
+                            for _ in range(3):
+                                learn.promote_pass([pr])
+                        self.assertLessEqual(gate.call_count - gates_before, 1)
+                        self.assertEqual(review.call_count, reviews_before)
+                        blocked = [
+                            row for row in lifecycle.read_events(dispatch.EVENTS)
+                            if row.get("event") == "promotion-blocked" and row["reason"] == "refresh failed"
+                        ]
+                        self.assertEqual([row["head"] for row in blocked], [new])
+                        self.assertEqual(git("rev-parse", branch, cwd=origin), new)
+                        self.assertFalse((cfg.factory / f"wt-{branch.removeprefix('agent/')}").exists())
+
                 (repo / "README.md").write_text("main advanced again\n")
                 git("commit", "-qam", "another main commit")
                 git("push", "-q", "origin", "main")
