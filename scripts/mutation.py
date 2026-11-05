@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import errno
 import os
 import random
 import re
@@ -29,14 +30,68 @@ import sys
 import tempfile
 import time
 import tomllib
+import traceback
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+from factory.gate import STORAGE_EXIT, storage_diagnostic
 
 CAP = 200
 SEED = 197
 WORKERS = min(16, os.cpu_count() or 1)
 COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", ".factory", "__pycache__", ".ruff_cache")
+
+
+def _output(*parts: str | bytes | None) -> str:
+    return "".join(
+        part.decode("utf-8", errors="replace") if isinstance(part, bytes) else part or ""
+        for part in parts
+    )
+
+
+def _storage_failure(output: str | bytes | None) -> int:
+    print(f"mutation INFRA: runner_storage_low\n{_output(output)[-3000:]}")
+    return STORAGE_EXIT
+
+
+def _is_storage_error(exc: BaseException) -> bool:
+    return (
+        isinstance(exc, OSError) and exc.errno == errno.ENOSPC
+    ) or (
+        isinstance(exc, shutil.Error) and "[Errno 28]" in str(exc)
+    ) or storage_diagnostic(_output(
+        getattr(exc, "output", None), getattr(exc, "stderr", None),
+    ))
+
+
+def _run_mutation_tests(command: str, timeout: float, outcomes):
+    """Cosmic Ray's test runner, retaining subprocess output on timeout."""
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    try:
+        proc = subprocess.Popen(
+            shlex.split(command), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            from cosmic_ray.testing import _kill_process_group
+
+            _kill_process_group(proc)
+            stdout, stderr = proc.communicate()
+            output = _output(stdout or exc.output, stderr or exc.stderr)
+            return outcomes.KILLED, f"timeout\n{output}" if output else "timeout"
+        output = _output(stdout)
+        combined = _output(stdout, stderr)
+        if proc.returncode == STORAGE_EXIT:
+            return outcomes.INCOMPETENT, f"INFRA: runner_storage_low\n{combined}"
+        if proc.returncode:
+            return outcomes.KILLED, combined
+        return outcomes.SURVIVED, output
+    except (OSError, subprocess.SubprocessError):
+        return outcomes.INCOMPETENT, traceback.format_exc()
 
 
 def changed_lines() -> dict[str, set[int]]:
@@ -65,7 +120,11 @@ def on_changed_line(mutation, lines: dict[str, set[int]]) -> bool:
 def gate_timeout() -> int:
     try:
         return int(tomllib.loads(Path(".factory.toml").read_text()).get("gate", {}).get("timeout", 1200))
-    except (OSError, tomllib.TOMLDecodeError, ValueError):
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            raise
+        return 1200
+    except (tomllib.TOMLDecodeError, ValueError):
         return 1200
 
 
@@ -152,19 +211,45 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.test_module is not None:
         return run_tests(args.test_module)
-    lines = changed_lines()
+    try:
+        lines = changed_lines()
+    except (OSError, subprocess.SubprocessError) as exc:
+        if _is_storage_error(exc):
+            return _storage_failure(_output(
+                str(exc) if isinstance(exc, OSError) else None,
+                getattr(exc, "output", None), getattr(exc, "stderr", None),
+            ))
+        raise
     if not lines:
         print("no mutable files")
         return 0
     from attrs import evolve
-    from cosmic_ray.mutating import mutate_and_test
+    from cosmic_ray import mutating
     from cosmic_ray.work_item import TestOutcome
-    deadline = time.monotonic() + max(1, gate_timeout() - 60)
+    mutate_and_test = mutating.mutate_and_test
+    try:
+        timeout_budget = gate_timeout()
+    except OSError as exc:
+        if _is_storage_error(exc):
+            return _storage_failure(str(exc))
+        raise
+    deadline = time.monotonic() + max(1, timeout_budget - 60)
     root = Path.cwd()
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="factory-mutation-") as tmp:
+    try:
+        temporary = tempfile.TemporaryDirectory(prefix="factory-mutation-")
+    except OSError as exc:
+        if _is_storage_error(exc):
+            return _storage_failure(str(exc))
+        raise
+    with temporary as tmp:
         scratch = Path(tmp)
-        mutations, hot = sample(lines, scratch)
+        try:
+            mutations, hot = sample(lines, scratch)
+        except OSError as exc:
+            if _is_storage_error(exc):
+                return _storage_failure(str(exc))
+            raise
         if args.blocking:
             mutations = mutations[:hot]
 
@@ -182,11 +267,19 @@ def main(argv: list[str] | None = None) -> int:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return baseline_timed_out()
-            subprocess.run(
-                ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(copy)],
-                check=True, timeout=remaining,
-            )
-            shutil.copytree(root, copy, ignore=COPY_IGNORE, dirs_exist_ok=True)
+            try:
+                subprocess.run(
+                    ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(copy)],
+                    check=True, timeout=remaining, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                )
+                shutil.copytree(root, copy, ignore=COPY_IGNORE, dirs_exist_ok=True)
+            except (OSError, shutil.Error, subprocess.SubprocessError) as exc:
+                if _is_storage_error(exc):
+                    return _storage_failure(_output(
+                        str(exc) if isinstance(exc, OSError) else None,
+                        getattr(exc, "output", None), getattr(exc, "stderr", None),
+                    ))
+                raise
         print(f"files: {', '.join(lines)}")
         print(f"mutants: {len(mutations)} sampled (seed {SEED}, cap {CAP}), "
               f"{min(hot, len(mutations))} on changed lines first, {workers} workers")
@@ -202,8 +295,19 @@ def main(argv: list[str] | None = None) -> int:
             proc = subprocess.run(shlex.split(test_command(copies[0])), stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True, check=False,
                                   timeout=remaining)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            output = _output(exc.output, exc.stderr)
+            if storage_diagnostic(output):
+                return _storage_failure(output)
             return baseline_timed_out()
+        except OSError as exc:
+            if _is_storage_error(exc):
+                return _storage_failure(str(exc))
+            raise
+        if proc.returncode and (
+            proc.returncode == STORAGE_EXIT or storage_diagnostic(proc.stdout)
+        ):
+            return _storage_failure(proc.stdout)
         baseline_finished = time.monotonic()
         if baseline_finished >= deadline:
             return baseline_timed_out()
@@ -218,11 +322,12 @@ def main(argv: list[str] | None = None) -> int:
         queue = collections.deque(mutations)  # popleft is atomic under the GIL
         results = []
         cut = []  # mutants whose run the deadline cut short: neither killed nor survived
+        storage = []
 
         def worker(copy: Path) -> None:
             # Most mutants die before a full baseline-length run. Use the remaining
             # budget, but never count a deadline-cut run as killed or survived.
-            while (left := deadline - time.monotonic()) > 0:
+            while not storage and (left := deadline - time.monotonic()) > 0:
                 try:
                     mutation = queue.popleft()
                 except IndexError:
@@ -231,13 +336,31 @@ def main(argv: list[str] | None = None) -> int:
                 result = mutate_and_test(
                     [local], test_command(copy, str(mutation.module_path)), min(timeout, left),
                 )
-                if left < timeout and result.output == "timeout":
+                output = result.output or ""
+                if output.startswith("INFRA: runner_storage_low\n") or (
+                    result.test_outcome != TestOutcome.SURVIVED and storage_diagnostic(output)
+                ):
+                    storage.append(output)
+                    return
+                if left < timeout and (
+                    output == "timeout" or output.startswith("timeout\n")
+                ):
                     cut.append(mutation)
                 else:
                     results.append((mutation, result))
 
-        with ThreadPoolExecutor(workers) as pool:
-            list(pool.map(worker, copies))
+        original_run_tests = getattr(mutating, "run_tests", None)
+        mutating.run_tests = lambda command, timeout: _run_mutation_tests(command, timeout, TestOutcome)
+        try:
+            with ThreadPoolExecutor(workers) as pool:
+                list(pool.map(worker, copies))
+        finally:
+            if original_run_tests is None:
+                del mutating.run_tests
+            else:
+                mutating.run_tests = original_run_tests
+        if storage:
+            return _storage_failure(storage[0])
 
     survivors = [(m, r) for m, r in results if r.test_outcome == TestOutcome.SURVIVED]
     hot_survivors = [

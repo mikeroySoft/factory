@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import errno
 import fcntl
 import fnmatch
 import os
@@ -28,6 +29,33 @@ LEAK_RE: re.Pattern[str] | None = None
 GPU_CHECKS: set[str] = set()
 TAIL_LINES = 80
 CHECK_TIMEOUT = 1200  # seconds; overridable via --check-timeout
+STORAGE_EXIT = 75
+
+
+class RunnerStorageLow(RuntimeError):
+    """The host cannot complete the check; no product verdict is available."""
+
+
+def storage_diagnostic(output: str | bytes | None) -> bool:
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    if not output:
+        return False
+    # Finished test reports can quote expected exceptions or assertion operands.
+    # They are product evidence, not evidence that the runner ran out of storage.
+    if re.search(
+        r"(?m)^(?:FAILED \((?:failures|errors)=|test result: FAILED|"
+        r"(?:=+\s*)?\d+ (?:failed|errors?)\b)", output,
+    ):
+        return False
+    return bool(re.search(
+        r"(?im)^(?:E\s+)?(?:"
+        r"(?:OSError|IOError):\s*(?:\[Errno 28\]|\bENOSPC\b)|"
+        r"(?:error|fatal|[^\n:]+(?:Error|Exception)):\s*[^\n]*"
+        r"(?:No space left on device|\bENOSPC\b)|"
+        r"[^\n:]+:\s*[^\n]*:\s*No space left on device\b"
+        r")", output,
+    ))
 
 
 def configure(c: Config) -> None:
@@ -89,11 +117,14 @@ def timed(
 def run(cmd: list[str]) -> tuple[bool, str]:
     """Run a command, return (passed, combined output)."""
     proc = timed(cmd)
+    output = proc.stdout + proc.stderr
+    if proc.returncode != 0 and (proc.returncode == STORAGE_EXIT or storage_diagnostic(output)):
+        raise RunnerStorageLow(output)
     execution = lifecycle.current()
     if execution and proc.returncode != 0 and execution.outcome == "completed":
         execution.outcome = "product_feedback"
         execution.reason = "configured_check_failed"
-    return proc.returncode == 0, proc.stdout + proc.stderr
+    return proc.returncode == 0, output
 
 def _check_status(name: str, passed: bool, output: str, blocking_mutation: bool) -> str:
     if (
@@ -610,6 +641,16 @@ def check_bug_reproduction(
 
 
 def main(argv: list[str]) -> int:
+    try:
+        return _main(argv)
+    except (RunnerStorageLow, OSError) as exc:
+        if isinstance(exc, OSError) and exc.errno != errno.ENOSPC:
+            raise
+        print(f"gate INFRA: runner_storage_low\n{exc}")
+        return STORAGE_EXIT
+
+
+def _main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Quality gate for agent worktrees.")
     parser.add_argument("--base", default=None, help="base ref for leak scan and protected paths")
     parser.add_argument(
@@ -764,7 +805,16 @@ def execute(args: argparse.Namespace, execution) -> int:
                 cfg.factory / "events.jsonl", "gate-check", lock=GPU_LOCK if gpu_lock else None
             ) as check:
                 check.emit("check", check=name)
-                passed, output = fn()
+                try:
+                    passed, output = fn()
+                except (RunnerStorageLow, OSError) as exc:
+                    if isinstance(exc, OSError) and exc.errno != errno.ENOSPC:
+                        raise
+                    check.outcome, check.reason = "unknown", "runner_storage_low"
+                    check.emit("result", check=name, infrastructure="runner_storage_low")
+                    results.append((name, "INFRA (runner_storage_low)", str(exc)))
+                    outcome, reason = check.outcome, check.reason
+                    break
                 if not passed and check.outcome == "completed":
                     check.outcome = "product_feedback"
                     check.reason = "check_failed"
@@ -789,7 +839,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, output in results:
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
         # them only through this report, so keep their output when they pass too.
-        if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
+        if status == "FAIL" or status.startswith("INFRA") or (args.tier == "pr" and status == "PASS" and output.strip()):
             tail = "\n".join(output.splitlines()[-TAIL_LINES:])
             lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", tail, "```"]
     report = Path(args.report)
@@ -797,8 +847,11 @@ def execute(args: argparse.Namespace, execution) -> int:
     report.write_text("\n".join(lines) + "\n")
 
     failed = [name for name, status, _ in results if status == "FAIL"]
-    summary = "gate FAIL: " + ", ".join(failed) if failed else "gate PASS"
+    infrastructure = reason == "runner_storage_low"
+    summary = "gate INFRA: runner_storage_low" if infrastructure else (
+        "gate FAIL: " + ", ".join(failed) if failed else "gate PASS"
+    )
     print(f"report: {report}")
     print(summary)
     execution.outcome, execution.reason = outcome, reason
-    return 1 if failed else 0
+    return STORAGE_EXIT if infrastructure else 1 if failed else 0

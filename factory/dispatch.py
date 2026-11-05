@@ -51,6 +51,7 @@ from factory.config import (
     USAGE_FIELDS,
     Config,
 )
+from factory.gate import STORAGE_EXIT, RunnerStorageLow
 
 cfg: Config
 ROOT: Path
@@ -2029,6 +2030,8 @@ def run_gate(
     if blocking_mutation:
         cmd.append("--blocking-mutation")
     proc = run(cmd, cwd=wt, check=False, timeout=timeout)
+    if proc.returncode == STORAGE_EXIT:
+        raise RunnerStorageLow(proc.stdout + proc.stderr)
     if report.exists():
         text = report.read_text()
         ok = proc.returncode == 0
@@ -2047,6 +2050,15 @@ def run_gate(
             time.monotonic() - started,
         )
     return ok, text
+
+def requeue_storage(n: int, exc: RunnerStorageLow) -> None:
+    execution = lifecycle.current()
+    if execution is not None:
+        execution.outcome, execution.reason = "unknown", "runner_storage_low"
+    record("infra", ticket=n, reason="runner_storage_low", detail=str(exc)[-2000:])
+    unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True)
+    log(f"#{n}: runner_storage_low; requeued without a product verdict")
+
 
 
 def escalation_packet(
@@ -3164,7 +3176,12 @@ def sync_pass(dry_run: bool) -> None:
             gate = report = None
             merge = merge_upstream_rev(wt, f"{UPSTREAM}/{cfg.main}", tip, count)
             if merge.returncode == 0:
-                ok, report = run_gate(wt, "upstream", skip="leak-scan", protected_override=True)
+                try:
+                    ok, report = run_gate(wt, "upstream", skip="leak-scan", protected_override=True)
+                except RunnerStorageLow as exc:
+                    execution.outcome, execution.reason = "unknown", "runner_storage_low"
+                    log(f"upstream sync: runner_storage_low; retry next pass ({exc})")
+                    return
                 gate = "PASS" if ok else "FAIL"
                 staged = f"contains the merge of the tip; the dispatcher's gate on it {'passed' if ok else 'FAILED'}"
                 evidence = f"## Gate report (detached candidate)\n\n{report.strip()[-6000:]}"
@@ -3619,40 +3636,43 @@ def refresh_requeue_context(n: int) -> str:
 
 
 def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
+    try:
+        return _refresh_pr_branch(n, pr, carries_upstream)
+    except RunnerStorageLow as exc:
+        wt = FACTORY / f"wt-{n}"
+        head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        restore_pr_head(wt, n, head)
+        requeue_storage(n, exc)
+        return False
+
+
+def restore_pr_head(wt: Path, n: int, refreshed_head: str) -> str:
+    """Keep the unpushed candidate as evidence before restoring the live PR head."""
+
+    evidence_ref = f"refs/factory-evidence/{n}-refreshed-{refreshed_head[:12]}"
+    run(["git", "update-ref", evidence_ref, refreshed_head], cwd=wt)
+    run(
+        ["git", "fetch", "origin", f"+refs/heads/agent/{n}:refs/remotes/origin/agent/{n}"],
+        cwd=wt,
+    )
+    run(["git", "reset", "--hard", f"origin/agent/{n}"], cwd=wt)
+    run(
+        [
+            "git", "clean", "-fd", "--", ".",
+            ":(exclude).factory-prompt.md", ":(exclude).factory",
+        ],
+        cwd=wt,
+    )
+    return evidence_ref
+
+
+def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     """Refresh, gate, push, and independently review the resulting immutable head."""
     target = gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "baseRefName"])
     if target.get("baseRefName") != cfg.main:
         log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
         return False
     wt = ensure_worktree(n)
-
-    def restore_pr_head(refreshed_head: str) -> str:
-        """Keep the unpushed candidate as evidence before restoring the live PR head."""
-        evidence_ref = f"refs/factory-evidence/{n}-refreshed-{refreshed_head[:12]}"
-        run(["git", "update-ref", evidence_ref, refreshed_head], cwd=wt)
-        run(
-            [
-                "git",
-                "fetch",
-                "origin",
-                f"+refs/heads/agent/{n}:refs/remotes/origin/agent/{n}",
-            ],
-            cwd=wt,
-        )
-        run(["git", "reset", "--hard", f"origin/agent/{n}"], cwd=wt)
-        run(
-            [
-                "git",
-                "clean",
-                "-fd",
-                "--",
-                ".",
-                ":(exclude).factory-prompt.md",
-                ":(exclude).factory",
-            ],
-            cwd=wt,
-        )
-        return evidence_ref
 
     def withdraw(
         reason: str,
@@ -3661,7 +3681,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         *,
         refreshed_head: str | None = None,
     ) -> None:
-        evidence_ref = restore_pr_head(refreshed_head) if refreshed_head is not None else None
+        evidence_ref = restore_pr_head(wt, n, refreshed_head) if refreshed_head is not None else None
         escalate(
             n,
             f"PR #{pr}: {reason}; `{FACTORY_APPROVED}` label removed",
@@ -3830,7 +3850,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                     "gate_failed", extra=details, refreshed_head=head,
                 )
                 return False
-            evidence_ref = restore_pr_head(head)
+            evidence_ref = restore_pr_head(wt, n, head)
             remote_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             record_merge_decision(
                 n, pr, "gate-requeue",
@@ -4923,6 +4943,9 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except RunnerStorageLow as exc:
+            requeue_storage(n, exc)
+            return False
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except FileNotFoundError as exc:
