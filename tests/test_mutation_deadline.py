@@ -80,6 +80,58 @@ class MutationDeadlineTest(unittest.TestCase):
                 status = mutation.main(["--blocking"])
         return status, output.getvalue(), mutating.mutate_and_test, baseline
 
+    def test_mutation_exhaustion_is_not_a_killed_mutant_or_check_failure(self) -> None:
+        exhausted = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL,
+            test_outcome=TestOutcome.KILLED,
+            diff="",
+            output="OSError: [Errno 28] No space left on device\n",
+        )
+
+        status, output, _, _ = self.run_mutation(exhausted)
+
+        self.assertEqual(status, 75)
+        self.assertIn("runner_storage_low", output)
+        self.assertIn("[Errno 28] No space left on device", output)
+        self.assertNotIn("1 killed", output)
+        self.assertNotIn("mutation check broke", output)
+
+    def test_mutant_timeout_preserves_captured_storage_output(self) -> None:
+        testing = types.ModuleType("cosmic_ray.testing")
+        testing._kill_process_group = mock.Mock()
+        work_item = types.ModuleType("cosmic_ray.work_item")
+        work_item.TestOutcome = TestOutcome
+        timeout = subprocess.TimeoutExpired(
+            "tests", 1,
+            output=b"write failed\n",
+            stderr=b"OSError: [Errno 28] No space left on device\n",
+        )
+        process = mock.Mock()
+        process.communicate.side_effect = [timeout, (b"", b"")]
+
+        with mock.patch.dict(sys.modules, {
+            "cosmic_ray.testing": testing,
+            "cosmic_ray.work_item": work_item,
+        }), mock.patch.object(mutation.subprocess, "Popen", return_value=process):
+            outcome, output = mutation.run_cosmic_tests("tests", 1)
+
+        self.assertEqual(outcome, TestOutcome.KILLED)
+        self.assertIn("write failed", output)
+        self.assertIn("[Errno 28] No space left on device", output)
+        testing._kill_process_group.assert_called_once_with(process)
+
+    def test_copy_exhaustion_exits_for_runner_storage_low(self) -> None:
+        with mock.patch.object(
+            mutation.shutil, "copytree",
+            side_effect=OSError(28, "No space left on device"),
+        ):
+            status, output, mutate, _ = self.run_mutation(SimpleNamespace())
+
+        self.assertEqual(status, 75)
+        self.assertIn("runner_storage_low", output)
+        self.assertIn("[Errno 28] No space left on device", output)
+        mutate.assert_not_called()
+
     def test_blocking_ignores_mutants_not_started_before_deadline(self) -> None:
         status, output, mutate, _ = self.run_mutation(
             SimpleNamespace(), clock=[0, 0, 0, 0.1, 0.2, 2, 2],
