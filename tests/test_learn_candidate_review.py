@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, learn, lifecycle
+from factory.gate import RunnerStorageLow
 
 APPROVE = '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE'
 REVISE = (
@@ -252,3 +253,27 @@ class LearnCandidateReviewTest(unittest.TestCase):
             rows = lifecycle.read_events(cfg.factory / "events.jsonl")
             self.assertFalse(any(row["event"] in ("learn-evaluation", "learn-candidate-review")
                                  for row in rows))
+
+    def test_runner_storage_low_skips_candidate_review_and_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg, case, diff, captured, _ = self.scenario(directory, APPROVE)
+            with mock.patch.object(
+                dispatch, "run_gate", side_effect=RunnerStorageLow("No space left on device"),
+            ), mock.patch.object(dispatch, "run_reviewer") as reviewer, \
+                    mock.patch.object(dispatch, "push_and_pr") as publish:
+                with self.assertRaises(RunnerStorageLow):
+                    self.run_proposal(cfg, case, diff)
+
+            reviewer.assert_not_called()
+            publish.assert_not_called()
+            self.assertFalse(captured.exists())
+            rows = lifecycle.read_events(cfg.factory / "events.jsonl")
+            self.assertFalse(any(
+                row.get("event") in ("learn-candidate-review", "learn")
+                for row in rows
+            ))
+            [storage] = [
+                row for row in rows
+                if row.get("kind") == "exit" and row.get("reason") == "runner_storage_low"
+            ]
+            self.assertEqual((storage["stage"], storage["outcome"]), ("gate", "unknown"))
