@@ -147,6 +147,33 @@ class MutationDeadlineTest(unittest.TestCase):
         self.assertNotIn("mutation check broke", output)
         mutate.assert_not_called()
 
+    def test_assertion_quoted_storage_is_a_killed_mutant_not_infrastructure(self) -> None:
+        result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL,
+            test_outcome=TestOutcome.KILLED,
+            diff="",
+            output="AssertionError: wrong gate result\n\n"
+                   "OSError: [Errno 28] No space left on device\n",
+        )
+        status, output, _, _ = self.run_mutation(result)
+        self.assertEqual(status, 0)
+        self.assertIn("1 killed", output)
+        self.assertNotIn("runner_storage_low", output)
+
+    def test_pytest_storage_timeout_is_not_a_deadline_cut_or_killed_mutant(self) -> None:
+        result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL,
+            test_outcome=TestOutcome.KILLED,
+            diff="",
+            output="timeout\nE       OSError: [Errno 28] No space left on device\n",
+        )
+        status, output, _, _ = self.run_mutation(
+            result, clock=[0, 0, 0, 0.1, 0.2, 0.3, 2, 2],
+        )
+        self.assertEqual(status, 75)
+        self.assertNotIn("1 killed", output)
+        self.assertNotIn("cut short", output)
+
     def test_blocking_ignores_mutants_not_started_before_deadline(self) -> None:
         status, output, mutate, _ = self.run_mutation(
             SimpleNamespace(), clock=[0, 0, 0, 0.1, 0.2, 2, 2],

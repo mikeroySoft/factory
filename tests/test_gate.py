@@ -361,6 +361,13 @@ class RunnerStorageTest(unittest.TestCase):
             ("ResourceWarning: unclosed file", 0, False),
             ("UserWarning: expected ENOSPC in storage regression", 0, False),
             ("AssertionError: wrong result", 1, False),
+            ("E       OSError: [Errno 28] No space left on device", 1, True),
+            ("AssertionError: wrong gate result:\nOSError: [Errno 28] No space left on device", 1, False),
+            ("E       AssertionError: wrong gate result:\nE       OSError: [Errno 28] No space left on device", 1, False),
+            ("AssertionError: quoted ENOSPC\nOSError: [Errno 28] No space left on device\n"
+             "----------------------------------------\n"
+             "Traceback (most recent call last):\n"
+             "OSError: [Errno 28] No space left on device", 1, True),
         ]
         for diagnostic, exit_code, storage in cases:
             with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as d:
@@ -382,6 +389,28 @@ class RunnerStorageTest(unittest.TestCase):
                 if storage:
                     self.assertTrue(all(r["reason"] == "runner_storage_low" for r in exits), exits)
                     self.assertNotIn("gate FAIL", out)
+
+    def test_assertion_quoting_storage_report_remains_a_product_failure(self):
+        import json
+
+        script = (
+            "import unittest\n"
+            "class BrokenStorageTest(unittest.TestCase):\n"
+            "    def runTest(self):\n"
+            "        self.assertEqual(1, 75, '# Gate report\\n\\n"
+            "## storage output\\nOSError: [Errno 28] No space left on device')\n"
+            "unittest.main()\n"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            toml = TOML + (
+                '\n[[gate.check]]\nname = "regression"\nrun = '
+                + json.dumps([sys.executable, "-c", script]) + "\n"
+            )
+            repo = repo_with_test(Path(d), toml)
+            code, _, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+            self.assertEqual(code, 1)
+            self.assertIn("- regression: FAIL", report)
+            self.assertNotIn("INFRA", report)
 
 if __name__ == "__main__":
     unittest.main()

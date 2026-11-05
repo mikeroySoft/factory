@@ -841,3 +841,32 @@ class RunnerStorageRefreshTest(unittest.TestCase):
         self.assertEqual(self.events("escalate"), [])
         self.assertEqual(self.events("risk-requeue"), [])
         self.assertEqual(self.events("review-rework"), [])
+
+    def test_storage_requeue_restores_unpushed_refresh_before_next_worker(self):
+        for fails_on_retry in (False, True):
+            with self.subTest(fails_on_retry=fails_on_retry):
+                refreshed = []
+
+                def exhausted(*_args, **_kwargs):
+                    wt = dispatch.ensure_worktree(9)
+                    refreshed.append(git(wt, "rev-parse", "HEAD"))
+                    raise dispatch.RunnerStorageLow("ENOSPC")
+
+                effects = [(False, "temporary failure"), exhausted] if fails_on_retry else [exhausted]
+
+                def gate(*args, **kwargs):
+                    effect = effects.pop(0)
+                    return effect(*args, **kwargs) if callable(effect) else effect
+
+                with self.patched(), mock.patch.object(dispatch, "run_gate", side_effect=gate):
+                    self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+                    wt = dispatch.ensure_worktree(9)
+                    self.assertEqual(git(wt, "rev-parse", "HEAD"), self.approved_head)
+                    self.assertNotEqual(refreshed[0], self.approved_head)
+                    self.assertEqual(git(
+                        wt, "rev-parse",
+                        f"refs/factory-evidence/9-refreshed-{refreshed[0][:12]}",
+                    ), refreshed[0])
+                    lease = dispatch.agent_lease(wt, 9)
+                    self.assertEqual(dispatch.push_agent(wt, 9, lease), self.approved_head)
+                self.assertEqual(self.events("escalate"), [])
