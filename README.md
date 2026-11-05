@@ -67,6 +67,60 @@ its own `[repo."owner/name".dashboard] port` in the host config. The preflight c
 reserve the port until systemd starts the service: a later bind failure exits 1
 with a one-line diagnostic, and the existing systemd restart policy still applies.
 
+**District drain (host-wide scheduled-pass admission).** `factory install` puts
+`ExecCondition=<python> -P -m factory drain-check` first in each pass service,
+before triage. Exit 0 admits the whole pass; exit 1 skips it without failing the
+unit. `watch` ignores the resulting `SERVICE_RESULT=exec-condition`; a skip adds
+no lifecycle failure or failure-metric sample. Dashboard, triage-probe and eval
+units are not gated. Timers fire normally: the drain feature never changes their
+state. Hand-run `triage`, `dispatch` and `gate` remain ungated.
+
+District atomically writes (same-directory temporary file + rename) and removes
+`${XDG_STATE_HOME:-$HOME/.local/state}/district/drain`, one UTF-8 JSON object per
+host user. Schema 1, with RFC 3339 UTC timestamps and unknown keys ignored:
+
+```json
+{"schema_version": 1, "requested_by": "district apply --drain", "reason": "engine 2ad8846 -> e84004a",
+ "pid": 12345, "created_at": "2026-11-02T14:30:00Z", "expires_at": "2026-11-02T20:45:00Z"}
+```
+
+`expires_at` is required. `DRAIN_MAX_TTL` is eight hours in both Factory and
+District; District caps `expires_at` at `created_at + DRAIN_MAX_TTL`. Factory
+decides once at pass start, using wall time and the file's mtime:
+
+1. No file: run. Stat failure: run, logging
+   `WARN drain flag unreadable; ignoring`.
+2. Mtime more than 60 seconds in the future: run, logging
+   `WARN drain flag mtime in the future; ignoring`.
+3. Valid JSON object and UTC `expires_at`: effective expiry is
+   `min(expires_at, mtime + DRAIN_MAX_TTL)`. Unreadable content, malformed JSON,
+   non-object, missing/invalid expiry: use `mtime + DRAIN_MAX_TTL` and log
+   `WARN drain flag malformed`.
+4. Now at or after effective expiry: run, logging
+   `drain flag expired at <effective_expiry>; ignoring`.
+5. Otherwise skip, logging
+   `skipped: district drain (<reason or "malformed flag">, until <effective_expiry>)`.
+6. Unexpected exceptions: log `ERROR` and run, never accidentally skip.
+
+A flag written after admission does nothing to that pass: no signals, shortened
+work, or flag checks between triage, dispatch and watch. District still rechecks
+busy work before swapping the engine, including hand-run work. A malformed fresh
+flag blocks only until the mtime cap; `district doctor` diagnoses stale/malformed
+flags and `district drain --clear` removes them. `FACTORY_NOW` injects RFC 3339 UTC
+wall time for deterministic `drain-check` regression tests; leave it unset in service.
+
+For hand-maintained launchd plists, begin the pass's shell script with this guard
+(Factory's installer here only renders systemd units):
+
+```sh
+factory drain-check || { echo "=== skipped: district drain"; exit 0; }
+factory triage; factory dispatch; factory watch
+```
+
+Rollout: the new condition arrives through `factory install`, which still
+re-enables an operator-stopped timer (factory#549). District deploys this through
+its normal apply path (district#149); drain itself does not operate timers.
+
 The liveness timer is opt-in. Set the systemd user service that owns the local
 model in the host config, then rerun `factory install`:
 
@@ -112,7 +166,7 @@ parses its assignments, applies the PATH rendered into units, then overlays
 `[install].env`. Failures stop installation before any mutation.
 The probe loads every generated service command and reports the loaded Factory version
 and location. It checks every loaded service module origin (`factory`,
-`factory.cli`, `factory.triage`, `factory.dispatch` and `factory.dashboard`), with
+`factory.cli`, `factory.drain`, `factory.triage`, `factory.dispatch` and `factory.dashboard`), with
 the selected interpreter's `purelib`/`platlib` context as appropriate, rejecting
 lexical origins under the repository root (`cfg.root`) unless within a selected
 package root.
@@ -355,6 +409,21 @@ key is unreadable or unregistered.
 `review_findings` counts in JSON and as `important/nit/pre-existing` triples in
 the ticket table.
 
+Ticket reviewers receive `origin/<main>...<gated head>`: only changes since the
+branch's merge base, not reverse patches for newer main-only commits.
+Risk classification, mutation selection, and the High-risk changed-file check use
+the same merge-base boundary. Explicit `base_ref` reviews keep their direct
+`base..head` boundary. `./snapshot` remains
+the exact gated head, so missing later main commits alone are not reversions;
+genuine reversals in the branch diff still receive normal blocking review.
+Review policy still comes from the supplied base ref (current main by default),
+not the candidate. External PR intake already uses GitHub's three-dot compare.
+Ticket `review` events and review lifecycle results record
+`outside_diff_findings`: citations outside the supplied diff's displayed head-side
+hunk ranges (old-side ranges for deleted files, adjacent anchor for pure deletions).
+This counts all validated findings before the nit cap, without filtering findings
+or changing verdicts; unavailable/unparsed evidence records `null`.
+
 ### Decision records and explanations
 
 Routing from triage through merge or wontfix writes `event: "decision"` rows
@@ -553,8 +622,9 @@ that bare argument for manager commands, not worker commands.
 Reviewers never start in a checkout: both review lanes launch the command in a fresh
 temporary directory, so project config written by a worker or PR author (OMP
 `.omp/extensions`, Claude Code `.claude/settings.json`, `.mcp.json`) is not discovered.
-Ticket review gets `./review.diff` (base to gated head) and a read-only `git archive`
-snapshot of the gated head in `./snapshot`; PR review gets the diff inline. `GIT_*` and
+Ticket review gets `./review.diff` (merge base to gated head, or the explicit
+re-review base) and a read-only `git archive` snapshot of the gated head in
+`./snapshot`; PR review gets the diff inline. `GIT_*` and
 GitHub credentials are stripped from the reviewer's environment.
 The dispatcher supplies the issue title, body, and every comment inline as untrusted
 data: the worker's accepted snapshot for plan-bound tickets, otherwise its own
@@ -975,7 +1045,7 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `verdict_counts_mismatch`. `review-result` records the three counts.
 
    **Risk tiers.** Before these checks, Factory classifies the exact gated
-   `base..head` diff with the installed `factory/risk.py` rules and records a
+   `origin/<main>...head` diff with the installed `factory/risk.py` rules and records a
    `risk` event plus a `risk` decision. Candidate code cannot change the rules
    classifying its own head, and a new head invalidates all tier evidence.
 
@@ -1513,27 +1583,39 @@ branches, or merge state.
   (a `[workers.<label>] usage` profile or `cost_pattern`).
 - **Learning loop**: after a batch of tickets, `factory learn --dry-run`,
   read the proposed lessons, then `factory learn` and commit
-  `.factory-lessons.md`. Workers see it on every ticket. With `[manager]`
-  configured the dispatcher does this itself: at the end of a pass, once 10
-  tickets have finished (latest `merged`/`escalate` row) since the last `learn`
-  event (manual or automatic; from the journal start if none), it runs
-  `factory score --last 10` (so every chosen ticket has session excerpts),
-  decides open promotions on the new scores (below), then, unless that opened a
-  revert (`learn: skipped (revert PR opened: ...)`; a lessons PR would conflict
-  with it), `factory learn --last 10` once and journals `learn` with
-  `trigger: "auto"`.
+  `.factory-lessons.md`. Workers see it on every ticket. At the end of every
+  dispatcher pass, `factory score` scores unscored finished attempts (at most 50),
+  independently of the learning threshold, manager availability, or open proposals.
+  With `[manager]` configured, once 10 tickets have finished (latest
+  `merged`/`escalate` row) since the last successful `learn` event (manual or
+  automatic; from the journal start if none), the dispatcher decides open
+  promotions on the scores (below), then, unless that opened a revert
+  (`learn: skipped (revert PR opened: ...)`; a lessons PR would conflict with it),
+  runs `factory learn --last 10` and journals `learn` with `trigger: "auto"`.
   It skips while an `agent/lessons-*`, `agent/curate-*` or
   `agent/revert-lessons-*` PR is open (`learn:
-  skipped (open lessons PR #N)`; the count is kept), and without a manager logs
-  `learn: skipped (no manager)` and records nothing. A failure is journaled as
-  `learn` with `status: "failed"` and a `reason`, never fails the pass, and
-  keeps the count, so the next pass retries. Lessons, CURATE, and their revert PRs auto-merge:
-  gate, reviewer APPROVE (posted as a GitHub `COMMENT` review, since the
-  dispatcher authored the PR and cannot approve its own; the journaled
-  `review-result` carries the verdict), CI, `factory-approved`, squash (see
-  `factory learn` in the command table). Only same-repository heads are
-  admitted by branch name; a fork PR named `agent/lessons-*` still needs
-  `needs-review`. The guard is measurement, not a person: each merge
+  skipped (open lessons PR #N)`; the count is kept). Blocker changes journal
+  `learn-wait`; the same PR blocking learn for over 24 hours journals exactly one
+  `learn-blocked` per uninterrupted wait, surfaced by `factory watch`. A different
+  PR starts a new clock; clearing the wait clears its watch signal. Without a
+  manager, learn logs `learn: skipped (no manager)`; scoring still runs.
+  A failure is journaled as `learn` with `status: "failed"` and a `reason`, never
+  fails the pass, and keeps the count, so the next pass retries.
+  Lessons and CURATE proposals require gate, reviewer APPROVE (posted as a
+  GitHub `COMMENT` review since the dispatcher cannot approve its own PR;
+  `review-result` carries the verdict), CI, `factory-approved`, and squash.
+  A recorded `promotion-revert` can instead pass on its nonempty measured
+  baseline score: the candidate's changed paths must exactly match the original
+  promotion's, and their contents/modes must equal that merge's parent versions.
+  This is checked against the exact candidate head, not a branch-name exemption.
+  Such restorations need gate and CI, not reviewer APPROVE or a new worker eval;
+  their `approved` row records `restored_score` rather than claiming a review.
+  A human GitHub `CHANGES_REQUESTED` review still blocks every proposal, including
+  measured restorations; factory reviewer findings posted as `COMMENT` are distinct.
+  An unmeasured or modified restoration still needs review and scheduled eval.
+  Only same-repository heads are admitted by branch name; a fork PR named
+  `agent/lessons-*` still needs `needs-review`.
+  The guard is measurement, not a person: each non-revert merge
   journals `promotion-open` with the score means of the 10 attempts before it,
   and once 10 attempts journaled after the merge are scored the same pass journals
   `promotion-keep` or `promotion-revert` (opening `agent/revert-lessons-<pr>`)
