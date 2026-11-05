@@ -1204,8 +1204,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    mutant gets `min(max(60, 3 * baseline), remaining / 4)` seconds, with `remaining`
    fixed at baseline completion. Per-mutant timeouts still count as killed even
    when the cap is below baseline duration; summaries and gate reports also show
-   their timeout count separately. Unstarted and deadline-cut
-   mutants are reported as incomplete, not survivors or blocking failures;
+   their timeout count separately. Unstarted mutants and timeout results returned
+   at or after the absolute deadline are incomplete, not survivors or blocking failures;
    a baseline that never passes within the deadline and tool failures still fail.
    Scratch workers use local shared clones with independent Git metadata and the
    current working files overlaid, so Git-dependent tests run without skips.

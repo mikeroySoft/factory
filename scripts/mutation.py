@@ -304,8 +304,9 @@ def main(argv: list[str] | None = None) -> int:
                 result = mutate_and_test(
                     [local], test_command(copy, str(mutation.module_path)), min(timeout, left),
                 )
-                if left < timeout and result.output == "timeout":
+                if result.output == "timeout" and (left < timeout or time.monotonic() >= deadline):
                     cut.append(mutation)
+                    return
                 else:
                     results.append((mutation, result))
 
