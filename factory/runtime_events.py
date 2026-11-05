@@ -565,10 +565,9 @@ class _Observation:
         current = self.lock_file(lock["path"])
         if (lock["device"], lock["inode"]) != (current["device"], current["inode"]):
             return "unknown", None
-        if platform_identity.darwin():
-            state = lifecycle._lock_state(current)
-            return state, self.holders(current) if state == "held" else None
         holders = self.holders(current)
+        if platform_identity.darwin():
+            return ("held", holders) if holders else ("unknown", None)
         return ("unknown", None) if holders is None else ("held" if holders else "free", holders)
 
 

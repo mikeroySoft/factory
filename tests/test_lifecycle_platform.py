@@ -108,8 +108,11 @@ class DarwinLifecycleTest(unittest.TestCase):
             self.assertEqual(observation.lock_state(lock), ("held", [os.getpid()]))
             with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "p123\nf4\nl \n", "")):
                 self.assertIsNone(lifecycle._lock_holders(lock))
-                self.assertEqual(runtime_events._Observation([]).lock_state(lock), ("held", None))
-        self.assertEqual(runtime_events._Observation([]).lock_state(lock), ("free", None))
+                self.assertEqual(lifecycle._lock_state(lock), "held")
+                self.assertEqual(runtime_events._Observation([]).lock_state(lock), ("unknown", None))
+        self.assertEqual(lifecycle._lock_state(lock), "free")
+        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, "", "")):
+            self.assertEqual(runtime_events._Observation([]).lock_state(lock), ("unknown", None))
 
     def test_passive_projection_never_acquires_flocks(self):
         path = Path(self.tmp.name) / "gpu.lock"
@@ -156,13 +159,15 @@ class DarwinLifecycleTest(unittest.TestCase):
             with self.subTest(result=result), patch("subprocess.run", return_value=result):
                 self.assertEqual(lifecycle._process_state(identity), "unknown")
 
-    def test_held_lock_remains_held_when_attribution_unavailable(self):
+    def test_lifecycle_lock_stays_held_but_passive_state_is_unknown_without_attribution(self):
         path = Path(self.tmp.name) / "gpu.lock"
         with path.open("w") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             observation = runtime_events._Observation([])
             with patch("subprocess.run", side_effect=FileNotFoundError):
-                self.assertEqual(observation.lock_state(lifecycle._lock(path)), ("held", None))
+                lock = lifecycle._lock(path)
+                self.assertEqual(lifecycle._lock_state(lock), "held")
+                self.assertEqual(observation.lock_state(lock), ("unknown", None))
 
 
 class HostIdentityTest(unittest.TestCase):
