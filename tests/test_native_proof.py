@@ -3,7 +3,7 @@ import json
 import sys
 import unittest
 
-import test_dispatch_lifecycle as fixtures
+from tests import test_dispatch_lifecycle as fixtures
 
 
 class NativeProofTest(unittest.TestCase):
