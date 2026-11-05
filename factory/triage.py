@@ -686,15 +686,6 @@ def list_needs_triage(execution=None) -> list[int]:
     return [item["number"] for item in json.loads(raw)]
 
 
-def timeouts_last(numbers: list[int]) -> list[int]:
-    """Tickets whose last triage attempt timed out go after the rest, so one slow ticket cannot starve older ones."""
-    last = {}
-    for row in lifecycle.read_events(cfg.factory / "events.jsonl"):
-        if row.get("stage") == "triage-ticket" and row.get("kind") == "exit":
-            last[row.get("ticket")] = row.get("reason")
-    return sorted(numbers, key=lambda n: last.get(n) == "triage_endpoint_timeout")
-
-
 def probe_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="factory triage-probe",
@@ -748,7 +739,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     elif args.issue:
         numbers = [args.issue]
     else:
-        numbers = timeouts_last(list_needs_triage(execution=execution))
+        numbers = list_needs_triage(execution=execution)
 
     if not numbers:
         if execution:
