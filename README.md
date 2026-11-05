@@ -67,6 +67,60 @@ its own `[repo."owner/name".dashboard] port` in the host config. The preflight c
 reserve the port until systemd starts the service: a later bind failure exits 1
 with a one-line diagnostic, and the existing systemd restart policy still applies.
 
+**District drain (host-wide scheduled-pass admission).** `factory install` puts
+`ExecCondition=<python> -P -m factory drain-check` first in each pass service,
+before triage. Exit 0 admits the whole pass; exit 1 skips it without failing the
+unit. `watch` ignores the resulting `SERVICE_RESULT=exec-condition`; a skip adds
+no lifecycle failure or failure-metric sample. Dashboard, triage-probe and eval
+units are not gated. Timers fire normally: the drain feature never changes their
+state. Hand-run `triage`, `dispatch` and `gate` remain ungated.
+
+District atomically writes (same-directory temporary file + rename) and removes
+`${XDG_STATE_HOME:-$HOME/.local/state}/district/drain`, one UTF-8 JSON object per
+host user. Schema 1, with RFC 3339 UTC timestamps and unknown keys ignored:
+
+```json
+{"schema_version": 1, "requested_by": "district apply --drain", "reason": "engine 2ad8846 -> e84004a",
+ "pid": 12345, "created_at": "2026-11-02T14:30:00Z", "expires_at": "2026-11-02T20:45:00Z"}
+```
+
+`expires_at` is required. `DRAIN_MAX_TTL` is eight hours in both Factory and
+District; District caps `expires_at` at `created_at + DRAIN_MAX_TTL`. Factory
+decides once at pass start, using wall time and the file's mtime:
+
+1. No file: run. Stat failure: run, logging
+   `WARN drain flag unreadable; ignoring`.
+2. Mtime more than 60 seconds in the future: run, logging
+   `WARN drain flag mtime in the future; ignoring`.
+3. Valid JSON object and UTC `expires_at`: effective expiry is
+   `min(expires_at, mtime + DRAIN_MAX_TTL)`. Unreadable content, malformed JSON,
+   non-object, missing/invalid expiry: use `mtime + DRAIN_MAX_TTL` and log
+   `WARN drain flag malformed`.
+4. Now at or after effective expiry: run, logging
+   `drain flag expired at <effective_expiry>; ignoring`.
+5. Otherwise skip, logging
+   `skipped: district drain (<reason or "malformed flag">, until <effective_expiry>)`.
+6. Unexpected exceptions: log `ERROR` and run, never accidentally skip.
+
+A flag written after admission does nothing to that pass: no signals, shortened
+work, or flag checks between triage, dispatch and watch. District still rechecks
+busy work before swapping the engine, including hand-run work. A malformed fresh
+flag blocks only until the mtime cap; `district doctor` diagnoses stale/malformed
+flags and `district drain --clear` removes them. `FACTORY_NOW` injects RFC 3339 UTC
+wall time for deterministic `drain-check` regression tests; leave it unset in service.
+
+For hand-maintained launchd plists, begin the pass's shell script with this guard
+(Factory's installer here only renders systemd units):
+
+```sh
+factory drain-check || { echo "=== skipped: district drain"; exit 0; }
+factory triage; factory dispatch; factory watch
+```
+
+Rollout: the new condition arrives through `factory install`, which still
+re-enables an operator-stopped timer (factory#549). District deploys this through
+its normal apply path (district#149); drain itself does not operate timers.
+
 The liveness timer is opt-in. Set the systemd user service that owns the local
 model in the host config, then rerun `factory install`:
 
@@ -112,7 +166,7 @@ parses its assignments, applies the PATH rendered into units, then overlays
 `[install].env`. Failures stop installation before any mutation.
 The probe loads every generated service command and reports the loaded Factory version
 and location. It checks every loaded service module origin (`factory`,
-`factory.cli`, `factory.triage`, `factory.dispatch` and `factory.dashboard`), with
+`factory.cli`, `factory.drain`, `factory.triage`, `factory.dispatch` and `factory.dashboard`), with
 the selected interpreter's `purelib`/`platlib` context as appropriate, rejecting
 lexical origins under the repository root (`cfg.root`) unless within a selected
 package root.

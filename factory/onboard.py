@@ -705,7 +705,7 @@ result = {
     "platlib": sysconfig.get_path("platlib"),
 }
 try:
-    for name in ("factory", "factory.cli", "factory.triage", "factory.dispatch", "factory.dashboard"):
+    for name in ("factory", "factory.cli", "factory.drain", "factory.triage", "factory.dispatch", "factory.dashboard"):
         spec = importlib.util.find_spec(name)
         result["origins"][name] = spec.origin if spec else None
         module = importlib.import_module(name)
@@ -713,7 +713,7 @@ try:
     import factory
     result["version"] = getattr(factory, "__version__", "unknown")
     from factory.cli import COMMANDS
-    for command in ("triage", "triage-probe", "dispatch", "dashboard"):
+    for command in ("drain-check", "triage", "triage-probe", "dispatch", "dashboard"):
         entry = COMMANDS.get(command)
         if not entry:
             raise RuntimeError(f"missing {command} command")
@@ -823,7 +823,7 @@ def interpreter_probe(cfg: config.Config) -> tuple[bool, str]:
     identity = f"Factory {version} at {location}" if location else "Factory not importable"
     details = ", ".join(
         f"{name}={origins.get(name)}"
-        for name in ("factory", "factory.cli", "factory.triage", "factory.dispatch", "factory.dashboard")
+        for name in ("factory", "factory.cli", "factory.drain", "factory.triage", "factory.dispatch", "factory.dashboard")
     )
     details += f", purelib={result.get('purelib')}, platlib={result.get('platlib')}"
     identity += f" ({details})"
@@ -879,6 +879,7 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
             f"[Unit]\nDescription=factory triage + dispatcher for {cfg.repo} (one pass)\n\n"
             # `-` prefix: an offline triage model must not stop the dispatch pass.
             f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
+            f"ExecCondition={exe} drain-check\n"
             f"ExecStart=-{exe} triage\nExecStart={exe} dispatch\n"
             # Post-pass monitor, after success or failure: systemd hands it $SERVICE_RESULT,
             # so a crashed pass files itself. `-`: the monitor never fails the unit.
