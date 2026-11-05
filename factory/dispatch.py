@@ -3731,9 +3731,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         unmerged = run(["git", "diff", "--name-only", "-z", "--diff-filter=U"], cwd=wt, check=False).stdout
         conflicts = [path for path in unmerged.split("\0") if path]
         run(["git", verb, "--abort"], cwd=wt, check=False)
-        # Routine worker work (#295): the ticket goes back to the frontier on the same worktree and
-        # branch, bounded by `review_rounds` conflict rounds. A human gets it only for a protected
-        # path without authority, rounds used up, or a ticket that is no longer open.
+        # Preserve routine worker work (#295) for a later claim after the PR closes,
+        # bounded by `review_rounds`. Escalate protected paths without authority,
+        # exhausted rounds, or a ticket that is no longer open.
         # A manager-FIX-approved PR may still have a ready-for-human issue; restore agent flow.
         issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels"])
         labels = {label["name"] for label in issue.get("labels", [])}

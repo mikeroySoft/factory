@@ -18,7 +18,7 @@ p = Path(os.environ["SMOKE_STATE"])
 s = json.loads(p.read_text())
 a = sys.argv[1:]
 if a[:2] == ["api", "user"]:
-    print(json.dumps({"login": "factory-bot"}))
+    print("factory-bot" if "--jq" in a else json.dumps({"login": "factory-bot"}))
     raise SystemExit(0)
 if a[:2] == ["issue", "edit"]:
     owners = s.setdefault("assignees", [])
@@ -1166,9 +1166,6 @@ class TriageExemptionLifecycleTest(unittest.TestCase):
             'issue["comments"] = [{"author": {"login": ' + repr(author) + '}, '
             '"body": "Triage: investigate hardware failure\\n\\n'
             'Agent brief: fix it\\nNo repro test: requires unavailable hardware"}]\n'
-            'if a[:2] == ["api", "user"]:\n'
-            '    print("factory-bot")\n'
-            '    raise SystemExit(0)\n'
             'if s.get("sync"):',
         ))
 

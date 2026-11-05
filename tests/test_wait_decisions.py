@@ -134,11 +134,19 @@ class WaitDecisions(unittest.TestCase):
         self.assertTrue(dispatch.lock_held(lock))
 
     def test_ticket_state_recheck_preserves_outcome_and_releases_before_exit(self):
-        with patch.object(dispatch, "gh_json", return_value={
-            "state": "CLOSED", "labels": [], "assignees": []
-        }) as query, patch.object(dispatch, "run") as run:
+        closed = {"state": "CLOSED", "labels": [], "assignees": []}
+
+        def github(args):
+            if args[:2] == ["pr", "list"]:
+                return []
+            if args[:2] == ["issue", "view"]:
+                return closed
+            raise AssertionError(args)
+
+        with patch.object(dispatch, "gh_json", side_effect=github) as query, \
+                patch.object(dispatch, "run") as run:
             dispatch.process_ticket(self.issue, 1, False)
-        query.assert_called_once()
+        self.assertEqual(query.call_count, 2)
         run.assert_not_called()
         rows = self.rows()
         exit_row = next(row for row in rows if row["kind"] == "exit")
@@ -155,7 +163,15 @@ class WaitDecisions(unittest.TestCase):
         self.cfg.workers = {"default": ["no-such-worker-7f3a", "{prompt}"]}
         fresh = {"state": "OPEN", "labels": [{"name": "ready-for-agent"}], "assignees": [],
                  "title": "local ticket", "body": "", "comments": []}
-        with patch.object(dispatch, "gh_json", return_value=fresh), \
+
+        def github(args):
+            if args[:2] == ["pr", "list"]:
+                return []
+            if args[:2] == ["issue", "view"]:
+                return fresh
+            raise AssertionError(args)
+
+        with patch.object(dispatch, "gh_json", side_effect=github), \
                 patch.object(dispatch, "admit_plan", return_value=None), \
                 patch.object(dispatch, "run") as run:
             dispatch.process_ticket(self.issue, 1, False)
@@ -197,10 +213,21 @@ class WaitDecisions(unittest.TestCase):
         self.assertFalse(any(row["kind"] == "lock_acquired" for row in rows))
 
     def test_dry_run_does_not_create_journal_or_lock_directory(self):
+        dry_issue = {"body": ""}
+
+        def github(args):
+            if args[:2] == ["pr", "list"]:
+                return []
+            if args[:2] == ["issue", "list"]:
+                return []
+            if args[:2] == ["issue", "view"]:
+                return dry_issue
+            raise AssertionError(args)
+
         with patch.object(dispatch.config, "load", return_value=self.cfg), \
                 patch.object(dispatch, "sync_pass") as sync, \
                 patch.object(dispatch, "merge_pass_locked") as merge, \
-                patch.object(dispatch, "gh_json", return_value=[]), \
+                patch.object(dispatch, "gh_json", side_effect=github), \
                 patch.object(dispatch, "frontier", return_value=[]):
             self.assertEqual(dispatch.main(["--dry-run"]), 0)
             dispatch.process_ticket(self.issue, 1, True)

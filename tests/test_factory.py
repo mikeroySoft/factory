@@ -2138,19 +2138,35 @@ PY
             }
             original_run = dispatch.run
 
+            def fake_github(args):
+                if args[:2] == ["pr", "list"]:
+                    return []
+                if args == ["api", "user"]:
+                    return {"login": "factory-bot"}
+                if args[:2] == ["issue", "view"]:
+                    return issue
+                raise AssertionError(args)
+
             def fake_run(cmd, *args, original_run=original_run, **kwargs):
+                if cmd[:3] == ["gh", "issue", "edit"]:
+                    if "--add-assignee" in cmd:
+                        issue["assignees"] = [{"login": "factory-bot"}]
+                    elif "--remove-assignee" in cmd:
+                        issue["assignees"] = []
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
                 if cmd[0] == "gh":
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 return original_run(cmd, *args, **kwargs)
 
             with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
-                    mock.patch.object(dispatch, "gh_json", return_value=issue), \
+                    mock.patch.object(dispatch, "gh_json", side_effect=fake_github), \
                     mock.patch.object(dispatch, "run", side_effect=fake_run), \
                     mock.patch.object(dispatch, "escalate") as escalate:
                 dispatch.process_ticket(issue, 5, False)
             escalate.assert_called_once()
             self.assertEqual(escalate.call_args.args[1], "worker removed or changed existing tests")
             self.assertIn("-assert True", escalate.call_args.kwargs["extra"])
+            self.assertEqual(issue["assignees"], [])
 
     def test_red_ci_pr_is_fixed_relabelled_and_merged_on_the_next_pass(self) -> None:
         """#15 exit gate: red CI withdrew the label; FIX + green gate + APPROVE relabel; next pass merges."""

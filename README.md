@@ -1097,10 +1097,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    refresh work to the ticket worker, or withdraw the label and escalate. A
    rebase (or sync-merge) conflict is routine work: the
    label is withdrawn, a `conflict-requeue` row records the PR, head and
-   conflicting files, and the ticket is released (unassigned, `ready-for-human`
-   removed, `ready-for-agent` added, including after a manager `FIX`) so the
-   next claim runs a worker in the same worktree on
-   the same `agent/<n>` branch with a brief to rebase onto current
+   conflicting files, and run-owned claims are released (`ready-for-human`
+   removed, `ready-for-agent` added, including after a manager `FIX`). The open
+   PR remains a named hold until it merges or closes. After closure, the next
+   claim runs a worker in the same worktree on the same `agent/<n>` branch
+   with a brief to rebase onto current
    `origin/main`, resolve the conflicts, keep the approved intent, and not widen
    scope. That attempt counts as a worker round; the normal gate, push (lease
    on the recorded PR head), independent review, `review_rounds` and
@@ -1116,9 +1117,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    A passing re-run continues the normal push and review path and journals both
    reports in `gate-rerun`. If the re-run also fails, a `gate-requeue` row records
    both reports, the PR diff paths, whether the failure appears unrelated to those
-   paths, and the round; the open ticket is released to its existing worker profile
-   on the same `agent/<n>` branch. The worker brief includes both reports and the
-   unrelated-failure assessment. This repeats for at most `review_rounds` gate
+   paths, and the round; the ticket keeps its existing worker profile and
+   `agent/<n>` branch, but an open PR still holds admission. After closure,
+   the worker brief includes both reports and the unrelated-failure assessment.
+   This repeats for at most `review_rounds` gate
    requeues. A closed ticket, exhausted gate rounds, or a protected/add-only failure
    without its authority label escalates immediately; escalation packets retain both
    reports and the same diff assessment.

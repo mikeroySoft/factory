@@ -557,6 +557,7 @@ class HighPipelineBoundaryTest(unittest.TestCase):
             "title": "change dispatcher", "files": [{"path": "factory/dispatch.py"}],
         }
         self.heads = []
+        self.pr_published = False
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
         self.command = self.patch(dispatch, "run", side_effect=self.command_result)
@@ -568,7 +569,7 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         self.patch(dispatch, "refresh_requeue_context", return_value="")
         self.patch(dispatch, "pending_risk_requeue_head", return_value=None)
         self.patch(dispatch, "sync_staged", return_value=None)
-        self.patch(dispatch, "push_and_pr", return_value=True)
+        self.patch(dispatch, "push_and_pr", side_effect=self.publish)
         self.patch(dispatch, "push_agent", return_value=NEW_HEAD)
         self.patch(dispatch, "pr_comment")
         self.patch(dispatch, "retain_handoff", return_value=True)
@@ -590,15 +591,29 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         if args[:2] == ["issue", "view"]:
             return self.issue
         if args[:2] == ["pr", "list"]:
+            if "--head" in args and not self.pr_published:
+                return []
             return [self.pr]
         if args[:2] == ["pr", "view"]:
             return self.pr
+        if args == ["api", "user"]:
+            return {"login": "factory-bot"}
         if args[0] == "api":
             return {"behind_by": 0}
         raise AssertionError(args)
 
+    def publish(self, *_args, **_kwargs):
+        self.pr_published = True
+        return True
+
     def command_result(self, args, **_kwargs):
-        if args[:3] == ["git", "diff", "--name-status"]:
+        if args[:3] == ["gh", "issue", "edit"]:
+            if "--add-assignee" in args:
+                self.issue["assignees"] = [{"login": "factory-bot"}]
+            elif "--remove-assignee" in args:
+                self.issue["assignees"] = []
+            output = ""
+        elif args[:3] == ["git", "diff", "--name-status"]:
             output = "M\tfactory/dispatch.py\n"
         elif args[:3] == ["git", "branch", "--show-current"]:
             output = "agent/7\n"
@@ -639,6 +654,7 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         ):
             with self.subTest(verdicts=verdicts):
                 self.heads.clear()
+                self.pr_published = False
                 self.worker.reset_mock()
                 self.escalate.reset_mock()
                 self.reviews(verdicts)
