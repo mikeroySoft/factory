@@ -110,6 +110,38 @@ class DarwinLifecycleTest(unittest.TestCase):
                 self.assertEqual(lifecycle._lock_holders(lock), [])
         self.assertEqual(runtime_events._Observation([]).lock_state(lock), ("free", []))
 
+    def test_resource_owner_correlates_with_passive_reader(self):
+        path = Path(self.tmp.name) / "gpu.lock"
+        with path.open("w") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            execution = lifecycle.Execution(self.path, "gate")
+            execution.emit("enter")
+            execution.resource("acquired", path, scope="host")
+            resource = lifecycle.resources(self.path, [(path, "host")])[0]
+            self.assertEqual(resource["ownership"], "confirmed")
+            self.assertEqual(resource["owner"]["execution_id"], execution.execution_id)
+            self.assertEqual(resource["evidence"]["attribution"], "lsof")
+            projected = runtime_events.project(self.path, [(path, "host")])
+            self.assertEqual(projected["resources"][0]["owner"], resource["owner"])
+            self.assertEqual(projected["resources"][0]["event_id"], resource["event_id"])
+            self.assertEqual(projected["errors"], [])
+
+    def test_unknown_probes_and_incomplete_identity_remain_unknown(self):
+        identity = self.recorded()
+        self.assertEqual(lifecycle._process_state({**identity, "start_ticks": None}), "unknown")
+        for result in (subprocess.CompletedProcess([], 0, "malformed", ""),
+                       subprocess.CompletedProcess([], 1, "", "permission denied")):
+            with self.subTest(result=result), patch("subprocess.run", return_value=result):
+                self.assertEqual(lifecycle._process_state(identity), "unknown")
+
+    def test_held_lock_remains_held_when_attribution_unavailable(self):
+        path = Path(self.tmp.name) / "gpu.lock"
+        with path.open("w") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            observation = runtime_events._Observation([])
+            with patch("subprocess.run", side_effect=FileNotFoundError):
+                self.assertEqual(observation.lock_state(lifecycle._lock(path)), ("held", None))
+
 
 class HostIdentityTest(unittest.TestCase):
     def test_darwin_host_id_stable_across_processes(self):
@@ -160,3 +192,13 @@ sys.stdin.readline()
                     child.wait(timeout=10)
         hosts = [subprocess.check_output([sys.executable, "-c", "from factory import lifecycle; print(lifecycle._host_id())"], text=True).strip() for _ in range(2)]
         self.assertEqual(hosts, [lifecycle._host_id()] * 2)
+
+    def test_native_linux_identity_fields_are_unchanged(self):
+        if sys.platform == "linux":
+            pid = os.getpid()
+            text = Path(f"/proc/{pid}/stat").read_text()
+            fields = text[text.rfind(")") + 2:].split()
+            identity = lifecycle._identity(pid)
+            self.assertEqual(identity["boot_id"], Path("/proc/sys/kernel/random/boot_id").read_text().strip())
+            self.assertEqual(identity["start_ticks"], int(fields[19]))
+            self.assertEqual(identity["pid_namespace"], os.readlink(f"/proc/{pid}/ns/pid"))
