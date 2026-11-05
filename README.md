@@ -749,8 +749,8 @@ because a partial rewrite or split may already have changed GitHub.
 
 A human who moves an escalated ticket back to `ready-for-agent` (by relabeling or with
 the guarded `requeue_agent` action) opens a new **generation** for it. Whichever stage
-first reads the live ticket in that state (land, manager or ticket) journals one
-`generation` row with `generation`, `intent`, `source` (`label` or `requeue_agent`),
+first reads the live ticket in that state (land, manager or ticket) in a pass after the
+escalation's own journals one `generation` row with `generation`, `intent`, `source` (`label` or `requeue_agent`),
 `actor`, `decision` and `escalation_at`. Every round budget counts only the rows after
 it. That covers the escalation and manager rounds, frontier manager rounds,
 review-bounce rounds and conflict, gate and risk requeue rounds, so the ticket gets its

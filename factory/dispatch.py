@@ -70,6 +70,8 @@ _LOW_FALLBACK: set[int] = set()
 _HOST_CLAIMS: dict[int, HostClaim] = {}
 # Worker profile -> why it cannot launch this pass (failed probe or auth failure at launch).
 UNAVAILABLE_WORKERS: dict[str, str] = {}
+# Tickets this pass escalated: no owner can have released them yet (see `observe_owner_requeue`).
+_ESCALATED: set[int] = set()
 
 
 def configure(c: Config) -> None:
@@ -91,6 +93,7 @@ def configure(c: Config) -> None:
     _PENDING_RISK.clear()
     _LOW_FALLBACK.clear()
     UNAVAILABLE_WORKERS.clear()
+    _ESCALATED.clear()
     host_claim_login.cache_clear()
 
 
@@ -2261,6 +2264,7 @@ def escalate(
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
         **evidence,
     )
+    _ESCALATED.add(n)
     claims = host_claims(n) if cfg.host_name else []
     elected = elected_host_claim(claims)
     unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
@@ -3647,7 +3651,8 @@ def observe_owner_requeue(n: int, issue: dict) -> None:
     A ticket still assigned may be a factory escalation whose relabel failed: not a release.
     """
     labels = {label["name"] for label in issue.get("labels", [])}
-    if LABEL_AGENT not in labels or LABEL_HUMAN in labels:
+    # A read right after this pass's own escalation relabel may still show the old labels.
+    if LABEL_AGENT not in labels or LABEL_HUMAN in labels or n in _ESCALATED:
         return
     opened = generation.owner_requeue(lifecycle.read_events(EVENTS), n)
     if opened is None:

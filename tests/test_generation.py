@@ -72,6 +72,7 @@ class FrontierGenerationTest(unittest.TestCase):
         dispatch.record("claimed", ticket=79)
         dispatch.record("attempt", ticket=79, gate="FAIL")
         dispatch.escalate(79, "gate failed after 3 attempts", None, code="gate_failed")
+        dispatch.configure(self.cfg)  # the owner answers in a later pass
         self.issue_labels = ["ready-for-agent"]
 
     def test_feedback_undelivered_at_the_requeue_waits_for_the_fresh_attempt(self) -> None:
@@ -108,6 +109,7 @@ class FrontierGenerationTest(unittest.TestCase):
         manage.frontier_pass()
         self.assertEqual([e["code"] for e in self.escalations()], ["manager_human"])
         self.issue_labels = ["ready-for-human"]
+        dispatch.configure(self.cfg)
 
     def next_head_asks_the_manager(self) -> None:
         self.pr = frontier_suite.pr_row(head=H2)
@@ -148,6 +150,7 @@ class RefreshGenerationTest(unittest.TestCase):
             self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
             self.assertEqual([e["code"] for e in self.events("escalate")], ["refresh_conflict"])
             self.assertEqual(self.github.assignees, [])
+            dispatch.configure(self.cfg)
             self.github.issue_labels = {config.LABEL_AGENT}  # the owner relabels; no ticket stage has run
             self.github.pr_labels.add(config.LABEL_APPROVED)
             self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
@@ -156,15 +159,18 @@ class RefreshGenerationTest(unittest.TestCase):
         [opened] = self.events("generation")
         self.assertEqual(opened["generation"], 1)
 
-    def test_assigned_ticket_is_not_an_owner_release(self) -> None:
-        # `escalate` unassigns in the same edit that relabels; an assignee left means that edit never landed.
-        lifecycle.append(dispatch.EVENTS, {"event": "escalate", "ticket": 9, "code": "gate_failed", "reason": "x", "round": 1})
+    def test_only_an_unassigned_ticket_escalated_before_this_pass_is_an_owner_release(self) -> None:
+        ready = {"labels": [{"name": config.LABEL_AGENT}]}
         with self.patched():
-            dispatch.observe_owner_requeue(9, {"labels": [{"name": config.LABEL_AGENT}]})
-        self.assertEqual(self.events("generation"), [])
-        self.github.assignees = []
-        with self.patched():
-            dispatch.observe_owner_requeue(9, {"labels": [{"name": config.LABEL_AGENT}]})
+            dispatch.escalate(9, "gate failed", None, code="gate_failed")
+            dispatch.observe_owner_requeue(9, ready)  # a read right after this pass's own relabel can lag
+            dispatch.configure(self.cfg)
+            # `escalate` unassigns in the edit that relabels; an assignee left means that edit never landed.
+            self.github.assignees = ["factory"]
+            dispatch.observe_owner_requeue(9, ready)
+            self.assertEqual(self.events("generation"), [])
+            self.github.assignees = []
+            dispatch.observe_owner_requeue(9, ready)
         self.assertEqual(len(self.events("generation")), 1)
 
     def test_fresh_intent_recuts_the_branch_from_main_and_keeps_the_old_heads(self) -> None:
