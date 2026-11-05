@@ -202,7 +202,7 @@ class SystemdProbesTest(unittest.TestCase):
         original = self.runner
         for failure in (FileNotFoundError("journalctl"),
                         subprocess.CompletedProcess([], 1, "", "journal unavailable")):
-            def unavailable(argv, **kwargs):
+            def unavailable(argv, failure=failure, **kwargs):
                 if argv[0] == "journalctl":
                     if isinstance(failure, OSError):
                         raise failure
