@@ -915,3 +915,48 @@ class MultiRoundReproductionGateTest(unittest.TestCase):
             self.assertEqual(code, 1, report)
             self.assertIn("- bug-repro: FAIL", report)
             self.assertNotIn("- bug-repro-before:", report)
+
+
+class BuiltinStorageGateTest(unittest.TestCase):
+    def test_bug_repro_storage_is_infrastructure(self) -> None:
+        import contextlib
+        import io
+        import json
+
+        for stage in ("protected", "tree", "worktree", "before-timeout", "head"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                add_repro(repo)
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+                popen = subprocess.Popen
+
+                def storage_command(command, *args, stage=stage, repo=repo, popen=popen, **kwargs):
+                    target = (
+                        (stage == "protected" and command[:2] == ["git", "ls-tree"])
+                        or (stage == "tree" and command[:3] == ["git", "ls-tree", "-r"])
+                        or (stage == "worktree" and command[:3] == ["git", "worktree", "add"])
+                        or (stage == "before-timeout" and command[0] == sys.executable
+                            and kwargs.get("cwd") != repo)
+                        or (stage == "head" and command[0] == sys.executable
+                            and kwargs.get("cwd") == repo)
+                    )
+                    if target:
+                        command = [
+                            sys.executable, "-c",
+                            "import time; print('fatal: cannot write: No space left on device', flush=True); "
+                            + ("time.sleep(30)" if stage == "before-timeout" else "raise SystemExit(1)"),
+                        ]
+                    return popen(command, *args, **kwargs)
+
+                with contextlib.chdir(repo), contextlib.redirect_stdout(io.StringIO()) as output, \
+                        mock.patch.object(gate_module.subprocess, "Popen", side_effect=storage_command):
+                    code = gate_module.main([
+                        "--bug", "--repro-test", TEST_ID, "--check-timeout", "1", "--skip", "test",
+                    ])
+                self.assertEqual(code, 75, output.getvalue())
+                self.assertIn("gate INFRA: runner_storage_low", output.getvalue())
+                rows = [json.loads(line) for line in (repo / ".factory/events.jsonl").read_text().splitlines()]
+                exits = [row for row in rows if row.get("stage") == "gate" and row.get("event") == "exit"]
+                self.assertEqual(exits[-1]["reason"], "runner_storage_low")
+                self.assertEqual(exits[-1]["outcome"], "unknown")

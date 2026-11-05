@@ -314,6 +314,33 @@ class MutationDeadlineTest(unittest.TestCase):
             baseline.assert_not_called()
             mutate.assert_not_called()
 
+    def test_completed_storage_traceback_is_not_a_killed_mutant(self) -> None:
+        source = (
+            "import unittest\n"
+            "class DiskTest(unittest.TestCase):\n"
+            "    def test_disk(self):\n"
+            "        raise OSError(28, 'No space left on device')\n"
+            "unittest.main()\n"
+        )
+        report = subprocess.run([sys.executable, "-c", source], capture_output=True, text=True, check=False)
+        result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.KILLED,
+            diff="-value = 1\n+value = 2\n", output=report.stderr,
+        )
+        with self.subTest("baseline"):
+            clone = subprocess.CompletedProcess([], 0, "", "")
+            status, output, mutate, _ = self.run_storage_mutation(
+                result, baseline=[clone, subprocess.CompletedProcess([], 1, report.stderr, "")],
+            )
+            self.assertEqual(status, 75, output)
+            self.assertNotIn("baseline suite failed", output)
+            mutate.assert_not_called()
+        with self.subTest("mutant"):
+            status, output, _, _ = self.run_storage_mutation(result)
+            self.assertEqual(status, 75, output)
+            self.assertNotIn("killed", output)
+            self.assertNotIn("mutation check broke", output)
+
 
 if __name__ == "__main__":
     unittest.main()

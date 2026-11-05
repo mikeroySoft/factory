@@ -381,3 +381,47 @@ class StorageDiagnosticsTest(unittest.TestCase):
                     self.assertNotIn("- test: FAIL", report)
                 else:
                     self.assertNotIn("INFRA", report)
+
+
+class CompletedStorageErrorTest(unittest.TestCase):
+    def test_completed_storage_error_is_infrastructure_not_product_failure(self) -> None:
+        import json
+
+        for assertion in (False, True):
+            with self.subTest(assertion=assertion), tempfile.TemporaryDirectory() as directory:
+                source = (
+                    "import unittest\n"
+                    "class DiskTest(unittest.TestCase):\n"
+                    "    def test_disk(self):\n"
+                    "        raise OSError(28, 'No space left on device')\n"
+                    "    def test_assertion(self):\n"
+                    "        self.fail('expected OSError: [Errno 28] No space left on device')\n"
+                    "unittest.main()\n"
+                )
+                if assertion:
+                    source = source.replace("raise OSError(28, 'No space left on device')", "pass")
+                command = [sys.executable, "-c", source]
+                repo = repo_with_test(Path(directory), TOML + (
+                    '\n[[gate.check]]\nname = "test"\nrun = ' + json.dumps(command) + "\n"
+                ))
+                code, out, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+                self.assertEqual(code, 1 if assertion else 75, report + out)
+                self.assertIn("- test: FAIL" if assertion else "- test: INFRA (runner_storage_low)", report)
+
+    def test_pytest_storage_error_is_not_hidden_by_an_assertion_in_another_test(self) -> None:
+        from factory.gate import storage_diagnostic
+
+        output = (
+            "________________ test_assertion ________________\n"
+            "E       OSError: [Errno 28] No space left on device\n"
+            "E       AssertionError: wrong product output\n"
+            "tests/test_product.py:10: AssertionError\n"
+            "________________ test_disk ________________\n"
+            "E       OSError: [Errno 28] No space left on device\n"
+            "tests/test_product.py:20: OSError\n"
+            "================ short test summary info ================\n"
+            "FAILED tests/test_product.py::test_assertion - AssertionError: wrong product output\n"
+            "FAILED tests/test_product.py::test_disk - OSError: [Errno 28] No space left on device\n"
+            "2 failed in 0.01s\n"
+        )
+        self.assertTrue(storage_diagnostic(output))
