@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import copy
 import subprocess
+import unittest
 from datetime import UTC, datetime, timedelta
 from types import FunctionType
-import unittest
 from unittest import mock
 
-from factory import dispatch, lifecycle
+from factory import dispatch, lifecycle, manage
 from tests import test_host_claims
 
 
@@ -197,6 +197,53 @@ class DispatchReleaseTest(unittest.TestCase):
         self.assertEqual(len(received), 1)
         self.assertIn("Resolve shared.py conflict", received[0])
         self.assertEqual(ultron.host_claim_state(7), ([], ""))
+
+    def test_manager_requeues_close_the_pr_before_resuming_a_worker(self):
+        for decision in ("RETRY", "REWRITE", "ROUTE", "AUTHORIZE"):
+            with self.subTest(decision=decision):
+                module = self.dispatcher(None)
+                self.github.issue["labels"] = [{"name": "ready-for-human"}]
+                self.github.open_prs = [{"number": 70, "labels": []}]
+                data = {"add": [], "remove": [], "guidance": "Fix shared.py",
+                        "justification": "Existing assertion contradicts the requested behavior"}
+                run = module.run
+
+                def external(cmd, *args, **kwargs):
+                    if cmd[:3] == ["gh", "issue", "comment"]:
+                        return subprocess.CompletedProcess(cmd, 0, "https://example.invalid/comment/1", "")
+                    return run(cmd, *args, **kwargs)
+
+                with mock.patch.object(manage, "dispatch", module), \
+                        mock.patch.object(module, "run", side_effect=external), \
+                        mock.patch.object(module, "comment_receipt"):
+                    manage.apply(7, copy.deepcopy(self.github.issue), decision, "Fix shared.py",
+                                 data, module.FACTORY / "packet.md")
+                [ready] = module.frontier()
+                self.assertNotIn("held", ready)
+                module.process_ticket(ready, 1, False)
+                self.assertEqual(self.launched[-1:], [None])
+
+    def test_failed_manager_pr_closure_keeps_the_human_queue(self):
+        module = self.dispatcher(None)
+        self.github.issue["labels"] = [{"name": "ready-for-human"}]
+        self.github.open_prs = [{"number": 70, "labels": []}]
+        run = module.run
+
+        def external(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "pr", "close"]:
+                raise subprocess.CalledProcessError(1, cmd, stderr="closure failed")
+            if cmd[:3] == ["gh", "issue", "comment"]:
+                return subprocess.CompletedProcess(cmd, 0, "https://example.invalid/comment/1", "")
+            return run(cmd, *args, **kwargs)
+
+        with mock.patch.object(manage, "dispatch", module), \
+                mock.patch.object(module, "run", side_effect=external), \
+                mock.patch.object(module, "comment_receipt"), \
+                self.assertRaises(subprocess.CalledProcessError):
+            manage.apply(7, copy.deepcopy(self.github.issue), "RETRY", "Fix shared.py",
+                         None, module.FACTORY / "packet.md")
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-human"}])
+        self.assertIn("#70", module.frontier()[0].get("held", ""))
 
     def test_requeue_context_cannot_bypass_an_open_unapproved_pr(self):
         for host in (None, "tank"):
