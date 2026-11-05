@@ -175,7 +175,7 @@ class WorkerSpec:
     env: dict[str, str]
     transcript: str | None
     wrap: int  # leading `argv` entries that are the host wrapper
-    source: str  # config layer that defined the profile; never a value from it
+    source: str  # config layer whose `command` is launched (so also the model's); never a value from it
 
 
 @dataclass
@@ -323,15 +323,16 @@ class Config:
 
     def worker_model(self, worker: str) -> str | None:
         """Explicit model of the launched command, or None when the command leaves it implicit."""
-        return command_model(self.launch_command(worker))
+        return self.worker_spec(worker, Path("{prompt}"), Path("{cwd}")).model
 
     def worker_spec(self, worker: str, prompt: Path, cwd: Path) -> WorkerSpec:
         """Everything one launch of `worker` uses; selection, audit and launch read this value."""
+        argv = expand([*self.worker_wrap, *self.launch_command(worker)], prompt=str(prompt), cwd=str(cwd),
+                      root=str(self.root), repo=self.repo, home=str(Path.home()))
         return WorkerSpec(
             profile=worker,
-            argv=expand([*self.worker_wrap, *self.launch_command(worker)], prompt=str(prompt), cwd=str(cwd),
-                        root=str(self.root), repo=self.repo, home=str(Path.home())),
-            model=self.worker_model(worker),
+            argv=argv,
+            model=command_model(argv[len(self.worker_wrap):]),
             version=self.worker_version.get(worker),
             env=self.worker_environment(worker, prompt, cwd),
             transcript=self.worker_transcript.get(worker),
@@ -803,10 +804,13 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
             if when:
                 cfg.worker_when[label] = when
     for label in cfg.workers:
+        # Layers merge per key: the effective command is the highest layer's that sets one.
         cfg.worker_source[label] = next(
             (name for name, layer in (("Repository", raw_repo), ("Host repository override", host_sections[1]),
                                       ("Host default", host_sections[0]))
-             if isinstance(layer.get("workers"), dict) and label in layer["workers"]),
+             if isinstance(layer.get("workers"), dict) and (
+                 isinstance(entry := layer["workers"].get(label), list)
+                 or (isinstance(entry, dict) and "command" in entry))),
             "Built-in default",
         )
     if "worker_wrap" in raw_repo:

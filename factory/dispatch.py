@@ -1901,23 +1901,41 @@ def set_worker_health(profile: str, reason: str | None, *, source: str) -> None:
         + (f"; falling back to `{fallback}`" if fallback else ""))
 
 
-def worker_health_pass() -> None:
-    """Run each configured worker probe; a failing profile is not launched this pass (#662)."""
-    for profile, probe in cfg.worker_probe.items():
-        argv = config.expand([*cfg.worker_wrap, *probe], root=str(ROOT), repo=REPO, home=str(Path.home()))
-        env = {**os.environ, **cfg.worker_environment(profile, FACTORY / ".factory-prompt.md", ROOT)}
+def _probe(argv: list[str], env: dict[str, str]) -> str | None:
+    """Why `[workers.<label>] probe` failed, else None. Output is read only from its last 64 KiB,
+    and a probe that outlives its timeout is stopped with its whole process group."""
+    with tempfile.TemporaryFile() as output, without_github(env) as isolated:
         try:
-            with without_github(env) as isolated:
-                proc = subprocess.run(argv, cwd=ROOT, env=isolated, capture_output=True, text=True,
-                                      errors="replace", timeout=WORKER_PROBE_TIMEOUT, check=False)
-            detail = (proc.stderr.strip() or proc.stdout.strip()).splitlines()[-1:]
-            reason = None if proc.returncode == 0 else (
-                f"probe exited {proc.returncode}" + "".join(f": {stderr_tail(line)[-200:]}" for line in detail)
-            )
-        except subprocess.TimeoutExpired:
-            reason = f"probe timed out after {WORKER_PROBE_TIMEOUT}s"
+            proc = subprocess.Popen(argv, cwd=ROOT, env=isolated, stdin=subprocess.DEVNULL, stdout=output,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
         except OSError as exc:
-            reason = f"probe could not start: {exc}"
+            return f"probe could not start: {exc}"
+        try:
+            code = proc.wait(timeout=WORKER_PROBE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _stop(proc)
+            return f"probe timed out after {WORKER_PROBE_TIMEOUT}s"
+        if code == 0:
+            return None
+        output.seek(max(0, output.seek(0, os.SEEK_END) - 64 * 1024))
+        detail = output.read().decode(errors="replace").strip().splitlines()[-1:]
+    return f"probe exited {code}" + "".join(f": {stderr_tail(line)[-200:]}" for line in detail)
+
+
+def worker_health_pass() -> None:
+    """Health-check every configured worker before the pass; a failing profile is not launched
+    this pass (#662). A profile's `probe` decides; without one, the launched executable must
+    resolve on the worker's PATH (an auth check needs a configured probe)."""
+    for profile in cfg.workers:
+        env = {**os.environ, **cfg.worker_environment(profile, FACTORY / ".factory-prompt.md", ROOT)}
+        if probe := cfg.worker_probe.get(profile):
+            reason = _probe(config.expand([*cfg.worker_wrap, *probe], root=str(ROOT), repo=REPO,
+                                          home=str(Path.home())), env)
+        else:
+            program = cfg.worker_spec(profile, FACTORY / ".factory-prompt.md", ROOT).argv[0]
+            reason = None if shutil.which(program, path=env.get("PATH")) else (
+                f"executable `{program}` not found on the worker's PATH"
+            )
         set_worker_health(profile, reason, source="probe")
 
 
@@ -5301,7 +5319,8 @@ def main(argv: list[str]) -> int:
             maintenance = results.prune(cfg)
             if maintenance["status"] != "complete":
                 log(f"Accepted-result expiry incomplete ({maintenance.get('reason')}); archive left for inspection")
-            worker_health_pass()
+            if not args.ticket:  # `--ticket` is an operator's explicit ask: it launches and fails loudly
+                worker_health_pass()
         if args.ticket and not yield_for_update:
             if not issue_is_open(args.ticket):
                 log(f"#{args.ticket}: not open, nothing to do")

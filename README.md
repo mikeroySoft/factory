@@ -685,10 +685,18 @@ the profile command, its model, version, environment, transcript mode and
 provenance (`Repository`, `Host repository override`, `Host default` or
 `Built-in default`). The built-in OMP default carries its pinned `--model`.
 Dispatch, `factory learn` replays, dry runs and the settings view all use that
-same value. A table may set `probe = [...]`, a health or auth check whose argv
-takes `{root}`, `{repo}` and `{home}`. Each dispatcher and `factory manage` pass
-runs it once under the host wrapper and the profile's environment, without
-GitHub credentials, before any stage; exit 0 means available. A failing profile
+same value; the model shown and recorded is read from the expanded command, and
+the provenance names the layer whose `command` is launched (a higher layer that
+adds only `probe` or `env` does not change it). Before any stage, each dispatcher
+and `factory manage` pass health-checks every configured profile. A table may set
+`probe = [...]`, a health or auth check whose argv takes `{root}`, `{repo}` and
+`{home}`; it runs once under the host wrapper and the profile's environment,
+without GitHub credentials, and exit 0 means available. Only its last 64 KiB of
+output is read, and a probe past 60 s is stopped with its process group. A
+profile without a probe is available while its launched executable resolves on
+the worker's PATH; detecting a broken login needs a probe. `dispatch --ticket`
+skips the pre-pass check: an operator's explicit ask launches and fails loudly,
+still classified as below. A failing profile
 is not launched that pass and is not offered to the manager. A ticket that
 profile owns runs on `default` instead, unless the profile is chosen by a
 `when = { label = ... }` selector or `default` is down too. In that case the
