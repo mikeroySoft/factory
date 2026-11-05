@@ -256,3 +256,40 @@ Path(".factory/handoff-7.md").write_text(
         for evidence in (second["comments"][-1], second["prompt"]):
             self.assertIn(f"STALE / conflicting proof for `{head}`; gated head is `{new_head}`.", evidence)
             self.assertNotIn("Current-head proof:", evidence)
+
+    def test_native_proof_handoff_link_is_published_for_each_reviewed_head(self):
+        self.local.worker.write_text(fixtures.WORKER + '''
+import subprocess
+subprocess.run(["git", "add", "change.txt"], check=True)
+subprocess.run(["git", "commit", "-m", "worker change"], check=True)
+head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+proof = Path(".factory/native/ultron-proof.txt")
+proof.parent.mkdir(parents=True, exist_ok=True)
+proof.write_text("Verified source revision: " + head + "\\nArchive SHA-256: " + "d" * 64
+                 + "\\nUltron current revision smoke: PASS\\n")
+Path(".factory/handoff-7.md").write_text(
+    "## Verification\\nProof file: [native run](.factory/native/ultron-proof.txt)\\n")
+''')
+        self.local.cli("dispatch", "--ticket", "7")
+        state = json.loads(self.local.state.read_text())
+        first, second = state["packets"]
+        path = ".factory/native/ultron-proof.txt"
+        self.assertEqual(
+            self.local.git("-C", ".factory/wt-7", "check-ignore", path).stdout.strip(), path,
+        )
+        self.assertEqual(self.local.git("-C", ".factory/wt-7", "ls-files", path).stdout, "")
+        heads = []
+        for packet in (first, second):
+            self.assertTrue(packet["comments"], "Cited proof must be posted before review")
+            comment = packet["comments"][-1]
+            head = comment.split("Current-head proof: `", 1)[1].split("`", 1)[0]
+            heads.append(head)
+            for expected in (head, "d" * 64, "Ultron current revision smoke: PASS"):
+                self.assertIn(expected, comment)
+                self.assertIn(expected, packet["prompt"])
+            self.assertIn(comment, packet["prompt"])
+            self.assertIn("UNTRUSTED NATIVE-HOST EVIDENCE", packet["prompt"])
+        self.assertNotEqual(*heads)
+        self.assertEqual(
+            heads[1], self.local.git("-C", ".factory/wt-7", "rev-parse", "HEAD").stdout.strip(),
+        )
