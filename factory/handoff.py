@@ -62,12 +62,23 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
         return "the manager could not run, so there is no automatic diagnosis; the cause is unknown until a human looks"
     if any(e.get("decision") == "HUMAN" for e in decided):
         return "the manager asked for a human decision"
+    since = events[events.index(escalation):] if escalation in events else events
+    if pending_fix(since, round=r, pr=None) is not None:
+        return None  # a FIX waiting for a healthy worker resumes on its own (#662)
+    resumes = [e for e in since if e.get("event") == "manage-resume" and e.get("round") == r and not e.get("pr")]
     failed = next((e for e in events if e.get("event") == "lifecycle" and e.get("kind") == "exit"
-                   and e.get("outcome") == "mechanism_failure"
-                   and e.get("execution_id") in {d.get("execution_id") for d in decided}), None)
+                   and e.get("outcome") in ({"mechanism_failure", "interrupted", "unknown"} if resumes else {"mechanism_failure"})
+                   and e.get("execution_id") in {d.get("execution_id") for d in decided + resumes}), None)
     if failed:
         return f"the manager's {decided[-1].get('decision')} decision could not be applied to GitHub and is never replayed"
     return None  # handed back to automation; a later failure is a new escalation generation
+
+
+def pending_fix(rows: list[dict], **decided: object) -> dict | None:
+    """The `manage-pending` FIX of the decision matching `decided` that no resume took up yet."""
+    marks = [row for row in rows if row.get("event") in {"manage-pending", "manage-resume"}
+             and all(row.get(key) == value for key, value in decided.items())]
+    return marks[-1] if marks and marks[-1]["event"] == "manage-pending" else None
 
 
 def observe(cfg, n: int, escalation: dict) -> dict | None:

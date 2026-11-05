@@ -692,28 +692,38 @@ and `factory manage` pass health-checks every configured profile. A table may se
 `probe = [...]`, a health or auth check whose argv takes `{root}`, `{repo}` and
 `{home}`; it runs once under the host wrapper and the profile's environment,
 without GitHub credentials, and exit 0 means available. Only its last 64 KiB of
-output is read, and a probe past 60 s is stopped with its process group. A
-profile without a probe is available while its launched executable resolves on
-the worker's PATH; detecting a broken login needs a probe. `dispatch --ticket`
-skips the pre-pass check: an operator's explicit ask launches and fails loudly,
-still classified as below. A failing profile
-is not launched that pass and is not offered to the manager. A ticket that
-profile owns runs on `default` instead, unless the profile is chosen by a
-`when = { label = ... }` selector or `default` is down too. In that case the
+output is read, and a probe past 60 s is stopped with its process group. Before
+the probe, the host wrapper and the profile's own executable must each resolve
+on the worker's PATH; a wrapper on PATH says nothing about the worker it runs.
+The probe is the only check that proves a login, so the manager is offered only
+profiles whose probe passed this pass, and `factory doctor` warns about each
+profile without one. A profile without a probe can still launch, but its login
+is unverified, and a failure seen at launch stands across passes until its probe
+passes or a launch works (`dispatch --ticket N` after fixing the host); PATH
+alone never clears it. `dispatch --ticket` skips the pre-pass check: an
+operator's explicit ask launches and fails loudly, still classified as below. A
+failing profile is not launched that pass and is not offered to the manager. A
+ticket that profile owns runs on `default` instead, unless the profile is chosen
+by a `when = { label = ... }` selector or `default` is down too. In that case the
 ticket waits unclaimed (`worker_unavailable`). A launch that exits nonzero
-without a timeout, makes no commit, leaves a clean worktree and logs an
-authentication failure is an infrastructure outcome. Factory records a
-`worker-infra` row, not an `attempt`, so it is not a strike, never reaches the
-gate and does not count toward `max_attempts`. It then marks the profile
-unavailable for the pass and relaunches the same attempt on the fallback. With
-no fallback the claim is given back. Availability changes are journaled once each
-as `worker-health` rows with `worker`, `available`, `reason`, `fallback` and
-`source` (`probe` or `launch`). The attempt that ran on a fallback records
-`fallback_from`. A manager FIX that finds no healthy worker keeps its `manage`
-row and records `manage-pending` (worker, guidance, packet) instead of failing;
-once a worker can take it, a later pass journals `manage-resume` and runs that
-same FIX without another manager round or comment. A resume is taken up once,
-so an interrupted one stays with the human.
+without a timeout, makes no commit and leaves a clean worktree is an
+infrastructure outcome when it logs an authentication failure (`auth_failed`)
+or exits 127, the POSIX code a wrapper or launcher returns when the worker it
+runs is missing (`executable_missing`); so is a launch whose executable vanished
+after the pre-pass check. Factory records a `worker-infra` row, not an `attempt`,
+so it is not a strike, never reaches the gate and does not count toward
+`max_attempts`. It then marks the profile unavailable and relaunches the same
+attempt on the fallback. With no fallback the claim is given back. Availability
+changes are journaled once each as `worker-health` rows with `worker`,
+`available`, `reason`, `fallback`, `source` (`probe` or `launch`) and `check`
+(`probe`, `executable` or `launch`: the evidence; `executable` never proves a
+login). The attempt that ran on a fallback records `fallback_from`. A manager FIX
+that finds no healthy worker keeps its `manage` row, records `manage-pending`
+(worker, guidance, packet) and a `worker_unavailable` wait instead of failing,
+and no human handoff is published while it waits. Once a worker can take it, a
+later pass journals `manage-resume` and runs that same FIX without another
+manager round or comment. A resume is taken up once: one that fails or is
+interrupted is handed to the human.
 `[review].json_mode = true` similarly declares an OMP-compatible reviewer:
 Factory adds or replaces `--mode json` and parses its JSONL verdict and usage.
 It defaults to true only when the reviewer program is named `omp`; set it to

@@ -851,19 +851,14 @@ def apply_fix(n: int, issue: dict, data: dict, packet: Path, **decided: object) 
         raise
 
 
-def pending_fix(rows: list[dict], **decided: object) -> dict | None:
-    """The `manage-pending` FIX of the decision matching `decided` that no resume took up yet."""
-    marks = [row for row in rows if row.get("event") in {"manage-pending", "manage-resume"}
-             and all(row.get(key) == value for key, value in decided.items())]
-    return marks[-1] if marks and marks[-1]["event"] == "manage-pending" else None
+pending_fix = handoff.pending_fix
 
 
 def resume_fix(n: int, issue: dict, pending: dict, **decided: object) -> None:
     """Run a pending FIX once a worker can take it, without another manager round or comment.
     The resume is journaled first: an interrupted resume is a human's call, never replayed."""
     if dispatch.fallback_worker(pending["worker"]) is None:
-        dispatch.log(f"#{n}: manager FIX still waits for worker `{pending['worker']}`")
-        return
+        raise dispatch.WorkerUnavailable(f"worker `{pending['worker']}` is still unavailable")
     dispatch.record("manage-resume", ticket=n, decision="FIX", **decided)
     dispatch.log(f"#{n}: resuming the manager FIX that waited for a healthy worker")
     apply_fix(n, issue, {"worker": pending["worker"], "guidance": pending["guidance"]},
@@ -1083,7 +1078,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                     dispatch.escalate(n, f"PR #{number}: manager requires a human: {body}", None, code="manager_human")
             except dispatch.WorkerUnavailable as exc:
                 if not dry_run:
-                    execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
+                    execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
                 dispatch.log(f"PR #{number}: manager FIX waits for a healthy worker ({exc}); no round is spent")
             except (CalledProcessError, OSError, ValueError) as exc:
                 if not dry_run:
@@ -1157,7 +1152,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                     try:
                         resume_fix(n, issue, pending, round=round_number)
                     except dispatch.WorkerUnavailable as exc:
-                        execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
+                        execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
                         dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
                     except (CalledProcessError, OSError, ValueError) as exc:
                         execution.outcome, execution.reason = "mechanism_failure", "github_command_failed"
@@ -1216,7 +1211,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                     else:
                         apply(n, issue, decision, body, data, packet)
                 except dispatch.WorkerUnavailable as exc:
-                    execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
+                    execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
                     dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
                 except (CalledProcessError, OSError, ValueError) as exc:
                     # A partial SPLIT or REWRITE must not be replayed automatically.
