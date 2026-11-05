@@ -190,9 +190,9 @@ def mutation_key(mutation, result) -> tuple:
             original, mutated)
 
 
-def stale_equivalents(reviewed: dict[tuple, dict], killed: set[tuple]) -> bool:
+def stale_equivalents(reviewed: dict[tuple, dict], disproven: set[tuple]) -> bool:
     # Sampling/deadlines leave entries untested, but source invalidation is deterministic.
-    stale = reviewed.keys() & killed
+    stale = reviewed.keys() & disproven
     sources = {}
     for key in reviewed:
         file, line, _, original, _ = key
@@ -333,9 +333,22 @@ def main(argv: list[str] | None = None) -> int:
     if queue or cut:
         print(f"incomplete: {len(queue)} mutants not started and {len(cut)} cut short by the "
               f"{deadline - started:.0f}s deadline")
-    stale = stale_equivalents(reviewed, {
+    disproven = {
         mutation_key(m, r) for m, r in results if r.test_outcome == TestOutcome.KILLED
-    })
+    }
+    if hot <= len(mutations) and not queue and not cut and all(
+        r.test_outcome in (TestOutcome.KILLED, TestOutcome.SURVIVED) for _, r in results
+    ):
+        # All changed-line candidates were sampled and tested. An absent identity
+        # is stale only on changed lines covered by those completed trials.
+        covered = {
+            (str(m.module_path), line)
+            for m in mutations[:hot]
+            for line in range(m.start_pos[0], m.end_pos[0] + 1)
+            if line in lines[str(m.module_path)]
+        }
+        disproven.update(key for key in reviewed if key[:2] in covered and key not in accepted)
+    stale = stale_equivalents(reviewed, disproven)
     # cosmic-ray swallows its own failures (a mutation it could not write, a test command it
     # could not launch) into INCOMPETENT results. NO_TEST also leaves the sampled
     # mutation untested; neither is evidence of a killed or surviving mutant.

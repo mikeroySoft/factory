@@ -1213,6 +1213,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    recorded `file:line`; rewritten, moved, deleted or unreadable source makes the
    entry stale and fails either mode, even with no changed mutable files.
    An exact reviewed mutant that was tested and killed also fails either mode.
+   When every changed-line candidate was sampled and completed, an entry on a
+   covered changed line with no matching surviving identity is also stale
+   (including obsolete operators or replacement text).
    With matching source, unchanged files, filtered or sampled-out mutants, and
    unstarted or deadline-cut trials provide no stale evidence.
    The registry is in `[gate].protected_paths`: additions, updates and removals
