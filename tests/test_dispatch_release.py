@@ -154,6 +154,28 @@ class DispatchReleaseTest(unittest.TestCase):
         self.github.open_prs = [{"number": 70, "labels": []}]
         self.assertIn("#70", module.frontier()[0].get("held", ""))
 
+    def test_requeue_context_cannot_bypass_an_open_unapproved_pr(self):
+        for host in (None, "tank"):
+            with self.subTest(host=host):
+                module = self.dispatcher(host)
+                self.github.open_prs = [{"number": 70, "labels": []}]
+                self.github.comments.append({
+                    "id": 100, "user": {"login": "@me"},
+                    "body": "Factory requeue: nonce=old\nPrevious review findings",
+                })
+                with mock.patch.object(module, "refresh_requeue_context",
+                                       return_value="Previous local rework"), \
+                        mock.patch.object(module, "worker_round") as worker, \
+                        mock.patch.object(module, "push_agent") as push:
+                    [issue] = module.frontier()
+                    self.assertEqual(issue.get("held"),
+                                     "open agent PR #70 (awaiting merge or closure)")
+                    module.ticket_pass(1, False)
+                    module.process_ticket(copy.deepcopy(self.github.issue), 1, False, forced=True)
+                worker.assert_not_called()
+                push.assert_not_called()
+                self.assertEqual(self.github.issue["assignees"], [])
+
     def test_approved_pr_is_a_hold_without_a_live_claim_or_lock(self):
         module = self.dispatcher("tank")
         self.github.open_prs = [{"number": 70, "labels": [{"name": "factory-approved"}]}]
