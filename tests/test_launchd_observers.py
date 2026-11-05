@@ -174,6 +174,48 @@ class LaunchdObserversTest(unittest.TestCase):
             self.assertIn("foreign", detail)
         self.assertIn(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], commands)
 
+    def test_runtime_reports_named_exit_as_failed(self):
+        self.job(exit_code="78: EX_CONFIG")
+        state, errors = runtime_local.dispatcher(self.cfg, [], {})
+        self.assertEqual(state["last_exit_code"], 78)
+        self.assertEqual(errors, [{"source": "launchctl", "scope": "service", "code": "unit_failed"}])
+
+    def test_runtime_never_exited_agent_is_fresh(self):
+        self.job(exit_code="(never exited)")
+        state, errors = runtime_local.dispatcher(self.cfg, [], {})
+        self.assertIsNone(state["last_exit_code"])
+        self.assertIs(state["timer_active"], True)
+        self.assertEqual(state["observation"], "fresh")
+        self.assertEqual(errors, [])
+
+    def test_watch_reports_named_exit_without_stderr_log(self):
+        self.job(exit_code="78: EX_CONFIG")
+        self.job(self.cfg.unit + "-dashboard", exit_code="(never exited)")
+        units = watch.failed_units(self.cfg)
+        self.assertEqual([name for name, _ in units], [self.cfg.unit])
+        self.assertIn("78", units[0][1])
+
+    def test_watch_shares_existing_linux_fingerprints_for_both_roles(self):
+        self.job(exit_code=1)
+        self.job(self.cfg.unit + "-dashboard", exit_code=1)
+        with patch.object(watch, "runtime_errors", return_value=[]):
+            launchd_signals = watch.signals(self.cfg, [])
+            with patch.object(sys, "platform", "linux"), patch.object(
+                watch, "failed_units", return_value=[
+                    (self.cfg.unit + ".service", "failed"),
+                    (self.cfg.unit + "-dashboard.service", "failed"),
+                ],
+            ):
+                linux_signals = watch.signals(self.cfg, [])
+        expected = {
+            watch.fingerprint("unit", "factory-<repo>.service"),
+            watch.fingerprint("unit", "factory-<repo>-dashboard.service"),
+        }
+        self.assertEqual({signal["fingerprint"] for signal in linux_signals}, expected)
+        self.assertEqual({signal["fingerprint"] for signal in launchd_signals}, expected)
+        self.assertEqual({signal["key"] for signal in launchd_signals},
+                         {self.cfg.unit, self.cfg.unit + "-dashboard"})
+
 class LaunchctlParserTest(unittest.TestCase):
     def test_interval_agent_properties_on_native_launchd(self):
         """On macOS CI, parse a real job; other hosts check the same scalar shape."""
