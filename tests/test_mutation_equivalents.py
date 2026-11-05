@@ -33,7 +33,7 @@ class MutationEquivalentsTest(unittest.TestCase):
     }
 
     def run_gate(self, entries, *, outcome=TestOutcome.SURVIVED, diff=None, changed=True,
-                 blocking=True, sampled=True, hot=1, clock=None, output=""):
+                 blocking=True, sampled=True, hot=1, clock=None, output="", source="value = 1\n"):
         spec = SimpleNamespace(
             module_path=Path(self.entry["file"]), operator_name=self.entry["operator"],
             start_pos=(1, 0), end_pos=(1, 9),
@@ -51,6 +51,10 @@ class MutationEquivalentsTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory, contextlib.chdir(directory):
             Path("reviewed.json").write_text(json.dumps(entries))
+            Path("factory").mkdir()
+            if source is not None:
+                Path(self.entry["file"]).write_text(source)
+            Path("factory/unchanged.py").write_text("value = 1\n")
             report = io.StringIO()
             timer = mock.patch.object(mutation.time, "monotonic", side_effect=clock) if clock else contextlib.nullcontext()
             with mock.patch.dict(sys.modules, modules), \
@@ -95,6 +99,29 @@ class MutationEquivalentsTest(unittest.TestCase):
         )
         self.assertEqual(status, 0, report)
         self.assertNotIn("stale equivalent", report)
+
+    def test_source_stale_entry_fails_without_mutation_trials(self):
+        for source in ("value = 3\n", "# inserted\nvalue = 1\n", "", None,
+                       "value = 10\n", " value = 1\n"):
+            for blocking in (False, True):
+                with self.subTest(source=source, blocking=blocking):
+                    status, report = self.run_gate(
+                        [self.entry], source=source, changed=False, blocking=blocking,
+                    )
+                    self.assertNotEqual(status, 0, report)
+                    self.assertIn("stale equivalent: factory/example.py:1:", report)
+
+    def test_multiline_original_must_match_every_source_line(self):
+        entry = {**self.entry, "original": "value = (\n    1\n)",
+                 "mutated": "value = (\n    2\n)"}
+        for source, expected in (("value = (\n    1\n)\n", 0),
+                                 ("value = (\n    3\n)\n", 1),
+                                 ("value = (\n    1\n", 1)):
+            with self.subTest(source=source):
+                status, report = self.run_gate(
+                    [entry], source=source, changed=False, blocking=False,
+                )
+                self.assertEqual(status, expected, report)
 
     def test_identity_requires_location_operator_and_exact_untruncated_text(self):
         for field, value in (("file", "factory/other.py"), ("line", 2),
@@ -199,6 +226,17 @@ class MutationEquivalentsTest(unittest.TestCase):
             stale = run(entries, 1, "stale")
             self.assertEqual(stale.count("stale equivalent:"), 2, stale)
             self.assertNotIn("accepted equivalent", stale)
+            for source in ("unused = 3\ndef answer():\n    return True\n",
+                           "# inserted\nunused = 1\ndef answer():\n    return True\n",
+                           "def answer():\n    return True\n", None):
+                with self.subTest(source=source):
+                    if source is None:
+                        (root / "factory/example.py").unlink()
+                    else:
+                        (root / "factory/example.py").write_text(source)
+                    report = run(entries, 1, "source stale")
+                    self.assertEqual(report.count("stale equivalent:"), 2, report)
+                    self.assertNotIn("accepted equivalent", report)
 
 
 if __name__ == "__main__":
