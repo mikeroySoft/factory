@@ -2273,10 +2273,10 @@ and an empty frontier do not establish next-pass intention or deliberate pause.
 Dashboard status/configuration display unknown and suppress unsupported
 countdowns. Schedule observations never create a dispatcher-run identity.
 
-`dispatcher.consecutive_failures` is null when journal history cannot be observed
-(non-Linux hosts, missing `journalctl`, or a failed journal query). Zero means a
-successful observation with no trailing failed runs, including an empty journal.
-Unavailable history leaves `dispatcher.runs` empty.
+`dispatcher.consecutive_failures` is always an integer for dashboard consumers.
+It defaults to zero with an empty `dispatcher.runs` when journal history cannot
+be observed (non-Linux hosts, missing `journalctl`, or a failed journal query).
+Zero alone does not establish that journal history was successfully observed.
 
 Because the journal may contain a torn row, a tolerant local ticket query is:
 

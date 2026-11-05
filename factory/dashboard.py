@@ -666,7 +666,7 @@ def dispatcher(runtime: dict) -> dict:
         },
         "service_active": state["service_active"],
         "schedule": schedule,
-        "consecutive_failures": consecutive_failures(runs) if runs is not None else None,
+        "consecutive_failures": consecutive_failures(runs) if runs is not None else 0,
         "runs": runs or [],
         "observation": state["observation"],
         "observed_at": state["observed_at"],

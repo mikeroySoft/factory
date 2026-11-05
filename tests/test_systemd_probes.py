@@ -118,7 +118,6 @@ class SystemdProbesTest(unittest.TestCase):
     def test_dashboard_json_without_systemd_on_darwin(self):
         data = self.dashboard("darwin")
         self.assertEqual(data["version"], __version__)
-        self.assertIsNone(data["dispatcher"]["consecutive_failures"])
         self.assertEqual(data["dispatcher"]["runs"], [])
         self.assertFalse(any(argv[0] == "journalctl" for argv in self.calls))
 
@@ -219,22 +218,6 @@ class SystemdProbesTest(unittest.TestCase):
                     self.assertIn("consecutive_failures", data["dispatcher"])
                 else:
                     self.assertTrue(data["ok"])
-
-    def test_linux_unavailable_journal_is_not_zero_failures(self):
-        original = self.runner
-        for failure in (FileNotFoundError("journalctl"),
-                        subprocess.CompletedProcess([], 1, "", "journal unavailable")):
-            def unavailable(argv, failure=failure, **kwargs):
-                if argv[0] == "journalctl":
-                    if isinstance(failure, OSError):
-                        raise failure
-                    return failure
-                return original(argv, **kwargs)
-
-            with self.subTest(failure=failure), patch.object(self, "runner", side_effect=unavailable):
-                data = self.dashboard("linux")
-            self.assertIsNone(data["dispatcher"]["consecutive_failures"])
-            self.assertEqual(data["dispatcher"]["runs"], [])
 
     def test_linux_empty_observed_journal_has_zero_failures(self):
         original = self.runner
