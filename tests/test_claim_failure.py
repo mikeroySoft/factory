@@ -100,8 +100,17 @@ class ClaimFailure(unittest.TestCase):
         self.assertNotIn(TOKEN[-8:], tail)
 
     def test_claim_failure_skips_ticket_and_waits_for_next_pass(self):
+        def github(args):
+            if args[:2] == ["pr", "list"]:
+                return []
+            if args == ["api", "user"]:
+                return {"login": "factory-bot"}
+            if args[:2] == ["issue", "view"]:
+                return self.fresh
+            raise AssertionError(args)
+
         output = io.StringIO()
-        with mock.patch.object(dispatch, "gh_json", return_value=self.fresh), \
+        with mock.patch.object(dispatch, "gh_json", side_effect=github), \
                 mock.patch.object(dispatch, "admit_plan", return_value=None), \
                 mock.patch.object(dispatch, "ensure_worktree") as worktree, \
                 redirect_stdout(output):

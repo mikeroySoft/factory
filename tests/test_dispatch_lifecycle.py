@@ -17,12 +17,29 @@ from pathlib import Path
 p = Path(os.environ["SMOKE_STATE"])
 s = json.loads(p.read_text())
 a = sys.argv[1:]
+if a[:2] == ["api", "user"]:
+    print("factory-bot" if "--jq" in a else json.dumps({"login": "factory-bot"}))
+    raise SystemExit(0)
+if a[:2] == ["issue", "edit"]:
+    owners = s.setdefault("assignees", [])
+    for flag in ("--add-assignee", "--remove-assignee"):
+        if flag in a:
+            login = a[a.index(flag) + 1]
+            login = "factory-bot" if login == "@me" else login
+            if flag == "--add-assignee" and login not in owners:
+                owners.append(login)
+            elif flag == "--remove-assignee" and login in owners:
+                owners.remove(login)
+    p.write_text(json.dumps(s))
 issue = {"number": 7, "title": "local change", "body": "Acceptance: make the local change", "comments": [], "labels": [{"name": "ready-for-agent"}], "assignees": [], "state": "OPEN"}
+issue["assignees"] = [{"login": login} for login in s.get("assignees", [])]
 if s.get("sync"):  # the dispatcher filed a sync ticket; the only open issue until its PR merges
     issue = {**issue, "title": "upstream sync: 1 commit(s) at local", "body": s["sync"], "state": "CLOSED" if s.get("merged") else "OPEN"}
 if a[:2] == ["issue", "view"]:
     print(json.dumps(issue))
 elif a[:2] == ["issue", "create"]:
+    s["filed_assignees"] = [a[i + 1] for i, flag in enumerate(a)
+                            if flag in ("--assignee", "--add-assignee", "-a")]
     s["sync"] = Path(a[a.index("--body-file") + 1]).read_text()
     p.write_text(json.dumps(s))
     print("https://example.invalid/issues/7")
@@ -1149,9 +1166,6 @@ class TriageExemptionLifecycleTest(unittest.TestCase):
             'issue["comments"] = [{"author": {"login": ' + repr(author) + '}, '
             '"body": "Triage: investigate hardware failure\\n\\n'
             'Agent brief: fix it\\nNo repro test: requires unavailable hardware"}]\n'
-            'if a[:2] == ["api", "user"]:\n'
-            '    print("factory-bot")\n'
-            '    raise SystemExit(0)\n'
             'if s.get("sync"):',
         ))
 

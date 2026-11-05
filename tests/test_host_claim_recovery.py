@@ -43,9 +43,9 @@ class HostClaimRecoveryTest(unittest.TestCase):
         tank.process_ticket(issue, 1, False)
 
         self.assertEqual(self.launched, ["tank"])
-        self.assertEqual(self.github.issue["labels"],
-                         [{"name": "ready-for-agent"}, {"name": "host:tank"}])
-        self.assertEqual([row["host"] for row in tank.host_claims(7)], ["tank"])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertEqual(tank.host_claims(7), [])
+        self.assertEqual(self.github.issue["assignees"], [])
         released = [row for row in lifecycle.read_events(tank.EVENTS)
                     if row.get("event") == "claim-released"]
         self.assertEqual([(row["host"], row["last_heartbeat"]) for row in released],
@@ -60,9 +60,9 @@ class HostClaimRecoveryTest(unittest.TestCase):
             nonlocal raced
             result = read(args)
             if "--slurp" in args and not raced:
-                # Both hosts passed fresh admission before either wrote a claim.
+                # Both hosts passed fresh admission before the elected claim appeared.
                 raced = True
-                tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+                self.github.add_claim("tank", datetime.now(UTC))
             return result
 
         with mock.patch.object(ultron, "gh_json", side_effect=winner_after_loser_admission), \
@@ -71,12 +71,12 @@ class HostClaimRecoveryTest(unittest.TestCase):
             ultron.process_ticket(copy.deepcopy(self.github.issue), 1, False)
 
         self.assertTrue(raced)
-        self.assertEqual(self.launched, ["tank"])
+        self.assertEqual(self.launched, [])
         self.assertEqual([row["host"] for row in tank.host_claims(7)], ["tank", "ultron"])
         self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
         self.assertIn("tank", ultron.frontier()[0]["held"])
 
-        # The winner finishes normally. A later host recovers the abandoned loser.
+        # The elected claim releases normally. A later host recovers the abandoned loser.
         tank.unclaim(7)
         thor = self.dispatcher("thor")
         with mock.patch.object(thor, "datetime", wraps=datetime) as clock:
@@ -84,15 +84,14 @@ class HostClaimRecoveryTest(unittest.TestCase):
             [issue] = thor.frontier()
             self.assertNotIn("held", issue)
             thor.process_ticket(issue, 1, False)
-        self.assertEqual(self.launched, ["tank", "thor"])
-        self.assertEqual(self.github.issue["labels"],
-                         [{"name": "ready-for-agent"}, {"name": "host:thor"}])
-        self.assertEqual([row["host"] for row in thor.host_claims(7)], ["thor"])
+        self.assertEqual(self.launched, ["thor"])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertEqual(thor.host_claims(7), [])
+        self.assertEqual(self.github.issue["assignees"], [])
 
-    def test_owner_unclaim_label_failure_is_recovered_on_foreign_requeue(self):
+    def test_owner_unclaim_label_failure_is_recovered_after_open_pr_closes(self):
         tank = self.dispatcher("tank")
-        tank.process_ticket(tank.frontier()[0], 1, False)
-        [owned] = tank.host_claims(7)
+        owned = self.github.add_claim("tank", datetime.now(UTC))
         self.github.open_prs = [{"number": 70}]
 
         with self.refuse_host_label_removal(tank), self.assertRaises(subprocess.CalledProcessError):
@@ -102,15 +101,20 @@ class HostClaimRecoveryTest(unittest.TestCase):
         self.assertIn({"name": "host:tank"}, self.github.issue["labels"])
         self.assertEqual(self.github.issue["assignees"], [])
         ultron = self.dispatcher("ultron")
+        self.assertEqual(
+            ultron.frontier()[0].get("held"),
+            "open agent PR #70 (awaiting merge or closure)",
+        )
+        self.github.open_prs = []
         with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
             clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
             [issue] = ultron.frontier()
             self.assertNotIn("held", issue)
             ultron.process_ticket(issue, 1, False)
-        self.assertEqual(self.launched, ["tank", "ultron"])
-        self.assertEqual(self.github.issue["labels"],
-                         [{"name": "ready-for-agent"}, {"name": "host:ultron"}])
-        self.assertEqual([row["host"] for row in ultron.host_claims(7)], ["ultron"])
+        self.assertEqual(self.launched, ["ultron"])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertEqual(ultron.host_claims(7), [])
+        self.assertEqual(self.github.issue["assignees"], [])
 
     def test_owner_cleanup_preserves_same_host_contenders_label(self):
         tank = self.dispatcher("tank")

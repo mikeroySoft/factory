@@ -67,6 +67,7 @@ class HostClaimMutationTest(unittest.TestCase):
         read, run = single.gh_json, single.run
         self.github.issue["labels"] = [{"name": "ready-for-human"}]
         self.github.issue["assignees"] = [{"login": "@me"}]
+        single._ASSIGNMENTS[7] = {"login": "@me", "exit_path": "crash"}
 
         def github(args):
             if args[:2] == ["pr", "view"]:

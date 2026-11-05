@@ -15,7 +15,7 @@ When `factory dispatch` is invoked without `--ticket` (`factory/dispatch.py` `ma
 3. **Manager.** `manage_pass` from `factory/manage.py`. Viability, pull-request frontier, and escalation recovery run only when `manager.command` is set. Terminal human handoffs run either way.
 4. **Claim.** Count held ticket locks. Capacity is `dispatch.max_active` minus that count (default `max_active` is 2). Claim that many open, unassigned, unblocked `ready-for-agent` issues that are not initiatives.
 
-`--ticket N` skips landing, review intake, and manage. It processes that open issue even if it is assigned or missing `ready-for-agent`. It still refuses an initiative and a bad plan binding.
+`--ticket N` skips landing, review intake, and manage. It processes that open issue even if it is assigned or missing `ready-for-agent`. It still refuses an initiative, a bad plan binding, or an open `agent/N` PR.
 
 `--dry-run` prints planned actions and does not take the merge lock or claim.
 
@@ -23,9 +23,9 @@ When `factory dispatch` is invoked without `--ticket` (`factory/dispatch.py` `ma
 
 ## Claim rules
 
-`frontier` lists open issues with `ready-for-agent`. It skips initiatives, issues with assignees, and issues with open blockers. Blockers come from the GitHub blocked-by API when present, and from `Blocked by: #N` lines in the body.
+`frontier` lists open issues with `ready-for-agent`. It skips initiatives, issues with assignees, issues with an open `agent/<ticket>` PR, and issues with open blockers. The PR hold names the PR (`approved, awaiting merge` when approved), regardless of assignment or requeue instructions, and ends when it merges or closes. Blockers come from the GitHub blocked-by API when present, and from `Blocked by: #N` lines in the body.
 
-`process_ticket` re-reads the issue before `gh issue edit --add-assignee @me`. A stale list must not reclaim an issue that was just escalated.
+`process_ticket` re-reads the issue and open PRs before claiming. A stale list must not reclaim an escalated issue or replace an open PR's head. On every exit, including approval, dispatch releases only the assignment it added and journals `assignment-cleared` with ticket, login and exit path. Pre-existing human assignments remain untouched, including on a hand run. Factory issue filing does not assign anyone.
 
 ## Where the worker runs
 

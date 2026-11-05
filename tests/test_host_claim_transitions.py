@@ -88,9 +88,9 @@ class HostClaimTransitionTest(unittest.TestCase):
             ultron.process_ticket(issue, 1, False)
         self.assertEqual(self.launched, ["ultron"])
         self.assertNotIn(claim, self.github.comments)
-        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
-        self.assertEqual(self.github.issue["labels"],
-                         [{"name": "ready-for-agent"}, {"name": "host:ultron"}])
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertEqual(ultron.host_claims(7), [])
 
     def test_owner_escalation_reaches_manager_after_host_cleanup(self):
         self.github = TimelineGitHub()

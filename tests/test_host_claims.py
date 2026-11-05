@@ -61,7 +61,12 @@ class FakeGitHub:
             self.calls.append((host, list(args)))
             if args[:2] == ["issue", "list"]:
                 result = [copy.deepcopy(self.issue)]
-            elif args[:2] == ["pr", "list"]:
+            elif args in (
+                ["pr", "list", "--repo", "local/claims", "--state", "open",
+                 "--head", "agent/7", "--json", "number"],
+                ["pr", "list", "--repo", "local/claims", "--state", "open",
+                 "--head", "agent/7", "--json", "number,labels"],
+            ):
                 result = copy.deepcopy(self.open_prs)
             elif args == ["api", "user"]:
                 result = {"login": "@me"}
@@ -83,7 +88,7 @@ class FakeGitHub:
                               "created_at": datetime.now(UTC).isoformat(), "user": {"login": "@me"}}
                     self.next_id += 1
                     self.comments.append(result)
-                    barrier = self.post_barrier
+                    barrier = self.post_barrier if body.startswith("Factory claim:") else None
                 else:
                     raise AssertionError(args)
             else:
@@ -191,10 +196,10 @@ class HostClaimRaceTest(unittest.TestCase):
         loser = "ultron" if winner == "tank" else "tank"
         rows = lifecycle.read_events((tank if loser == "tank" else ultron).EVENTS)
         self.assertTrue(any(row.get("event") == "claim_lost" for row in rows), rows)
-        self.assertEqual([row["name"] for row in self.github.issue["labels"]
-                          if row["name"].startswith("host:")], [f"host:{winner}"])
-        self.assertEqual(len(self.github.comments), 1)
-        self.assertTrue(self.github.comments[0]["body"].startswith(f"Factory claim: host={winner} "))
+        self.assertFalse(any(row["name"].startswith("host:")
+                             for row in self.github.issue["labels"]))
+        self.assertEqual((tank if winner == "tank" else ultron).host_claims(7), [])
+        self.assertEqual(self.github.issue["assignees"], [])
 
     def test_stale_claim_past_ttl_is_released_and_reclaimed(self):
         now = datetime(2026, 11, 2, tzinfo=UTC)
@@ -208,18 +213,15 @@ class HostClaimRaceTest(unittest.TestCase):
         tank.process_ticket(stale, 1, False)
 
         self.assertEqual(self.launched, ["tank"])
-        self.assertEqual(
-            [row["name"] for row in self.github.issue["labels"]
-             if row["name"].startswith("host:")],
-            ["host:tank"],
-        )
-        self.assertEqual(len(self.github.comments), 1)
-        self.assertTrue(self.github.comments[0]["body"].startswith("Factory claim: host=tank "))
-        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertFalse(any(row["name"].startswith("host:")
+                             for row in self.github.issue["labels"]))
+        self.assertEqual(tank.host_claims(7), [])
+        self.assertEqual(self.github.issue["assignees"], [])
         released = [row for row in lifecycle.read_events(tank.EVENTS)
                     if row.get("event") == "claim-released"]
         self.assertEqual([(row["host"], row["last_heartbeat"]) for row in released],
                          [("ultron", old["created_at"])])
+        self.github.add_claim("tank", now)
 
         thor = self.dispatcher("thor", claim_ttl="1s")
         clock = self.enterContext(mock.patch.object(thor, "datetime", wraps=datetime))
@@ -307,13 +309,10 @@ class HostClaimRaceTest(unittest.TestCase):
                 release.set()
             future.result(timeout=5)
 
-        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
-        self.assertEqual(
-            [row["name"] for row in self.github.issue["labels"]
-             if row["name"].startswith("host:")],
-            ["host:tank"],
-        )
-        self.assertEqual(len(self.github.comments), 1)
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertFalse(any(row["name"].startswith("host:")
+                             for row in self.github.issue["labels"]))
+        self.assertEqual(tank.host_claims(7), [])
 
     def test_worker_launch_failure_releases_host_claim(self):
         tank = self.dispatcher("tank")
@@ -386,33 +385,19 @@ class SingleHostTest(unittest.TestCase):
     dispatcher = HostClaimRaceTest.dispatcher
     launch = HostClaimRaceTest.launch
 
-    def test_single_host_claim_path_unchanged(self):
+    def test_single_host_releases_run_owned_assignment_without_host_claims(self):
         single = self.dispatcher(None)
 
         single.process_ticket(copy.deepcopy(self.github.issue), 1, False)
 
-        github_calls = [
-            args for _, args in self.github.calls
-            if args[0] in {"issue", "api", "gh"}
-        ]
-        self.assertEqual(github_calls, [
-            [
-                "issue", "view", "7", "--repo", "local/claims", "--json",
-                "state,labels,assignees,title,body,comments",
-            ],
-            [
-                "gh", "issue", "edit", "7", "--repo", "local/claims",
-                "--add-assignee", "@me",
-            ],
-        ])
-        self.assertFalse(any(
-            arg in {"--add-label", "--remove-label"}
-            for call in github_calls for arg in call
-        ))
-        self.assertFalse(any(
-            call[0] == "api" or call[:3] == ["gh", "issue", "comment"]
-            for call in github_calls
-        ))
+        self.assertEqual(self.launched, [None])
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertEqual(self.github.comments, [])
+        cleared = [row for row in lifecycle.read_events(single.EVENTS)
+                   if row.get("event") == "assignment-cleared"]
+        self.assertEqual([(row["ticket"], row["login"], row["exit_path"]) for row in cleared],
+                         [(7, "@me", "done")])
 
 
 if __name__ == "__main__":

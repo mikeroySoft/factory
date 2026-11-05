@@ -183,6 +183,8 @@ class DispatcherPassTest(unittest.TestCase):
                 self.assertGreaterEqual(limit, 1000, "frontier() must pass an explicit --limit >= 1000")
                 served = sorted(issues, key=lambda row: row["createdAt"], reverse=True)[:limit]
                 return subprocess.CompletedProcess(cmd, 0, json.dumps(served), "")
+            if args[:2] == ["pr", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, "[]", "")
             if args[0] == "api" and args[1].endswith("/dependencies/blocked_by"):
                 return subprocess.CompletedProcess(cmd, 1, "", "HTTP 404")
             self.fail(f"unexpected gh call: {cmd}")
@@ -296,21 +298,46 @@ class DispatcherPassTest(unittest.TestCase):
 
         workers = config.Config(root=self.cfg.root, repo=REPO, workers={"default": [sys.executable, "{prompt}"]})
         done = subprocess.CompletedProcess([], 0, "abc123\n", "")
+        assignment_ops = []
+        view = {**fresh, "state": "CLOSED"}
+
+        def github(args):
+            if args[:2] == ["pr", "list"]:
+                return []
+            if args == ["api", "user"]:
+                return {"login": "factory-bot"}
+            if args[:2] == ["issue", "view"]:
+                return view
+            raise AssertionError(args)
+
+        def run(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "issue", "edit"]:
+                if "--add-assignee" in cmd:
+                    view["assignees"] = [{"login": "factory-bot"}]
+                    assignment_ops.append("add")
+                elif "--remove-assignee" in cmd:
+                    view["assignees"] = []
+                    assignment_ops.append("remove")
+            return done
+
         with patch.multiple(
             dispatch, create=True, cfg=workers, MAX_ATTEMPTS=1, admit_plan=lambda n, fresh: None,
-            run=lambda cmd, *args, **kwargs: done, ensure_worktree=worktree, agent_lease=lease,
+            run=run, ensure_worktree=worktree, agent_lease=lease,
             sync_staged=lambda n, wt: None, worker_round=first_round,
         ):
             admitted = threading.Event()
             issue = {**ticket(7, "2026-01-01T00:00:00Z"), "_factory_admitted": admitted}
-            with patch.object(dispatch, "gh_json", return_value={**fresh, "state": "CLOSED"}):
+            with patch.object(dispatch, "gh_json", side_effect=github):
                 dispatch.process_ticket(issue, 30, False)
             self.assertFalse(admitted.is_set(), "a ticket skipped before its claim must not signal admission")
             self.assertEqual(claimed(), [])
 
-            with patch.object(dispatch, "gh_json", return_value=fresh), self.assertRaises(Stop):
+            view = fresh
+            with patch.object(dispatch, "gh_json", side_effect=github), self.assertRaises(Stop):
                 dispatch.process_ticket(issue, 30, False)
         self.assertEqual(seen, {"worktree": False, "lease": True, "round": (True, [7])})
+        self.assertEqual(assignment_ops, ["add", "remove"])
+        self.assertEqual(fresh["assignees"], [])
 
 
 if __name__ == "__main__":

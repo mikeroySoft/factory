@@ -54,16 +54,19 @@ class FakeGitHub:
     def __init__(self, origin: Path, real_run) -> None:
         self.origin, self.real_run = origin, real_run
         self.issue_labels = {config.LABEL_AGENT}
-        self.assignees = ["factory"]
+        self.assignees = []  # A completed dispatch releases its assignment before PR refresh.
         self.pr_labels = {config.LABEL_APPROVED}
         self.calls: list[list[str]] = []
         self.merged = False
+        self.closed = False
+        self.pr_number = 102
 
     def head(self) -> str:
         return git(self.origin, "rev-parse", "agent/9")
 
     def pr(self) -> dict:
-        return {"number": 102, "state": "MERGED" if self.merged else "OPEN", "headRefName": "agent/9",
+        state = "MERGED" if self.merged else "CLOSED" if self.closed else "OPEN"
+        return {"number": self.pr_number, "state": state, "headRefName": "agent/9",
                 "headRefOid": self.head(), "baseRefName": "main", "isDraft": False, "reviewDecision": "",
                 "labels": [{"name": label} for label in sorted(self.pr_labels)], "title": "agent/9: change"}
 
@@ -74,17 +77,22 @@ class FakeGitHub:
 
     def gh_json(self, args: list[str]) -> object:
         if args[:2] == ["pr", "list"]:
-            return [] if self.merged else [self.pr()]
+            return [] if self.merged or self.closed else [self.pr()]
         if args[:2] == ["pr", "view"]:
             return self.pr()
         if args[:2] == ["issue", "view"]:
             return self.issue()
         if args[:2] == ["issue", "list"]:
             return [self.issue()] if config.LABEL_AGENT in self.issue_labels else []
+        if args == ["api", "user"]:
+            return {"login": "factory"}
         if args[0] == "api" and "/compare/" in args[1]:
             head = args[1].rsplit("...", 1)[1]
             return {"behind_by": int(git(self.origin, "rev-list", "--count", f"{head}..main"))}
         raise AssertionError(args)
+
+    def close_pr(self) -> None:
+        self.closed = True
 
     def run(self, cmd, *args, **kwargs):
         if cmd[0] != "gh":
@@ -105,12 +113,44 @@ class FakeGitHub:
             self.pr_labels |= {flags["--add-label"]} if "--add-label" in cmd else set()
         elif cmd[1:3] == ["pr", "checks"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps([{"name": "ci", "bucket": "pass"}]), "")
+        elif cmd[1:3] == ["pr", "create"]:
+            self.closed = False
+            self.pr_number += 1
+            return subprocess.CompletedProcess(
+                cmd, 0, f"https://github.com/acme/widgets/pull/{self.pr_number}\n", "",
+            )
         elif cmd[1:3] == ["pr", "merge"]:
             assert cmd[cmd.index("--match-head-commit") + 1] == self.head()
             git(self.origin, "merge", "-q", "--squash", "agent/9")
-            git(self.origin, "commit", "-q", "-m", "Squash PR #102")
+            git(self.origin, "commit", "-q", "-m", f"Squash PR #{self.pr_number}")
             self.merged = True
         return subprocess.CompletedProcess(cmd, 0, "", "")
+
+
+def assert_open_pr_blocks(case: unittest.TestCase, github: FakeGitHub) -> None:
+    [held] = dispatch.frontier()
+    case.assertEqual(
+        held.get("held"),
+        f"open agent PR #{github.pr_number} (awaiting merge or closure)",
+    )
+    head = github.head()
+    claimed = len([
+        row for row in lifecycle.read_events(dispatch.EVENTS)
+        if row.get("event") == "claimed"
+    ])
+    with mock.patch.object(dispatch, "worker_round") as worker, \
+            mock.patch.object(dispatch, "push_and_pr") as push:
+        dispatch.process_ticket(held, 30, False)
+    worker.assert_not_called()
+    push.assert_not_called()
+    case.assertEqual(github.head(), head)
+    case.assertEqual(
+        len([
+            row for row in lifecycle.read_events(dispatch.EVENTS)
+            if row.get("event") == "claimed"
+        ]),
+        claimed,
+    )
 
 
 class RefreshConflictTest(unittest.TestCase):
@@ -165,7 +205,10 @@ class RefreshConflictTest(unittest.TestCase):
             self.assertEqual(decision["inputs"][0]["summary"], f"PR head {self.approved_head}")
             self.assertEqual(self.github.head(), self.approved_head)  # nothing pushed yet
 
+            assert_open_pr_blocks(self, self.github)
+            self.github.close_pr()
             [ready] = dispatch.frontier()
+            self.assertNotIn("held", ready)
             dispatch.process_ticket(ready, 30, False)
 
             prompt = self.prompt_seen.read_text()
@@ -212,7 +255,10 @@ class RefreshConflictTest(unittest.TestCase):
             gate.assert_not_called()
             review.assert_not_called()
 
+            assert_open_pr_blocks(self, self.github)
+            self.github.close_pr()
             [ready] = dispatch.frontier()
+            self.assertNotIn("held", ready)
             dispatch.process_ticket(ready, 30, False)
 
             resolved = self.github.head()
@@ -355,7 +401,10 @@ class RefreshGateFailureTest(unittest.TestCase):
             self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
             self.assertEqual(self.github.assignees, [])
 
+            assert_open_pr_blocks(self, self.github)
+            self.github.close_pr()
             [ready] = dispatch.frontier()
+            self.assertNotIn("held", ready)
             dispatch.process_ticket(ready, 30, False)
 
             resolved = self.github.head()

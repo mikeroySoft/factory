@@ -1104,10 +1104,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    refresh work to the ticket worker, or withdraw the label and escalate. A
    rebase (or sync-merge) conflict is routine work: the
    label is withdrawn, a `conflict-requeue` row records the PR, head and
-   conflicting files, and the ticket is released (unassigned, `ready-for-human`
-   removed, `ready-for-agent` added, including after a manager `FIX`) so the
-   next claim runs a worker in the same worktree on
-   the same `agent/<n>` branch with a brief to rebase onto current
+   conflicting files, and run-owned claims are released (`ready-for-human`
+   removed, `ready-for-agent` added, including after a manager `FIX`). The open
+   PR remains a named hold until it merges or closes. After closure, the next
+   claim runs a worker in the same worktree on the same `agent/<n>` branch
+   with a brief to rebase onto current
    `origin/main`, resolve the conflicts, keep the approved intent, and not widen
    scope. That attempt counts as a worker round; the normal gate, push (lease
    on the recorded PR head), independent review, `review_rounds` and
@@ -1123,9 +1124,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    A passing re-run continues the normal push and review path and journals both
    reports in `gate-rerun`. If the re-run also fails, a `gate-requeue` row records
    both reports, the PR diff paths, whether the failure appears unrelated to those
-   paths, and the round; the open ticket is released to its existing worker profile
-   on the same `agent/<n>` branch. The worker brief includes both reports and the
-   unrelated-failure assessment. This repeats for at most `review_rounds` gate
+   paths, and the round; the ticket keeps its existing worker profile and
+   `agent/<n>` branch, but an open PR still holds admission. After closure,
+   the worker brief includes both reports and the unrelated-failure assessment.
+   This repeats for at most `review_rounds` gate
    requeues. A closed ticket, exhausted gate rounds, or a protected/add-only failure
    without its authority label escalates immediately; escalation packets retain both
    reports and the same diff assessment.
@@ -1338,8 +1340,11 @@ and removes its own comment and label without assigning or launching a worker.
 The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
 pipeline runs. Unclaim always applies escalation/requeue labels; only the owning
 host can remove an existing claim's `@me`, host label and comment, even after expiry.
-An in-process claim must also match the elected nonce before cleanup. Tickets
-assigned before host claims were enabled retain the original `@me` release path.
+An in-process claim must also match the elected nonce before cleanup. Dispatch
+releases assignments it added on every exit, including approval, failed claim responses,
+and interruption; pre-existing assignments (including the authenticated login on a hand
+run) remain human holds. Each removal journals `assignment-cleared` with `ticket`,
+`login`, and `exit_path`. Assignments without run/host ownership evidence are never cleared.
 If the label/assignee edit fails, unclaim retains its comment and host label so
 another host can recover the assignment after TTL expiry. Successful host-label
 removals journal `claim-label-removed` receipts. The manager ignores those exact
@@ -1347,22 +1352,27 @@ labels from the authenticated dispatcher only before the recorded escalation
 comment; human removals and later edits still hold automatic management.
 
 Expired claims are admitted through the frontier only when no other hold exists.
-A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
-hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
+An open `agent/<ticket>` PR is an explicit hold naming its PR number, independently
+of assignees or host claims. A `factory-approved` PR is held as `approved, awaiting merge`;
+closing or merging it releases that hold. Admission rechecks the PR even for `--ticket`,
+so stale frontier reads cannot replace an approved head.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
 issue comment with the refresh instructions, including when the owner releases
 its claim. The next host can consume that context even after the claim is deleted.
 Deferred actionable review rework uses the same ownership-aware release and shares
-its findings, so another host can resume the existing PR after the lease expires.
+its findings, so another host can resume after the PR closes and no live claim remains.
 Shared instructions take precedence over this host's local requeue journal. Local
 risk-disagreement history carries forward only when its instructions match the
 selected context; an intervening foreign requeue cannot trigger early escalation.
+Successful host dispatch consumes shared rework instructions before releasing its
+host comment and label; completed work is a PR hold, not a live claim. Requeue
+instructions do not bypass an open PR hold; dispatch resumes only after it closes.
 Escalation comments carry the same nonce marker on their second line, preserving
 the escalation prefix. A later manager/human `ready-for-agent` relabel can resume
-the expired claim's existing PR; its live heartbeat still holds admission.
-Neither transition can release a later worker's claim or its completed-PR hold.
+the ticket after its PR closes; its live heartbeat still holds admission.
+Neither transition can release a later worker's claim or bypass an open PR hold.
 Expired ownership follows election order, not the newest raw comment: a contender
 created during the winner's last live lease cannot supersede its requeue marker
 just because loser cleanup failed. A claim created at or after that lease expires
