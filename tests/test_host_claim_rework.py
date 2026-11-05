@@ -35,7 +35,7 @@ class HostClaimReworkTest(unittest.TestCase):
         self.assertEqual(dispatch.host_claims(7), [])
         self.assertIn("Resolve shared.py conflict", dispatch.host_claim_state(7)[1])
 
-    def test_foreign_deferred_rework_keeps_live_owner_then_resumes_after_expiry(self):
+    def test_foreign_deferred_rework_keeps_live_owner_and_open_pr_hold_after_expiry(self):
         self.configure("ultron")
         old = self.github.add_claim("tank", datetime.now(UTC))
         self.github.open_prs = [{"number": 70}]
@@ -53,6 +53,10 @@ class HostClaimReworkTest(unittest.TestCase):
             clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
             claims, context = dispatch.host_claim_state(7)
             self.assertIsNone(dispatch.host_claim_hold(7, self.github.issue, claims))
+            self.assertEqual(
+                dispatch.open_agent_pr_hold(7),
+                "open agent PR #70 (awaiting merge or closure)",
+            )
             self.assertIn("Resolve shared.py conflict", context)
 
     def test_deferred_rework_edit_failure_retains_claim_for_recovery(self):

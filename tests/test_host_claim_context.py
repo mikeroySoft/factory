@@ -31,10 +31,22 @@ class HostClaimContextTest(unittest.TestCase):
     def test_foreign_gate_requeue_supersedes_local_conflict_instructions(self):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
         self.requeue(tank, "conflict-requeue", verb="rebase", files=["already-resolved.py"])
+        self.assertEqual(
+            ultron.frontier()[0].get("held"),
+            "open agent PR #70 (awaiting merge or closure)",
+        )
+        self.github.open_prs = []  # The old PR closed before the carried work resumes.
         ultron.process_ticket(ultron.frontier()[0], 1, False)
+        self.github.add_claim("ultron", datetime.now(UTC))
+        self.github.open_prs = [{"number": 70}]
         ultron.record("gate-requeue", ticket=7, pr=70, head="a" * 40, round=1,
                       reports=["new gate failure", "new gate failure again"])
         ultron.unclaim(7, "--add-label", "ready-for-agent", assignee_last=True)
+        self.assertEqual(
+            tank.frontier()[0].get("held"),
+            "open agent PR #70 (awaiting merge or closure)",
+        )
+        self.github.open_prs = []  # That PR also closed before the next host resumes.
         contexts = []
 
         def worker(*args, **kwargs):
@@ -53,6 +65,11 @@ class HostClaimContextTest(unittest.TestCase):
         tank.record("risk-requeue", ticket=7, pr=70, head="c" * 40,
                     round=1, packet="obsolete disagreement")
         self.requeue(ultron, "gate-requeue", reports=["current gate failure"])
+        self.assertEqual(
+            tank.frontier()[0].get("held"),
+            "open agent PR #70 (awaiting merge or closure)",
+        )
+        self.github.open_prs = []  # Closure releases the unconditional PR hold.
         heads = iter(("a" * 40, "b" * 40))
 
         def worker(*args, **kwargs):
@@ -80,6 +97,11 @@ class HostClaimContextTest(unittest.TestCase):
     def test_matching_shared_risk_requeue_preserves_successive_head_escalation(self):
         tank = self.dispatcher("tank")
         self.requeue(tank, "risk-requeue", packet="pending disagreement")
+        self.assertEqual(
+            tank.frontier()[0].get("held"),
+            "open agent PR #70 (awaiting merge or closure)",
+        )
+        self.github.open_prs = []  # Closure releases the unconditional PR hold.
         tank._PENDING_RISK[7] = {
             "head": "a" * 40, "disagreement": True, "packet": "second disagreement",
         }
