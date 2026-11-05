@@ -77,7 +77,8 @@ class FakeGitHub:
 
     def gh_json(self, args: list[str]) -> object:
         if args[:2] == ["pr", "list"]:
-            return [] if self.merged or self.closed else [self.pr()]
+            state = args[args.index("--state") + 1] if "--state" in args else "open"
+            return [self.pr()] if self.pr()["state"].lower() == state else []
         if args[:2] == ["pr", "view"]:
             return self.pr()
         if args[:2] == ["issue", "view"]:
@@ -90,9 +91,6 @@ class FakeGitHub:
             head = args[1].rsplit("...", 1)[1]
             return {"behind_by": int(git(self.origin, "rev-list", "--count", f"{head}..main"))}
         raise AssertionError(args)
-
-    def close_pr(self) -> None:
-        self.closed = True
 
     def run(self, cmd, *args, **kwargs):
         if cmd[0] != "gh":
@@ -111,6 +109,10 @@ class FakeGitHub:
         elif cmd[1:3] == ["pr", "edit"]:
             self.pr_labels -= {flags["--remove-label"]} if "--remove-label" in cmd else set()
             self.pr_labels |= {flags["--add-label"]} if "--add-label" in cmd else set()
+        elif cmd[1:3] == ["pr", "close"]:
+            self.closed = True
+        elif cmd[1:3] == ["pr", "reopen"]:
+            self.closed = False
         elif cmd[1:3] == ["pr", "checks"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps([{"name": "ci", "bucket": "pass"}]), "")
         elif cmd[1:3] == ["pr", "create"]:
@@ -127,30 +129,11 @@ class FakeGitHub:
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
 
-def assert_open_pr_blocks(case: unittest.TestCase, github: FakeGitHub) -> None:
-    [held] = dispatch.frontier()
-    case.assertEqual(
-        held.get("held"),
-        f"open agent PR #{github.pr_number} (awaiting merge or closure)",
-    )
-    head = github.head()
-    claimed = len([
-        row for row in lifecycle.read_events(dispatch.EVENTS)
-        if row.get("event") == "claimed"
-    ])
-    with mock.patch.object(dispatch, "worker_round") as worker, \
-            mock.patch.object(dispatch, "push_and_pr") as push:
-        dispatch.process_ticket(held, 30, False)
-    worker.assert_not_called()
-    push.assert_not_called()
-    case.assertEqual(github.head(), head)
-    case.assertEqual(
-        len([
-            row for row in lifecycle.read_events(dispatch.EVENTS)
-            if row.get("event") == "claimed"
-        ]),
-        claimed,
-    )
+def assert_requeue_ready(case: unittest.TestCase, github: FakeGitHub) -> None:
+    case.assertTrue(github.closed, "requeue must close its PR without human intervention")
+    case.assertNotIn(config.LABEL_APPROVED, github.pr_labels)
+    [ready] = dispatch.frontier()
+    case.assertNotIn("held", ready)
 
 
 class RefreshConflictTest(unittest.TestCase):
@@ -205,8 +188,7 @@ class RefreshConflictTest(unittest.TestCase):
             self.assertEqual(decision["inputs"][0]["summary"], f"PR head {self.approved_head}")
             self.assertEqual(self.github.head(), self.approved_head)  # nothing pushed yet
 
-            assert_open_pr_blocks(self, self.github)
-            self.github.close_pr()
+            assert_requeue_ready(self, self.github)
             [ready] = dispatch.frontier()
             self.assertNotIn("held", ready)
             dispatch.process_ticket(ready, 30, False)
@@ -222,6 +204,7 @@ class RefreshConflictTest(unittest.TestCase):
             [review] = self.events("review")
             self.assertEqual((review["head"], review["verdict"]), (resolved, "APPROVE"))
             self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+            self.assertEqual(self.github.pr_number, 102, "resume the same PR and its human reviews")
 
             dispatch.merge_pass_locked(False)
 
@@ -255,8 +238,7 @@ class RefreshConflictTest(unittest.TestCase):
             gate.assert_not_called()
             review.assert_not_called()
 
-            assert_open_pr_blocks(self, self.github)
-            self.github.close_pr()
+            assert_requeue_ready(self, self.github)
             [ready] = dispatch.frontier()
             self.assertNotIn("held", ready)
             dispatch.process_ticket(ready, 30, False)
@@ -401,8 +383,7 @@ class RefreshGateFailureTest(unittest.TestCase):
             self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
             self.assertEqual(self.github.assignees, [])
 
-            assert_open_pr_blocks(self, self.github)
-            self.github.close_pr()
+            assert_requeue_ready(self, self.github)
             [ready] = dispatch.frontier()
             self.assertNotIn("held", ready)
             dispatch.process_ticket(ready, 30, False)
