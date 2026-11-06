@@ -679,6 +679,56 @@ Factory restores its lifecycle context and strips GitHub credentials. A pinned
 `version = "..."` is recorded with the claim, usage, attempt, and worker
 lifecycle entry. The prompt lists routable profiles with their `when` rules;
 neither ROUTE nor FIX accepts unlisted profiles.
+
+Each launch resolves one worker spec (`Config.worker_spec`): the host wrapper,
+the profile command, its model, version, environment, transcript mode and
+provenance (`Repository`, `Host repository override`, `Host default` or
+`Built-in default`). The built-in OMP default carries its pinned `--model`.
+Dispatch, `factory learn` replays, dry runs and the settings view all use that
+same value; the model shown and recorded is read from the expanded command, and
+the provenance names the layer whose `command` is launched (a higher layer that
+adds only `probe` or `env` does not change it). Before any stage, each dispatcher
+and `factory manage` pass health-checks every configured profile. A table may set
+`probe = [...]`, a health or auth check whose argv takes `{root}`, `{repo}` and
+`{home}`; it runs once under the host wrapper and the profile's environment,
+without GitHub credentials, and exit 0 means available. Only its last 64 KiB of
+output is read, and a probe past 60 s is stopped with its process group. Before
+the probe, the host wrapper and the profile's own executable must each resolve
+on the worker's PATH; a wrapper on PATH says nothing about the worker it runs.
+The worker's PATH is the one its launch gets, including the profile's `env`,
+both in this check and when a ticket is claimed.
+The probe is the only check that proves a login, so the manager is offered only
+profiles whose probe passed this pass, and `factory doctor` warns about each
+profile without one. A profile without a probe can still launch, but its login
+is unverified, and a failure seen at launch stands across passes until its probe
+passes or a launch works (`dispatch --ticket N` after fixing the host); PATH
+alone never clears it. `dispatch --ticket` skips the pre-pass check: an
+operator's explicit ask launches and fails loudly, still classified as below. A
+failing profile is not launched that pass and is not offered to the manager. A
+ticket that profile owns runs on `default` instead, unless the profile is chosen
+by a `when = { label = ... }` selector or `default` is down too. In that case the
+ticket waits unclaimed (`worker_unavailable`). A launch that exits nonzero
+without a timeout, makes no commit and leaves a clean worktree is an
+infrastructure outcome when it logs an authentication failure (`auth_failed`)
+or exits 127, the POSIX code a wrapper or launcher returns when the worker it
+runs is missing (`executable_missing`); so is a launch whose executable vanished
+after the pre-pass check. Factory records a `worker-infra` row, not an `attempt`,
+so it is not a strike, never reaches the gate and does not count toward
+`max_attempts`. It then marks the profile unavailable and relaunches the same
+attempt on the fallback. With no fallback the claim is given back. Availability
+changes, and a launch failure on a profile already down for another reason,
+are journaled once each as `worker-health` rows with `worker`,
+`available`, `reason`, `fallback`, `source` (`probe` or `launch`) and `check`
+(`probe`, `executable` or `launch`: the evidence; `executable` never proves a
+login). The attempt that ran on a fallback records `fallback_from`. A manager FIX
+that finds no healthy worker keeps its `manage` row, records `manage-pending`
+(worker, guidance, packet) and a `worker_unavailable` wait instead of failing,
+and no human handoff is published while it waits. Once a worker can take it, a
+later pass journals `manage-resume` and runs that same FIX without another
+manager round or comment. A resume is taken up once: one that fails or is
+interrupted is handed to the human. Only the latest resume's own run counts,
+so a deciding pass that crashed after recording the pending FIX, or an earlier
+resume that re-pended, does not hand off a FIX a later resume applied.
 `[review].json_mode = true` similarly declares an OMP-compatible reviewer:
 Factory adds or replaces `--mode json` and parses its JSONL verdict and usage.
 It defaults to true only when the reviewer program is named `omp`; set it to
@@ -727,6 +777,41 @@ mutation fails, the execution records a terminal failure and the ticket remains
 with the human; other tickets can proceed. The consumed round is not replayed,
 because a partial rewrite or split may already have changed GitHub.
 
+### Owner requeues and ticket generations
+
+A human who moves an escalated ticket back to `ready-for-agent` (by relabeling or with
+the guarded `requeue_agent` action) opens a new **generation** for it. Whichever stage
+first reads the live ticket in that state (land, manager or ticket) in a pass after the
+escalation's own journals one `generation` row with `generation`, `intent`, `source` (`label` or `requeue_agent`),
+`actor`, `decision` and `escalation_at`. Every round budget counts only the rows after
+it. That covers the escalation and manager rounds, frontier manager rounds,
+review-bounce rounds and conflict, gate and risk requeue rounds, so the ticket gets its
+full budget again. A factory release never opens a generation. The dispatcher and
+manager journal each of their own releases before relabeling: `conflict-requeue`,
+`gate-requeue`, `risk-requeue`, deferred `review-rework`, and RETRY, REWRITE,
+AUTHORIZE or ROUTE `manage` rows. A ticket that is back in `ready-for-agent` and
+unassigned after its latest escalation, with none of those rows after it, was released
+by a human. A journal with no `generation` row is generation 0 and counts exactly as
+before.
+
+`requeue_agent` takes an optional `intent`. With `resume` (the default, and what a
+plain relabel means), the branch, worktree and refresh context are kept. With `fresh`,
+`agent/<n>` is recut from main at the generation's first claim, and the superseded local
+and remote heads stay under create-only
+`refs/factory-evidence/<n>-generation-<g>-{local,remote}-<sha12>` refs, so replaying an
+interrupted restart never replaces them. A `generation-restart` row (`local`, `remote`,
+`base`) is the receipt: later claims of the generation reuse the recut worktree instead
+of recutting it, and until the generation first publishes, its push may replace exactly
+the preserved `remote` sha and nothing else. A remote that moved after the restart is
+leased as usual, so the push is refused (`lease_refused`) and the newer commit stays.
+The `claimed` row records `generation` and `base`. Until the generation's first worker
+attempt, the PR frontier does not re-escalate feedback that was already undelivered when
+it first saw the requeue. That set is journaled as a `feedback-watermark` row with the
+`sources` it covered completely. A source that was unreadable then is watermarked when
+first seen complete, holding only its items no newer than the owner's release (all of
+them while the release time is unknown). Any newer or edited source after its watermark
+still escalates. Manager decisions stay bound to their exact head across generations.
+
 ### Routed human handoffs
 
 Once automatic recovery for an escalation is terminal — the manager returned `HUMAN`,
@@ -735,7 +820,8 @@ diagnosis), `manager.rounds` is exhausted, no manager is configured, or the esca
 loop can never act again (its decision could not be applied to GitHub, its packet is
 gone, or its escalation comment was never receipted so takeover detection cannot clear
 it, as for escalations recorded before this version) — `factory manage`
-publishes **one** request comment for that escalation generation (`<ticket>/<round>`):
+publishes **one** request comment for that escalation generation (`<ticket>/<round>`,
+or `<ticket>/g<generation>/<round>` after an owner requeue):
 a concrete question, bounded public links (PR, the recorded escalation and manager
 comments), a proposed next step, the routed owner or candidates, and the step-by-step
 routing rationale from `factory plan route` (reason `ci` for CI failures, otherwise
@@ -2880,7 +2966,7 @@ two MCP tools call that same function. Nothing else composes these label edits.
 
 | Action | `args` | Preconditions | Effect |
 |---|---|---|---|
-| `requeue_agent` | `number`, `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor |
+| `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
 | `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
 | `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
 

@@ -605,6 +605,10 @@ def doctor(argv: list[str]) -> int:
 
     for label, argv_t in cfg.workers.items():
         report(which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}", on_path)
+        probe = cfg.worker_probe.get(label)
+        report(True if probe else None, f"worker `{label}` login check", f"probe: {probe[0]}" if probe else (
+            f"no `[workers.{label}] probe`: its login is unverified until a launch fails, "
+            "and the manager cannot choose it"))
     if cfg.worker_wrap:
         report(which(cfg.worker_wrap[0]) is not None, f"worker wrap: {cfg.worker_wrap[0]}", on_path)
     report(which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}", on_path)
