@@ -9,7 +9,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -21,11 +20,12 @@ class MutationAnnotationsTest(unittest.TestCase):
             result = subprocess.run(
                 ["uv", "run", "--project", str(ROOT), "--frozen", "--no-managed-python",
                  "--group", "mutation", "python", "-c",
-                 "import json, sys; from pathlib import Path; "
-                 "sys.path.insert(0, sys.argv[1]); from scripts.mutation import sample; "
-                 "items, hot = sample({'example.py': set(range(1, 100))}, Path('.')); "
-                 "print(json.dumps([[m.start_pos, m.end_pos] for m in items]))", str(ROOT)],
-                cwd=root, capture_output=True, text=True, check=True, timeout=60,
+                 ("import json, sys; from pathlib import Path; "
+                  "sys.path.insert(0, sys.argv[1]); from scripts.mutation import sample; "
+                  "items, hot = sample({'example.py': set(range(1, 100))}, Path('.')); "
+                  "print(json.dumps([[m.start_pos, m.end_pos] for m in items]))"), str(ROOT)],
+                cwd=root, env=os.environ | {"TMPDIR": directory},
+                capture_output=True, text=True, check=True, timeout=60,
             )
             return {tuple(start) for start, end in json.loads(result.stdout.splitlines()[-1])}
 
