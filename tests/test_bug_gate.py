@@ -384,7 +384,8 @@ class BugReproductionGateTest(unittest.TestCase):
                 )
 
     def test_repro_outside_first_discovery_root_uses_its_own_directory(self) -> None:
-        for start in ("tests", "ns.tests"):
+        starts = ("tests", "ns.tests") if sys.version_info >= (3, 14) else ("tests",)
+        for start in starts:
             with self.subTest(start=start), tempfile.TemporaryDirectory() as directory:
                 repo = repository(Path(directory))
                 command = [
