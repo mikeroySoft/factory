@@ -2228,6 +2228,11 @@ def escalation_packet(
 ) -> tuple[Path, int]:
     events = lifecycle.read_events(EVENTS)
     ticket_events = [event for event in events if event.get("ticket") == n]
+    escalations = [
+        event for event in generation.current(events, n).rows
+        if event.get("event") == "escalate" and event.get("reason") != "manager_failed"
+    ]
+    previous = escalations[-1] if escalations and not escalations[-1].get("pr") else None
     attempts = [event for event in ticket_events if event.get("event") == "attempt"]
     rows = [
         f"| {event.get('attempt', '')} | {event.get('gate') or 'not run'} | "
@@ -2248,7 +2253,8 @@ def escalation_packet(
     packet.write_text(
         f"# Escalation #{n}\n\n"
         f"## Reason\n\n{reason}\n\n"
-        "## Attempts\n\n"
+        + (f"## Previous round failure\n\n{previous.get('reason') or '(not recorded)'}\n\n" if previous else "")
+        + "## Attempts\n\n"
         "| Attempt | Gate | Worker exit | Timeout | Seconds | Log |\n"
         "|---:|---|---:|---|---:|---|\n"
         + "\n".join(rows)
@@ -2263,10 +2269,7 @@ def escalation_packet(
         + f"\n\n## Worktree path\n\n`{wt}`\n"
         + (f"\n{extra.strip()}\n" if extra.strip() else "")
     )
-    round_number = 1 + sum(
-        event.get("event") == "escalate" and event.get("reason") != "manager_failed"
-        for event in generation.current(events, n).rows
-    )
+    round_number = 1 + len(escalations)
     return packet, round_number
 
 

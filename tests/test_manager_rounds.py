@@ -21,8 +21,10 @@ class ManagerRoundsTest(unittest.TestCase):
         self.cfg = config.Config(
             self.root, "acme/widgets",
             manager_rounds=4,
-            manager=[sys.executable, "-c", "from pathlib import Path; import sys; "
-                     "Path(sys.argv[1]).read_text(); print('DECISION: HUMAN\\nFixture diagnosis')", "{prompt}"],
+            manager=[sys.executable, "-c", (
+                "from pathlib import Path; import sys; "
+                "Path(sys.argv[1]).read_text(); print('DECISION: HUMAN\\nFixture diagnosis')"
+            ), "{prompt}"],
         )
         self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
         dispatch.configure(self.cfg)

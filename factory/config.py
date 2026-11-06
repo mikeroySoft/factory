@@ -94,7 +94,8 @@ KNOWN_KEYS = {
     "workers": None,
     "worker_wrap": ("command",),
     "review": ("command", "second_command", "json_mode", "policy"),
-    "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
+    "manager": ("model", "command", "rounds", "human_on_repeat", "review", "stale_days",
+                "max_active_cap", "budget_min_cap"),
     "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
@@ -221,7 +222,8 @@ class Config:
     review_policy: str = "REVIEW.md"
     second_reviewer: list[str] = field(default_factory=lambda: list(DEFAULT_SECOND_REVIEWER))
     manager: list[str] | None = None
-    manager_rounds: int = 1
+    manager_rounds: int = 4
+    manager_human_on_repeat: bool = True
     manager_review: str = "escalated"
     manager_stale_days: int = 7
     # Ceilings for the fleet manager (`district manage`) raising `max_active`/`budget_min`; None = no cap.
@@ -853,6 +855,9 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.review_policy = policy
     cfg.manager, cfg.manager_model = manager_settings(manager)
     cfg.manager_rounds = int(manager.get("rounds", cfg.manager_rounds))
+    cfg.manager_human_on_repeat = manager.get("human_on_repeat", cfg.manager_human_on_repeat)
+    if type(cfg.manager_human_on_repeat) is not bool:
+        raise ConfigError("manager.human_on_repeat must be true or false")
     cfg.manager_review = manager.get("review", cfg.manager_review)
     if cfg.manager_review not in ("escalated", "all"):
         raise ConfigError("manager.review must be escalated or all")

@@ -767,6 +767,17 @@ and Plan baseline exactly. Bound split children inherit that baseline, and all
 linked children are validated against the complete live initiative before the
 first issue is created. A validation failure consumes the recorded manager
 round, creates no intake-ready child, and leaves the parent with the human.
+
+`[manager].rounds` defaults to **4** per ticket generation. From the second
+escalation onward, the packet and manager prompt place the previous round's
+failure reason immediately after the current reason (excluding manager transport
+failures). `[manager].human_on_repeat` defaults to `true`: the prompt tells the
+manager to choose `HUMAN` and cite both failures when the current failure repeats
+or contradicts the previous one. Progressing rounds keep the remaining budget;
+the existing HUMAN path handles early handoff. Set `human_on_repeat = false` to
+omit this prompt rule while retaining both failure reasons. First-round packets
+and prompts have no previous-round section or comparison rule.
+
 A trailing fenced `notes` block replaces `.factory/manager/notes.md`
 (gitignored, never committed, carried into every later manager prompt). The block
 is optional; code refuses an empty or over-16 KB replacement, keeps the existing
