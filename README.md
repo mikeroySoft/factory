@@ -421,12 +421,16 @@ Merge CI and advisory review readiness verify each active base-branch ruleset's
 required context against check runs on the exact PR head, including its source
 GitHub App (`integration_id`). A same-name success from another app or SHA is
 not evidence. App-unpinned contexts may use exact-head legacy statuses; a pinned
-app requires check-run provenance. Reads are paginated and a head/base change,
-unreadable evidence, or GitHub's blocked/unknown merge state keeps CI pending.
+app requires check-run provenance even when other requirements are unpinned.
+Reads are paginated; a head/base change, unreadable evidence, or GitHub's
+blocked/unknown merge state keeps CI pending. Already pending or failed CI
+returns without fetching additional provenance.
 Behind-main heads remain eligible only for the existing refresh path, not merge.
 
-PR [#573](https://github.com/mikeroySoft/factory/pull/573)'s two successful `gate`
-runs both have app ID 15368 and head `7a05cbf46ff7c00f66a36c1d01a951bc92c2e464`,
+PR [#573](https://github.com/mikeroySoft/factory/pull/573)'s successful `gate`
+runs [125588773738](https://github.com/mikeroySoft/factory/actions/runs/41536267505/job/125588773738)
+and [125588741702](https://github.com/mikeroySoft/factory/actions/runs/41536258131/job/125588741702)
+both have app ID 15368 and head `7a05cbf46ff7c00f66a36c1d01a951bc92c2e464`,
 matching [protect-main](https://github.com/mikeroySoft/factory/rules/22827438).
 The refusal was strict-base freshness, not a source-app/head mismatch:
 [#587](https://github.com/mikeroySoft/factory/issues/587) records `behind_by: 4`
