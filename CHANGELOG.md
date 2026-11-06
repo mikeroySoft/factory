@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Encoding tests now use invalid UTF-8 file content and raw subprocess output on macOS instead of APFS-illegal byte filenames. Linux retains literal non-UTF-8 filename coverage; APFS-rejection regressions run on both platforms without skips (#638).
 - `factory install` preserves existing stopped or disabled timers and dashboard services while updating unit files and reloading systemd. Fresh units still enable and start, including on older systemd versions that report missing units only on stderr; inconclusive state queries abort before writes. `--enable` explicitly resumes installed units, and paused-unit output includes a resume command (#549).
 - Lessons and CURATE promotion now refresh behind heads before attempting a merge, including lessons-only diffs. Refresh merges `origin/main`, gates, refuses a changed remote head, pushes without force, and reviews the new head. Strict-base/required-check refusals and legacy `merge failed: …is expected` blockers trigger refresh instead of permanently stranding the PR; failed refreshes (including merges that leave the head unchanged) remain bounded to one attempt per head, without repeated gates or reviews, and new heads expire old blockers (#587).
 - Triage completions now send configurable positive `max_tokens` (default 2048), pass optional `chat_template_kwargs` through unchanged, and serialize requests to each URL across repositories/processes for the same host user. Host triage defaults and District remote sync preserve both request-shape settings (#586).
