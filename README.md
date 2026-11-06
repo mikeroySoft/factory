@@ -1183,6 +1183,48 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    a baseline that never passes within the deadline and tool failures still fail.
    Scratch workers use local shared clones with independent Git metadata and the
    current working files overlaid, so Git-dependent tests run without skips.
+   Baseline and mutant subprocesses disable bytecode writes, preventing cached
+   baseline code from masking same-size mutations in reused scratch copies.
+   This repository's mutation command loads `mutation-equivalents.json` through
+   `--equivalents FILE`. It is a JSON array; each reviewed entry has this shape:
+
+   ```json
+   {
+     "file": "factory/example.py",
+     "line": 1,
+     "operator": "core/NumberReplacer",
+     "original": "unused = 1",
+     "mutated": "unused = 2",
+     "argument": "Only the integer literal 1 reaches this module-level assignment; no code reads unused, so changing it to 2 cannot affect behavior.",
+     "reviewer": "Agreeing reviewer"
+   }
+   ```
+
+   `file` is repository-relative and `line` is the positive start line. Matching
+   uses the exact operator and the complete removed/added source lines from the
+   mutation diff, preserving indentation and joining multiple lines with `\n`;
+   it never uses the report's truncated display text. `argument` and `reviewer`
+   must be nonempty single lines. Each argument must name the input domain and
+   where it is filtered (or why no filtering is needed). The agreeing reviewer
+   must check that assumption against the source at the gated head. A later
+   change widening that domain reopens the mutant, even if its exact mutation
+   identity has not changed. Matching survivors remain in the report as
+   **accepted equivalent**, with the argument and reviewer, but do not block.
+   Invalid entries fail in both blocking and report-only modes. Before selecting
+   mutants, every entry's complete `original` source must still match at its
+   recorded `file:line`; rewritten, moved, deleted or unreadable source makes the
+   entry stale and fails either mode, even with no changed mutable files.
+   An exact reviewed mutant that was tested and killed also fails either mode.
+   When every changed-line candidate was sampled and completed, an entry on any
+   enumerated changed line with no matching surviving identity is also stale
+   (including lines with zero candidates, obsolete operators or replacement text).
+   With matching source, unchanged files or lines, sampled-out mutants, and
+   unstarted or deadline-cut trials provide no stale evidence.
+   The registry is in `[gate].protected_paths`: additions, updates and removals
+   require the normal human-reviewed configuration/protected-override path, not
+   an ordinary worker diff. The registry ships empty (`[]`); #541 adds its own
+   reviewed entries pinned to its gated head. No survivor is pre-approved by this
+   mechanism.
    The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
    profiles must also name a model. `factory doctor` warns when any of the
    worker, primary-reviewer, or second-reviewer models is missing or not

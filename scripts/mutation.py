@@ -5,8 +5,9 @@ the full discovered unittest suite against each mutant (related tests first,
 stopping at the first failure), and prints
 every survivor as `path:line: <mutation>`. The default report-only mode exits zero
 after a complete trial even when mutants survive. ``--blocking`` exits nonzero for
-completed survivors on changed lines. Tool and baseline failures always exit
-nonzero. Mutants are sampled deterministically (sorted, then shuffled with a fixed
+completed survivors on changed lines, except exact reviewed ``--equivalents`` matches.
+Invalid or stale equivalent entries, tool and baseline failures always exit nonzero.
+Mutants are sampled deterministically (sorted, then shuffled with a fixed
 seed, capped at CAP). One absolute deadline, `[gate].timeout` - 60,
 covers preparation, the baseline and every mutant: each run is bounded by the time
 left, and mutants not started or cut short are reported as incomplete.
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import json
 import os
 import random
 import re
@@ -105,7 +107,7 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
 def test_command(copy: Path, module: str | None = None) -> str:
     command = [
         "env", "-C", str(copy), f"PYTHONPATH={copy}", sys.executable,
-        "-m", "scripts.mutation", "--test-module", module or "",
+        "-B", "-m", "scripts.mutation", "--test-module", module or "",
     ]
     return shlex.join(command)
 
@@ -145,13 +147,83 @@ def describe(diff: str) -> str:
     return f"`{old[:80]}` -> `{new[:80]}`"
 
 
+def load_equivalents(path: str | None) -> dict[tuple, dict]:
+    """Load reviewed identities; never match the truncated display description."""
+    if path is None:
+        return {}
+    entries = json.loads(Path(path).read_text())
+    if not isinstance(entries, list):
+        raise TypeError("expected an array of reviewed equivalents")
+    reviewed = {}
+    fields = ("file", "line", "operator", "original", "mutated")
+    for index, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict) or not {*fields, "argument", "reviewer"} <= entry.keys():
+            raise ValueError(f"entry {index}: requires file, line, operator, original, mutated, argument, reviewer")
+        for field in ("file", "operator", "argument", "reviewer"):
+            value = entry[field]
+            if not isinstance(value, str) or not value.strip() or value.splitlines() != [value]:
+                raise ValueError(f"entry {index}: {field} must be a nonempty single line")
+        file = Path(entry["file"])
+        if file.is_absolute() or ".." in file.parts or file.as_posix() != entry["file"]:
+            raise ValueError(f"entry {index}: file must be a repository-relative path")
+        if type(entry["line"]) is not int or entry["line"] < 1:
+            raise ValueError(f"entry {index}: line must be a positive integer")
+        if any(not isinstance(entry[field], str) for field in ("original", "mutated")):
+            raise ValueError(f"entry {index}: original and mutated must be exact source strings")
+        if entry["original"] == entry["mutated"]:
+            raise ValueError(f"entry {index}: original and mutated must differ")
+        key = tuple(entry[field] for field in fields)
+        if key in reviewed:
+            raise ValueError(f"entry {index}: duplicate equivalent")
+        reviewed[key] = entry
+    return reviewed
+
+
+def mutation_key(mutation, result) -> tuple:
+    lines = (result.diff or "").splitlines()
+    # Ignore unified-diff headers, preserving all changed source lines verbatim.
+    start = next((i + 1 for i, line in enumerate(lines) if line.startswith("@@")), 0)
+    changes = lines[start:]
+    original = "\n".join(line[1:] for line in changes if line.startswith("-"))
+    mutated = "\n".join(line[1:] for line in changes if line.startswith("+"))
+    return (str(mutation.module_path), mutation.start_pos[0], mutation.operator_name,
+            original, mutated)
+
+
+def stale_equivalents(reviewed: dict[tuple, dict], disproven: set[tuple]) -> bool:
+    # Sampling/deadlines leave entries untested, but source invalidation is deterministic.
+    stale = reviewed.keys() & disproven
+    sources = {}
+    for key in reviewed:
+        file, line, _, original, _ = key
+        if file not in sources:
+            try:
+                sources[file] = Path(file).read_text().splitlines()
+            except (OSError, UnicodeError):
+                sources[file] = []
+        expected = original.split("\n")
+        if sources[file][line - 1:line - 1 + len(expected)] != expected:
+            stale.add(key)
+    for file, line, operator, original, mutated in sorted(stale):
+        print(f"stale equivalent: {file}:{line}: {operator} {original!r} -> {mutated!r}")
+    return bool(stale)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--blocking", action="store_true")
+    parser.add_argument("--equivalents", metavar="FILE", help="reviewed equivalent-mutants JSON file")
     parser.add_argument("--test-module", default=None)
     args = parser.parse_args(argv)
     if args.test_module is not None:
         return run_tests(args.test_module)
+    try:
+        reviewed = load_equivalents(args.equivalents)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"invalid equivalents: {exc}")
+        return 1
+    if stale_equivalents(reviewed, set()):
+        return 1
     lines = changed_lines()
     if not lines:
         print("no mutable files")
@@ -240,13 +312,17 @@ def main(argv: list[str] | None = None) -> int:
             list(pool.map(worker, copies))
 
     survivors = [(m, r) for m, r in results if r.test_outcome == TestOutcome.SURVIVED]
+    accepted = {mutation_key(m, r) for m, r in survivors} & reviewed.keys()
     hot_survivors = [
         (mutation, result) for mutation, result in survivors
-        if on_changed_line(mutation, lines)
+        if on_changed_line(mutation, lines) and mutation_key(mutation, result) not in accepted
     ]
     for mutation, result in sorted(survivors, key=lambda mr: (str(mr[0].module_path), mr[0].start_pos)):
         print(f"{mutation.module_path}:{mutation.start_pos[0]}: {mutation.operator_name} "
               f"{describe(result.diff or '')}")
+        if (key := mutation_key(mutation, result)) in accepted:
+            entry = reviewed[key]
+            print(f"  accepted equivalent: {entry['argument']} (reviewer: {entry['reviewer']})")
     counts: dict[str, int] = {}
     for _, result in results:
         name = (result.test_outcome or result.worker_outcome).value
@@ -257,6 +333,19 @@ def main(argv: list[str] | None = None) -> int:
     if queue or cut:
         print(f"incomplete: {len(queue)} mutants not started and {len(cut)} cut short by the "
               f"{deadline - started:.0f}s deadline")
+    disproven = {
+        mutation_key(m, r) for m, r in results if r.test_outcome == TestOutcome.KILLED
+    }
+    if hot <= len(mutations) and not queue and not cut and all(
+        r.test_outcome in (TestOutcome.KILLED, TestOutcome.SURVIVED) for _, r in results
+    ):
+        # All changed-line candidates were sampled and tested. Enumeration also
+        # proves absence on changed lines that generated no candidates.
+        disproven.update(
+            key for key in reviewed
+            if key[1] in lines.get(key[0], ()) and key not in accepted
+        )
+    stale = stale_equivalents(reviewed, disproven)
     # cosmic-ray swallows its own failures (a mutation it could not write, a test command it
     # could not launch) into INCOMPETENT results. NO_TEST also leaves the sampled
     # mutation untested; neither is evidence of a killed or surviving mutant.
@@ -269,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mutation check broke on {len(broken)} mutants; first at "
               f"{mutation.module_path}:{mutation.start_pos[0]}:\n{(result.output or '')[-3000:]}")
         return 1
-    if args.blocking and hot_survivors:
+    if stale or (args.blocking and hot_survivors):
         return 1
     return 0
 
