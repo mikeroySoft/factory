@@ -35,7 +35,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext, suppress
 from datetime import UTC, datetime
-from functools import cache
+from functools import cache, wraps
 from pathlib import Path
 
 from factory import __version__, brief, config, generation, lifecycle, risk
@@ -213,6 +213,96 @@ def stderr_tail(err: str | bytes | None) -> str:
 
 
 
+class BudgetExceeded(RuntimeError):
+    """The non-extendable total dispatch deadline was reached."""
+
+
+_BUDGET = contextvars.ContextVar("dispatch_budget", default=None)
+
+
+class WallBudget:
+    def __init__(self, ticket: int, floor_min: int):
+        self.ticket = ticket
+        self.started = time.monotonic()
+        self.floor_seconds = floor_min * 60
+        self.cap_seconds = cfg.budget_cap_min * 60
+        if self.floor_seconds > self.cap_seconds:
+            raise config.ConfigError("dispatch budget_min must not exceed budget_cap_min")
+        self.measured_seconds = dict.fromkeys(("attempt", "pr", "review"), 0.0)
+
+    def status(self) -> dict:
+        return {
+            "floor_seconds": self.floor_seconds,
+            "cap_seconds": self.cap_seconds,
+            "effective_seconds": min(
+                self.cap_seconds, self.floor_seconds + sum(self.measured_seconds.values()),
+            ),
+            "measured_seconds": dict(self.measured_seconds),
+        }
+
+    @property
+    def deadline(self) -> float:
+        return self.started + self.status()["effective_seconds"]
+
+    def remaining(self) -> float:
+        remaining = self.started + self.cap_seconds - time.monotonic()
+        if remaining <= 0:
+            raise BudgetExceeded(f"hard wall-clock cap ({self.cap_seconds / 60:g} min) exceeded")
+        return remaining
+
+    def journal(self) -> None:
+        execution = lifecycle.current()
+        record("dispatch-budget", ticket=self.ticket,
+               attempt=execution.attempt if execution else None, **self.status())
+
+
+@contextmanager
+def wall_budget(ticket: int, floor_min: int):
+    budget = WallBudget(ticket, floor_min)
+    token = _BUDGET.set(budget)
+    try:
+        yield budget
+    finally:
+        _BUDGET.reset(token)
+
+
+def budget_status(c: Config) -> dict:
+    latest = next((
+        row for row in reversed(lifecycle.read_events(c.factory / "events.jsonl"))
+        if row.get("event") == "dispatch-budget"
+    ), None)
+    measured = latest["measured_seconds"] if latest else dict.fromkeys(("attempt", "pr", "review"), 0)
+    return {
+        "floor_seconds": c.budget_min * 60, "cap_seconds": c.budget_cap_min * 60,
+        "effective_seconds": min(c.budget_cap_min * 60, c.budget_min * 60 + sum(measured.values())),
+        "measured_seconds": measured,
+    }
+
+
+def _budget_deadline(fallback: float) -> float:
+    budget = _BUDGET.get()
+    return budget.deadline if budget else fallback
+
+
+def _measure_budget(fn):
+    @wraps(fn)
+    def measured(*args, **kwargs):
+        budget = _BUDGET.get()
+        if budget is None:
+            return fn(*args, **kwargs)
+        budget.remaining()
+        started = time.monotonic()
+        phase = kwargs.get("tier", "attempt") if fn.__name__ == "run_gate" else "review"
+        try:
+            result = fn(*args, **kwargs)
+            budget.remaining()
+            return result
+        finally:
+            budget.measured_seconds[phase] += max(0, time.monotonic() - started)
+            budget.journal()
+    return measured
+
+
 def run(
     cmd: list[str],
     cwd: Path | None = None,
@@ -249,29 +339,39 @@ def raise_if_interrupted() -> None:
 
 def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedProcess:
     raise_if_interrupted()
+    budget = _BUDGET.get()
+    if budget is not None:
+        remaining = budget.remaining()
+        timeout = min(timeout, remaining) if timeout is not None else remaining
     execution = lifecycle.current()
-    if execution is None:
+    if execution is None and budget is None:
         return subprocess.run(
             cmd, cwd=cwd, check=check, stdout=stdout, stderr=stderr,
             encoding="utf-8", errors="replace", env=env, timeout=timeout,
         )
-    launch = execution.env()
+    launch = execution.env() if execution else dict(os.environ)
     if env is not None:
-        launch = {**env, lifecycle.CONTEXT_ENV: launch[lifecycle.CONTEXT_ENV]}
+        launch = {**env, **({lifecycle.CONTEXT_ENV: launch[lifecycle.CONTEXT_ENV]} if execution else {})}
     with subprocess.Popen(
         cmd, cwd=cwd, stdout=stdout, stderr=stderr,
         encoding="utf-8", errors="replace", env=launch,
+        start_new_session=budget is not None,
     ) as proc:
         try:
-            execution.child(proc.pid)
+            if execution:
+                execution.child(proc.pid)
             out, err = proc.communicate(timeout=timeout)
         except BaseException:
-            # Preserve subprocess.run's kill/reap behavior on normal exceptions.
-            proc.kill()
+            if budget is not None:
+                _stop(proc)
+            else:
+                proc.kill()
             proc.wait()
+            if budget is not None:
+                budget.remaining()
             raise
         finally:
-            if proc.poll() is not None:
+            if execution and proc.poll() is not None:
                 execution.child_done(proc.pid)
     # The terminal's Ctrl-C also killed this child, maybe a moment before the main thread set
     # _CANCEL: the command was interrupted, not failed, so nothing may act on its result.
@@ -1784,7 +1884,8 @@ def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadl
     state, changed = start, time.monotonic()
     while True:
         try:
-            proc.wait(timeout=WATCH_POLL)
+            budget = _BUDGET.get()
+            proc.wait(timeout=min(WATCH_POLL, budget.remaining()) if budget else WATCH_POLL)
             return None
         except subprocess.TimeoutExpired:
             raise_if_interrupted()
@@ -1794,7 +1895,7 @@ def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadl
         quiet = now - changed
         # Done: committed or wrote its handoff during this run. A done worker is never "stuck".
         done = current[1] != start[1] or current[3] != start[3]
-        if now >= deadline:
+        if now >= _budget_deadline(deadline):
             return "budget_min"
         if done and cfg.exit_grace and quiet >= cfg.exit_grace:
             return "exit_grace"
@@ -2150,6 +2251,7 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
         run(["git", "commit", *flags, "-m", f"agent/{n}: {title}"], cwd=wt)
 
 
+@_measure_budget
 def run_gate(
     wt: Path, n: int | str, skip: str = "", protected_override: bool = False,
     test_override: bool = False, add_only_override: bool = False,
@@ -2813,7 +2915,10 @@ def run_reviewer(
                 break
             log(f"{subject}: reviewer tooling failure ({failure_reason}); retrying in {delay:g}s")
             if delay:
-                time.sleep(delay)
+                budget = _BUDGET.get()
+                time.sleep(min(delay, budget.remaining()) if budget else delay)
+                if budget:
+                    budget.remaining()
     if failure_reason == "state_changed":
         verdict = "REVISE"
         reason = failure_reason
@@ -2842,6 +2947,7 @@ def run_reviewer(
     }
 
 
+@_measure_budget
 def review(
     wt: Path, n: int, gate_report: str, expected_head: str, *,
     role: str = "primary", reviewer: list[str] | None = None,
@@ -4670,6 +4776,9 @@ def worker_round(
 
     if lifecycle.current() is not None:
         lifecycle.current().attempt = attempt
+    if budget := _BUDGET.get():
+        budget.remaining()
+        budget.journal()
     plan_dir = attempt_plan_dir(wt, attempt)
     shutil.rmtree(plan_dir, ignore_errors=True)
     promptfile = wt / ".factory-prompt.md"
@@ -4723,6 +4832,8 @@ def worker_round(
         set_worker_health(worker, f"{cause}: {detail}", source="launch")
     set_worker_health(worker, None, source="launch")
     worker_version = spec.version
+    if budget := _BUDGET.get():
+        budget.remaining()
     # Decide before commit_leftovers: dispatcher commits cannot turn unfinished work into done.
     finished = (
         handoff_path.exists()
@@ -4765,7 +4876,7 @@ def worker_round(
             f"worker stuck: idle_timeout fired ({cfg.idle_timeout:g} min without worker "
             "log output or worktree change); worker killed before the gate"
         ), logfile, head
-    if time.monotonic() > deadline and not finished:
+    if time.monotonic() > _budget_deadline(deadline) and not finished:
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
             log=str(logfile), transcript=transcript, head=head, handoff=handoff,
@@ -4950,8 +5061,8 @@ def process_ticket(
         )
         return
 
-    with lifecycle.scope(EVENTS, "ticket", ticket=n) as execution:
-        deadline = time.monotonic() + budget_min * 60
+    with lifecycle.scope(EVENTS, "ticket", ticket=n) as execution, wall_budget(n, budget_min) as budget:
+        deadline = budget.deadline
         lock_fd = ticket_lock(n).open("w")  # held for the life of this pipeline
         request = execution.resource("requested", lock_path, scope="repository")
         try:
@@ -5116,7 +5227,7 @@ def process_ticket(
                         code="protected_paths",
                     )
                     return
-                if time.monotonic() > deadline:
+                if time.monotonic() > budget.deadline:
                     escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
                     return
                 extra = f"{resolve}## Previous gate report (attempt {attempt} failed)\n\n{report}"
@@ -5185,7 +5296,7 @@ def process_ticket(
                     rounds_used >= cfg.review_rounds and (actionable or risk_disagreement_head is None)
                 ):
                     break
-                if time.monotonic() > deadline:
+                if time.monotonic() > budget.deadline:
                     finished = next((
                         row.get("finished", False)
                         for row in reversed(lifecycle.read_events(EVENTS))
@@ -5272,6 +5383,10 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except BudgetExceeded as exc:
+            # Reporting/releasing the claim must still run after the execution cap.
+            _BUDGET.set(None)
+            escalate(n, str(exc), None, code="budget")
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except WorkerUnavailable as exc:

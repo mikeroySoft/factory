@@ -1040,6 +1040,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    timings. `budget_cap_min` defaults to 720 minutes and is the independent
    hard total cap for the whole ticket pipeline across every attempt and review
    round.
+   Each worker attempt journals a `dispatch-budget` snapshot before launch;
+   each gate/review completion updates its effective seconds, floor, cap, and
+   cumulative `measured_seconds` inputs. `factory doctor` shows the configured
+   floor/cap and effective budget using the latest journaled measurement
+   (zero measured time before the first attempt).
    A fresh handoff with an empty `Still unverified` or `Unverified` section
    (blank or `None.`) and a clean, committed worktree is the finish signal:
    after the effective floor expires, the dispatcher still gates that head and

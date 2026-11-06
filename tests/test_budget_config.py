@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch, onboard, triage
+from factory import config, lifecycle, onboard, triage
 
 
 class BudgetConfigTest(unittest.TestCase):
@@ -77,6 +77,7 @@ class BudgetDoctorTest(unittest.TestCase):
             "effective_seconds": 130 * 60,
             "measured_seconds": {"attempt": 10 * 60, "pr": 20 * 60, "review": 10 * 60},
         }
+        lifecycle.append(cfg.factory / "events.jsonl", {"event": "dispatch-budget", **status})
         output = io.StringIO()
         with mock.patch.object(onboard.config, "load", return_value=cfg), \
                 mock.patch.object(onboard.config, "host_config", return_value={}), \
@@ -89,7 +90,6 @@ class BudgetDoctorTest(unittest.TestCase):
                 mock.patch.object(onboard, "unit_dir", return_value=root / "units"), \
                 mock.patch.object(onboard, "_dashboard_port_check", return_value=(True, "free")), \
                 mock.patch.object(onboard.shutil, "which", return_value="/bin/tool"), \
-                mock.patch.object(dispatch, "budget_status", return_value=status), \
                 mock.patch.object(triage, "probe_endpoint", return_value=(True, "ok")), \
                 mock.patch("factory.workspace.key_directory_problem", return_value=None), \
                 mock.patch("factory.workspace.access_file_problem", return_value=None), \
