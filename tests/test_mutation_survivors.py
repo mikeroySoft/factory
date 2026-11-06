@@ -159,6 +159,22 @@ class MutationSurvivorHandoffTest(unittest.TestCase):
                 ])
                 self.assertEqual(self.round()[0], accepted)
 
+    def test_equivalent_mutant_restatement_is_not_reasoning(self):
+        for reason in (
+            "This mutant is equivalent.",
+            "It is equivalent.",
+            "Equivalent.",
+            "This mutation is an equivalent mutant.",
+        ):
+            with self.subTest(reason=reason):
+                self.handoff = accounting([
+                    {"survivor": SURVIVORS[0], "disposition": "equivalent", "reason": reason},
+                    *[killed(survivor) for survivor in SURVIVORS[1:]],
+                ])
+                ok, report, _, _ = self.round()
+                self.assertFalse(ok, "an equivalence assertion is not an equivalence argument")
+                self.assertIn(SURVIVORS[0], report)
+
     def test_mutation_survivor_same_line_different_mutant_is_not_accounted(self):
         self.handoff = accounting([killed(SURVIVORS[0]), killed(SURVIVORS[2])])
         ok, report, _, _ = self.round()
