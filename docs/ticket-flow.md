@@ -145,6 +145,14 @@ flowchart TB
   class REPORTER,HUMAN,CI,UPSTREAM,EXTPR out
 ```
 
+## Owner requeues
+
+The human `RFH` to `RFA` edge opens a ticket generation (`dispatch.observe_owner_requeue`,
+projected by `factory/generation.py`). The land, manager and ticket stages each check it
+at their first live read of the ticket, before they read a round budget. Factory
+`RFA` edges journal their release first and never open one. See
+[Owner requeues and ticket generations](../README.md#owner-requeues-and-ticket-generations).
+
 ## Manager CLOSE and command failures
 
 `manage.apply` treats `gh pr view agent/<ticket>` reporting "no pull requests
