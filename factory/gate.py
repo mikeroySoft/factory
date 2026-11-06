@@ -800,9 +800,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                     fields.update(_mutation_budget(output))
                 if check.reason == "check_timeout":
                     fields["status"] = "budget_limited"
-                if fields.get("status") == "budget_limited" and (
-                    passed or check.reason == "check_timeout"
-                ):
+                if passed and fields.get("status") == "budget_limited":
                     check.reason = "budget_limited"
                 check.emit("result", check=name, passed=passed, **fields)
                 status = _check_status(name, passed, output, args.blocking_mutation)

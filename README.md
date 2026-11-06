@@ -2080,8 +2080,10 @@ this status when its baseline-sized sample leaves candidates not run. Its
 `mutation-budget:` JSON summary on stdout supplies `baseline_seconds`, `workers`,
 `mutants_run` (completed verdicts), and `mutants_not_run` (sized out, unstarted,
 or cut short) to the same journal row. A passing budget-limited check exits with
-reason `budget_limited`; real survivor/tool failures retain their failure reason
-even when coverage was budget-limited.
+reason `budget_limited`, which remains visible in runtime projections. Outer
+check timeouts retain outcome `unknown` and reason `check_timeout` so `factory watch`
+still detects them; real survivor/tool failures retain their failure reason even
+when coverage was budget-limited.
 
 ### Observation, interrupted writes, and CLI semantics
 
