@@ -158,6 +158,55 @@ class GateFixupsTest(unittest.TestCase):
                 with mock.patch.dict(os.environ, self.f.env), self.assertRaises(config.ConfigError):
                     config.load(self.f.repo)
 
+    def test_failed_fixup_runs_once_after_worker_attempts_are_exhausted(self):
+        self.configure("pass\n", attempts=2)
+        self.f.cli("dispatch", "--ticket", "7")
+        self.assertEqual(self.count.read_text(), "ran\n")
+        self.assertEqual([row["gate"] for row in self.events("attempt")], ["FAIL", "FAIL"])
+        self.assertEqual([row["code"] for row in self.events("escalate")], ["gate_failed"])
+
+    def test_refresh_fixup_commits_and_regates_before_new_head_review(self):
+        self.configure("Path('fixed.txt').write_text('refresh fix\\n')\n")
+        wt = self.f.repo / ".factory/wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.f.git("worktree", "add", str(wt), "-b", "agent/7")
+        (wt / "change.txt").write_text("branch change\n")
+        self.f.git("-C", str(wt), "add", "change.txt")
+        self.f.git("-C", str(wt), "commit", "-qm", "branch work")
+        self.f.git("-C", str(wt), "push", "origin", "agent/7")
+        (self.f.repo / "main-change.txt").write_text("main moved\n")
+        self.f.git("add", "main-change.txt")
+        self.f.git("commit", "-qm", "main moves")
+        self.f.git("push", "origin", "main")
+        issue = {"state": "OPEN", "labels": [], "body": "", "comments": []}
+        with mock.patch.dict(os.environ, self.f.env), \
+                mock.patch.object(dispatch, "gh_json", side_effect=lambda a: {"baseRefName": "main"} if a[:2] == ["pr", "view"] else issue), \
+                mock.patch.object(dispatch, "review", return_value=("APPROVE", "approved")) as review, \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True) as approve:
+            dispatch.configure(config.load(self.f.repo))
+            self.assertTrue(dispatch.refresh_pr_branch(7, 70, False))
+        head = self.f.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+        self.assertEqual(approve.call_args.args, (7, head))
+        self.assertEqual(review.call_args.args[3], head)
+        self.assertEqual(self.f.git("show", f"{head}:fixed.txt").stdout, "refresh fix\n")
+        self.assertEqual(self.count.read_text(), "ran\n")
+        self.assertEqual(self.checks.read_text().splitlines()[-1], head)
+
+    def test_pr_fixup_cannot_bypass_new_attempt_gate_failure(self):
+        self.configure("Path('fixed.txt').write_text('pr fix\\n')\n", pr=True)
+        path = self.f.repo / ".factory.toml"
+        guard = [sys.executable, "-c", "from pathlib import Path; raise SystemExit(Path('fixed.txt').exists())"]
+        path.write_text(path.read_text().replace(
+            json.dumps([sys.executable, "-c", "pass"]), json.dumps(guard),
+        ).replace("review_rounds = 1", "review_rounds = 0"))
+        self.f.commit_config()
+        self.f.cli("dispatch", "--ticket", "7")
+        self.assertFalse(self.events("approved"))
+        self.assertFalse(self.events("review"))
+        self.assertEqual([row["code"] for row in self.events("escalate")], ["pr_checks_failed"])
+        self.assertEqual(self.count.read_text(), "ran\n")
+
 
 if __name__ == "__main__":
     unittest.main()
