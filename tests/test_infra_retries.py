@@ -383,6 +383,39 @@ class CIInfraRetriesTest(unittest.TestCase):
         self.assertEqual((exhausted["infra_retry"], exhausted["infra_limit"]), (1, 1))
         self.assertEqual(len(self.reruns), 1)
 
+    def test_owner_requeue_excludes_prior_generation_retry_classes_from_escalation(self):
+        dispatch.cfg.infra_retries = 1
+        dispatch.record(
+            "failure", ticket=7, source="gate", gate="old-code", tier="attempt",
+            failure_class="code",
+        )
+        dispatch.record(
+            "failure", ticket=7, source="gate", gate="old-network", tier="attempt",
+            failure_class="infra", retry=1, limit=1, exhausted=True,
+        )
+        dispatch.record("generation", ticket=8, generation=1, intent="resume")
+        legacy = dispatch.retry_summary(7)
+        self.assertIn("old-code", legacy)
+        self.assertIn("old-network", legacy)
+        dispatch.record("generation", ticket=7, generation=1, intent="resume")
+        self.assertEqual(dispatch.retry_summary(7), "")
+
+        self.assertEqual(self.triage()[0]["bucket"], "pending")
+        dispatch.record(
+            "failure", ticket=7, source="gate", gate="7-pr", tier="pr",
+            failure_class="code",
+        )
+        self.attempt = 2
+        dispatch.runner_unavailable(7, 70, self.triage(), False)
+        packet = (dispatch.FACTORY / "escalations" / "7.md").read_text()
+        for evidence in (self.comments[0], packet):
+            with self.subTest(evidence="comment" if evidence == self.comments[0] else "packet"):
+                self.assertNotIn("old-code", evidence)
+                self.assertNotIn("old-network", evidence)
+                self.assertIn("| 1. ci run 42 attempt 1 | infra | infra retry 1/1; normal cap unchanged |", evidence)
+                self.assertIn("| 2. gate 7-pr (pr) | code | review retry cap |", evidence)
+        self.assertEqual(len(self.reruns), 1)
+
 
 class InfraConfigTest(unittest.TestCase):
     def test_invalid_retry_policy_is_rejected_at_load(self):
