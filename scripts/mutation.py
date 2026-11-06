@@ -332,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"
     timeouts = sum(result.output == "timeout" for _, result in results)
     print(f"ran {len(results)} of {len(mutations)} mutants in {time.monotonic() - started:.0f}s: "
-          f"{summary}; {timeouts} timeouts (included in killed); {len(survivors)} survived")
+          f"{summary}; {len(survivors)} survived; {timeouts} timeouts (included in killed)")
     if queue or cut:
         print(f"incomplete: {len(queue)} mutants not started and {len(cut)} cut short by the "
               f"{deadline - started:.0f}s deadline")
