@@ -562,6 +562,8 @@ def check_bug_reproduction(
     gpu_lock = _acquire_exclusive(execution) if exclusive else None
     try:
         reproduced, ran = _run_at(test_commit, command)
+        if ran and reproduced.returncode and cfg.infra_error(reproduced.stdout + reproduced.stderr):
+            return [("bug-repro-before", "FAIL (infra)", reproduced.stdout + reproduced.stderr)]
         if not ran or reproduced.returncode == 124:
             return [(
                 "bug-repro-before",
@@ -600,7 +602,9 @@ def check_bug_reproduction(
             *results,
             (
                 "bug-repro-head",
-                "PASS" if fixed.returncode == 0 else "FAIL",
+                "PASS" if fixed.returncode == 0 else (
+                    "FAIL (infra)" if cfg.infra_error(fixed.stdout + fixed.stderr) else "FAIL"
+                ),
                 "" if fixed.returncode == 0 else "reproduction test still fails at HEAD\n" + fixed.stdout + fixed.stderr,
             ),
         ]
@@ -749,7 +753,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     )
     outcome, reason = (
         ("product_feedback", "bug_reproduction_failed")
-        if any(status == "FAIL" for _, status, _ in results)
+        if any(status.startswith("FAIL") for _, status, _ in results)
         else ("completed", None)
     )
     gpu_lock = None
@@ -791,14 +795,14 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, output in results:
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
         # them only through this report, so keep their output when they pass too.
-        if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
+        if status.startswith("FAIL") or (args.tier == "pr" and status == "PASS" and output.strip()):
             tail = "\n".join(output.splitlines()[-TAIL_LINES:])
-            lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", tail, "```"]
+            lines += ["", f"## {name} {'failure' if status.startswith('FAIL') else 'output'}", "```", tail, "```"]
     report = Path(args.report)
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text("\n".join(lines) + "\n")
 
-    failed = [name for name, status, _ in results if status == "FAIL"]
+    failed = [name for name, status, _ in results if status.startswith("FAIL")]
     summary = "gate FAIL: " + ", ".join(failed) if failed else "gate PASS"
     print(f"report: {report}")
     print(summary)

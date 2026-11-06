@@ -1053,6 +1053,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    after the initial failure, per gate invocation (`0` escalates immediately).
    Classification uses full failed-check output before report truncation; every
    failing check must match, so a mixed code/infra failure keeps the ordinary cap.
+   Reproduction test commands use the same policy at both the test commit and
+   HEAD; a network failure at the test commit is not proof of reproduction.
+   Source-content checks such as leak-scan are not classified from their text.
    Exhaustion stops worker/review retries and escalates as `infra_failed`, naming
    a host problem, including when mutation is the only failing High-risk PR check.
    Each classified failure is journaled as `failure`; escalation packets and
