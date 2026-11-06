@@ -417,6 +417,27 @@ Blocked outcomes and approvals are journaled once per head; `merged` is written
 only after a successful merge. A human-merged lessons PR is reconciled on the
 next pass with `by: human` and opens the same promotion measurement.
 
+Merge CI and advisory review readiness verify each active base-branch ruleset's
+required context against check runs on the exact PR head, including its source
+GitHub App (`integration_id`). A same-name success from another app or SHA is
+not evidence. App-unpinned contexts may use legacy statuses fetched by exact head
+SHA (individual status objects have no SHA field); a pinned app requires check-run
+provenance even when other requirements are unpinned.
+Reads are paginated; a head/base change, unreadable evidence, or GitHub's
+blocked/unknown merge state keeps CI pending. Already pending or failed CI
+returns without fetching additional provenance.
+Behind-main and conflicting (`dirty`) heads remain eligible only for the existing
+merge callers' refresh path, not merge; advisory readiness still reports them pending.
+
+PR [#573](https://github.com/mikeroySoft/factory/pull/573)'s successful `gate`
+runs [125588773738](https://github.com/mikeroySoft/factory/actions/runs/41536267505/job/125588773738)
+and [125588741702](https://github.com/mikeroySoft/factory/actions/runs/41536258131/job/125588741702)
+both have app ID 15368 and head `7a05cbf46ff7c00f66a36c1d01a951bc92c2e464`,
+matching [protect-main](https://github.com/mikeroySoft/factory/rules/22827438).
+The refusal was strict-base freshness, not a source-app/head mismatch:
+[#587](https://github.com/mikeroySoft/factory/issues/587) records `behind_by: 4`
+and `BEHIND` at diagnosis, with strict required checks enabled.
+
 When Git uses SSH commit signing, `factory doctor` checks the configured signing
 key against the dispatcher GitHub account and warns with `unknown_key` when the
 key is unreadable or unregistered.
