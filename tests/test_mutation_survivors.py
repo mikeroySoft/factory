@@ -1,0 +1,179 @@
+"""PR-tier survivors remain required work until a worker accounts for each identity."""
+from __future__ import annotations
+
+import contextlib
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import test_actionable_rework as rework
+import test_risk_merge as risk_tests
+
+from factory import config, dispatch, lifecycle
+
+_WORKER_ROUND = dispatch.worker_round
+SURVIVORS = [
+    "factory/dispatch.py:10: NumberReplacer `1` -> `2`",
+    "factory/dispatch.py:10: NumberReplacer `1` -> `0`",
+    "factory/risk.py:20: BooleanReplacer `True` -> `False`",
+]
+REPORT = (
+    "- mutation: FAIL\n\n## mutation\n```text\n"
+    + "\n".join(SURVIVORS)
+    + "\nran 3 of 3 mutants in 1s: 3 survived; 3 survived\n```\n"
+)
+
+
+def accounting(rows):
+    return "## Mutation survivor accounting\n```json\n" + json.dumps({"mutation_survivors": rows}) + "\n```\n"
+
+
+def killed(survivor):
+    return {"survivor": survivor, "disposition": "killed", "test": "tests.test_dispatch.Case.test_branch"}
+
+
+class SurvivorRequiredTest(unittest.TestCase):
+    patch = risk_tests.HighPipelineBoundaryTest.patch
+    github = risk_tests.HighPipelineBoundaryTest.github
+    command_result = risk_tests.HighPipelineBoundaryTest.command_result
+    configure_reviews = rework.ActionableReworkTest.configure_reviews
+
+    def setUp(self):
+        risk_tests.HighPipelineBoundaryTest.setUp(self)
+        self.patch(dispatch.brief, "ensure", return_value="")
+        self.prompts = []
+
+    def work(self, *args, **kwargs):
+        self.prompts.append(dispatch.build_prompt(7, self.wt, args[4]))
+        return rework.ActionableReworkTest.work(self, *args, **kwargs)
+
+    def assert_required(self, prompt):
+        required = prompt.split("## Required mutation survivor findings", 1)
+        self.assertEqual(len(required), 2, "survivors are context, not required findings")
+        for survivor in SURVIVORS:
+            self.assertIn(survivor, required[1])
+        self.assertIn("mutation_survivors", required[1])
+
+    def test_survivor_required_after_both_revise_bounce(self):
+        self.configure_reviews(("REVISE", "REVISE"), mutation=True)
+        self.patch(dispatch, "run_gate", return_value=(False, REPORT))
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.assert_required(self.prompts[1])
+
+    def test_survivor_required_after_deferred_rework(self):
+        self.configure_reviews(("REVISE", "REVISE"), mutation=True)
+        self.patch(dispatch, "run_gate", return_value=(False, REPORT))
+        self.expire = True
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.clock = 0
+        self.expire = False
+        self.patch(dispatch, "refresh_requeue_context", side_effect=rework._REFRESH_CONTEXT)
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.assert_required(self.prompts[1])
+
+    def test_survivor_required_after_escalation_and_dispatcher_restart(self):
+        self.configure_reviews(("REVISE", "REVISE"), mutation=True)
+        self.patch(dispatch, "run_gate", return_value=(False, REPORT))
+        self.cfg.review_rounds = 0
+        self.patch(dispatch, "escalate", side_effect=rework._ESCALATE)
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.assertTrue(any(row["event"] == "escalate" for row in lifecycle.read_events(dispatch.EVENTS)))
+        # The latest attempt hides ordinary requeue context; only durable survivor state can recover it.
+        dispatch.record("attempt", ticket=7, head=risk_tests.HEAD)
+        dispatch.configure(self.cfg)
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.assert_required(self.prompts[1])
+        other = dispatch.build_prompt(8, self.wt)
+        self.assertNotIn("## Required mutation survivor findings", other)
+
+
+class MutationSurvivorHandoffTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.cfg = config.Config(self.root, "local/smoke")
+        self.cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
+        dispatch.configure(self.cfg)
+        self.wt = dispatch.FACTORY / "wt-7"
+        (self.wt / ".factory").mkdir(parents=True)
+        dispatch.LOGS.mkdir(parents=True)
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.patch(dispatch, "gh_json", return_value={"title": "change", "body": "", "comments": []})
+        self.patch(dispatch, "admit_plan", return_value=None)
+        self.patch(dispatch.brief, "ensure", return_value="")
+        self.patch(dispatch, "run", side_effect=lambda cmd, **_kw: subprocess.CompletedProcess(
+            cmd, 0, risk_tests.HEAD if cmd[:2] == ["git", "rev-parse"] else "", "",
+        ))
+        self.patch(dispatch, "risk_for_head", return_value=("Medium", []))
+        self.gate = self.patch(dispatch, "run_gate", return_value=(False, REPORT))
+        dispatch.pr_gate_and_review(self.wt, 7, "attempt", risk_tests.HEAD, {})
+        self.gate.return_value = (True, "- test: PASS\n")
+        for name in ("journal_attempt_plan", "restore_unplanned_lockfiles", "commit_leftovers"):
+            self.patch(dispatch, name)
+        self.patch(dispatch, "sync_event", return_value=None)
+        self.handoff = ""
+        self.patch(dispatch, "run_worker", side_effect=self.work)
+
+    def patch(self, target, name, **kwargs):
+        return self.stack.enter_context(mock.patch.object(target, name, **kwargs))
+
+    def work(self, _argv, _wt, logfile, handoff, _deadline, **_kwargs):
+        logfile.write_text("")
+        handoff.write_text("## Changed\nDone.\n## Still unverified\nNone.\n## Next\nNothing.\n" + self.handoff)
+        return 0, None
+
+    def round(self):
+        return _WORKER_ROUND(7, self.wt, set(), "change", "", 2, float("inf"))
+
+    def test_mutation_survivor_omission_rejects_otherwise_passing_round(self):
+        self.handoff = accounting([killed(survivor) for survivor in SURVIVORS[:2]])
+        ok, report, _, _ = self.round()
+        self.assertFalse(ok, "worker ignored a required survivor but proceeded")
+        self.assertIn(SURVIVORS[2], report)
+        row = [row for row in lifecycle.read_events(dispatch.EVENTS) if row["event"] == "attempt"][-1]
+        self.assertEqual(row["gate"], "FAIL")
+        self.assertFalse(row["finished"])
+
+    def test_equivalent_mutant_requires_reasoning_and_killed_requires_test(self):
+        cases = [
+            ({"disposition": "equivalent"}, False),
+            ({"disposition": "equivalent", "reason": "  "}, False),
+            ({"disposition": "equivalent", "reason": "equivalent mutant"}, False),
+            ({"disposition": "equivalent", "reason": "The bound is unreachable because callers require a positive count."}, True),
+            ({"disposition": "killed"}, False),
+            ({"disposition": "killed", "test": "tests.test_dispatch.Case.test_branch"}, True),
+        ]
+        for disposition, accepted in cases:
+            with self.subTest(disposition=disposition):
+                self.handoff = accounting([
+                    {"survivor": SURVIVORS[0], **disposition},
+                    *[killed(survivor) for survivor in SURVIVORS[1:]],
+                ])
+                self.assertEqual(self.round()[0], accepted)
+
+    def test_mutation_survivor_same_line_different_mutant_is_not_accounted(self):
+        self.handoff = accounting([killed(SURVIVORS[0]), killed(SURVIVORS[2])])
+        ok, report, _, _ = self.round()
+        self.assertFalse(ok)
+        self.assertIn(SURVIVORS[1], report)
+
+    def test_mutation_survivor_missing_or_malformed_accounting_is_rejected(self):
+        for handoff in ("", "```json\n{broken\n```", accounting([None]), accounting({"bad": "shape"})):
+            with self.subTest(handoff=handoff):
+                self.handoff = handoff
+                self.assertFalse(self.round()[0])
+
+    def test_mutation_survivor_passing_pr_gate_replaces_old_requirements(self):
+        self.handoff = accounting([killed(survivor) for survivor in SURVIVORS])
+        self.assertTrue(self.round()[0])
+        self.patch(dispatch, "review", return_value=("APPROVE", "ok"))
+        self.gate.return_value = (True, "- mutation: PASS\n")
+        dispatch.pr_gate_and_review(self.wt, 7, "attempt", risk_tests.NEW_HEAD, {})
+        self.assertNotIn("## Required mutation survivor findings", dispatch.build_prompt(7, self.wt))
+        self.handoff = ""
+        self.assertTrue(self.round()[0])
