@@ -1986,11 +1986,15 @@ Evidence kinds retain the common keys above and add these kind-specific keys:
 
 Gate children record one `child_start` and one `child_exit`, not progress
 heartbeats; a successful child adds only `handoff` and `result` besides those
-transitions, regardless of runtime or output volume. Configured gate checks and
-mutation baseline/mutant test commands discard inherited
-`FACTORY_LIFECYCLE_CONTEXT`, so fixture executions use their own journal paths
-instead of the dispatcher's live journal. The gate itself retains its causal
-link to the dispatcher.
+transitions, regardless of runtime or output volume. Each internal Git
+subprocess has its own transitions, so total gate rows also depend on the
+number of commands, not just the number of configured checks.
+Configured gate checks and standalone mutation baseline/mutant test commands
+discard inherited `FACTORY_LIFECYCLE_CONTEXT`. Selecting a dispatcher
+repository also discards an inherited context whose journal differs from
+that repository's journal: selected unittest discovery can bypass both
+`tests/__init__.py` and `test_factory.py`. Same-root handoffs, including the
+gate's causal link to the dispatcher, remain intact.
 
 ### Outcomes and uncertainty
 
