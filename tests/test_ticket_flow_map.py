@@ -1,7 +1,8 @@
-"""#168: docs/ticket-flow.md cites existing symbols and lists escalation reasons.
+"""#168: docs/ticket-flow.md is an index of factory/, not a freehand sketch.
 
-Escalate reasons (`escalate`, `sync_escalate`, `withdraw`, `record("escalate", reason=)`)
-are extracted from factory/*.py and compared with the map.
+Label transitions (`gh ... --add-label/--remove-label`, `gh ... create --label`) and
+escalate reasons (`escalate`, `sync_escalate`, `withdraw`, `record("escalate", reason=)`)
+are extracted from the AST of factory/*.py and compared with the map's tables, both ways.
 Every `module.symbol` the map cites must exist in factory/.
 """
 from __future__ import annotations
@@ -106,19 +107,30 @@ def code_spans(cell: str) -> set[str]:
     return set(re.findall(r"`([^`]+)`", cell))
 
 
-def scan_map() -> set[tuple[str, str]]:
+def scan_map() -> tuple[dict[str, tuple[set, set]], set[tuple[str, str]]]:
     text = MAP.read_text()
+    transitions = {}
+    for row in section_rows(text, "Label transitions"):
+        (where,) = code_spans(row[0])
+        transitions[where] = (code_spans(row[1]), code_spans(row[2]))
     reasons = set()
     for row in section_rows(text, "Escalate reasons"):
         (where,) = code_spans(row[0])
         reasons.add((where, re.fullmatch(r"``(.+)``", row[1]).group(1)))
-    return reasons
+    return transitions, reasons
 
 
 class TicketFlowMapTest(unittest.TestCase):
     def setUp(self):
         self.code_transitions, self.code_reasons = scan_code()
-        self.map_reasons = scan_map()
+        self.map_transitions, self.map_reasons = scan_map()
+
+    def test_label_transitions_match_code(self):
+        for where, (removes, adds) in self.code_transitions.items():
+            self.assertIn(where, self.map_transitions, f"{where} edits labels; add it to the map")
+            self.assertEqual((removes, adds), self.map_transitions[where], f"{where}: (removes, adds)")
+        for where in self.map_transitions.keys() - self.code_transitions.keys():
+            self.fail(f"map names a label transition in {where} that the code does not have")
 
     def test_escalate_reasons_match_code(self):
         self.assertEqual(set(), self.code_reasons - self.map_reasons, "escalate reasons missing from the map")
