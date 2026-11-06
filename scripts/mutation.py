@@ -339,15 +339,12 @@ def main(argv: list[str] | None = None) -> int:
     if hot <= len(mutations) and not queue and not cut and all(
         r.test_outcome in (TestOutcome.KILLED, TestOutcome.SURVIVED) for _, r in results
     ):
-        # All changed-line candidates were sampled and tested. An absent identity
-        # is stale only on changed lines covered by those completed trials.
-        covered = {
-            (str(m.module_path), line)
-            for m in mutations[:hot]
-            for line in range(m.start_pos[0], m.end_pos[0] + 1)
-            if line in lines[str(m.module_path)]
-        }
-        disproven.update(key for key in reviewed if key[:2] in covered and key not in accepted)
+        # All changed-line candidates were sampled and tested. Enumeration also
+        # proves absence on changed lines that generated no candidates.
+        disproven.update(
+            key for key in reviewed
+            if key[1] in lines.get(key[0], ()) and key not in accepted
+        )
     stale = stale_equivalents(reviewed, disproven)
     # cosmic-ray swallows its own failures (a mutation it could not write, a test command it
     # could not launch) into INCOMPETENT results. NO_TEST also leaves the sampled
