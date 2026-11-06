@@ -213,3 +213,32 @@ class ReadinessTest(unittest.TestCase):
         with mock.patch.object(dispatch, "record") as record:
             dispatch.review_readiness(573, self.HEAD, history)
         self.assertEqual(record.call_args.kwargs["state"], "ci_pending")
+
+    def test_promotion_rejects_push_before_first_provenance_read(self):
+        branch = "agent/lessons-2026-11-02-t517"
+        reviewed_head = self.HEAD
+        pr = {"number": 573, "headRefName": branch, "headRefOid": reviewed_head}
+        self.HEAD = "b" * 40
+        self.pr["head"]["sha"] = self.HEAD
+        self.checks[0]["head_sha"] = self.HEAD
+        original_run = self.run_gh
+
+        def run_gh(cmd, **kwargs):
+            if cmd[:3] in (["gh", "pr", "edit"], ["gh", "pr", "merge"]):
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            return original_run(cmd, **kwargs)
+
+        for dry_run in (True, False):
+            events = [{"event": "review-result", "pr": 573, "head": reviewed_head,
+                       "verdict": "APPROVE"},
+                      {"event": "gate", "branch": branch, "head": reviewed_head, "gate": "PASS"}]
+            output = io.StringIO()
+            with self.subTest(dry_run=dry_run), redirect_stdout(output), \
+                    mock.patch.object(dispatch, "run", side_effect=run_gh) as commands:
+                learn.promote(dispatch.cfg, pr, events, dry_run=dry_run)
+                self.assertFalse(any(
+                    call.args[0][:3] == ["gh", "pr", "merge"]
+                    for call in commands.call_args_list
+                ))
+                self.assertNotIn("would merge", output.getvalue())
+                self.assertIn("not merging", output.getvalue())
