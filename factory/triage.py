@@ -286,7 +286,7 @@ def gh(*args: str, execution=None) -> str:
                 raise
             finally:
                 if proc.poll() is not None:
-                    execution.child_done(proc.pid)
+                    execution.child_done(proc.pid, command=command, returncode=proc.returncode)
     else:
         proc = subprocess.run(command, capture_output=True, text=True, check=False)
         out, err = proc.stdout, proc.stderr

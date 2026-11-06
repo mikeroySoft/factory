@@ -28,9 +28,8 @@ class ChildExitTest(unittest.TestCase):
     def test_timeout_records_killed_child_status(self):
         with tempfile.TemporaryDirectory() as directory:
             events = Path(directory) / "events.jsonl"
-            with lifecycle.scope(events, "ticket", ticket=7):
-                with self.assertRaises(subprocess.TimeoutExpired):
-                    dispatch.run([sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.05)
+            with lifecycle.scope(events, "ticket", ticket=7), self.assertRaises(subprocess.TimeoutExpired):
+                dispatch.run([sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.05)
             [exit_row] = [row for row in lifecycle.read_events(events) if row.get("kind") == "child_exit"]
             self.assertLess(exit_row["returncode"], 0)
             self.assertEqual(exit_row["command"][0], sys.executable)
@@ -56,9 +55,8 @@ class ChildExitTest(unittest.TestCase):
             events = root / "events.jsonl"
             with mock.patch.object(triage, "cfg", Config(root=root, repo="local/safety"), create=True), \
                     mock.patch.dict("os.environ", {"PATH": str(root)}), \
-                    lifecycle.scope(events, "triage") as execution:
-                with self.assertRaises(SystemExit):
-                    triage.gh("issue", "list", execution=execution)
+                    lifecycle.scope(events, "triage") as execution, self.assertRaises(SystemExit):
+                triage.gh("issue", "list", execution=execution)
             [exit_row] = [row for row in lifecycle.read_events(events) if row.get("kind") == "child_exit"]
             self.assertEqual(exit_row["returncode"], 17)
             self.assertEqual(exit_row["command"][:3], ["gh", "issue", "list"])

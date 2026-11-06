@@ -1352,6 +1352,28 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    head (`manage` row with `head`); a refreshed head needs a fresh decision and
    nothing is re-bound. Decisions are bounded by `manager.rounds` per PR.
 
+### Dispatcher exit safety
+
+Owned ticket exits post their reason on the issue: escalation, deferred review
+rework, refresh conflict/gate/risk requeues, worker launch failures, approval or
+manager-approval waits, and merge. Dry runs, admission refusals and another
+owner's locked/in-flight tickets remain read-only.
+
+Queue transitions add the replacement label in a checked write before removing
+either other queue label (`ready-for-agent`, `ready-for-human`, `factory-held`).
+A failed add never removes the existing queue. Escalation comments follow host
+cleanup so authenticated cleanup receipts retain their takeover-detection boundary.
+If a queue write fails, escalation still attempts to comment with the reason
+and failed-transition notice.
+
+Checked exit writes retry once: normally after one second, or at least 60 seconds
+for primary/secondary rate limits (honoring a longer `retry-after` hint).
+Each failed attempt records `github-write-failed` with redacted argv, return code
+and bounded stderr. Exhaustion raises an error and exits `mechanism_failure`
+with reason `github_write_failed`, never silently `project_escalation`.
+A persistent outage can prevent a remote comment or leave both old and replacement
+labels after a failed removal; it cannot silently remove the last queue label.
+
 ## Configuration
 
 `.factory.toml` at the repository root; every key is optional. The template
@@ -2046,7 +2068,7 @@ Evidence kinds retain the common keys above and add these kind-specific keys:
 |---|---|
 | `handoff` | `handoff_id`: UUID string, persisted before launching a child. |
 | `child_start` | `child_process`: process identity object; `handoff_id`: UUID string or null. |
-| `child_exit` | `child_process`: the recorded child identity object. |
+| `child_exit` | `child_process`: the recorded child identity object; `command`: redacted argument-string array; `returncode`: integer (negative for a signal), or null if unobserved. Legacy rows may omit command/status. |
 | `lock_acquired`, `lock_released` | `lock`: path string; `locks` reflects the updated recorded set. |
 | `check` | `check`: string check name. |
 | `timeout` | `command`: array of argument strings; `timeout_seconds`: integer. |
