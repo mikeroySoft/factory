@@ -1213,6 +1213,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    current working files overlaid, so Git-dependent tests run without skips.
    Baseline and mutant subprocesses disable bytecode writes, preventing cached
    baseline code from masking same-size mutations in reused scratch copies.
+   Before sampling, annotation subtrees are excluded: parameter, return and variable
+   annotations, explicit `TypeAlias` values and `type` statements. Executable defaults,
+   assigned values, call arguments and bodies remain eligible, even on the same line.
+   Reports show `annotation sites excluded: N (M mutants)`, counting distinct candidate
+   source spans and their excluded mutants before the sample cap.
    This repository's mutation command loads `mutation-equivalents.json` through
    `--equivalents FILE`. It is a JSON array; each reviewed entry has this shape:
 

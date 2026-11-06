@@ -64,7 +64,7 @@ class MutationAnnotationsTest(unittest.TestCase):
         source = (
             "from __future__ import annotations\n"
             "async def f(\n"
-            "    x: str | None, /, *args: int | None,\n"
+            "    x: str | None, *args: int | None,\n"
             "    y: tuple[str | None, int | None] = choose(1 + 2),\n"
             "    **kwargs: str | None,\n"
             ") -> (int | None):\n"
@@ -82,9 +82,16 @@ class MutationAnnotationsTest(unittest.TestCase):
         source = (
             "type Alias[T: str | None] = list[T | None]\n"
             "type Other = int | None; live = 1 + 2\n"
+            + ("type Default[T = str | None] = T | None\n" if sys.version_info >= (3, 13) else "")
         )
         line = source.splitlines()[1]
         self.assertEqual(self.sample(source), {(2, line.index(token)) for token in ("1", "+", "2")})
+
+    def test_non_ascii_prefix_does_not_hide_executable_sites(self):
+        source = "def café(x: str | None = 1 + 2) -> int | None: return x + x\n"
+        expected = {(1, source.index(token)) for token in ("1", "+", "2")}
+        expected.add((1, source.rindex("+")))
+        self.assertEqual(self.sample(source), expected)
 
     def test_annotation_only_cli_reports_exclusions_without_survivors_or_errors(self):
         with tempfile.TemporaryDirectory(prefix="mutation-annotations-cli-") as directory, \
