@@ -10,12 +10,14 @@ import argparse
 import ast
 import fcntl
 import fnmatch
+import json
 import os
 import re
 import signal
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from pathlib import Path
 
@@ -94,6 +96,26 @@ def run(cmd: list[str]) -> tuple[bool, str]:
         execution.outcome = "product_feedback"
         execution.reason = "configured_check_failed"
     return proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def _mutation_budget(output: str) -> dict:
+    """Read the mutation command's coverage summary, never arbitrary journal fields."""
+    for line in reversed(output.splitlines()):
+        if not line.startswith("mutation-budget: "):
+            continue
+        try:
+            data = json.loads(line.removeprefix("mutation-budget: "))
+        except ValueError:
+            continue
+        if not isinstance(data, dict) or data.get("status") not in ("completed", "budget_limited"):
+            continue
+        fields = {"status": data["status"]}
+        for key in ("budget_seconds", "baseline_seconds", "workers", "mutants_run", "mutants_not_run"):
+            value = data.get(key)
+            if type(value) in (int, float) and 0 <= value < float("inf"):
+                fields[key] = value
+        return fields
+    return {}
 
 def _check_status(name: str, passed: bool, output: str, blocking_mutation: bool) -> str:
     if (
@@ -764,6 +786,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 cfg.factory / "events.jsonl", "gate-check", lock=GPU_LOCK if gpu_lock else None
             ) as check:
                 check.emit("check", check=name)
+                check_started = time.monotonic()
                 passed, output = fn()
                 if not passed and check.outcome == "completed":
                     check.outcome = "product_feedback"
@@ -771,6 +794,16 @@ def execute(args: argparse.Namespace, execution) -> int:
                 fields = {"failed_tests": failed_test_ids(output)} if not passed else {}
                 if fields.get("failed_tests"):
                     fields["changed_paths"] = changed_paths(args.base)
+                fields.update(elapsed_seconds=time.monotonic() - check_started,
+                              budget_seconds=CHECK_TIMEOUT)
+                if name == "mutation":
+                    fields.update(_mutation_budget(output))
+                if check.reason == "check_timeout":
+                    fields["status"] = "budget_limited"
+                if fields.get("status") == "budget_limited" and (
+                    passed or check.reason == "check_timeout"
+                ):
+                    check.reason = "budget_limited"
                 check.emit("result", check=name, passed=passed, **fields)
                 status = _check_status(name, passed, output, args.blocking_mutation)
                 results.append((name, status, output))
