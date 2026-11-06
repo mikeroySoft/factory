@@ -171,6 +171,15 @@ class ReadinessTest(unittest.TestCase):
         self.statuses = [{"id": 20, "context": "gate", "state": "success", "sha": "old-head"}]
         self.assert_pending()
 
+    def test_unpinned_status_cannot_satisfy_a_pinned_gate(self):
+        self.rules[0]["parameters"]["required_status_checks"].append({"context": "lint"})
+        self.checks[0]["app"] = {"id": 99}
+        self.statuses = [
+            {"id": 20, "context": "gate", "state": "success", "sha": self.HEAD},
+            {"id": 21, "context": "lint", "state": "success", "sha": self.HEAD},
+        ]
+        self.assert_pending()
+
     def test_strict_base_refusal_still_refreshes_lessons_head(self):
         self.pr["mergeable_state"] = "behind"
         branch = "agent/lessons-2026-11-02-t517"
