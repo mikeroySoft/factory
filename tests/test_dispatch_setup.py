@@ -136,3 +136,76 @@ class DispatchSetupTest(unittest.TestCase):
         dispatch.setup_worktree(9, wt, time.monotonic() + 10)
         self.assertEqual([e["exit_status"] for e in self.events("setup")], [127, 124, 0])
         self.assertEqual(self.events("attempt"), [])
+
+    def manager_setup_recovery(self, frontier: bool):
+        from datetime import UTC, datetime
+
+        fixed = self.tmp / "fixed"
+        self.configure_setup(
+            "from pathlib import Path\n"
+            f"raise SystemExit(0 if Path({str(fixed)!r}).exists() else 23)\n"
+        )
+        self.cfg.workers["fixer"] = self.cfg.workers["default"]
+        self.cfg.manager = [sys.executable, "-c", 'print(\'DECISION: FIX\\n{"worker":"fixer","guidance":"fix the boundary"}\')']
+        self.cfg.manager_rounds = 1
+        self.cfg.manager_review = "all"
+        dispatch.VERIFIED_WORKERS.add("fixer")
+        wt = dispatch.ensure_worktree(9)
+        head = fixture.git(wt, "rev-parse", "HEAD")
+        dispatch.record("claimed", ticket=9)
+        run_pass = manage.frontier_pass if frontier else manage.escalation_pass
+        github = self.github.gh_json
+
+        def gh_json(args):
+            if args[:2] == ["issue", "list"]:
+                return [self.github.issue()]
+            if args[:2] == ["pr", "list"]:
+                return [{**self.github.pr(), "isCrossRepository": False,
+                         "updatedAt": datetime.now(UTC).isoformat()}]
+            return github(args)
+
+        with self.patched(), mock.patch.object(dispatch, "gh_json", side_effect=gh_json), \
+                mock.patch.object(manage, "human_activity", return_value=False), \
+                mock.patch.object(manage, "observe_pr", return_value={"owner": {"relation": "factory_issue"}}), \
+                mock.patch.object(manage, "undelivered", return_value=[]), \
+                mock.patch.object(dispatch, "build_prompt", return_value="fix the boundary"), \
+                mock.patch.object(dispatch, "commit_leftovers"), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "gate ok")), \
+                mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "approved", False)), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True) as approve, \
+                mock.patch("factory.results.source_metadata", return_value={}):
+            self.github.pr_labels.clear()
+            if frontier:
+                dispatch.record("attempt", ticket=9, gate="PASS", head=head, actual_head=head)
+                dispatch.record("review", ticket=9, verdict="APPROVE", accepted=True, head=head, actual_head=head)
+            else:
+                self.github.issue_labels = {config.LABEL_HUMAN}
+                dispatch.escalate(9, "gate failed", None, code="gate_failed")
+            before = self.events("attempt")
+            escalations = self.events("escalate")
+            for _ in range(2):
+                run_pass()
+                self.assertIsNotNone(manage.pending_fix(
+                    dispatch.lifecycle.read_events(dispatch.EVENTS),
+                    **({"pr": 102, "head": head} if frontier else {"round": 1, "pr": None}),
+                ))
+                self.assertEqual(self.events("attempt"), before)
+                self.assertEqual(self.events("escalate"), escalations)
+                self.assertEqual(self.events("setup-infra")[-1]["classification"], "env")
+                approve.assert_not_called()
+            fixed.touch()
+            run_pass()
+            approve.assert_called_once_with(9, head)
+            self.assertEqual(len(self.events("attempt")), len(before) + 1)
+            run_pass()
+        self.assertEqual(len(self.events("manage")), 1)
+        self.assertEqual(self.events("manage")[0]["round"], 1)
+        self.assertEqual(len(self.events("attempt")), len(before) + 1)
+        self.assertEqual(self.events("escalate"), escalations)
+        self.assertEqual([row["exit_status"] for row in self.events("setup")], [23, 23, 0])
+
+    def test_frontier_fix_setup_failure_resumes_without_another_decision(self):
+        self.manager_setup_recovery(frontier=True)
+
+    def test_escalation_fix_setup_failure_resumes_without_another_round(self):
+        self.manager_setup_recovery(frontier=False)

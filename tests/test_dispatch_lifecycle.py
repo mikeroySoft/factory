@@ -2013,3 +2013,58 @@ class WorkerCompletionBoundaryLifecycleTest(unittest.TestCase):
             "```text\n- protected-paths: FAIL (add-only existing file modified)\n```"
         )
         self.assertIsNone(dispatch._protected_gate_guidance(report, set()))
+
+
+class SetupReworkRecoveryTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+
+    def test_setup_failure_preserves_charged_rework_across_dispatch_passes(self):
+        fixed = self.base / "fixed"
+        seen = self.base / "prompts.jsonl"
+        setup_runs = self.base / "setup-runs"
+        setup = self.base / "setup.py"
+        setup.write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(setup_runs)!r})\n"
+            "runs = int(p.read_text()) if p.exists() else 0\n"
+            "p.write_text(str(runs + 1))\n"
+            f"raise SystemExit(23 if runs and not Path({str(fixed)!r}).exists() else 0)\n"
+        )
+        self.worker.write_text(
+            "import json\nfrom pathlib import Path\n"
+            f"with Path({str(seen)!r}).open('a') as out:\n"
+            "    out.write(json.dumps(Path('.factory-prompt.md').read_text()) + '\\n')\n"
+            + WORKER
+        )
+        self.write_config()
+        path = self.repo / ".factory.toml"
+        path.write_text(path.read_text().replace(
+            '[dispatch]\n', '[dispatch]\nsetup = ' + json.dumps([sys.executable, str(setup)]) + '\n'
+        ))
+        self.commit_config()
+        self.cli("dispatch", "--ticket", "7", "--budget", "1", expected=1)
+        first = lifecycle.read_events(self.events)
+        self.assertEqual(len([r for r in first if r.get("event") == "attempt"]), 1)
+        self.assertEqual([r["classification"] for r in first if r.get("event") == "setup-infra"], ["env"])
+        self.assertFalse(any(r.get("event") == "escalate" for r in first))
+        self.assertEqual(len([r for r in first if r.get("event") == "review-rework"]), 1)
+
+        # Still broken on another pass: neither the attempt nor the review budget grows.
+        self.cli("dispatch", "--ticket", "7", "--budget", "1", expected=1)
+        waiting = lifecycle.read_events(self.events)
+        self.assertEqual(len([r for r in waiting if r.get("event") == "attempt"]), 1)
+        self.assertEqual(len([r for r in waiting if r.get("event") == "review-rework"]), 1)
+        fixed.touch()
+        self.cli("dispatch", "--ticket", "7", "--budget", "1")
+        prompts = [json.loads(line) for line in seen.read_text().splitlines()]
+        self.assertEqual(len(prompts), 2)
+        self.assertIn("First review requires revision.", prompts[1])
+        final = lifecycle.read_events(self.events)
+        self.assertEqual(len([r for r in final if r.get("event") == "attempt"]), 2)
+        self.assertEqual(len([r for r in final if r.get("event") == "review-rework"]), 1)
+        self.assertFalse(any(r.get("event") == "escalate" for r in final))
+        self.assertTrue(any(r.get("event") == "approved" for r in final))
