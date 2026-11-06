@@ -88,8 +88,8 @@ HOST_SCALARS = ("host_name", "triage_host", "claim_ttl")
 # `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive, when}.
 KNOWN_KEYS = {
     "repo": ("slug", "upstream", "main"),
-    "dispatch": ("max_active", "max_attempts", "budget_min", "idle_timeout", "exit_grace",
-                 "review_rounds", "cost_pattern", "signoff"),
+    "dispatch": ("max_active", "max_attempts", "budget_min", "budget_cap_min", "idle_timeout",
+                 "exit_grace", "review_rounds", "cost_pattern", "signoff"),
     "engine": ("yield_for_update",),
     "workers": None,
     "worker_wrap": ("command",),
@@ -187,6 +187,7 @@ class Config:
     max_active: int = 2
     max_attempts: int = 3
     budget_min: int = 90
+    budget_cap_min: int = 720
     idle_timeout: float = 30  # minutes without worker log output or worktree change = stuck; 0 off
     exit_grace: float = 300  # seconds a done (handoff/commit) worker may stay quiet before termination; 0 off
     review_rounds: int = 1  # REVISE -> worker -> re-review cycles before escalating
@@ -739,7 +740,13 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.main = repo_t.get("main", cfg.main)
     cfg.max_active = int(dispatch.get("max_active", cfg.max_active))
     cfg.max_attempts = int(dispatch.get("max_attempts", cfg.max_attempts))
+    budget_cap_min = dispatch.get("budget_cap_min", cfg.budget_cap_min)
+    if isinstance(budget_cap_min, bool) or not isinstance(budget_cap_min, int) or budget_cap_min <= 0:
+        raise ConfigError("dispatch.budget_cap_min must be a positive integer")
+    cfg.budget_cap_min = budget_cap_min
     cfg.budget_min = int(dispatch.get("budget_min", cfg.budget_min))
+    if cfg.budget_min > cfg.budget_cap_min:
+        raise ConfigError("dispatch.budget_min must be <= dispatch.budget_cap_min")
     cfg.idle_timeout = float(dispatch.get("idle_timeout", cfg.idle_timeout))
     cfg.exit_grace = float(dispatch.get("exit_grace", cfg.exit_grace))
     if cfg.idle_timeout < 0 or cfg.exit_grace < 0:

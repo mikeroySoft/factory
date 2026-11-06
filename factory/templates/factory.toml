@@ -15,7 +15,8 @@
 # max_active = 2       # tickets in flight at once
 # max_attempts = 3     # worker+gate rounds before escalating
 # review_rounds = 1    # REVISE -> worker -> re-review cycles before escalating
-# budget_min = 90      # wall-clock budget per ticket; overall ceiling, kills a running worker
+# budget_min = 90      # worker budget floor; measured gate/review time extends it
+# budget_cap_min = 720 # hard total ticket-pipeline cap across all rounds
 # idle_timeout = 30    # minutes with no worker log output and no worktree change = stuck:
 #                      # killed, attempt fails (reason `stuck`) and retries; 0 disables
 # exit_grace = 300     # seconds a worker may stay quiet after committing or writing its

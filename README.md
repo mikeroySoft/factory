@@ -1030,12 +1030,23 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 3. **Work.** The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
-   reviewer's findings. Up to `max_attempts` attempts within `budget_min`.
+   reviewer's findings. Up to `max_attempts` attempts. `budget_min` is the
+   configured elapsed-time floor: its live effective value is
+   `min(budget_cap_min, budget_min + measured gate/review time)`. Measured time
+   is cumulative since claim: elapsed attempt-tier gate (`attempt`), PR-tier
+   gate (`pr`, including mutation), and reviewer (`review`) work actually
+   observed for this ticket. The floor does not reset for worker retries or
+   review bounces, and Factory does not predict future work from historical
+   timings. `budget_cap_min` defaults to 720 minutes and is the independent
+   hard total cap for the whole ticket pipeline across every attempt and review
+   round.
    A fresh handoff with an empty `Still unverified` or `Unverified` section
    (blank or `None.`) and a clean, committed worktree is the finish signal:
-   after expiry, the dispatcher still gates that head and proceeds through
-   push, PR-tier gate, review and merge normally, without charging a rework
-   round. Unfinished work and failing gate tiers still escalate.
+   after the effective floor expires, the dispatcher still gates that head and
+   proceeds through push, PR-tier gate, review and merge normally, without
+   charging a rework round, only while the hard cap remains. The hard cap has
+   no clean-finish exception. Unfinished work and failing gate tiers still
+   escalate.
    Nested headings remain part of the unverified section; only a same-level
    or higher-level heading ends it, so a subsection cannot hide blocking work.
    A worker that exits before the deadline keeps its passing gate result even
@@ -1185,11 +1196,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    revising uses the normal Medium loop. Concrete required REVISE findings
    from either reviewer, and completed surviving mutants after approval,
    use the normal `[dispatch].review_rounds` budget, not the second-head
-   disagreement cutoff. When the wall-clock expires after a clean finish
+   disagreement cutoff. When the effective budget expires after a clean finish
    recorded for the current attempt and head, Factory retains the findings in
    a `review-rework` journal row and returns the ticket to the next pass,
    charging one round before releasing its claim and clearing `ready-for-human`.
-   Charges survive pass boundaries; the next worker receives the full packet.
+   Charges survive pass boundaries; the next worker receives the full packet,
+   but the independent hard cap still bounds the whole ticket pipeline.
    Rework after a merge-stage refresh uses the same mechanism and budget.
    Protected-path blockers come from gate status rows, not quoted reviewer
    findings or surviving-mutant source text.
@@ -1358,8 +1370,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 written by `factory init` documents them all. The ones you will actually set:
 
 The dashboard's **Settings** view (`/#settings`) edits exactly five controls:
-`dispatch.max_active` (concurrent tickets), `dispatch.budget_min` (time limit
-per ticket, in minutes), `dispatch.max_attempts` (worker and gate attempts),
+`dispatch.max_active` (concurrent tickets), `dispatch.budget_min` (the
+elapsed-time floor, in minutes), `dispatch.max_attempts` (worker and gate attempts),
 `dispatch.review_rounds` (reviewer revision rounds), and `manager.model` (the
 Factory Manager model). It shows each effective value and its source
 (Repository, Host repository override, Host default, or Built-in default), plus
@@ -1387,6 +1399,8 @@ default model. Gate and safety policy remain file-managed.
 
 [dispatch]
 review_rounds = 1                # REVISE -> worker -> re-review cycles
+# budget_min = 90                # elapsed-time floor, extended by measured gate/review time
+# budget_cap_min = 720           # hard total cap across all attempts and review rounds
 # idle_timeout = 30              # minutes quiet mid-work = stuck; 0 disables
 # exit_grace = 300               # seconds quiet after commit/handoff before termination; 0 disables
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)

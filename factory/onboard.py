@@ -508,6 +508,19 @@ def doctor(argv: list[str]) -> int:
     unset = unset_repo_keys(cfg.raw_repo)
     if unset:
         report(None, "defaults in effect", ", ".join(unset), info=True)
+    from factory import dispatch
+
+    budget = dispatch.budget_status(cfg)
+    measured = budget["measured_seconds"]
+    report(
+        True,
+        "dispatch budget",
+        f"effective {budget['effective_seconds'] / 60:g}m; cap {budget['cap_seconds'] / 60:g}m; "
+        f"floor {budget['floor_seconds'] / 60:g}m; measured "
+        f"attempt {measured['attempt'] / 60:g}m, pr {measured['pr'] / 60:g}m, "
+        f"review {measured['review'] / 60:g}m",
+        info=True,
+    )
     report_stage_success(cfg, report)
     if cfg.watch_bands:
         from factory import watch
