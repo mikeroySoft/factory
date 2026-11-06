@@ -85,7 +85,7 @@ class MutationEquivalentsTest(unittest.TestCase):
                 self.assertIn("stale equivalent", report)
 
     def test_untested_entries_are_not_stale(self):
-        for changes in ({"changed": False}, {"sampled": False}, {"hot": 0},
+        for changes in ({"changed": False}, {"sampled": False},
                         {"clock": [0, 0, 0, 0.1, 0.2, 2, 2]},
                         {"clock": [0, 0, 0, 0.1, 0.2, 0.3, 2, 2], "output": "timeout"}):
             with self.subTest(changes=changes):
@@ -244,6 +244,17 @@ class MutationEquivalentsTest(unittest.TestCase):
                     self.assertEqual(report.count("stale equivalent:"), 2, report)
                     self.assertNotIn("accepted equivalent", report)
 
+            # A fully enumerated comment-only file has no mutation spans at all.
+            (root / "factory/example.py").write_text("# reviewed comment\n")
+            (root / "tests/test_example.py").write_text("import factory.example\n")
+            absent = run(
+                [{**entries[0], "original": "# reviewed comment",
+                  "mutated": "# obsolete replacement"}],
+                1, "zero candidates",
+            )
+            self.assertIn("mutants: 0 sampled", absent)
+            self.assertIn("stale equivalent: factory/example.py:1:", absent)
+
     def test_missing_identity_is_stale_after_complete_killed_trial(self):
         for field, obsolete in (("operator", "ObsoleteReplacer"), ("mutated", "value = 99")):
             for blocking in (False, True):
@@ -258,7 +269,7 @@ class MutationEquivalentsTest(unittest.TestCase):
 
     def test_missing_identity_is_not_stale_without_complete_coverage(self):
         entry = {**self.entry, "operator": "ObsoleteReplacer"}
-        for changes in ({"changed": False}, {"sampled": False}, {"hot": 0},
+        for changes in ({"changed": False}, {"sampled": False},
                         {"hot": 2},
                         {"clock": [0, 0, 0, 0.1, 0.2, 2, 2]},
                         {"clock": [0, 0, 0, 0.1, 0.2, 0.3, 2, 2], "output": "timeout"}):
