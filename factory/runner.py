@@ -25,16 +25,20 @@ def _users(root: Path) -> bool:
         # macOS has no /proc. lsof covers cwd/open files; ps covers inherited
         # scratch paths even when the child has changed cwd and closed its files.
         with suppress(OSError, subprocess.TimeoutExpired):
-            result = subprocess.run(["lsof", "-t", "+D", str(root)], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(
+                ["lsof", "-t", "+D", str(root)], capture_output=True, text=True, timeout=10, check=False,
+            )
             if any(pid.isdecimal() and int(pid) != os.getpid() for pid in result.stdout.split()):
                 return True
         with suppress(OSError, subprocess.TimeoutExpired):
-            result = subprocess.run(["ps", "axeww", "-o", "pid=,command="], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(
+                ["ps", "axeww", "-o", "pid=,command="], capture_output=True, text=True, timeout=10, check=False,
+            )
             for line in result.stdout.splitlines():
                 parts = line.split(None, 1)
-                if len(parts) == 2 and parts[0].isdecimal() and int(parts[0]) != os.getpid():
-                    if any(f"{key}={root}" in parts[1] for key in ("TMPDIR", "GH_CONFIG_DIR")):
-                        return True
+                if (len(parts) == 2 and parts[0].isdecimal() and int(parts[0]) != os.getpid()
+                        and any(f"{key}={root}" in parts[1] for key in ("TMPDIR", "GH_CONFIG_DIR"))):
+                    return True
         return False
     try:
         processes = list(Path("/proc").iterdir())
