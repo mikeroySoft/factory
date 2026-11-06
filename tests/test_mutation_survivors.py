@@ -275,6 +275,99 @@ class MutationSurvivorHandoffTest(unittest.TestCase):
         approve.assert_not_called()
         self.assertEqual(escalate.call_args.kwargs["code"], "gate_failed")
 
+    def test_mutation_survivor_placeholder_evidence_rejects_passing_round(self):
+        cases = [
+            ("equivalent", "reason", detail)
+            for detail in (
+                "This is equivalent.", "These mutants are functionally equivalent!",
+                "N/A", "n.a.", "not applicable", "None", "TBD", "TODO",
+                "unknown", "not provided", "---",
+            )
+        ] + [
+            ("killed", "test", detail)
+            for detail in ("N/A", "None", "TBD", "not provided", "the tests", "---")
+        ]
+        for disposition, field, detail in cases:
+            with self.subTest(disposition=disposition, detail=detail):
+                self.handoff = accounting([
+                    {"survivor": SURVIVORS[0], "disposition": disposition, field: detail},
+                    *[killed(survivor) for survivor in SURVIVORS[1:]],
+                ])
+                ok, report, _, _ = self.round()
+                self.assertFalse(ok)
+                self.assertIn(SURVIVORS[0], report)
+                row = lifecycle.read_events(dispatch.EVENTS)[-1]
+                self.assertEqual(row["gate"], "FAIL")
+                self.assertFalse(row["finished"])
+
+    def test_mutation_survivor_stale_accounting_rejects_passing_round(self):
+        self.handoff = accounting([killed(survivor) for survivor in SURVIVORS])
+        self.assertTrue(self.round()[0])
+        self.patch(dispatch, "run_worker", return_value=(0, None))
+        ok, report, _, _ = self.round()
+        self.assertFalse(ok, "the prior round's accounting cannot finish this round")
+        for survivor in SURVIVORS:
+            self.assertIn(survivor, report)
+        row = lifecycle.read_events(dispatch.EVENTS)[-1]
+        self.assertEqual(row["gate"], "FAIL")
+        self.assertFalse(row["finished"])
+
+    def test_mutation_survivor_manager_fix_requires_fresh_supported_accounting(self):
+        from factory import manage
+
+        issue = {"title": "change", "body": "", "comments": [], "labels": []}
+        pr = {"state": "OPEN", "headRefName": "agent/7", "headRefOid": risk_tests.HEAD,
+              "baseRefName": "main", "reviewDecision": ""}
+        self.patch(dispatch, "gh_json", side_effect=lambda args: pr if args[0] == "pr" else issue)
+        self.patch(dispatch, "run", side_effect=lambda cmd, **_kw: subprocess.CompletedProcess(
+            cmd, 0, "agent/7" if cmd[:2] == ["git", "branch"] else
+            risk_tests.HEAD if cmd[:2] == ["git", "rev-parse"] else "", "",
+        ))
+        packet = self.root / "packet.md"
+        packet.write_text("Fix reviewer findings.")
+        push = self.patch(dispatch, "push_agent")
+        approve = self.patch(dispatch, "approve_pr", return_value=True)
+        escalate = self.patch(dispatch, "escalate")
+        self.patch(dispatch, "record_risk")
+        self.patch(dispatch, "pr_comment")
+        review = self.patch(dispatch, "pr_gate_and_review", return_value=("APPROVE", "ok", False))
+        cases = [
+            ({"disposition": "equivalent", "reason": "This is equivalent."}, True, False),
+            ({"disposition": "equivalent", "reason": "N/A"}, True, False),
+            ({"disposition": "killed", "test": "N/A"}, True, False),
+            (killed(SURVIVORS[0]), False, False),
+            ({"disposition": "equivalent",
+              "reason": "Both branches return zero because the input count is always zero here."}, True, True),
+            (killed(SURVIVORS[0]), True, True),
+        ]
+        for disposition, fresh, accepted in cases:
+            with self.subTest(disposition=disposition, fresh=fresh):
+                for call in (push, approve, escalate, review):
+                    call.reset_mock()
+                self.handoff = accounting([
+                    {"survivor": SURVIVORS[0], **disposition},
+                    *[killed(survivor) for survivor in SURVIVORS[1:]],
+                ])
+                if not fresh:
+                    (self.wt / ".factory" / "handoff-7.md").write_text(self.handoff)
+                with mock.patch.object(
+                    dispatch, "run_worker", side_effect=self.work if fresh else None,
+                    return_value=(0, None),
+                ):
+                    manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "Fix"}, packet)
+                row = [row for row in lifecycle.read_events(dispatch.EVENTS) if row["event"] == "attempt"][-1]
+                self.assertEqual(row["gate"], "PASS" if accepted else "FAIL")
+                self.assertEqual(row["finished"], accepted)
+                if accepted:
+                    approve.assert_called_once_with(7, risk_tests.HEAD)
+                    review.assert_called_once()
+                    escalate.assert_not_called()
+                else:
+                    push.assert_not_called()
+                    approve.assert_not_called()
+                    review.assert_not_called()
+                    self.assertEqual(escalate.call_args.kwargs["code"], "gate_failed")
+
 
 class MutationSurvivorCLITest(unittest.TestCase):
     from test_dispatch_lifecycle import LocalCLI as _Fixture
