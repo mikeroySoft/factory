@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 
-from factory import __version__, brief, config, lifecycle, risk
+from factory import __version__, brief, config, generation, lifecycle, risk
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -68,6 +68,13 @@ _PENDING_SECOND_REVIEWS: dict[int, dict] = {}
 _PENDING_RISK: dict[int, dict] = {}
 _LOW_FALLBACK: set[int] = set()
 _HOST_CLAIMS: dict[int, HostClaim] = {}
+# Worker profile -> why it cannot launch this pass (failed check, or a launch failure not yet recovered).
+UNAVAILABLE_WORKERS: dict[str, str] = {}
+# Profiles whose `probe` passed this pass: only these prove a login, so only these besides
+# `default` may be chosen by the manager (#662).
+VERIFIED_WORKERS: set[str] = set()
+# Tickets this pass escalated: no owner can have released them yet (see `observe_owner_requeue`).
+_ESCALATED: set[int] = set()
 
 
 def configure(c: Config) -> None:
@@ -88,6 +95,9 @@ def configure(c: Config) -> None:
     _PENDING_SECOND_REVIEWS.clear()
     _PENDING_RISK.clear()
     _LOW_FALLBACK.clear()
+    UNAVAILABLE_WORKERS.clear()
+    VERIFIED_WORKERS.clear()
+    _ESCALATED.clear()
     host_claim_login.cache_clear()
 
 
@@ -1855,6 +1865,131 @@ def run_worker(
     return code, fired
 
 
+# A worker that failed like this with no commit and a clean worktree never reached the work.
+WORKER_AUTH_FAILURE = re.compile(
+    r"authentication failed|not logged in|invalid api key|401 unauthorized", re.IGNORECASE,
+)
+WORKER_PROBE_TIMEOUT = 60  # seconds per `[workers.<label>] probe`
+
+
+class WorkerUnavailable(OSError):
+    """No available worker profile can run the ticket: a host defect, never a ticket strike."""
+
+
+def fallback_worker(profile: str) -> str | None:
+    """The profile to launch for `profile`: itself while available, else `default`, else None.
+
+    A profile chosen by a structured `when` label is a required capability; it waits for its
+    own worker instead of falling back."""
+    if profile not in UNAVAILABLE_WORKERS:
+        return profile
+    if profile == "default" or profile in cfg.worker_select_label or "default" in UNAVAILABLE_WORKERS:
+        return None
+    return "default"
+
+
+def last_worker_health(profile: str) -> dict | None:
+    return next((row for row in reversed(lifecycle.read_events(EVENTS))
+                 if row.get("event") == "worker-health" and row.get("worker") == profile), None)
+
+
+def set_worker_health(profile: str, reason: str | None, *, source: str, check: str | None = None) -> None:
+    """Mark `profile` available (`reason` None) or unavailable; journal only a change.
+
+    `check` names the evidence: `probe`, `executable` (PATH only, so the login is unverified)
+    or `launch`."""
+    if reason is None:
+        UNAVAILABLE_WORKERS.pop(profile, None)
+    else:
+        UNAVAILABLE_WORKERS[profile] = reason
+    last = last_worker_health(profile)
+    available = reason is None
+    # A launch failure is journaled even on a profile already down for another reason: the
+    # next pass keeps a launch-sourced row sticky until a probe or a launch clears it.
+    relaunch = source == "launch" and not available and (last or {}).get("source") != "launch"
+    if (last["available"] if last else True) == available and not relaunch:
+        return
+    check = check or source
+    fallback = None if available else fallback_worker(profile)
+    record("worker-health", worker=profile, available=available, reason=reason, fallback=fallback,
+           source=source, check=check)
+    log(f"worker `{profile}` " + ("available again" if available else f"unavailable ({reason})")
+        + (" (executable found; its login is unverified without a probe)" if available and check == "executable" else "")
+        + (f"; falling back to `{fallback}`" if fallback else ""))
+
+
+def worker_missing(spec: config.WorkerSpec, env: dict[str, str]) -> str | None:
+    """The host wrapper or the profile's own executable that does not resolve on the worker's
+    PATH, checked independently: a wrapper on PATH says nothing about the worker it runs."""
+    return next((program for program in dict.fromkeys((spec.argv[0], spec.argv[spec.wrap]))
+                 if shutil.which(program, path=env.get("PATH")) is None), None)
+
+
+def _probe(argv: list[str], env: dict[str, str]) -> str | None:
+    """Why `[workers.<label>] probe` failed, else None. Output is read only from its last 64 KiB,
+    and a probe that outlives its timeout is stopped with its whole process group."""
+    with tempfile.TemporaryFile() as output, without_github(env) as isolated:
+        try:
+            proc = subprocess.Popen(argv, cwd=ROOT, env=isolated, stdin=subprocess.DEVNULL, stdout=output,
+                                    stderr=subprocess.STDOUT, start_new_session=True)
+        except OSError as exc:
+            return f"probe could not start: {exc}"
+        try:
+            code = proc.wait(timeout=WORKER_PROBE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _stop(proc)
+            return f"probe timed out after {WORKER_PROBE_TIMEOUT}s"
+        if code == 0:
+            return None
+        output.seek(max(0, output.seek(0, os.SEEK_END) - 64 * 1024))
+        detail = output.read().decode(errors="replace").strip().splitlines()[-1:]
+    return f"probe exited {code}" + "".join(f": {stderr_tail(line)[-200:]}" for line in detail)
+
+
+def worker_health_pass() -> None:
+    """Health-check every configured worker before the pass; a failing profile is not launched
+    this pass (#662). The host wrapper and the profile's executable must each resolve on the
+    worker's PATH, then the profile's `probe`, the only check that proves a login, decides.
+    PATH alone never clears a failure seen at launch: that stands until a probe passes or a
+    launch works (`dispatch --ticket` skips this pass)."""
+    for profile in cfg.workers:
+        env = {**os.environ, **cfg.worker_environment(profile, FACTORY / ".factory-prompt.md", ROOT)}
+        probe = cfg.worker_probe.get(profile)
+        last = last_worker_health(profile)
+        if missing := worker_missing(cfg.worker_spec(profile, FACTORY / ".factory-prompt.md", ROOT), env):
+            reason, check = f"executable `{missing}` not found on the worker's PATH", "executable"
+        elif probe:
+            reason, check = _probe(config.expand([*cfg.worker_wrap, *probe], root=str(ROOT), repo=REPO,
+                                                 home=str(Path.home())), env), "probe"
+        elif last and not last["available"] and last.get("source") == "launch":
+            reason, check = last["reason"], "launch"
+        else:
+            reason, check = None, "executable"
+        if probe and reason is None:
+            VERIFIED_WORKERS.add(profile)
+        set_worker_health(profile, reason, source="probe", check=check)
+
+
+def _launch_failure(wt: Path, logfile: Path, offset: int, launch_head: str, code: int) -> tuple[str, str] | None:
+    """Why a launch that left no commit and a clean worktree never reached the work, else None:
+    `auth_failed` with its output line, or `executable_missing` for POSIX exit 127, which a
+    wrapper or launcher script returns when the worker it runs was not found."""
+    if run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip() != launch_head or run([
+        "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+        ":(exclude).factory-prompt.md", ":(exclude).factory",
+    ], cwd=wt).stdout.strip():
+        return None
+    with logfile.open("rb") as stream:
+        stream.seek(max(offset, logfile.stat().st_size - 64 * 1024))
+        text = stream.read().decode(errors="replace")
+    match = WORKER_AUTH_FAILURE.search(text)
+    if match is None:
+        tail = text.strip().splitlines()[-1:]
+        return ("executable_missing", stderr_tail(tail[0] if tail else "exit 127")[-200:]) if code == 127 else None
+    line = text[text.rfind("\n", 0, match.start()) + 1:].split("\n", 1)[0]
+    return "auth_failed", stderr_tail(line.strip())[-200:]
+
+
 def ensure_worktree(n: int) -> Path:
     wt = FACTORY / f"wt-{n}"
     if wt.is_dir():
@@ -1871,6 +2006,33 @@ def ensure_worktree(n: int) -> Path:
     if run(["git", "rev-parse", "--verify", start], cwd=ROOT, check=False).returncode != 0:
         start = f"origin/{cfg.main}"
     run(["git", "worktree", "add", str(wt), "-b", branch, start], cwd=ROOT)
+    return wt
+
+
+def restart_worktree(n: int, number: int) -> Path:
+    """A fresh generation's worktree: `agent/<n>` recut from main. The superseded local and
+    remote branch heads stay reachable under create-only, sha-named `refs/factory-evidence/`
+    refs, so replaying an interrupted restart never replaces what it preserved; uncommitted
+    worktree changes are discarded, as the owner's fresh intent asked. The journaled
+    `generation-restart` receipt names the preserved remote head, the only one a fresh
+    publication may replace (`agent_lease`)."""
+    wt, branch = FACTORY / f"wt-{n}", f"agent/{n}"
+    with _REMOTE_REFS:
+        run(["git", "fetch", "origin"], cwd=ROOT)
+    preserved = {}
+    for name, ref in (("local", f"refs/heads/{branch}"), ("remote", f"refs/remotes/origin/{branch}")):
+        head = run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=ROOT, check=False).stdout.strip()
+        preserved[name] = head
+        evidence = f"refs/factory-evidence/{n}-generation-{number}-{name}-{head[:12]}"
+        if head and run(["git", "rev-parse", "--verify", "--quiet", evidence], cwd=ROOT, check=False).returncode:
+            run(["git", "update-ref", evidence, head, ""], cwd=ROOT)
+    if wt.is_dir():
+        run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT)
+    run(["git", "worktree", "add", "-B", branch, str(wt), f"origin/{cfg.main}"], cwd=ROOT)
+    base = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    record("generation-restart", ticket=n, generation=number, local=preserved["local"] or None,
+           remote=preserved["remote"], base=base)
+    log(f"#{n}: generation {number} starts fresh from origin/{cfg.main}")
     return wt
 
 
@@ -2095,7 +2257,7 @@ def escalation_packet(
     )
     round_number = 1 + sum(
         event.get("event") == "escalate" and event.get("reason") != "manager_failed"
-        for event in ticket_events
+        for event in generation.current(events, n).rows
     )
     return packet, round_number
 
@@ -2163,6 +2325,7 @@ def escalate(
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
         **evidence,
     )
+    _ESCALATED.add(n)
     claims = host_claims(n) if cfg.host_name else []
     elected = elected_host_claim(claims)
     unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
@@ -2789,10 +2952,17 @@ def _remote_agent_head(wt: Path, n: int, check: bool = True) -> str:
     return "(unavailable)" if found.returncode else (found.stdout.split() or [""])[0]
 
 
-def agent_lease(wt: Path, n: int) -> str:
-    """Read the remote `agent/<n>` sha to lease before the worker runs, or "" when absent."""
+def agent_lease(wt: Path, n: int, *, preserved: str | None = None) -> str:
+    """Read the remote `agent/<n>` sha to lease before the worker runs, or "" when absent.
+
+    `preserved`: the remote head a fresh generation's restart preserved as evidence before it
+    recut the branch from main by owner decision. While the remote still holds exactly that
+    sha, it counts as this worktree's starting history and the push may replace it; any other
+    remote head (a later push, or this generation's own publication) is leased as usual."""
     remote = _remote_agent_head(wt, n)
-    _AGENT_LEASE_BASES[wt, n] = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    _AGENT_LEASE_BASES[wt, n] = remote if remote and remote == preserved else run(
+        ["git", "rev-parse", "HEAD"], cwd=wt,
+    ).stdout.strip()
     return remote
 
 
@@ -3528,11 +3698,35 @@ def _refresh_failure_scope(wt: Path, n: int, reports: list[str]) -> tuple[list[s
     return paths, bool(paths) and not related
 
 
+def _generation_rows(n: int) -> list[dict]:
+    return generation.current(lifecycle.read_events(EVENTS), n).rows
+
+
 def _review_rounds_used(n: int) -> int:
-    return sum(
-        row.get("ticket") == n and row.get("event") in {"review-rework", "risk-requeue"}
-        for row in lifecycle.read_events(EVENTS)
-    )
+    return sum(row.get("event") in {"review-rework", "risk-requeue"} for row in _generation_rows(n))
+
+
+def observe_owner_requeue(n: int, issue: dict) -> None:
+    """Open a generation when a human released `n`'s latest escalation.
+
+    Called wherever a stage first reads the live ticket, before it reads a round budget, so
+    the land, manager and ticket stages all see the fresh budget in the pass that observes it.
+    A ticket still assigned may be a factory escalation whose relabel failed: not a release.
+    """
+    labels = {label["name"] for label in issue.get("labels", [])}
+    # A read right after this pass's own escalation relabel may still show the old labels.
+    if LABEL_AGENT not in labels or LABEL_HUMAN in labels or n in _ESCALATED:
+        return
+    opened = generation.owner_requeue(lifecycle.read_events(EVENTS), n)
+    if opened is None:
+        return
+    if "assignees" not in issue:
+        issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "assignees"])
+    if issue.get("assignees") and not cfg.host_name:
+        return
+    record("generation", ticket=n, cause="owner_requeue", **opened)
+    log(f"#{n}: owner requeue opened generation {opened['generation']} ({opened['intent']}); "
+        "round budgets restart")
 
 
 def _record_rework(n: int, head: str, findings: str, deferred: bool) -> None:
@@ -3699,8 +3893,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         # path without authority, rounds used up, or a ticket that is no longer open.
         # A manager-FIX-approved PR may still have a ready-for-human issue; restore agent flow.
         issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels"])
+        observe_owner_requeue(n, issue)
         labels = {label["name"] for label in issue.get("labels", [])}
-        rounds = sum(e.get("event") == "conflict-requeue" and e.get("ticket") == n for e in lifecycle.read_events(EVENTS))
+        rounds = sum(e.get("event") == "conflict-requeue" for e in _generation_rows(n))
         protected = [] if LABEL_PROTECTED_OVERRIDE in labels else [
             path for path in conflicts if any(fnmatch.fnmatchcase(path, glob) for glob in cfg.protected_paths)
         ]
@@ -3740,6 +3935,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     ]
     before_status = run(status_cmd, cwd=wt).stdout.strip()
     issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,body,comments"])
+    observe_owner_requeue(n, issue)
     labels = {label["name"] for label in issue.get("labels", [])}
     handoff = wt / ".factory" / f"handoff-{n}.md"
     flags = gate_flags(
@@ -3812,10 +4008,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             )
             return False
         if not ok:
-            rounds = sum(
-                event.get("event") == "gate-requeue" and event.get("ticket") == n
-                for event in lifecycle.read_events(EVENTS)
-            )
+            rounds = sum(event.get("event") == "gate-requeue" for event in _generation_rows(n))
             issue_state = gh_json(
                 ["issue", "view", str(n), "--repo", REPO, "--json", "state"]
             ).get("state")
@@ -3896,10 +4089,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             return False
         state = _PENDING_RISK.get(n) or {}
         if state.get("head") == head and state.get("disagreement"):
-            rounds = sum(
-                event.get("event") == "risk-requeue" and event.get("ticket") == n
-                for event in lifecycle.read_events(EVENTS)
-            )
+            rounds = sum(event.get("event") == "risk-requeue" for event in _generation_rows(n))
             record(
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,
@@ -4366,34 +4556,51 @@ def worker_round(
     started = time.monotonic()
     wall = time.time()
     if selected_worker is None:
-        worker = cfg.worker_key(labels)
+        profile = cfg.worker_key(labels)
     else:
-        worker = record_worker_selection(n, labels, selected_worker=selected_worker)
-    worker_version = cfg.worker_version.get(worker)
-    worker_model = cfg.worker_model(worker)
-    command = cfg.worker_command(worker, promptfile, wt)
-    if cfg.workers[worker] == config.DEFAULT_WORKER:
-        command[len(cfg.worker_wrap) + 2:len(cfg.worker_wrap) + 2] = [
-            "--model", config.DEFAULT_WORKER_MODEL,
-        ]
-    identity = {
-        "worker": worker, "worker_version": worker_version,
-        "worker_model": worker_model,
-    }
-    transcript_mode = cfg.worker_transcript.get(worker)
-    argv, session_dir = _with_transcript(
-        command, n, transcript_mode, len(cfg.worker_wrap) if transcript_mode else None,
-    )
-    run_options = {}
-    if environment := cfg.worker_environment(worker, promptfile, wt):
-        run_options["env_overrides"] = environment
-    if worker_version:
-        run_options.update(worker=worker, worker_version=worker_version)
+        profile = record_worker_selection(n, labels, selected_worker=selected_worker)
     handoff_path = wt / ".factory" / f"handoff-{n}.md"
     handoff_start = handoff_path.stat().st_mtime_ns if handoff_path.exists() else None
-    code, fired = run_worker(
-        argv, wt, logfile, wt / ".factory" / f"handoff-{n}.md", deadline, **run_options,
-    )
+    while True:
+        worker = fallback_worker(profile)
+        if worker is None:
+            raise WorkerUnavailable(f"worker `{profile}` is unavailable: {UNAVAILABLE_WORKERS[profile]}")
+        spec = cfg.worker_spec(worker, promptfile, wt)
+        identity = {
+            "worker": worker, "worker_version": spec.version, "worker_model": spec.model,
+            **({"fallback_from": profile} if worker != profile else {}),
+        }
+        argv, session_dir = _with_transcript(
+            spec.argv, n, spec.transcript, spec.wrap if spec.transcript else None,
+        )
+        run_options = {}
+        if spec.env:
+            run_options["env_overrides"] = spec.env
+        if spec.version:
+            run_options.update(worker=worker, worker_version=spec.version)
+        launch_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        offset = logfile.stat().st_size if logfile.exists() else 0
+        try:
+            code, fired = run_worker(argv, wt, logfile, handoff_path, deadline, **run_options)
+        except FileNotFoundError as exc:
+            # The executable vanished after the pre-pass check (#260): a host defect, so the same
+            # attempt falls back when it can; with no fallback the claim goes back as before.
+            record("worker-infra", ticket=n, attempt=attempt, log=str(logfile), reason="executable_missing",
+                   detail=stderr_tail(str(exc))[-200:], **identity)
+            set_worker_health(worker, f"executable_missing: {exc}", source="launch")
+            if fallback_worker(profile) is None:
+                raise
+            continue
+        failure = None if code == 0 or fired else _launch_failure(wt, logfile, offset, launch_head, code)
+        if failure is None:
+            break
+        cause, detail = failure
+        # Not an attempt: no strike, no gate, not counted toward max_attempts.
+        record("worker-infra", ticket=n, attempt=attempt, worker_exit=code, log=str(logfile),
+               reason=cause, detail=detail, **identity)
+        set_worker_health(worker, f"{cause}: {detail}", source="launch")
+    set_worker_health(worker, None, source="launch")
+    worker_version = spec.version
     # Decide before commit_leftovers: dispatcher commits cannot turn unfinished work into done.
     finished = (
         handoff_path.exists()
@@ -4593,7 +4800,6 @@ def process_ticket(
     labels = {label["name"] for label in issue.get("labels", [])}
     wt = FACTORY / f"wt-{n}"
     worker_key = cfg.worker_key(labels)
-    worker = cfg.worker_command(worker_key, wt / ".factory-prompt.md", wt)[0]
     lock_path = FACTORY / "locks" / f"{n}.lock"
     if lock_held(lock_path):
         log(f"#{n}: skipped (in flight, lock held on {lock_path})")
@@ -4614,9 +4820,11 @@ def process_ticket(
         except binding.BindingError as exc:
             log(f"#{n}: refused ({exc})")
             return
+        spec = cfg.worker_spec(worker_key, wt / ".factory-prompt.md", wt)
         log(
             f"#{n}: would claim (assign @me), create worktree {wt} on branch agent/{n}, "
-            f"run {worker} worker, gate, push, open PR, review"
+            f"run worker `{spec.profile}` ({spec.source}; model {spec.model or 'implicit'}: "
+            f"{' '.join(spec.argv)}), gate, push, open PR, review"
         )
         return
 
@@ -4674,12 +4882,22 @@ def process_ticket(
                 execution.reason = "state_changed"
                 return
             labels = {label["name"] for label in fresh["labels"]}
-            if not forced and shutil.which(worker) is None:
+            observe_owner_requeue(n, fresh)
+            profile = cfg.worker_key(labels)
+            launch = fallback_worker(profile)
+            if not forced and launch is None:
+                log(f"#{n}: skipped (worker `{profile}` unavailable: {UNAVAILABLE_WORKERS[profile]}); retry next pass")
+                execution.wait("worker_unavailable", mode="retry_next_pass", worker=profile)
+                return
+            launch_spec = None if launch is None else cfg.worker_spec(launch, wt / ".factory-prompt.md", wt)
+            # The PATH the launch itself gets: the host's, overridden by the profile's `env`.
+            missing = launch_spec and worker_missing(launch_spec, {**os.environ, **launch_spec.env})
+            if not forced and missing:
                 # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
                 # ponytail: PATH probe only; a binary swapped out between here and Popen still
                 # fails the launch. Not claimed, so the next pass retries once it is back.
-                log(f"#{n}: skipped (worker executable not on PATH: {worker}); retry next pass")
-                execution.wait("worker_unavailable", mode="retry_next_pass", executable=worker)
+                log(f"#{n}: skipped (worker executable not on PATH: {missing}); retry next pass")
+                execution.wait("worker_unavailable", mode="retry_next_pass", executable=missing)
                 return
             if forced and admission_id is None:
                 admission_id = record_direct_admission({**fresh, "number": n})
@@ -4722,24 +4940,33 @@ def process_ticket(
 
             tier, why = schedule.priority(n, fresh.get("body"), REPO)
 
-            wt = ensure_worktree(n)
+            ticket_generation = generation.current(lifecycle.read_events(EVENTS), n)
+            receipt = ticket_generation.restart
+            # A claim journaled with no receipt predates receipts: that generation already restarted.
+            if ticket_generation.intent == "fresh" and receipt is None and not ticket_generation.claimed:
+                wt = restart_worktree(n, ticket_generation.number)
+                receipt = generation.current(lifecycle.read_events(EVENTS), n).restart
+            else:
+                wt = ensure_worktree(n)
             replay_base = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             record(
                 "claimed", ticket=n, title=title, labels=sorted(labels),
                 worker=worker_key, worker_version=cfg.worker_version.get(worker_key),
                 priority=tier, priority_source=why, experiment=schedule.is_experiment(fresh),
-                base=replay_base,
+                base=replay_base, generation=ticket_generation.number,
                 issue={key: fresh.get(key) for key in ("title", "body", "comments")},
             )
             if admitted := issue.get("_factory_admitted"):
                 admitted.set()
-            lease = agent_lease(wt, n)
+            lease = agent_lease(wt, n, preserved=receipt["remote"]) if receipt else agent_lease(wt, n)
+            # Until the fresh generation first publishes, the remote still holds the preserved head.
+            restart = receipt is not None and lease == receipt["remote"]
             LOGS.mkdir(parents=True, exist_ok=True)
 
             # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back. A sync
             # candidate the dispatcher's own gate passed at this exact head needs no worker,
             # unless a refresh conflict or repeated refresh gate failure requeued it.
-            local_context = refresh_requeue_context(n)
+            local_context = "" if restart else refresh_requeue_context(n)
             resolve = shared_context or local_context
             prior_risk_disagreement_head = (
                 pending_risk_requeue_head(n) if resolve == local_context else None
@@ -4925,6 +5152,12 @@ def process_ticket(
                          code="approval_drift")
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
+        except WorkerUnavailable as exc:
+            # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.
+            execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
+            log(f"#{n}: {exc}; unclaimed, retry once the worker is healthy")
+            unclaim(n)
+            return False
         except FileNotFoundError as exc:
             # Host defect (worker executable not on PATH, #260), not a ticket defect: give the
             # claim back so the frontier retries once the host is fixed; the pass goes on.
@@ -5131,6 +5364,8 @@ def main(argv: list[str]) -> int:
             maintenance = results.prune(cfg)
             if maintenance["status"] != "complete":
                 log(f"Accepted-result expiry incomplete ({maintenance.get('reason')}); archive left for inspection")
+            if not args.ticket:  # `--ticket` is an operator's explicit ask: it launches and fails loudly
+                worker_health_pass()
         if args.ticket and not yield_for_update:
             if not issue_is_open(args.ticket):
                 log(f"#{args.ticket}: not open, nothing to do")

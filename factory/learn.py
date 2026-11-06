@@ -481,7 +481,7 @@ def replay_ticket(
             promptfile.write_text(_replay_prompt(cfg, case, wt, extra))
             wall = time.time()
             argv, session_dir = dispatch._with_transcript(
-                cfg.worker(set(case.labels), promptfile, wt),
+                cfg.worker_spec(worker, promptfile, wt).argv,
                 f"learn-{case.ticket}-{state.name}-{candidate.kind if candidate else 'baseline'}-{attempt}",
                 transcript_mode,
                 worker_at,
@@ -564,7 +564,7 @@ def replay_ticket(
             logfile = state / f"worker-review-{bounce + 1}.log"
             wall = time.time()
             argv, session_dir = dispatch._with_transcript(
-                cfg.worker(set(case.labels), promptfile, wt),
+                cfg.worker_spec(worker, promptfile, wt).argv,
                 f"learn-{case.ticket}-{state.name}-{candidate.kind if candidate else 'baseline'}-review-{bounce + 1}",
                 transcript_mode,
                 worker_at,
