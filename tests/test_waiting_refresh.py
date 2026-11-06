@@ -287,6 +287,30 @@ class WaitingRefreshTest(unittest.TestCase):
         gate.assert_not_called()
         self.assertEqual(self.github.head(), self.old_head)
 
+    def test_cross_repository_agent_branch_is_not_refreshed(self) -> None:
+        self.move_main()
+        real_json = self.github.gh_json
+
+        def github_json(args):
+            result = real_json(args)
+            if args[:2] in (["pr", "list"], ["pr", "view"]):
+                rows = result if isinstance(result, list) else [result]
+                if "isCrossRepository" in args[args.index("--json") + 1].split(","):
+                    for row in rows:
+                        row["isCrossRepository"] = True
+            return result
+
+        with self.patched(), mock.patch.object(dispatch, "gh_json", side_effect=github_json), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "gate passed")) as gate:
+            dispatch.merge_pass_locked(False)
+
+        self.assertEqual(self.github.head(), self.old_head)
+        gate.assert_not_called()
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+        self.assertEqual(self.events("refreshed"), [])
+        self.assertEqual(self.events("escalate"), [])
+        self.assertEqual(self.events("manage"), [])
+
     def test_active_ticket_lock_prevents_waiting_refresh_race(self) -> None:
         self.move_main()
         dispatch.ticket_lock(9).parent.mkdir(parents=True, exist_ok=True)

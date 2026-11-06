@@ -421,6 +421,20 @@ class MainTestRequeueTest(unittest.TestCase):
         [requeue] = self.events("test-requeue")
         self.assertEqual((requeue["test"], requeue["main"]), (test, changed))
 
+    def test_pytest_failure_message_ending_in_bracket_preserves_recovery_id(self):
+        test = "tests/test_flaky.py::FlakyTest::test_status[hello world]"
+        report = REPORT.replace(
+            f"FAIL: test_status ({TEST})",
+            f"FAILED {test} - AssertionError: unexpected [value]",
+        ).replace("FAILED (failures=1)", "1 failed in 0.01s")
+        self.park(report)
+        self.assertEqual(self.events("escalate")[-1]["parked_test"]["test"], test)
+        changed = self.advance()
+        self.dispatch_pass()
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+        [requeue] = self.events("test-requeue")
+        self.assertEqual((requeue["test"], requeue["main"]), (test, changed))
+
 
 if __name__ == "__main__":
     unittest.main()
