@@ -1810,6 +1810,9 @@ branches, or merge state.
   `runner-infra` with reason `runner_storage_low`, path, resource, available, and
   minimum; an unreadable filesystem records `runner_storage_unavailable`.
   Neither claims the ticket nor records an attempt or escalation; retry next pass.
+  Watch treats both refusal reasons as host conditions: transient refusals are
+  ignored; an uninterrupted streak spanning `[watch].host_failure_minutes`
+  files with the `host` label rather than as a Factory lifecycle defect.
   Reviewer, gate, and isolated GitHub-config roots hold directory flocks for their
   owner's lifetime. After normal exit or a crash, only confirmed live process use
   (cwd, open files, or inherited scratch environment) retains an unlocked root.
