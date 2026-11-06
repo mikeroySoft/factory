@@ -1984,6 +1984,18 @@ Evidence kinds retain the common keys above and add these kind-specific keys:
 | Ordinary `exit` with unreaped children | `evidence`: object containing `children` (process identity/state objects as below). Default `completed` becomes `unknown`; a supported exception classification is retained. |
 | Reconciled `exit` | `reconciled`: true; `observer_process`: process identity object; `evidence`: the observation object described below. |
 
+Gate children record one `child_start` and one `child_exit`, not progress
+heartbeats; a successful child adds only `handoff` and `result` besides those
+transitions, regardless of runtime or output volume. Each internal Git
+subprocess has its own transitions, so total gate rows also depend on the
+number of commands, not just the number of configured checks.
+Configured gate checks and standalone mutation baseline/mutant test commands
+discard inherited `FACTORY_LIFECYCLE_CONTEXT`. Selecting a dispatcher
+repository also discards an inherited context whose journal differs from
+that repository's journal: selected unittest discovery can bypass both
+`tests/__init__.py` and `test_factory.py`. Same-root handoffs, including the
+gate's causal link to the dispatcher, remain intact.
+
 ### Outcomes and uncertainty
 
 | `outcome` | Meaning |

@@ -89,6 +89,11 @@ def configure(c: Config) -> None:
     LOGS = FACTORY / "logs"
     SYNC_LOG = FACTORY / "upstream-sync.jsonl"
     EVENTS = FACTORY / "events.jsonl"
+    # A handoff belongs to one repository. Selected test discovery can bypass
+    # the suite bootstrap, so selecting a fixture root must detach its context.
+    inherited = lifecycle._inherited()
+    if inherited and Path(inherited["path"]).resolve() != EVENTS.resolve():
+        os.environ.pop(lifecycle.CONTEXT_ENV, None)
     MAX_ACTIVE = cfg.max_active
     MAX_ATTEMPTS = cfg.max_attempts
     _PENDING_REVIEWS.clear()
