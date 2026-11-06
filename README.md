@@ -1056,7 +1056,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Exhaustion stops worker/review retries and escalates as `infra_failed`, naming
    a host problem, including when mutation is the only failing High-risk PR check.
    Each classified failure is journaled as `failure`; escalation packets and
-   GitHub comments list its class and the retry budget charged.
+   GitHub comments list its class and the retry budget charged for the current
+   ticket generation. An owner requeue excludes earlier generations' failures;
+   tickets without a generation row retain their complete retry history.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to

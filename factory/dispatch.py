@@ -2263,8 +2263,8 @@ def gate_infra_exhausted(
 
 def retry_summary(n: int) -> str:
     failures = [
-        event for event in lifecycle.read_events(EVENTS)
-        if event.get("ticket") == n and event.get("event") == "failure"
+        event for event in generation.current(lifecycle.read_events(EVENTS), n).rows
+        if event.get("event") == "failure"
     ]
     if not failures:
         return ""
