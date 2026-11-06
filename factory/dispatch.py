@@ -3825,7 +3825,7 @@ def _required_ci(pr: int, expected: str | None = None, *, allow_behind: bool = F
                 legacy = [status for status in statuses
                           if status["context"] == context and status["sha"] == head]
                 # A legacy context cannot establish the identity of a pinned GitHub App.
-                if legacy:
+                if not app and legacy:
                     passed = (passed or not matches) and max(
                         legacy, key=lambda status: status["id"],
                     )["state"] == "success"
@@ -3861,6 +3861,10 @@ def pr_checks(pr: int) -> list[dict]:
             return []
     except (ValueError, TypeError):
         return []
+    if not any(row["bucket"] == "pass" for row in rows) or any(
+        row["bucket"] not in ("pass", "skipping") for row in rows
+    ):
+        return rows
     return rows + _required_ci(pr, allow_behind=True)
 
 

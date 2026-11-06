@@ -46,6 +46,11 @@ elif a[:2] == ["pr", "checks"]:
 elif a[:2] == ["pr", "merge"]:
     s["merged"] = a
     p.write_text(json.dumps(s))
+elif a[0] == "api" and "/pulls/" in a[1]:
+    head = subprocess.run(["git", "-C", ".factory/wt-7", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    print(json.dumps({"head": {"sha": head}, "base": {"ref": "main"}, "mergeable_state": "clean"}))
+elif a[0] == "api" and "/rules/branches/" in a[1]:
+    print("[[]]")
 elif a[0] == "api" and "/compare/" in a[1]:
     print(json.dumps({"behind_by": 0}))
 elif a[:2] not in (["issue", "edit"], ["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):
