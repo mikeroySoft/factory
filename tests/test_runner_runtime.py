@@ -154,6 +154,41 @@ class RunnerRuntimeTest(unittest.TestCase):
                 self.assertEqual(infra[-1]["resource"], resource)
                 self.assertFalse(any(row.get("event") in {"claimed", "attempt", "escalate"} for row in rows))
 
+    def test_storage_refusals_use_host_streaks_instead_of_engine_defects(self):
+        from datetime import UTC, datetime, timedelta
+
+        from factory import watch
+
+        cfg = config.Config(self.base, "example/project")
+        issue = {"number": 610, "title": "runner", "labels": []}
+        low = SimpleNamespace(f_bavail=0, f_frsize=4096, f_favail=10**6, f_files=10**7)
+        for reason, observation in (
+            ("runner_storage_low", {"return_value": low}),
+            ("runner_storage_unavailable", {"side_effect": OSError("filesystem unavailable")}),
+        ):
+            with self.subTest(reason=reason), \
+                    mock.patch.object(os, "statvfs", **observation), \
+                    mock.patch.object(watch, "failed_units", return_value=[]), \
+                    mock.patch.object(watch, "runtime_errors", return_value=[]):
+                events = []
+                now = datetime.now(UTC)
+                for minutes in (0, 30, 60):
+                    at = (now + timedelta(minutes=minutes)).isoformat()
+                    with mock.patch.object(lifecycle, "_now", return_value=at):
+                        self.assertIs(dispatch.process_ticket(issue, 1, False, forced=True), False)
+                    rows = lifecycle.read_events(dispatch.EVENTS)
+                    events.append(next(row for row in reversed(rows)
+                                       if row.get("event") == "lifecycle" and row.get("kind") == "exit"))
+                    self.assertEqual(events[-1]["reason"], reason)
+                    if minutes < cfg.watch_host_failure_minutes:
+                        self.assertEqual(watch.signals(cfg, events), [])
+                signals = watch.signals(cfg, events)
+                self.assertEqual([(signal["kind"], signal["key"]) for signal in signals],
+                                 [("host", reason)])
+                self.assertEqual(signals[0]["rows"], events)
+                events.append(events[-1] | {"outcome": "completed", "reason": None})
+                self.assertEqual(watch.signals(cfg, events), [])
+
     def tearDown(self):
         # A red crash-recovery assertion must not itself leak a temp root.
         for path in self.base.glob("factory-*"):
