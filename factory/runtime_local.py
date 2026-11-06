@@ -1,9 +1,9 @@
 """Bounded, read-only local inputs for the runtime JSON projection.
 
-At most five local commands (two git, three systemctl), each limited to 0.5s
-and 64 KiB of stdout. Configuration reads are limited to 256 KiB per file;
+At most five local commands (git and platform service/lock queries), each limited to
+0.5s and 64 KiB of stdout. Configuration reads are limited to 256 KiB per file;
 admission observation examines at most 1024 directory entries and 256 KiB of
-kernel locks. No probes acquire locks, create paths, or read logs.
+kernel locks on Linux, or lsof lock fields on macOS.
 """
 from __future__ import annotations
 
@@ -13,13 +13,14 @@ import re
 import selectors
 import stat
 import subprocess
+import sys
 import time
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
-from . import config
+from . import config, launchd
 from .config import Config, ConfigError
 
 COMMAND_TIMEOUT = 0.5
@@ -63,6 +64,15 @@ def _command(operation: str, *, root: Path | None = None, unit: str = "") -> str
         argv = ["git", "--no-optional-locks", "rev-parse", "--path-format=absolute", "--git-common-dir"]
     elif operation == "slug":
         argv = ["git", "--no-optional-locks", "remote", "get-url", "origin"]
+    elif operation == "launchd":
+        try:
+            argv = ["launchctl", "print", launchd.target(unit)]
+        except ValueError:
+            raise _Unavailable("invalid_unit") from None
+    elif operation == "locks":
+        if root is None or not root.is_absolute() or root.name != "locks":
+            raise _Unavailable("invalid_locks")
+        argv = ["lsof", "-nP", "-F0fln", "+d", str(root)]
     elif operation in {"service", "timer", "schedule"}:
         if not re.fullmatch(r"factory-[A-Za-z0-9_.-]+", unit):
             raise _Unavailable("invalid_unit")
@@ -86,24 +96,32 @@ def _command(operation: str, *, root: Path | None = None, unit: str = "") -> str
     proc = None
     try:
         proc = subprocess.Popen(argv, cwd=root, env=env, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        data = bytearray()
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE if operation == "locks" else subprocess.DEVNULL)
+        data, diagnostics = bytearray(), bytearray()
         with selectors.DefaultSelector() as selector:
-            selector.register(proc.stdout, selectors.EVENT_READ)
-            while True:
+            selector.register(proc.stdout, selectors.EVENT_READ, data)
+            if proc.stderr is not None:
+                selector.register(proc.stderr, selectors.EVENT_READ, diagnostics)
+            while selector.get_map():
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or not selector.select(remaining):
+                events = selector.select(max(0, remaining))
+                if remaining <= 0 or not events:
                     raise _Unavailable("timeout")
-                chunk = os.read(proc.stdout.fileno(), min(8192, COMMAND_BYTE_LIMIT - len(data)))
-                if not chunk:
-                    break
-                data.extend(chunk)
-                if len(data) == COMMAND_BYTE_LIMIT:
-                    raise _Unavailable("output_limit")
+                for key, _ in events:
+                    size = len(data) + len(diagnostics)
+                    chunk = os.read(key.fd, min(8192, COMMAND_BYTE_LIMIT - size))
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    key.data.extend(chunk)
+                    if size + len(chunk) == COMMAND_BYTE_LIMIT:
+                        raise _Unavailable("output_limit")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise _Unavailable("timeout")
-        if proc.wait(timeout=remaining):
+        status = proc.wait(timeout=remaining)
+        if diagnostics or (status and not (operation == "locks" and status == 1)):
             raise _Unavailable("command_failed")
         return data.decode("utf-8")
     except subprocess.TimeoutExpired:
@@ -120,6 +138,8 @@ def _command(operation: str, *, root: Path | None = None, unit: str = "") -> str
                 pass  # The observation already failed; cleanup must not expose raw diagnostics.
             if proc.stdout is not None:
                 proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
 
 
 def _toml(path: Path) -> dict:
@@ -172,6 +192,7 @@ def load(start: Path | None = None) -> Config:
 def _capacity(cfg: Config) -> int:
     """Count actual numeric ticket FLOCKs, never lifecycle stage counts."""
     inodes = set()
+    paths = {}
     try:
         with os.scandir(cfg.factory / "locks") as entries:
             for index, entry in enumerate(entries):
@@ -183,6 +204,8 @@ def _capacity(cfg: Config) -> int:
                 if not stat.S_ISREG(info.st_mode):
                     raise _Unavailable("unsupported_file")
                 inodes.add((os.major(info.st_dev), os.minor(info.st_dev), info.st_ino))
+                if sys.platform == "darwin":
+                    paths[str(Path(entry.path).resolve())] = info.st_ino
     except FileNotFoundError:
         # A disappearing entry is not evidence that every claim disappeared.
         if inodes:
@@ -198,6 +221,27 @@ def _capacity(cfg: Config) -> int:
         raise _Unavailable("unreadable") from None
     if not inodes:
         return 0
+    if sys.platform == "darwin":
+        text = _command("locks", root=cfg.factory / "locks")
+        held = set()
+        locked = False
+        for field in text.split("\0"):
+            field = field.lstrip("\n")
+            if field.startswith("f"):
+                locked = False
+            elif field.startswith("l"):
+                status = field[1:]
+                if status not in {" ", "R", "W", "r", "w", "u"}:
+                    raise _Unavailable("invalid_kernel_locks")
+                locked = status in {"R", "W"}
+                if status in {"r", "w", "u"}:
+                    raise _Unavailable("invalid_kernel_locks")
+            elif field.startswith("n") and field[1:] in paths:
+                if not locked:
+                    # Darwin lsof can expose the descriptor without exposing its flock.
+                    raise _Unavailable("lock_state_unavailable")
+                held.add(paths[field[1:]])
+        return len(held)
 
     held = set()
     try:
@@ -247,25 +291,44 @@ def dispatcher(cfg: Config, executions: list[dict], history: dict) -> tuple[dict
             error("systemctl", kind, str(exc))
             return None
 
-    service_active, timer_active = active("service"), active("timer")
+    extra = {}
     following = None
-    try:
-        rows = json.loads(_command("schedule", unit=cfg.unit))
-        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-            raise ValueError
-        matches = [row for row in rows if row.get("unit") == f"{cfg.unit}.timer"]
-        if len(matches) > 1 or (not matches and timer_active is True):
-            raise ValueError
-        if matches:
-            value = matches[0].get("next")
-            if value is not None and (type(value) is not int or value < 0):
+    if sys.platform == "darwin":
+        service_active = timer_active = None
+        extra = {"next_at_code": "not_applicable", "last_exit_status": None, "run_interval": None}
+        try:
+            props = launchd.parse(_command("launchd", unit=cfg.unit))
+            interval = launchd.number(props, "run interval")
+            extra.update(last_exit_status=launchd.number(props, "last exit code"), run_interval=interval)
+            timer_active = interval is not None and interval > 0
+            state = props["state"]
+            if state == "running":
+                service_active = True
+            elif state in {"not running", "exited"}:
+                service_active = False
+            else:
+                raise _Unavailable("transitioning" if state in {"spawn scheduled", "waiting"} else "invalid_state")
+        except (_Unavailable, ValueError) as exc:
+            error("launchctl", "service", str(exc))
+    else:
+        service_active, timer_active = active("service"), active("timer")
+        try:
+            rows = json.loads(_command("schedule", unit=cfg.unit))
+            if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
                 raise ValueError
-            if value not in (None, 0, 2**64 - 1):
-                following = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=value)
-    except _Unavailable as exc:
-        error("systemctl", "schedule", str(exc))
-    except (ValueError, TypeError, OverflowError, OSError, RecursionError):
-        error("systemctl", "schedule", "invalid_schedule")
+            matches = [row for row in rows if row.get("unit") == f"{cfg.unit}.timer"]
+            if len(matches) > 1 or (not matches and timer_active is True):
+                raise ValueError
+            if matches:
+                value = matches[0].get("next")
+                if value is not None and (type(value) is not int or value < 0):
+                    raise ValueError
+                if value not in (None, 0, 2**64 - 1):
+                    following = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=value)
+        except _Unavailable as exc:
+            error("systemctl", "schedule", str(exc))
+        except (ValueError, TypeError, OverflowError, OSError, RecursionError):
+            error("systemctl", "schedule", "invalid_schedule")
 
     active_count = None
     try:
@@ -284,6 +347,7 @@ def dispatcher(cfg: Config, executions: list[dict], history: dict) -> tuple[dict
         observation = "unavailable"
     return {
         "service_active": service_active, "timer_active": timer_active, "next_at": next_at,
+        **extra,
         "paused": None,
         "observed_at": observed.isoformat(timespec="microseconds").replace("+00:00", "Z"),
         "observation": observation,

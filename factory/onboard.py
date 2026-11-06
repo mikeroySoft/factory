@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, config, lifecycle
+from factory import __version__, config, launchd, lifecycle
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -361,7 +361,8 @@ def _listener_conflicts(local: str, target: str) -> bool:
 
 
 def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[bool, str]:
-    unit = f"{cfg.unit}-dashboard.service"
+    darwin = sys.platform == "darwin"
+    unit = f"{cfg.unit}-dashboard" + ("" if darwin else ".service")
     try:
         target = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)[0][4]
         probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -378,39 +379,59 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
                 return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
             collision = True
 
-        # Keep a free probe held through `ss`; the later install-to-service bind
-        # remains inherently racy. A collision that vanishes here fails closed.
+        # Keep a free probe held through the query; install-to-service bind is still racy.
+        tool = "lsof" if darwin else "ss"
+        argv = (["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"] if darwin
+                else ["ss", "-ltnp", f"sport = :{port}"])
         try:
-            listeners = sh(["ss", "-ltnp", f"sport = :{port}"])
+            listeners = sh(argv)
         except OSError as exc:
-            return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {exc})")
-        if listeners.returncode != 0:
+            return False, dashboard_port_error(cfg, host, port, f"could not be checked ({tool}: {exc})")
+        empty = darwin and listeners.returncode == 1 and not listeners.stdout and not listeners.stderr
+        if listeners.returncode != 0 and not empty:
             detail = listeners.stderr.strip() or str(listeners.returncode)
-            return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {detail})")
+            return False, dashboard_port_error(cfg, host, port, f"could not be checked ({tool}: {detail})")
         if not collision:
             return True, f"available on {host}"
 
     holders: list[tuple[str, int]] = []
     unknown = False
     for line in listeners.stdout.splitlines():
-        fields = line.split(maxsplit=5)
-        if not fields or fields[0] == "State" or len(fields) < 4 or not _listener_conflicts(fields[3], target[0]):
-            continue
-        found = re.findall(r'\("([^"]+)",pid=(\d+)', line)
-        unknown |= not found
-        holders.extend((name, int(pid)) for name, pid in found)
+        if darwin:
+            fields = line.split()
+            if not fields or fields[0] == "COMMAND":
+                continue
+            if len(fields) < 9 or not fields[1].isdigit():
+                unknown = True
+                continue
+            if _listener_conflicts(fields[8], target[0]):
+                holders.append((fields[0], int(fields[1])))
+        else:
+            fields = line.split(maxsplit=5)
+            if not fields or fields[0] == "State" or len(fields) < 4 or not _listener_conflicts(fields[3], target[0]):
+                continue
+            found = re.findall(r'\("([^"]+)",pid=(\d+)', line)
+            unknown |= not found
+            holders.extend((name, int(pid)) for name, pid in found)
     if unknown or not holders:
         return False, dashboard_port_error(cfg, host, port, "is in use by an unknown process")
 
     names = ", ".join(dict.fromkeys(name for name, _ in holders))
     try:
-        owner = sh(["systemctl", "--user", "show", "-p", "MainPID", "--value", unit])
+        owner = sh(["launchctl", "print", launchd.target(unit)] if darwin else
+                   ["systemctl", "--user", "show", "-p", "MainPID", "--value", unit])
     except OSError as exc:
         return False, dashboard_port_error(
             cfg, host, port, f"is in use by {names} (could not verify {unit}: {exc})"
         )
     try:
-        main_pid = int(owner.stdout.strip())
+        if darwin:
+            props = launchd.parse(owner.stdout)
+            main_pid = launchd.number(props, "pid") if props["state"] == "running" else None
+            if main_pid is None:
+                main_pid = -1
+        else:
+            main_pid = int(owner.stdout.strip())
     except ValueError:
         main_pid = -1
     if owner.returncode != 0 or main_pid < 0:
