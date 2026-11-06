@@ -115,6 +115,25 @@ class TriageAuthorization(unittest.TestCase):
         self.run_pass()
         self.assertEqual(self.labels, {1: {LABEL_HUMAN}, 2: {LABEL_HUMAN}})
 
+    def test_missing_or_non_numeric_label_actor_never_promotes(self):
+        for actor in ({}, {"id": "101"}, {"id": True}):
+            with self.subTest(actor=actor):
+                self.timeline[2] = [[self.event("labeled", actor)]]
+                self.labels[2] = {LABEL_TRIAGE}
+                self.run_pass()
+                self.assertEqual(self.labels[2], {LABEL_HUMAN})
+
+    def test_watch_decision_cannot_bypass_authorization(self):
+        with patch.object(triage, "watch_filed", return_value=True):
+            self.run_pass()
+        self.assertEqual(self.labels, {1: {LABEL_HUMAN}, 2: {LABEL_AGENT}})
+
+    def test_direct_promotion_without_issue_snapshot_still_checks_author(self):
+        decision = {"decision": LABEL_AGENT, "rationale": "Clear", "brief": "", "question": ""}
+        with patch.object(triage, "gh", side_effect=self.gh):
+            self.assertEqual(triage.apply_decision(1, decision, False), LABEL_HUMAN)
+        self.assertEqual(self.labels[1], {LABEL_HUMAN})
+
     def test_dry_run_does_not_change_labels(self):
         self.run_pass(dry_run=True)
         self.assertEqual(self.labels, {1: {LABEL_TRIAGE}, 2: {LABEL_TRIAGE}})

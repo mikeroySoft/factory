@@ -170,6 +170,10 @@ exclusive = false
 # exclude = ["skills", "skills-lock.json"]   # pathspecs excluded from the scan
 
 [triage]
+# Promotion requires BOTH the issue author and latest needs-triage label actor here.
+# Numeric REST GitHub user IDs (gh api users/LOGIN --jq .id), never logins/node IDs.
+# Empty/missing denies every promotion, including watch-filed issues, to ready-for-human.
+# allowed_user_ids = []
 # Any OpenAI-compatible chat endpoint (Ollama, vLLM, llama.cpp, LM Studio, ...).
 # url = "http://127.0.0.1:11434/v1/chat/completions"
 # model = "qwen3:30b"
