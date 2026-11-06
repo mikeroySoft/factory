@@ -1110,6 +1110,28 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    out (or the head came from a manager FIX) the ticket escalates with `pr checks failed`. Otherwise
    the reviewer runs the diff itself and gets the gate report and issue snapshot
    inline, including every comment (the triage brief, approved scope changes).
+   Native-host acceptance belongs in the worker handoff's `## Native-host proof`
+   section (`Head SHA: <tested commit>`, results and any archive/tree digest), or
+   in a worktree-relative proof file cited by that handoff (for example
+   `Proof: .factory/macos-proof.txt`, containing
+   `Verified source revision: <tested commit>`). A plain `Native-host proof:`
+   label may also introduce file citations on following lines, up to the next
+   Markdown heading. Paths containing spaces must be quoted with backticks,
+   single quotes or double quotes. Before each ticket review,
+   including manager FIX and refresh reviews, the dispatcher posts the evidence
+   to the PR and supplies the same text inline as untrusted worker evidence.
+   Recorded proof SHAs are checked against the gated head; stale/conflicting
+   proof shows both revisions, while absent/unbound/unsafe evidence is explicitly
+   not supplied as current-head proof. Re-run native proof after a refresh.
+   Reads are bounded to 256 KiB, reject symlinks, worktree escapes and NUL-containing
+   filenames (reported as unavailable evidence rather than aborting review), and use
+   existing credential redaction/withholding rules; excerpts are capped at 4,000
+   characters and comments at 20,000, with explicit truncation notices and
+   archive/tree digests retained when present. Successful publication is
+   journaled by head and content hash to avoid duplicate comments on same-head
+   retries or second reviews. Failed publication is stated in the packet and
+   retried at the next review; it introduces no human gate. A reviewer never
+   needs to open the gitignored worktree proof file.
    Every finding cites `path:line`; a required fix also cites an acceptance
    criterion, a documented rule with its source, or a concrete correctness/security
    defect with its trigger and impact — preferences and hypothetical extensibility
@@ -1178,8 +1200,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    disagreement path. Mutation runs related tests first and stops after the first
    failure; a surviving mutant still has to pass every discovered test. The
    deterministic 200-mutant sample uses the gate timeout minus 60 seconds for
-   preparation, baseline, and mutants together. Unstarted and deadline-cut
-   mutants are reported as incomplete, not survivors or blocking failures;
+   preparation, baseline, and mutants together. After baseline completes, each
+   mutant gets `min(max(60, 3 * baseline), remaining / 4)` seconds, with `remaining`
+   fixed at baseline completion. Per-mutant timeouts count as killed, with their
+   timeout count shown separately in summaries and gate reports, unless the cap
+   is below baseline duration: those runs stay incomplete and cannot disprove
+   reviewed equivalents. Workers continue with remaining mutants after such cuts.
+   Unstarted mutants, deadline-shortened runs and timeout results returned at or
+   after the absolute deadline are also incomplete, not survivors or blocking failures;
    a baseline that never passes within the deadline and tool failures still fail,
    except genuine ENOSPC/storage diagnostics (including output retained from a
    timeout): these return exit 75, `INFRA (runner_storage_low)`, not a killed
@@ -1196,6 +1224,48 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    without treating them as failed product or candidate evidence.
    Scratch workers use local shared clones with independent Git metadata and the
    current working files overlaid, so Git-dependent tests run without skips.
+   Baseline and mutant subprocesses disable bytecode writes, preventing cached
+   baseline code from masking same-size mutations in reused scratch copies.
+   This repository's mutation command loads `mutation-equivalents.json` through
+   `--equivalents FILE`. It is a JSON array; each reviewed entry has this shape:
+
+   ```json
+   {
+     "file": "factory/example.py",
+     "line": 1,
+     "operator": "core/NumberReplacer",
+     "original": "unused = 1",
+     "mutated": "unused = 2",
+     "argument": "Only the integer literal 1 reaches this module-level assignment; no code reads unused, so changing it to 2 cannot affect behavior.",
+     "reviewer": "Agreeing reviewer"
+   }
+   ```
+
+   `file` is repository-relative and `line` is the positive start line. Matching
+   uses the exact operator and the complete removed/added source lines from the
+   mutation diff, preserving indentation and joining multiple lines with `\n`;
+   it never uses the report's truncated display text. `argument` and `reviewer`
+   must be nonempty single lines. Each argument must name the input domain and
+   where it is filtered (or why no filtering is needed). The agreeing reviewer
+   must check that assumption against the source at the gated head. A later
+   change widening that domain reopens the mutant, even if its exact mutation
+   identity has not changed. Matching survivors remain in the report as
+   **accepted equivalent**, with the argument and reviewer, but do not block.
+   Invalid entries fail in both blocking and report-only modes. Before selecting
+   mutants, every entry's complete `original` source must still match at its
+   recorded `file:line`; rewritten, moved, deleted or unreadable source makes the
+   entry stale and fails either mode, even with no changed mutable files.
+   An exact reviewed mutant that was tested and killed also fails either mode.
+   When every changed-line candidate was sampled and completed, an entry on any
+   enumerated changed line with no matching surviving identity is also stale
+   (including lines with zero candidates, obsolete operators or replacement text).
+   With matching source, unchanged files or lines, sampled-out mutants, and
+   unstarted or deadline-cut trials provide no stale evidence.
+   The registry is in `[gate].protected_paths`: additions, updates and removals
+   require the normal human-reviewed configuration/protected-override path, not
+   an ordinary worker diff. The registry ships empty (`[]`); #541 adds its own
+   reviewed entries pinned to its gated head. No survivor is pre-approved by this
+   mechanism.
    The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
    profiles must also name a model. `factory doctor` warns when any of the
    worker, primary-reviewer, or second-reviewer models is missing or not
