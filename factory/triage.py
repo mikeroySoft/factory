@@ -252,7 +252,10 @@ def watch_filed(issue: dict) -> bool:
                                if row.get("event") == "watch"}:
         return True
     author = (issue.get("author") or {}).get("login") or ""
-    return bool(author) and author.casefold() == login().casefold()
+    try:
+        return bool(author) and author.casefold() == login().casefold()
+    except subprocess.CalledProcessError:
+        return False
 
 def deterministic_needs_info(body: str, comments: str) -> str | None:
     """Cheap lint before the LLM: obviously under-specified -> needs-info."""
