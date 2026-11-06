@@ -771,7 +771,12 @@ round, creates no intake-ready child, and leaves the parent with the human.
 `[manager].rounds` defaults to **4** per ticket generation. From the second
 escalation onward, the packet and manager prompt place the previous round's
 failure reason immediately after the current reason (excluding manager transport
-failures). `[manager].human_on_repeat` defaults to `true`: the prompt tells the
+failures). Each escalation snapshots its gate report, review findings, handoff
+and additional failure evidence in the journal; the next packet includes those
+details even after the live artifacts are overwritten. Identical summary reasons
+therefore do not hide narrowing or contradictory findings. Older journal rows
+without snapshots retain their recorded reason only.
+`[manager].human_on_repeat` defaults to `true`: the prompt tells the
 manager to choose `HUMAN` and cite both failures when the current failure repeats
 or contradicts the previous one. Progressing rounds keep the remaining budget;
 the existing HUMAN path handles early handoff. Set `human_on_repeat = false` to
