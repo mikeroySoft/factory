@@ -5077,24 +5077,6 @@ def fairness_session() -> dict:
     return {"timer_invocation": invocation, "engine_version": __version__, "engine_commit": config.engine_commit()}
 
 
-def fairness_session() -> dict:
-    """Scope fairness to the engine revision and, when observable, timer activation."""
-    # Passive probe: an idle pass must not commit lifecycle child rows.
-    invocation = None
-    try:
-        timer = subprocess.run(
-            ["systemctl", "--user", "show", "--property=InvocationID", "--value", f"{cfg.unit}.timer"],
-            capture_output=True, text=True, check=False, timeout=3,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    else:
-        value = timer.stdout.strip()
-        if not timer.returncode and re.fullmatch(r"[0-9a-f]{32}", value) and value != "0" * 32:
-            invocation = value
-    return {"timer_invocation": invocation, "engine_version": __version__, "engine_commit": config.engine_commit()}
-
-
 def ticket_pass(budget_min: int, dry_run: bool) -> None:
     """Claim up to capacity frontier tickets in accepted-priority order and work them concurrently.
 

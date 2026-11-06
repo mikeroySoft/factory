@@ -71,7 +71,12 @@ class HostClaimMutationTest(unittest.TestCase):
 
         def github(args):
             if args[:2] == ["pr", "view"]:
-                return {"baseRefName": single.cfg.main}
+                fields = args[args.index("--json") + 1]
+                if fields == "baseRefName":
+                    return {"baseRefName": single.cfg.main}
+                if fields == "number,isCrossRepository":
+                    return {"number": 70, "isCrossRepository": False}
+                raise AssertionError(f"unexpected PR fields: {fields}")
             return read(args)
 
         def command(cmd, *args, **kwargs):
