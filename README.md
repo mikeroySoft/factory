@@ -1038,8 +1038,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `log` path (`.factory/logs/<n>-setup.log`, appended). Failure journals
    `setup-infra` classified `env`, leaves no success marker, and spends no
    worker attempt or strike; dispatch releases the claim for a later pass.
-   Manager FIX defers without escalating. Setup shares the ticket's remaining
-   wall-clock budget (timeout status 124; launch failure 127).
+   Manager FIX stays pending and resumes without another manager decision or
+   round. A review-bounce setup failure carries the findings to the next pass;
+   its already-charged rework runs before the review-round limit is enforced,
+   without charging it again. Setup shares the ticket's remaining wall-clock
+   budget (timeout status 124; launch failure 127).
    The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the

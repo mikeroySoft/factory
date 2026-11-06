@@ -5244,6 +5244,13 @@ def process_ticket(
                         logfile, code="budget",
                     )
                     return
+                try:
+                    # Setup must succeed before a charged rework is marked delivered.
+                    # worker_round's setup check then hits the same worktree/head marker.
+                    setup_worktree(n, wt, deadline)
+                except WorktreeSetupFailed:
+                    _record_rework(n, gate_head, findings, deferred=True)
+                    raise
                 _record_rework(n, gate_head, findings, deferred=False)
                 rounds_used += 1
                 execution.review_round = bounce + 1

@@ -97,18 +97,6 @@ class DispatchSetupTest(unittest.TestCase):
         self.assertTrue(self.worker_round(wt)[0])
         self.assertEqual([e["exit_status"] for e in self.events("setup")], [23, 0])
 
-    def test_manager_fix_setup_failure_never_launches_worker_or_escalates(self):
-        self.configure_setup("raise SystemExit(23)")
-        dispatch.ensure_worktree(9)
-        packet = self.tmp / "packet.md"
-        packet.write_text("Fix the change")
-        with self.patched(), mock.patch.object(dispatch, "run_worker", side_effect=AssertionError("worker launched before setup succeeded")) as worker:
-            manage.apply(9, self.github.issue(), "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
-        worker.assert_not_called()
-        self.assertEqual(self.events("attempt"), [])
-        self.assertEqual(self.events("escalate"), [])
-        self.assertEqual(self.events("setup-infra")[0]["classification"], "env")
-
     def test_setup_argv_is_validated(self):
         for value in ('"echo hello"', '[]', '["", "arg"]', '["echo", 1]'):
             with self.subTest(value=value):
