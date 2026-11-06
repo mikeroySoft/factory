@@ -2675,6 +2675,9 @@ rejected before GitHub collection. Repository identity comes from the main
 checkout's `.factory.toml` (`repo.slug`) or its GitHub origin remote, using the
 bounded F03 loader. Cwd does not select scope. The normal Python package
 requires TOMLKit; these reads require no Pi installation or model provider.
+Workspace evidence envelopes compare absolute roots using `Path.resolve`, so
+symlink aliases such as macOS `/var` and `/private/var` identify the same checkout.
+Relative, missing, malformed, or genuinely different roots remain rejected.
 
 ### Requests and implemented reads
 
