@@ -105,3 +105,67 @@ class MutationBudgetTest(unittest.TestCase):
                 self.assertEqual(result[key], value)
             [exit_row] = [row for row in rows if row.get("stage") == "gate-check" and row.get("kind") == "exit"]
             self.assertEqual(exit_row["reason"], "budget_limited")
+
+    def test_outer_timeouts_keep_watch_filing_and_runtime_reason(self):
+        from factory import runtime_events, watch
+
+        for name in ("test", "ruff", "mutation"):
+            with self.subTest(check=name), tempfile.TemporaryDirectory() as directory:
+                command = json.dumps([sys.executable, "-c", "import time; time.sleep(30)"])
+                root = gate_test.repo_with_test(Path(directory), (
+                    f'[[gate.check]]\nname = "{name}"\nrun = {command}\n'
+                    'when = "pr"\nexclusive = false\n'
+                ))
+                with contextlib.chdir(root), mock.patch.dict(gate.__dict__), \
+                        mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}), \
+                        mock.patch.object(gate, "toolchain", return_value={
+                            "rocm": "n/a", "kernel": "n/a", "amdgpu": "n/a",
+                        }):
+                    self.assertEqual(gate.main([
+                        "--tier", "pr", "--check-timeout", "1",
+                        "--report", str(root / "report.md"),
+                    ]), 1)
+                journal = root / ".factory/events.jsonl"
+                rows = lifecycle.read_events(journal)
+                [result] = [row for row in rows if row.get("kind") == "result"
+                            and row.get("check") == name]
+                self.assertFalse(result["passed"])
+                self.assertEqual(result["status"], "budget_limited")
+                self.assertEqual(result["budget_seconds"], 1)
+                self.assertGreaterEqual(result["elapsed_seconds"], 1)
+                exits = [row for row in rows if row.get("kind") == "exit"]
+                self.assertEqual({row["stage"] for row in exits}, {"gate", "gate-check"})
+                for row in exits:
+                    self.assertEqual(row["outcome"], "unknown")
+                    self.assertEqual(row["reason"], "check_timeout")
+                    self.assertTrue(watch._failing(row))
+                projected = runtime_events.project(journal)["executions"]
+                self.assertEqual({row["reason"] for row in projected}, {"check_timeout"})
+
+    def test_passing_budget_limited_reason_survives_runtime_projection(self):
+        from factory import runtime_events, watch
+
+        summary = {"status": "budget_limited", "budget_seconds": 1140,
+                   "baseline_seconds": 221, "workers": 1,
+                   "mutants_run": 4, "mutants_not_run": 196}
+        with tempfile.TemporaryDirectory() as directory:
+            root = gate_test.repo_with_test(Path(directory), (
+                '[[gate.check]]\nname = "mutation"\nrun = ["stub-mutation"]\n'
+                'when = "pr"\nexclusive = false\n'
+            ))
+            with contextlib.chdir(root), mock.patch.dict(gate.__dict__), \
+                    mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}), \
+                    mock.patch.object(gate, "toolchain", return_value={
+                        "rocm": "n/a", "kernel": "n/a", "amdgpu": "n/a",
+                    }), mock.patch.object(gate, "timed", return_value=subprocess.CompletedProcess(
+                        [], 0, "mutation-budget: " + json.dumps(summary), "",
+                    )):
+                self.assertEqual(gate.main(["--tier", "pr", "--report", str(root / "report.md")]), 0)
+            journal = root / ".factory/events.jsonl"
+            [check] = [row for row in runtime_events.project(journal)["executions"]
+                       if row["stage"] == "gate-check"]
+            self.assertEqual(check["outcome"], "completed")
+            self.assertEqual(check["reason"], "budget_limited")
+            [exit_row] = [row for row in lifecycle.read_events(journal)
+                          if row.get("kind") == "exit" and row["stage"] == "gate-check"]
+            self.assertFalse(watch._failing(exit_row))
