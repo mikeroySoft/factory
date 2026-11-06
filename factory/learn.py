@@ -1078,7 +1078,7 @@ def refresh(cfg: config.Config, n: int, branch: str, head: str) -> None:
     dispatch.run(["git", "fetch", "origin", cfg.main, branch], cwd=cfg.root)
     dispatch.run(["git", "worktree", "add", "--force", "-B", branch, str(wt), head], cwd=cfg.root)
     try:
-        dispatch.run(["git", "merge", "--no-edit", f"origin/{cfg.main}"], cwd=wt)
+        dispatch.run(["git", "merge", "--no-edit", *(["--signoff"] if cfg.signoff else []), f"origin/{cfg.main}"], cwd=wt)
         new = gate_head(wt, branch, protected_override=True)  # the diff `chore_pr` gated, now on main
         push = ["git", "push", "origin", f"HEAD:{branch}"]
         remote = dispatch.run(["git", "ls-remote", "origin", f"refs/heads/{branch}"], cwd=wt)
