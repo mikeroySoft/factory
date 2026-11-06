@@ -232,6 +232,28 @@ class MutationSurvivorHandoffTest(unittest.TestCase):
         self.assertIn(SURVIVORS[0], dispatch.build_prompt(7, self.wt))
         self.assertFalse(self.round()[0])
 
+    def test_survivor_required_from_full_gate_output_beyond_tail_limit(self):
+        from test_gate import gate, repo_with_test
+
+        survivors = [
+            f"factory/dispatch.py:{line}: NumberReplacer `1` -> `2`"
+            for line in range(1, 101)
+        ]
+        output = "\n".join([*survivors, *["broken mutant diagnostic"] * 100])
+        command = [sys.executable, "-c", f"print({output!r}); raise SystemExit(1)"]
+        toml = (
+            '[[gate.check]]\nname = "mutation"\nwhen = "pr"\nexclusive = false\nrun = '
+            + json.dumps(command) + "\n"
+        )
+        repo = repo_with_test(self.root, toml)
+        code, _, report = gate(repo, "--tier", "pr")
+        self.assertEqual(code, 1)
+        self.gate.return_value = (False, report)
+        dispatch.pr_gate_and_review(self.wt, 7, "", risk_tests.NEW_HEAD, {})
+        required = dispatch.build_prompt(7, self.wt).split("## Required mutation survivor findings", 1)[1]
+        for survivor in survivors:
+            self.assertIn(survivor, required)
+
     def test_mutation_survivor_manager_fix_cannot_proceed_with_omission(self):
         from factory import manage
 
