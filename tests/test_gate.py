@@ -435,6 +435,7 @@ class QuotedStorageDiagnosticTest(unittest.TestCase):
             "366 |     (\"OSError: [Errno 28] No space left on device\", 1, 75),",
             " 42 |     raise RuntimeError('No space left on device')",
             " 43 |     message = 'fatal: cannot write: No space left on device'",
+            '    ("OSError: [Errno 28] No space left on device", 1, 75),',
         ):
             with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
                 output = f"ISC004 Unparenthesized implicit string concatenation\n{diagnostic}\nFound 1 error."
@@ -446,3 +447,23 @@ class QuotedStorageDiagnosticTest(unittest.TestCase):
                 self.assertEqual(code, 1, report + out)
                 self.assertIn("- ruff: FAIL", report)
                 self.assertNotIn("INFRA", report)
+
+    def test_expected_repro_still_detects_exhausted_bytes_or_inodes(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from factory import gate as gate_module
+
+        available = SimpleNamespace(f_bavail=100, f_files=100, f_favail=100)
+        for disk in (
+            SimpleNamespace(f_bavail=0, f_files=100, f_favail=100),
+            SimpleNamespace(f_bavail=100, f_files=100, f_favail=0),
+        ):
+            for filesystems in ((disk, available), (available, disk)):
+                with self.subTest(filesystems=filesystems), \
+                        mock.patch.object(gate_module.os, "statvfs", side_effect=filesystems), \
+                        self.assertRaises(gate_module.RunnerStorageLow):
+                    gate_module.timed(
+                        [sys.executable, "-c", "raise OSError(28, 'No space left on device')"],
+                        expected_failure=True,
+                    )

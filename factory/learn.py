@@ -1782,6 +1782,8 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         if not dry_run:
             try:
                 refresh(cfg, n, branch, head)
+            except RunnerStorageLow:
+                raise
             except Exception:
                 _promotion_blocked(events, n, branch, head, "refresh failed", False)
                 raise

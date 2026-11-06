@@ -54,11 +54,11 @@ def storage_diagnostic(output: str | bytes | None) -> bool:
         ):
             continue
         if re.search(
-            r"(?im)^(?:E\s+)?(?:"
+            r"(?im)^(?![ \t]*\d+[ \t]*\|)(?:E\s+)?(?:"
             r"(?:OSError|IOError):\s*(?:\[Errno 28\]|\bENOSPC\b)|"
-            r"(?:error|fatal|[^\n:]+(?:Error|Exception)):\s*[^\n]*"
-            r"(?:No space left on device|\bENOSPC\b)|"
-            r"[^\n:]+:\s*[^\n]*:\s*No space left on device\b"
+            r"(?:error|fatal|(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*(?:Error|Exception)):"
+            r"\s*[^\n]*(?:No space left on device|\bENOSPC\b)|"
+            r"[\w./-]+:\s*[^\n]*:\s*No space left on device\b"
             r")", report,
         ):
             return True
@@ -75,7 +75,8 @@ def configure(c: Config) -> None:
 
 
 def timed(
-    cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None
+    cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None,
+    *, expected_failure: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run a command with the per-check timeout.
 
@@ -119,7 +120,16 @@ def timed(
     finally:
         if execution and proc.poll() is not None:
             execution.child_done(proc.pid)
-    if result.returncode and (result.returncode == STORAGE_EXIT or storage_diagnostic(result.stdout)):
+    storage_low = result.returncode and storage_diagnostic(result.stdout)
+    if storage_low and expected_failure and result.returncode not in (124, STORAGE_EXIT):
+        # A completed before-fix repro may deliberately raise ENOSPC. Require
+        # host evidence before discarding that expected product failure.
+        filesystems = (os.statvfs(cwd or Path.cwd()), os.statvfs(tempfile.gettempdir()))
+        storage_low = any(
+            disk.f_bavail == 0 or (disk.f_files > 0 and disk.f_favail == 0)
+            for disk in filesystems
+        )
+    if result.returncode == STORAGE_EXIT or storage_low:
         raise RunnerStorageLow(result.stdout)
     return result
 
@@ -545,7 +555,7 @@ def _run_at(
         if added.returncode:
             return added, False
         try:
-            return timed(command, cwd=checkout, pythonpath=checkout), True
+            return timed(command, cwd=checkout, pythonpath=checkout, expected_failure=True), True
         finally:
             timed(["git", "worktree", "remove", "--force", str(checkout)])
 

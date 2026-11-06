@@ -1185,8 +1185,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    timeout): these return exit 75, `INFRA (runner_storage_low)`, not a killed
    mutant, gate failure, or High-risk disagreement. This includes built-in gate
    commands (bug-repro checkout, test discovery and replay) and genuine storage
-   errors in completed test reports. Assertion failures that merely quote
-   storage exceptions retain their normal product classification.
+   errors in completed test reports. Assertion failures and numbered source
+   excerpts that merely quote storage exceptions retain their normal product
+   classification. A completed before-fix reproduction may intentionally raise
+   ENOSPC; it is infrastructure only when the worktree or temporary filesystem
+   reports exhausted bytes or inodes. Timeout storage diagnostics remain infrastructure.
    The dispatcher releases the claim to `ready-for-agent` without escalating;
    after refresh it restores the remote PR head and preserves the candidate in
    an evidence ref first. Upstream sync and learning defer storage-blocked runs
