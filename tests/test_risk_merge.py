@@ -552,7 +552,7 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         }
         self.pr = {
             "number": 70, "headRefName": "agent/7", "headRefOid": HEAD,
-            "baseRefName": "main", "isDraft": False, "state": "OPEN",
+            "baseRefName": "main", "isCrossRepository": False, "isDraft": False, "state": "OPEN",
             "labels": [{"name": config.LABEL_APPROVED}], "reviewDecision": "APPROVED",
             "title": "change dispatcher", "files": [{"path": "factory/dispatch.py"}],
         }

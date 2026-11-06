@@ -632,11 +632,8 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
         if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
             return "assigned"
         # Only a later election can supersede the expired owner's transition.
-        if "requeue" not in elected_host_claim(claims) and gh_json(
-            ["pr", "list", "--repo", REPO, "--state", "open",
-             "--head", f"agent/{n}", "--json", "number"]
-        ):
-            return "open PR"
+        if "requeue" not in elected_host_claim(claims) and (held := open_agent_pr_hold(n)):
+            return held
     return None
 
 
@@ -822,10 +819,12 @@ def unclaim(
 
 
 def open_agent_pr_hold(n: int) -> str | None:
-    """Every open agent PR owns delivery until it merges or closes."""
+    """Every open same-repository agent PR owns delivery until it merges or closes."""
     prs = gh_json(["pr", "list", "--repo", REPO, "--state", "open",
-                   "--head", f"agent/{n}", "--json", "number,labels"])
+                   "--head", f"agent/{n}", "--json", "number,isCrossRepository,labels"])
     for pr in prs:
+        if pr["isCrossRepository"]:
+            continue
         approved = any(label["name"] == LABEL_APPROVED for label in pr.get("labels", []))
         reason = "approved, awaiting merge" if approved else "awaiting merge or closure"
         return f"open agent PR #{pr['number']} ({reason})"
@@ -2903,32 +2902,41 @@ def push_and_pr(
     ahead = run(["git", "rev-list", "--count", f"origin/{cfg.main}..HEAD"], cwd=wt).stdout
     if int(ahead) == 0:
         return False
-    existing = gh_json(
-        ["pr", "list", "--repo", REPO, "--head", branch, "--json", "number,baseRefName"]
-    )
+    existing = [
+        pr for pr in gh_json(
+            ["pr", "list", "--repo", REPO, "--head", branch,
+             "--json", "number,baseRefName,isCrossRepository"]
+        )
+        if not pr.get("isCrossRepository")
+    ]
     if not existing and ticket is not None:
         closed = gh_json(
             ["pr", "list", "--repo", REPO, "--head", branch, "--state", "closed",
-             "--limit", "1", "--json", "number,baseRefName,state"]
+             "--limit", "1000", "--json", "number,baseRefName,state,isCrossRepository"]
         )
-        if closed and closed[0]["state"] == "CLOSED":
-            existing = closed
+        existing = [
+            pr for pr in closed
+            if pr["state"] == "CLOSED" and not pr.get("isCrossRepository")
+        ][:1]
     if existing and existing[0].get("baseRefName") != cfg.main:
         log(
             f"{branch}: existing PR #{existing[0]['number']} targets "
             f"{existing[0].get('baseRefName')!r}, not {cfg.main!r}; not pushing"
         )
         return False
-    if existing and existing[0].get("state") == "CLOSED":
-        # Resume the same PR so a human's blocking review cannot be discarded.
-        pr = str(existing[0]["number"])
-        run(["gh", "pr", "edit", pr, "--repo", REPO, "--remove-label", FACTORY_APPROVED])
-        run(["gh", "pr", "reopen", pr, "--repo", REPO])
     if ticket is None or lease is None:
         with _REMOTE_REFS:
             run(["git", "push", "-u", "origin", branch], cwd=wt)
     else:
         push_agent(wt, ticket, lease)
+    if existing and existing[0].get("state") == "CLOSED":
+        # Resume the same PR so a human's blocking review cannot be discarded.
+        pr = str(existing[0]["number"])
+        run(["gh", "pr", "edit", pr, "--repo", REPO, "--remove-label", FACTORY_APPROVED])
+        reopened = run(["gh", "pr", "reopen", pr, "--repo", REPO], check=False)
+        if reopened.returncode:
+            log(f"{branch}: PR #{pr} could not be reopened; creating a replacement")
+            existing = []
     if existing:
         log(f"{branch}: PR already exists (#{existing[0]['number']})")
         if ticket is not None:
@@ -3587,12 +3595,16 @@ def _review_rounds_used(n: int) -> int:
 
 
 def close_requeue_pr(n: int, pr: int | None = None) -> None:
-    """End the open-PR hold before returning work to the automatic queue."""
-    prs = [{"number": pr}] if pr is not None else gh_json(
+    """End the same-repository open-PR hold before returning work to the automatic queue."""
+    prs = [gh_json(
+        ["pr", "view", str(pr), "--repo", REPO, "--json", "number,isCrossRepository"]
+    )] if pr is not None else gh_json(
         ["pr", "list", "--repo", REPO, "--state", "open",
-         "--head", f"agent/{n}", "--json", "number"]
+         "--head", f"agent/{n}", "--json", "number,isCrossRepository"]
     )
     for row in prs:
+        if row["isCrossRepository"]:
+            continue
         number = str(row["number"])
         run(["gh", "pr", "edit", number, "--repo", REPO, "--remove-label", FACTORY_APPROVED])
         run(["gh", "pr", "close", number, "--repo", REPO])

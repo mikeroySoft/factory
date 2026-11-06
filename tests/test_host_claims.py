@@ -65,9 +65,14 @@ class FakeGitHub:
                 ["pr", "list", "--repo", "local/claims", "--state", "open",
                  "--head", "agent/7", "--json", "number"],
                 ["pr", "list", "--repo", "local/claims", "--state", "open",
-                 "--head", "agent/7", "--json", "number,labels"],
+                 "--head", "agent/7", "--json", "number,isCrossRepository"],
+                ["pr", "list", "--repo", "local/claims", "--state", "open",
+                 "--head", "agent/7", "--json", "number,isCrossRepository,labels"],
             ):
-                result = copy.deepcopy(self.open_prs)
+                result = [{"isCrossRepository": False, **copy.deepcopy(pr)} for pr in self.open_prs]
+            elif args[:2] == ["pr", "view"]:
+                pr = next(pr for pr in self.open_prs if str(pr["number"]) == args[2])
+                result = {"isCrossRepository": False, **copy.deepcopy(pr)}
             elif args == ["api", "user"]:
                 result = {"login": "@me"}
             elif args[:2] == ["issue", "view"]:

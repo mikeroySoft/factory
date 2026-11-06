@@ -1130,8 +1130,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    scope. That attempt counts as a worker round; the normal gate, push (lease
    on the recorded PR head), independent review, `review_rounds` and
    `manager.rounds` follow. Publishing reopens the same closed, unmerged PR after
-   withdrawing stale approval, preserving its human review veto; only fresh
-   approval restores the label. The
+   withdrawing stale approval, preserving its human review veto when reopening
+   succeeds. If GitHub refuses reopening (for example, its head branch was deleted),
+   publishing pushes the branch and creates a new PR; fresh approval is required. The
    conflict escalates as `refresh_conflict`, with the conflicting files in the
    packet, when it touches `gate.protected_paths` without
    `factory-protected-override`, when `review_rounds` conflict requeues are
@@ -1371,10 +1372,11 @@ labels from the authenticated dispatcher only before the recorded escalation
 comment; human removals and later edits still hold automatic management.
 
 Expired claims are admitted through the frontier only when no other hold exists.
-An open `agent/<ticket>` PR is an explicit hold naming its PR number, independently
-of assignees or host claims. A `factory-approved` PR is held as `approved, awaiting merge`;
-closing or merging it releases that hold. Admission rechecks the PR even for `--ticket`,
-so stale frontier reads cannot replace an approved head.
+An open same-repository `agent/<ticket>` PR is an explicit hold naming its PR number,
+independently of assignees or host claims. A `factory-approved` PR is held as
+`approved, awaiting merge`; closing or merging it releases that hold. Admission rechecks
+the PR even for `--ticket`, so stale frontier reads cannot replace an approved head.
+Fork PRs with matching branch names neither hold the ticket nor become requeue targets.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
@@ -1385,7 +1387,8 @@ Deferred actionable review rework uses the same ownership-aware release and shar
 its findings. Conflict, gate, risk and deferred-review requeues close their PR
 automatically before releasing readiness, so another host can resume without a
 manual closure once no live claim remains. Publishing reopens the latest closed,
-unmerged agent PR with stale approval removed, retaining human blocking reviews.
+unmerged same-repository agent PR with stale approval removed, retaining human blocking
+reviews when reusable. A refused reopen falls back to a new PR after pushing the branch.
 Manager RETRY, REWRITE, ROUTE and AUTHORIZE also close any open agent PR before
 restoring readiness; a failed closure leaves the ticket on the human queue.
 Shared instructions take precedence over this host's local requeue journal. Local

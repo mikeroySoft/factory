@@ -23,11 +23,11 @@ When `factory dispatch` is invoked without `--ticket` (`factory/dispatch.py` `ma
 
 ## Claim rules
 
-`frontier` lists open issues with `ready-for-agent`. It skips initiatives, issues with assignees, issues with an open `agent/<ticket>` PR, and issues with open blockers. The PR hold names the PR (`approved, awaiting merge` when approved), regardless of assignment or requeue instructions, and ends when it merges or closes. Blockers come from the GitHub blocked-by API when present, and from `Blocked by: #N` lines in the body.
+`frontier` lists open issues with `ready-for-agent`. It skips initiatives, issues with assignees, issues with an open same-repository `agent/<ticket>` PR, and issues with open blockers. The PR hold names the PR (`approved, awaiting merge` when approved), regardless of assignment or requeue instructions, and ends when it merges or closes. Matching fork branch names do not confer ownership: those PRs are not held, closed or reopened as Factory delivery. Blockers come from the GitHub blocked-by API when present, and from `Blocked by: #N` lines in the body.
 
 `process_ticket` re-reads the issue and open PRs before claiming. A stale list must not reclaim an escalated issue or replace an open PR's head. On every exit, including approval, dispatch releases only the assignment it added and journals `assignment-cleared` with ticket, login and exit path. Pre-existing human assignments remain untouched, including on a hand run. Factory issue filing does not assign anyone.
 
-Automatic conflict, gate, risk and deferred-review requeues, plus manager RETRY, REWRITE, ROUTE and AUTHORIZE, close the agent PR before returning the ticket to `ready-for-agent`. The next claim remains on the same branch; publishing removes stale approval and reopens the latest closed, unmerged PR rather than discarding its human reviews. A failed closure does not release a ready requeue.
+Automatic conflict, gate, risk and deferred-review requeues, plus manager RETRY, REWRITE, ROUTE and AUTHORIZE, close the agent PR before returning the ticket to `ready-for-agent`. The next claim remains on the same branch; publishing removes stale approval and reopens the latest closed, unmerged same-repository PR to retain its human reviews. If GitHub refuses reopening (including after head-branch deletion), publishing pushes the branch and creates a new PR requiring fresh approval. A failed closure does not release a ready requeue.
 
 ## Where the worker runs
 

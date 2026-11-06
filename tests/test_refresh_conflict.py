@@ -68,7 +68,7 @@ class FakeGitHub:
     def pr(self) -> dict:
         state = "MERGED" if self.merged else "CLOSED" if self.closed else "OPEN"
         return {"number": self.pr_number, "state": state, "headRefName": "agent/9",
-                "headRefOid": self.head(), "baseRefName": "main", "isDraft": False,
+                "headRefOid": self.head(), "baseRefName": "main", "isCrossRepository": False, "isDraft": False,
                 "reviewDecision": self.review_decision,
                 "labels": [{"name": label} for label in sorted(self.pr_labels)], "title": "agent/9: change"}
 
