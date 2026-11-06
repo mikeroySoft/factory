@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, manage
-import test_dispatch_lifecycle as support
+from tests import test_dispatch_lifecycle as support
 
 
 class GateFixupsTest(unittest.TestCase):
