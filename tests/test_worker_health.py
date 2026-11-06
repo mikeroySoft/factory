@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -86,11 +87,11 @@ class WorkerHealthTest(unittest.TestCase):
         self.github.assignees = []
         self.github.pr_labels = set()
 
-    def process(self) -> bool | None:
+    def process(self, *, forced: bool = False) -> bool | None:
         with self.patched(), mock.patch.object(dispatch, "run_gate", return_value=(True, "gate ok")) as gate, \
                 mock.patch.object(dispatch, "run_worker", wraps=dispatch.run_worker) as launches:
             [ready] = dispatch.frontier()
-            result = dispatch.process_ticket(ready, 30, False)
+            result = dispatch.process_ticket(ready, 30, False, forced=forced)
         self.gate, self.launches = gate, launches
         return result
 
@@ -196,6 +197,39 @@ class WorkerHealthTest(unittest.TestCase):
         up = self.events("worker-health")[-1]
         self.assertEqual((up["available"], up["source"], up["check"]), (True, "probe", "probe"))
         self.assertIn("droid", manage.selectable_workers(self.cfg))
+
+    def test_a_launch_failure_on_an_already_unavailable_profile_stays_sticky(self) -> None:
+        self.ticket("droid", droid=["factory-test-missing-worker", "exec"])
+        dispatch.worker_health_pass()  # journaled unavailable: its executable is missing
+        self.cfg.workers["droid"] = AUTH_FAILED  # the executable is back; its login is still broken
+        dispatch.configure(self.cfg)
+        self.process(forced=True)  # `dispatch --ticket` skips the pre-pass check and launches it
+        self.assertEqual(self.events("worker-infra")[0]["reason"], "auth_failed")
+        for _ in range(2):
+            dispatch.configure(self.cfg)
+            dispatch.worker_health_pass()
+            self.assertIn("droid", dispatch.UNAVAILABLE_WORKERS)
+        self.assertFalse(any(row["available"] for row in self.events("worker-health")))
+        self.cfg.worker_probe = {"droid": PROBE_PASSES}
+        dispatch.configure(self.cfg)
+        dispatch.worker_health_pass()
+        self.assertNotIn("droid", dispatch.UNAVAILABLE_WORKERS)
+
+    def test_a_wrapped_worker_found_only_on_its_profile_path_can_be_claimed(self) -> None:
+        profile_bin = self.tmp / "profile-bin"
+        profile_bin.mkdir()
+        child = profile_bin / "factory-test-profile-worker"
+        child.write_text(f"#!{sys.executable}\n{COMMIT}")
+        child.chmod(0o755)
+        self.ticket("droid", droid=["factory-test-profile-worker"])
+        self.cfg.worker_wrap = ["env"]
+        self.cfg.worker_env = {"droid": {"PATH": f"{profile_bin}{os.pathsep}{os.environ['PATH']}"}}
+        self.cfg.worker_probe = {"droid": PROBE_PASSES}
+        dispatch.worker_health_pass()
+        self.assertIn("droid", manage.selectable_workers(self.cfg))
+        self.process()
+        [attempt] = self.events("attempt")
+        self.assertEqual((attempt["worker"], attempt.get("fallback_from"), attempt["gate"]), ("droid", None, "PASS"))
 
     def test_the_manager_may_choose_only_a_profile_its_probe_verified(self) -> None:
         self.ticket(droid=PROBE_PASSES, chore=PROBE_PASSES)
@@ -368,6 +402,36 @@ class ManagerFixInfraTest(unittest.TestCase):
         self.assertIn("@alice", published[-1])
         self.assertIn("could not be applied", published[-1])
 
+    def test_a_successful_resume_after_a_crashed_deciding_pass_is_not_handed_to_a_human(self) -> None:
+        self.fix_decided()
+        dispatch.record("claimed", ticket=79)
+        dispatch.escalate(79, "gate failed", None, code="gate_failed")
+        dispatch.configure(self.cfg)
+        dispatch.worker_health_pass()
+        self.enterContext(mock.patch.object(manage, "human_activity", return_value=False))
+        route = {"status": "selected", "owner": "alice", "candidates": [], "source": "s", "reason": "r", "provenance": []}
+        self.enterContext(mock.patch.object(handoff, "observe", return_value={"route": route, "pr_url": None}))
+        log = dispatch.log
+
+        def die_after_pending(message: str) -> None:
+            if "waits for a healthy worker" in message:
+                raise KeyboardInterrupt  # the deciding pass dies once its pending FIX is journaled
+            log(message)
+
+        with mock.patch.object(manage, "apply", side_effect=[self.down, None]) as apply:
+            with mock.patch.object(dispatch, "log", side_effect=die_after_pending), \
+                    self.assertRaises(KeyboardInterrupt):
+                manage.escalation_pass()
+            exits = [row["outcome"] for row in lifecycle.read_events(dispatch.EVENTS)
+                     if row.get("event") == "lifecycle" and row.get("stage") == "manage" and row.get("kind") == "exit"]
+            self.assertEqual(exits, ["unknown"])
+            dispatch.configure(self.cfg)
+            dispatch.worker_health_pass()
+            manage.escalation_pass()  # the resume runs the FIX and succeeds
+            self.assertEqual(apply.call_count, 2)
+            handoff.handoff_pass()
+        self.assertEqual(self.handoffs(), [])
+
     def test_a_fix_pending_after_a_crash_stays_recoverable_until_its_resume_fails(self) -> None:
         self.cfg.manager = ["manager"]
         escalation = {"event": "escalate", "ticket": 79, "round": 1, "packet": "p", "at": "2026-11-05T00:00:00Z"}
@@ -382,6 +446,11 @@ class ManagerFixInfraTest(unittest.TestCase):
         crashed = [escalation, decided, {**pending, "execution_id": "a"}, ended("a", "unknown")]
         waiting = [*crashed, resume, {**pending, "execution_id": "b"}, ended("b", "completed")]
         self.assertIsNone(handoff.terminal(self.cfg, waiting, escalation))
+        self.assertIsNone(handoff.terminal(self.cfg, [*crashed, resume, ended("b", "completed")], escalation))
+        # A resume that re-pended and then died is superseded by the later resume that succeeded.
+        later = {**resume, "execution_id": "c"}
+        superseded = [*crashed, resume, {**pending, "execution_id": "b"}, ended("b", "unknown"), later, ended("c", "completed")]
+        self.assertIsNone(handoff.terminal(self.cfg, superseded, escalation))
         for outcome in ("mechanism_failure", "interrupted"):
             with self.subTest(resume=outcome):
                 spent = [*crashed, resume, ended("b", outcome)]
