@@ -175,6 +175,7 @@ class FrontierGenerationTest(unittest.TestCase):
         self.assertTrue(any("--add-label" in cmd and "factory-approved" in cmd for cmd in self.mutations))
 
     def test_factory_requeue_keeps_the_spent_manager_budget(self) -> None:
+        self.cfg.manager_rounds = 1
         self.manager_said_human_on(H)
         dispatch.record("conflict-requeue", ticket=79, pr=80, head=H, round=1, files=["x"])
         self.issue_labels = ["ready-for-agent"]

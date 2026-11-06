@@ -246,6 +246,7 @@ class FrontierTest(unittest.TestCase):
         self.provider.thread["isResolved"] = True
 
     def test_review_all_waits_for_a_manager_approve_bound_to_the_exact_head(self) -> None:
+        self.cfg.manager_rounds = 1
         self.cfg.manager_review = "all"
         self.quiet_provider()
         self.approved_head(H)

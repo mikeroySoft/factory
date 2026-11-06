@@ -2219,15 +2219,33 @@ def run_gate(
     return ok, text
 
 
+def _escalation_failure_details(n: int, wt: Path) -> dict[str, str]:
+    return {
+        title: (path.read_text().strip()[-limit:] if path.exists() else "") or "(none recorded)"
+        for title, path, limit in (
+            ("Last gate report", wt / ".factory" / f"gate-report-{n}.md", 6000),
+            ("Latest review findings", FACTORY / f"review-{n}.md", 6000),
+            ("Handoff", wt / ".factory" / f"handoff-{n}.md", 4000),
+        )
+    }
+
+
 def escalation_packet(
     n: int,
     reason: str,
     log_path: Path | None,
     wt: Path,
     extra: str = "",
+    *,
+    failure_details: dict[str, str] | None = None,
 ) -> tuple[Path, int]:
     events = lifecycle.read_events(EVENTS)
     ticket_events = [event for event in events if event.get("ticket") == n]
+    escalations = [
+        event for event in generation.current(events, n).rows
+        if event.get("event") == "escalate" and event.get("reason") != "manager_failed"
+    ]
+    previous = escalations[-1] if escalations and not escalations[-1].get("pr") else None
     attempts = [event for event in ticket_events if event.get("event") == "attempt"]
     rows = [
         f"| {event.get('attempt', '')} | {event.get('gate') or 'not run'} | "
@@ -2235,9 +2253,6 @@ def escalation_packet(
         f"`{event.get('log') or ''}` |"
         for event in attempts
     ] or ["| — | — | — | — | — | none recorded |"]
-    gate = wt / ".factory" / f"gate-report-{n}.md"
-    review = FACTORY / f"review-{n}.md"
-    handoff = wt / ".factory" / f"handoff-{n}.md"
     logs = list(dict.fromkeys(
         str(event["log"]) for event in attempts if event.get("log")
     ))
@@ -2245,28 +2260,30 @@ def escalation_packet(
         logs.append(str(log_path))
     packet = FACTORY / "escalations" / f"{n}.md"
     packet.parent.mkdir(parents=True, exist_ok=True)
+    if failure_details is None:
+        failure_details = _escalation_failure_details(n, wt)
+    previous_failure = ""
+    if previous:
+        previous_failure = f"## Previous round failure\n\n{previous.get('reason') or '(not recorded)'}\n\n"
+        previous_failure += "".join(
+            f"### {title}\n\n{text}\n\n" for title, text in previous.get("failure_details", {}).items()
+        )
     packet.write_text(
         f"# Escalation #{n}\n\n"
         f"## Reason\n\n{reason}\n\n"
-        "## Attempts\n\n"
+        + previous_failure
+        + "## Attempts\n\n"
         "| Attempt | Gate | Worker exit | Timeout | Seconds | Log |\n"
         "|---:|---|---:|---|---:|---|\n"
         + "\n".join(rows)
-        + "\n\n## Last gate report\n\n"
-        + ((gate.read_text() if gate.exists() else "").strip()[-6000:] or "(none recorded)")
-        + "\n\n## Latest review findings\n\n"
-        + (review.read_text().strip()[-6000:] if review.exists() else "(none recorded)")
-        + "\n\n## Handoff\n\n"
-        + (handoff.read_text().strip()[-4000:] if handoff.exists() else "(none recorded)")
+        + "\n\n"
+        + "\n\n".join(f"## {title}\n\n{text}" for title, text in failure_details.items())
         + "\n\n## Log paths\n\n"
         + ("\n".join(f"- `{path}`" for path in logs) or "- none recorded")
         + f"\n\n## Worktree path\n\n`{wt}`\n"
         + (f"\n{extra.strip()}\n" if extra.strip() else "")
     )
-    round_number = 1 + sum(
-        event.get("event") == "escalate" and event.get("reason") != "manager_failed"
-        for event in generation.current(events, n).rows
-    )
+    round_number = 1 + len(escalations)
     return packet, round_number
 
 
@@ -2303,7 +2320,10 @@ def escalate(
             + f"- Refreshed head: `{refreshed_head}`\n"
             + f"- Evidence ref: `{evidence_ref}`\n"
         )
-    packet, round_number = escalation_packet(n, reason, log_path, wt, extra=extra)
+    failure_details = _escalation_failure_details(n, wt)
+    packet, round_number = escalation_packet(
+        n, reason, log_path, wt, extra=extra, failure_details=failure_details,
+    )
     from factory import trace
 
     cause = _latest_decision_id(n, {"gate", "review", "manager", "claim"})
@@ -2331,6 +2351,10 @@ def escalate(
     record(
         "escalate", ticket=n, code=code, reason=reason,
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
+        failure_details={
+            **failure_details,
+            **({"Additional evidence": extra.strip()} if extra.strip() else {}),
+        },
         **evidence,
     )
     _ESCALATED.add(n)
