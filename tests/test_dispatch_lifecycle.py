@@ -640,6 +640,84 @@ class LocalCLI(unittest.TestCase):
         self.assertIn(diagnostic, findings)
         self.assertIn(diagnostic, Path(escalation["packet"]).read_text())
 
+    def test_crashed_review_retries_before_real_feedback(self):
+        self.pr_config(fails=0)
+        runs = self.base / "crash-review-runs"
+        self.reviewer.write_text(
+            "from pathlib import Path\n"
+            f"p = Path({str(runs)!r})\n"
+            "p.write_text(p.read_text() + 'x' if p.exists() else 'x')\n"
+            "if p.read_text() == 'x':\n"
+            "    print('crash-only diagnostic retry-after-ms=0')\n"
+            "    raise SystemExit(1)\n"
+            + self.reviewer.read_text()
+        )
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertEqual(runs.read_text(), "xxx")
+        events = lifecycle.read_events(self.events)
+        self.assertEqual(
+            [e["verdict"] for e in events if e.get("event") == "review"],
+            ["REVISE", "APPROVE"],
+        )
+        [rework] = [e for e in events if e.get("event") == "review-rework"]
+        self.assertEqual(rework["round"], 1)
+        self.assertNotIn("crash-only diagnostic", rework["findings"])
+        workers = self.prompts(self.worker_prompts)
+        self.assertEqual(len(workers), 2)
+        self.assertIn("First review requires revision.", workers[1])
+        self.assertTrue(all("crash-only diagnostic" not in prompt for prompt in workers))
+        self.assertTrue(any(e.get("event") == "approved" for e in events))
+        self.assertFalse(any(e.get("event") == "escalate" for e in events))
+
+    def test_nonzero_reviewer_with_approve_verdict_is_approved(self):
+        self.pr_config(fails=0)
+        self.state.write_text('{"reviews": 1}')
+        self.reviewer.write_text(self.reviewer.read_text() + "\nraise SystemExit(1)\n")
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertEqual(json.loads(self.state.read_text())["reviews"], 2)
+        events = lifecycle.read_events(self.events)
+        [review] = [e for e in events if e.get("event") == "review"]
+        self.assertEqual((review["accepted"], review["verdict"]), (True, "APPROVE"))
+        self.assertTrue(any(e.get("event") == "approved" for e in events))
+        self.assertFalse(any(e.get("event") in {"review-rework", "escalate"} for e in events))
+        self.assertEqual(len(self.prompts(self.worker_prompts)), 1)
+
+    def test_nonzero_reviewer_with_revise_verdict_sends_real_feedback(self):
+        self.pr_config(fails=0)
+        self.reviewer.write_text(self.reviewer.read_text() + "\nraise SystemExit(1)\n")
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertEqual(json.loads(self.state.read_text())["reviews"], 2)
+        events = lifecycle.read_events(self.events)
+        self.assertEqual(
+            [(e["accepted"], e["verdict"]) for e in events if e.get("event") == "review"],
+            [(True, "REVISE"), (True, "APPROVE")],
+        )
+        [rework] = [e for e in events if e.get("event") == "review-rework"]
+        self.assertEqual(rework["round"], 1)
+        self.assertIn("First review requires revision.", self.prompts(self.worker_prompts)[1])
+        self.assertTrue(any(e.get("event") == "approved" for e in events))
+        self.assertFalse(any(e.get("event") == "escalate" for e in events))
+
+    def test_repeated_review_crashes_record_no_change_request(self):
+        self.assert_reviewer_unavailable(
+            "print('crash-only diagnostic retry-after-ms=0')\nraise SystemExit(1)\n",
+            "review_exit:1",
+        )
+        events = lifecycle.read_events(self.events)
+        self.assertFalse(any(e.get("event") == "review-rework" for e in events))
+        self.assertFalse(any(
+            e.get("event") == "review-result" and e.get("verdict") == "REQUEST_CHANGES"
+            for e in events
+        ))
+        reviews = [r for r in self.rows() if r["stage"] == "review" and r["kind"] == "exit"]
+        self.assertEqual([r["outcome"] for r in reviews], ["unknown"])
+
     def test_reviewer_exit_does_not_consume_a_review_round(self):
         self.assert_reviewer_unavailable("raise SystemExit(1)\n", "review_exit:1")
 
