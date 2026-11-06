@@ -790,7 +790,8 @@ def execute(args: argparse.Namespace, execution) -> int:
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
         # them only through this report, so keep their output when they pass too.
         if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
-            tail = "\n".join(output.splitlines()[-TAIL_LINES:])
+            # Every mutation survivor is required worker input, not just report context.
+            tail = output if name == "mutation" else "\n".join(output.splitlines()[-TAIL_LINES:])
             lines += ["", f"## {name} {'failure' if status == 'FAIL' else 'output'}", "```", tail, "```"]
     report = Path(args.report)
     report.parent.mkdir(parents=True, exist_ok=True)

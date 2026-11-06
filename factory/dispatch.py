@@ -2800,10 +2800,14 @@ def _mutation_status(report: str) -> str:
 
 
 def _mutation_survivors(n: int) -> list[str]:
-    return next((
-        row["survivors"] for row in reversed(lifecycle.read_events(EVENTS))
-        if row.get("event") == "mutation-survivors" and row.get("ticket") == n
-    ), [])
+    for row in reversed(lifecycle.read_events(EVENTS)):
+        if row.get("ticket") != n:
+            continue
+        if row.get("event") == "mutation-survivors":
+            return row["survivors"]
+        if row.get("event") == "generation" and row.get("intent") == "fresh":
+            break
+    return []
 
 
 def _record_mutation_survivors(n: int, head: str, report: str) -> None:
@@ -2845,7 +2849,11 @@ def _unaccounted_mutation_survivors(survivors: list[str], handoff: str) -> list[
                 continue
             if not detail.strip() or (
                 disposition == "equivalent"
-                and detail.strip().lower().rstrip(".") in {"equivalent", "equivalent mutant"}
+                and re.fullmatch(
+                    r"(?:(?:this|the) (?:mutant|mutation) (?:is )?|it is )?"
+                    r"(?:an? )?(?:(?:semantically|functionally|behaviorally) )?equivalent(?: mutant)?[.! ]*",
+                    detail.strip(), re.IGNORECASE,
+                )
             ):
                 continue
             accounted.add(row["survivor"])

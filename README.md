@@ -1104,7 +1104,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 5. **Review.** After the attempt gate passes, the dispatcher runs the
    `when = "pr"` checks once for the head about to be reviewed (same timeout and
    `exclusive` lock; a head is never re-run) and appends their report to the gate
-   report; that report keeps the output of passing pr checks too (last 80 lines),
+   report; that report keeps passing pr-check output too (last 80 lines, except
+   mutation output is retained in full),
    so report-only checks reach the reviewer. A pr-tier FAIL goes back to the worker like a `REVISE`, with that
    report as the findings, and uses one `review_rounds` slot; when the rounds run
    out (or the head came from a manager FIX) the ticket escalates with `pr checks failed`. Otherwise
@@ -1176,10 +1177,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    with a `mutation_survivors` array: each entry copies the exact `survivor` string
    and supplies either `"disposition": "killed"` with a `test` naming its killing
    test, or `"disposition": "equivalent"` with a `reason` explaining equivalence.
-   Missing entries, unnamed killing tests, and bare equivalence claims fail the
+   Missing entries, unnamed killing tests, and bare equivalence claims (including
+   restatements such as "This mutant is equivalent.") fail the
    worker round even if its gate passes; they cannot count as finished work.
    A later failed mutation report replaces the list; a passing/skipped mutation
    check clears it, while a tool failure without survivors preserves it.
+   Owner requeues with `resume` retain unresolved survivors; `fresh` discards the
+   superseded branch's requirements, without hiding survivors on the new branch.
    Handoff accounting never bypasses blocking mutation checks.
    Protected-path blockers come from gate status rows, not quoted reviewer
    findings or surviving-mutant source text.
