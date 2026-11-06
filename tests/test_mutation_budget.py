@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import subprocess
 import sys
 import tempfile
@@ -52,7 +53,7 @@ class MutationBudgetTest(unittest.TestCase):
         specs = [SimpleNamespace(
             module_path=Path("factory/example.py"), operator_name="NumberReplacer",
             start_pos=(n, 0), end_pos=(n, 9), occurrence=n,
-        ) for n in range(1, 4)]
+        ) for n in range(1, 5)]
 
         def run(command, **kwargs):
             if command[0] != "git":
@@ -62,13 +63,16 @@ class MutationBudgetTest(unittest.TestCase):
         def mutate_and_test(local, command, timeout):
             timeouts.append(timeout)
             number = local[0].occurrence
-            duration = 100 if number == 1 else 1
+            duration = 100 if number == 1 else 80 if number == 3 else 1
             now[0] += min(duration, timeout)
             completed.append(number)
             return SimpleNamespace(
                 worker_outcome=WorkerOutcome.NORMAL,
-                test_outcome=TestOutcome.SURVIVED if number == 3 else TestOutcome.KILLED,
-                output="timeout" if duration > timeout else "", diff="",
+                test_outcome=(
+                    TestOutcome.SURVIVED if number == 3 and duration <= timeout else TestOutcome.KILLED
+                ),
+                output="timeout" if duration > timeout else "",
+                diff=f"-{'abcd'[number - 1]} = 1\n+{'abcd'[number - 1]} = 2\n",
             )
 
         modules = {
@@ -82,29 +86,48 @@ class MutationBudgetTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "factory").mkdir()
-            (root / "factory/example.py").write_text("a = 1\nb = 1\nc = 1\n")
+            (root / "factory/example.py").write_text("a = 1\nb = 1\nc = 1\nd = 1\n")
+            (root / "reviewed.json").write_text(json.dumps([{
+                "file": "factory/example.py", "line": 3, "operator": "NumberReplacer",
+                "original": "c = 1", "mutated": "c = 2",
+                "argument": "The value is unused.", "reviewer": "Fixture reviewer",
+            }]))
             output = io.StringIO()
             with contextlib.chdir(root), mock.patch.dict(sys.modules, modules), \
                     mock.patch.object(mutation.time, "monotonic", side_effect=lambda: now[0]), \
                     mock.patch.object(mutation, "WORKERS", 1), \
                     mock.patch.object(mutation, "gate_timeout", return_value=180), \
-                    mock.patch.object(mutation, "changed_lines", return_value={"factory/example.py": {1, 2, 3}}), \
-                    mock.patch.object(mutation, "sample", return_value=(specs, 3)), \
+                    mock.patch.object(mutation, "changed_lines", return_value={"factory/example.py": {1, 2, 3, 4}}), \
+                    mock.patch.object(mutation, "sample", return_value=(specs, 4)), \
                     mock.patch.object(mutation.subprocess, "run", side_effect=run), \
                     contextlib.redirect_stdout(output):
-                status = mutation.main(["--blocking"])
+                status = mutation.main(["--blocking", "--equivalents", "reviewed.json"])
 
-        self.assertEqual(timeouts, [10.0, 10.0, 10.0])
-        self.assertEqual(completed, [1, 2, 3])
-        self.assertEqual(now[0], 92)
-        self.assertEqual(status, 1)  # the completed survivor still blocks
+        self.assertEqual(timeouts, [10.0] * 4)
+        self.assertEqual(completed, [1, 2, 3, 4])
+        self.assertEqual(now[0], 102)
         text = output.getvalue()
+        self.assertEqual(status, 0, text)  # an unfinished equivalent is not disproven
         self.assertIn("baseline: 80s, per-mutant timeout 10s, 40s left", text)
-        self.assertIn("ran 3 of 3 mutants", text)
-        self.assertIn("2 killed", text)  # includes the per-mutant timeout
-        self.assertIn("1 timeouts", text)
-        self.assertIn("1 survived", text)
-        self.assertNotIn("incomplete:", text)
+        self.assertIn("ran 2 of 4 mutants", text)
+        self.assertIn("2 killed", text)
+        self.assertIn("0 timeouts", text)  # sub-baseline timeouts belong only in cut
+        self.assertIn("0 survived", text)
+        self.assertIn("incomplete: 0 mutants not started and 2 cut short", text)
+        self.assertNotIn("stale equivalent:", text)
+
+    def test_timeout_with_baseline_sized_budget_still_counts_as_killed(self) -> None:
+        result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.KILLED,
+            diff="", output="timeout",
+        )
+        status, output, mutate, _ = test_mutation_deadline.MutationDeadlineTest().run_mutation(
+            result, clock=[0, 0, 0, 0.1, 0.2, 0.3, 0.5, 0.5, 0.5],
+        )
+        self.assertEqual(status, 0, output)
+        self.assertAlmostEqual(mutate.call_args.args[2], 0.2)  # baseline 0.1s fits
+        self.assertIn("1 timeouts (included in killed); 1 killed; 0 survived", output)
+        self.assertNotIn("incomplete:", output)
 
     def test_completed_survivor_output_remains_actionable_for_dispatch(self) -> None:
         from factory import dispatch
