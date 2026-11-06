@@ -46,7 +46,8 @@ REPEAT_DAYS = 7  # ...inside this trailing window to count as a factory defect
 # PR's own failed checks; `pr_feedback` reports feedback on that PR; an already-fixed
 # ticket may produce `no_change`; `review_revise` means review still requests changes
 # after bounded review rounds, a manager FIX, or a merge-stage refresh/rebase.
-OUTCOME_CODES = {"budget", "gate_failed", "ci_failed", "pr_feedback", "no_change", "review_revise"}
+# `infra_failed` is a bounded network/download host outage, not an engine defect.
+OUTCOME_CODES = {"budget", "gate_failed", "ci_failed", "pr_feedback", "no_change", "review_revise", "infra_failed"}
 OBSERVED = "## Observed by"
 COMMENT_PREFIX = "factory watch: observed in `"
 MAX_OPEN = 200  # newest open `bug` issues of the engine repo searched for a fingerprint

@@ -535,6 +535,48 @@ class RefreshGateFailureRecoveryTest(unittest.TestCase):
         ):
             self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
 
+    def test_infra_exhaustion_after_refresh_names_host_problem_and_preserves_evidence(self) -> None:
+        report = "Infra retries exhausted (host problem; limit 1).\n\n# Gate report\n- test: FAIL (infra)"
+        with self.patched(), mock.patch.object(dispatch, "run_gate", return_value=(False, report)):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+        [escalation] = self.events("escalate")
+        self.assertEqual(escalation["code"], "infra_failed")
+        self.assertIn("Infra retries exhausted (host problem; limit 1)", escalation["reason"])
+        packet = Path(escalation["packet"]).read_text()
+        self.assertIn(report, packet)
+        comments = [c[c.index("--body") + 1] for c in self.github.calls if c[1:3] == ["issue", "comment"]]
+        self.assertIn("Infra retries exhausted (host problem; limit 1)", comments[0])
+        wt = dispatch.FACTORY / "wt-9"
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), self.pr_head)
+        self.assertEqual(git(wt, "rev-parse", escalation["evidence_ref"]), escalation["refreshed_head"])
+        self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+        self.assertEqual(self.events("gate-requeue"), [])
+
+    def test_manager_fix_pr_gate_infra_exhaustion_keeps_host_failure_class(self) -> None:
+        wt = dispatch.ensure_worktree(9)
+        packet = self.tmp / "packet.md"
+        packet.write_text("Fix the gate")
+        report = "Infra retries exhausted (host problem; limit 1).\n\n# Gate report\n- mutation: FAIL (infra)"
+        with (
+            self.patched(),
+            mock.patch.object(dispatch, "worker_round", return_value=(True, "gate ok", None, self.pr_head)),
+            mock.patch.object(dispatch, "record_risk"),
+            mock.patch.object(dispatch, "pr_gate_and_review", return_value=(None, report, True)),
+            mock.patch.object(dispatch, "approve_pr", return_value=True) as approve,
+        ):
+            manage.apply(
+                9, self.github.issue(), "FIX", "",
+                {"worker": "default", "guidance": "fix the gate"}, packet,
+            )
+        [escalation] = self.events("escalate")
+        self.assertEqual(escalation["code"], "infra_failed")
+        self.assertIn("host problem", escalation["reason"])
+        self.assertIn(report, Path(escalation["packet"]).read_text())
+        comments = [c[c.index("--body") + 1] for c in self.github.calls if c[1:3] == ["issue", "comment"]]
+        self.assertIn("host problem", comments[0])
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), self.pr_head)
+        approve.assert_not_called()
+
     def test_gate_failure_after_refresh_resets_worktree_to_pr_head_and_keeps_rebased_head_in_side_ref(
         self,
     ) -> None:

@@ -462,6 +462,8 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             selected_worker=data["worker"],
             comments=comments,
         )
+        if not ok and dispatch.gate_infra_exhausted(n, report, logfile, already_human=already_human):
+            return
         if not ok:
             reason = "gate failed after manager FIX"
             if already_human:
@@ -477,6 +479,8 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         dispatch.push_agent(wt, n, lease)
         dispatch.record_risk(wt, n, gate_head)
         verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
+        if pr_failed and dispatch.gate_infra_exhausted(n, findings, logfile, already_human=already_human):
+            return
         dispatch.pr_comment(n, findings)
         if pr_failed:
             reason = "pr checks failed"
@@ -976,7 +980,16 @@ def frontier_pass(dry_run: bool = False) -> None:
                 def fresh(at: str, released: str = released) -> bool:  # missing or zero time (gh's commit-status checks) is unknown, so fresh
                     return not at or at.startswith("0001-") or at > released
 
-                failed = [c["name"] for c in red if fresh(c.get("completedAt", ""))]
+                checks = dispatch.triage_cancelled(
+                    number, [c for c in checks if c not in red or fresh(c.get("completedAt", ""))],
+                    dry_run, n, head,
+                )
+                failed = [c["name"] for c in checks if c["bucket"] in ("fail", "cancel")]
+                starved = [c for c in checks if c["bucket"] == "infra"] if not failed else []
+                if not failed and not starved and any(c.get("run") and c["bucket"] == "pending" for c in checks):
+                    if execution:
+                        execution.wait("ci_pending", mode="eligibility", pr=number)
+                    continue
                 late = [i for i in late if i["kind"] not in CI_KINDS or fresh(i["source_updated_at"])]
                 age = datetime.now(UTC) - max(updated, datetime.fromisoformat(released or pr["updatedAt"]))
                 stale = age.days >= cfg.manager_stale_days
@@ -987,16 +1000,23 @@ def frontier_pass(dry_run: bool = False) -> None:
                           f"{len(late)} unresolved feedback item(s) on head {head[:12]}" if late else
                           f"no activity for {age.days} days (stale_days = {cfg.manager_stale_days})" if stale else "")
                 code = "ci_failed" if failed else "pr_feedback" if late else "pr_stale"
-                if reason:
+                if reason or starved:
                     if dry_run:
-                        dispatch.log(f"PR #{number}: would escalate ({reason})")
+                        if starved:
+                            dispatch.runner_unavailable(n, number, starved, dry_run)
+                        else:
+                            dispatch.log(f"PR #{number}: would escalate ({reason})")
                         continue
                     if late:
                         dispatch.record("feedback-delivered", ticket=n, pr=number, head=head,
                                         observation_id=observation["observation_id"],
                                         pairs=[[i["evidence_id"], i["source_revision"]] for i in late])
-                    dispatch.escalate(n, f"PR #{number}: {reason}", None, extra=feedback_packet(late) if late else "",
-                                      code=code)
+                    extra = feedback_packet(late)
+                    if starved:
+                        if not dispatch.runner_unavailable(n, number, starved, dry_run, extra=extra):
+                            continue
+                    else:
+                        dispatch.escalate(n, f"PR #{number}: {reason}", None, extra=extra, code=code)
                     execution.outcome, execution.reason = "project_escalation", "pr_frontier"
                     continue
                 if red and not failed:

@@ -137,6 +137,10 @@
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks
+# infra_retries = 3                    # retries after an infrastructure failure
+# Additional case-insensitive strong-signal regexes; these extend the built-in
+# Cargo registry, HTTP/2, connection-reset, and DNS-resolution patterns.
+# infra_patterns = ["INTERNAL_REGISTRY_UNAVAILABLE"]
 # Review policy is read from the base ref, so a PR cannot change its own review rules.
 protected_paths = ["REVIEW.md"]
 

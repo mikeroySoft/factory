@@ -131,6 +131,79 @@ class FrontierTest(unittest.TestCase):
         self.assertEqual(pairs[1][0][0], first[0])
         self.assertNotEqual(pairs[1][0][1], first[1])
 
+    def test_exhausted_infra_preserves_fresh_feedback_and_delivery_revisions(self) -> None:
+        import json
+
+        dispatch.record("claimed", ticket=79)
+        self.cfg.infra_retries = 1
+        dispatch.record("ci-rerun", pr=80, run=42, attempt=1, ok=True)
+        checks = [{
+            "name": "signatures", "bucket": "fail",
+            "link": "https://github.com/example/project/actions/runs/42/job/99",
+        }]
+        observation = manage.observe_pr(self.pr, 79, self.events())
+        selected = manage.undelivered(observation, self.events(), 79)
+        self.assertEqual({i["source_id"] for i in selected}, {"RV_1", "RC_1", "CR_1"})
+        original = self.fake_run
+
+        def command(argv, **kwargs):
+            if argv[:2] == ["gh", "api"]:
+                output = ({"status": "completed"} if "/actions/runs/" in argv[2]
+                          else {"run_attempt": 2})
+                return subprocess.CompletedProcess(argv, 0, json.dumps(output), "")
+            if argv[:3] == ["gh", "run", "view"]:
+                return subprocess.CompletedProcess(argv, 0, "Connection reset by peer", "")
+            return original(argv, **kwargs)
+
+        with (
+            mock.patch.object(dispatch, "pr_checks", return_value=checks),
+            mock.patch.object(dispatch, "run", side_effect=command),
+        ):
+            manage.frontier_pass()
+            escalated = self.escalations()
+            self.assertEqual([e["code"] for e in escalated], ["infra_failed"])
+            self.assertIn("infra retry limit 1 exhausted", escalated[0]["reason"])
+            self.assertIn("network/download host problem", escalated[0]["reason"])
+            packet = Path(escalated[0]["packet"]).read_text()
+            self.assertIn("## Late feedback on the current head", packet)
+            self.assertIn("Fix boundary", packet)
+            self.assertIn("`factory/example.py:7`", packet)
+            for item in selected:
+                self.assertIn(item["source_id"], packet)
+                self.assertIn(item["source_url"], packet)
+            delivered = [e for e in self.events() if e.get("event") == "feedback-delivered"]
+            self.assertEqual(len(delivered), 1)
+            self.assertEqual(delivered[0]["pairs"],
+                             [[i["evidence_id"], i["source_revision"]] for i in selected])
+            self.assertEqual((delivered[0]["ticket"], delivered[0]["pr"], delivered[0]["head"]),
+                             (79, 80, H))
+            self.assertEqual(delivered[0]["observation_id"], observation["observation_id"])
+            terminal = [e for e in self.events()
+                        if e.get("stage") == "manage" and e.get("kind") == "exit"][-1]
+            self.assertEqual((terminal["outcome"], terminal["reason"]),
+                             ("project_escalation", "pr_frontier"))
+            self.assertFalse(any("factory-approved" in cmd for cmd in self.mutations))
+            self.assertFalse(any(cmd[:3] == ["gh", "run", "rerun"] for cmd in self.mutations))
+            self.issue_labels = ["ready-for-human"]
+            manage.frontier_pass()
+            self.issue_labels = ["ready-for-agent"]
+            manage.frontier_pass()
+            self.assertEqual(len(self.escalations()), 1)
+            self.assertEqual(len([e for e in self.events()
+                                  if e.get("event") == "feedback-delivered"]), 1)
+            self.provider.reviews[0]["body"] = "Fix the revised boundary too"
+            manage.frontier_pass()
+            self.assertEqual([e["code"] for e in self.escalations()],
+                             ["infra_failed", "infra_failed"])
+            revised_packet = Path(self.escalations()[-1]["packet"]).read_text()
+            self.assertIn("Fix the revised boundary too", revised_packet)
+            deliveries = [e for e in self.events() if e.get("event") == "feedback-delivered"]
+            self.assertEqual(len(deliveries), 2)
+            first_review = next(p for p in deliveries[0]["pairs"] if ":review:" in p[0])
+            self.assertEqual(len(deliveries[1]["pairs"]), 1)
+            self.assertEqual(deliveries[1]["pairs"][0][0], first_review[0])
+            self.assertNotEqual(deliveries[1]["pairs"][0][1], first_review[1])
+
     def test_partial_coverage_unknown_relevance_and_resolved_threads_are_not_delivered(self) -> None:
         dispatch.record("claimed", ticket=79)
         self.provider.fail = "threads"
@@ -192,6 +265,68 @@ class FrontierTest(unittest.TestCase):
         manage.frontier_pass()
         self.assertIn("stale_days = 7", self.escalations()[-1]["reason"])
         self.assertEqual(len(self.escalations()), 2)
+
+    def test_code_failure_precedes_independent_exhausted_infra_workflow(self) -> None:
+        self.cfg.infra_retries = 0
+        self.mixed_ci_frontier()
+
+    def test_code_failure_precedes_infra_budget_spent_by_another_poller(self) -> None:
+        self.cfg.infra_retries = 1
+        dispatch.record("ci-rerun", pr=80, run=42, attempt=1, ok=True)
+        self.mixed_ci_frontier()
+
+    def mixed_ci_frontier(self) -> None:
+        dispatch.record("claimed", ticket=79)
+        self.provider.reviews, self.provider.checks = [], []
+        self.provider.thread["isResolved"] = True
+        checks = [
+            {"name": name, "bucket": "fail",
+             "link": f"https://github.com/example/project/actions/runs/{run}/job/{job}"}
+            for name, run, job in (("unit", 41, 98), ("signatures", 42, 99))
+        ]
+        original = self.fake_run
+
+        def command(argv, **kwargs):
+            if argv[:2] == ["gh", "api"]:
+                import json
+
+                output = ({"status": "completed"} if "/actions/runs/" in argv[2]
+                          else {"run_attempt": 2})
+                return subprocess.CompletedProcess(argv, 0, json.dumps(output), "")
+            if argv[:3] == ["gh", "run", "view"]:
+                output = "Connection reset by peer" if "99" in argv else "assertion failed"
+                return subprocess.CompletedProcess(argv, 0, output, "")
+            return original(argv, **kwargs)
+
+        with (
+            mock.patch.object(dispatch, "pr_checks", return_value=checks),
+            mock.patch.object(dispatch, "run", side_effect=command),
+        ):
+            manage.frontier_pass()
+        self.assertEqual([e["code"] for e in self.escalations()], ["ci_failed"])
+        self.assertEqual([e["reason"] for e in self.escalations()], ["PR #80: CI failed (unit)"])
+
+    def test_pending_check_does_not_hide_actionable_feedback(self) -> None:
+        dispatch.record("claimed", ticket=79)
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+            {"name": "slow", "bucket": "pending"},
+        ]):
+            manage.frontier_pass()
+        self.assertEqual([e["code"] for e in self.escalations()], ["pr_feedback"])
+        packet = Path(self.escalations()[0]["packet"]).read_text()
+        self.assertIn("Fix boundary", packet)
+        self.assertTrue(any(e.get("event") == "feedback-delivered" for e in self.events()))
+
+    def test_completed_check_with_run_does_not_hide_actionable_feedback(self) -> None:
+        dispatch.record("claimed", ticket=79)
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+            {"name": "signatures", "bucket": "pass", "run": 42},
+        ]):
+            manage.frontier_pass()
+        self.assertEqual([e["code"] for e in self.escalations()], ["pr_feedback"])
+        packet = Path(self.escalations()[0]["packet"]).read_text()
+        self.assertIn("Fix boundary", packet)
+        self.assertTrue(any(e.get("event") == "feedback-delivered" for e in self.events()))
 
     def released_after_red_ci(self) -> None:
         """#188: gate failed at 18:52; the owner released the ticket to ready-for-agent at 19:45."""
