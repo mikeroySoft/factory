@@ -718,7 +718,14 @@ def execute(args: argparse.Namespace, execution) -> int:
     replay = bool(args.replay)
     from factory.plan import is_initiative  # plan -> evidence -> dashboard: import lazily
 
-    if not (replay or args.dry_run) and (refused := identity_mismatch()):
+    try:
+        refused = None if replay or args.dry_run else identity_mismatch()
+    except subprocess.CalledProcessError as exc:
+        print(f"triage refused to post: GitHub login lookup failed: {exc.stderr.strip()}", file=sys.stderr)
+        if execution:
+            execution.outcome, execution.reason = "mechanism_failure", "github_command_failed"
+        return 1
+    if refused:
         print(f"triage refused to post: {refused}. Run it from the factory unit, whose "
               "[install].dispatch_env selects the dispatcher's gh config.", file=sys.stderr)
         if execution:

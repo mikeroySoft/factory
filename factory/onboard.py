@@ -43,9 +43,9 @@ def sh(
 
 
 def gh_login(env: dict[str, str]) -> str:
-    """`gh api user` login under `env`; empty when gh cannot authenticate."""
-    proc = subprocess.run(["gh", "api", "user", "--jq", ".login"], env=env, capture_output=True, text=True, check=False)
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+    """`gh api user` login under `env`; raise if the lookup fails."""
+    proc = subprocess.run(["gh", "api", "user", "--jq", ".login"], env=env, capture_output=True, text=True, check=True)
+    return proc.stdout.strip()
 
 
 def _ssh_key_material(root: Path, configured: str) -> str | None:
@@ -555,8 +555,14 @@ def doctor(argv: list[str]) -> int:
         registered, detail = signing
         report(registered, "SSH signing key registered", detail)
     if dispatch_env := cfg.install.get("dispatch_env"):
-        dispatcher = gh_login({**os.environ, **cfg.install["env"], **dispatch_env})
-        dashboard = gh_login(config.dashboard_env(cfg))
+        try:
+            dispatcher = gh_login({**os.environ, **cfg.install["env"], **dispatch_env})
+        except subprocess.CalledProcessError:
+            dispatcher = ""
+        try:
+            dashboard = gh_login(config.dashboard_env(cfg))
+        except subprocess.CalledProcessError:
+            dashboard = ""
         same = dispatcher.casefold() == dashboard.casefold()
         report(
             bool(dispatcher and dashboard) and not same, "GitHub identities",
