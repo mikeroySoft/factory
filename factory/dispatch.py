@@ -4890,7 +4890,7 @@ def process_ticket(
                 execution.wait("worker_unavailable", mode="retry_next_pass", worker=profile)
                 return
             launch_spec = None if launch is None else cfg.worker_spec(launch, wt / ".factory-prompt.md", wt)
-            # The PATH the launch itself gets: the host's plus the profile's [workers.env].
+            # The PATH the launch itself gets: the host's, overridden by the profile's `env`.
             missing = launch_spec and worker_missing(launch_spec, {**os.environ, **launch_spec.env})
             if not forced and missing:
                 # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
