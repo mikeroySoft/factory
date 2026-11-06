@@ -99,7 +99,7 @@ KNOWN_KEYS = {
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
-    "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
+    "gate": ("timeout", "lock", "check", "fixups", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout", "service", "max_tokens", "chat_template_kwargs"),
     "journal": ("max_mb", "retention"),
@@ -243,6 +243,7 @@ class Config:
     release_bar_floor_human_rate: float = 0.10
     release_bar_floor_first_pass: float = 0.90
     checks: list[Check] = field(default_factory=list)
+    fixups: list[list[str]] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
     add_only_paths: list[str] = field(default_factory=list)
     check_timeout: int = 1200
@@ -916,6 +917,15 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.prices = price_table(raw.get("prices", {}))
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
+    fixups = gate.get("fixups", [])
+    if not isinstance(fixups, list) or any(
+        not isinstance(argv, list) or not argv
+        or any(not isinstance(arg, str) or "\0" in arg for arg in argv)
+        or not argv[0].strip()
+        for argv in fixups
+    ):
+        raise ConfigError("gate.fixups must be an array of nonempty argv arrays")
+    cfg.fixups = fixups
     for key in ("protected_paths", "add_only_paths"):
         paths = gate.get(key, [])
         if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):
