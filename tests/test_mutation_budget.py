@@ -106,6 +106,18 @@ class MutationBudgetTest(unittest.TestCase):
         self.assertIn("1 survived", text)
         self.assertNotIn("incomplete:", text)
 
+    def test_completed_survivor_output_remains_actionable_for_dispatch(self) -> None:
+        from factory import dispatch
+
+        survivor = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.SURVIVED,
+            diff="-value = 1\n+value = 2\n", output="",
+        )
+        status, output, _, _ = test_mutation_deadline.MutationDeadlineTest().run_mutation(survivor)
+
+        self.assertEqual(status, 1)
+        self.assertTrue(dispatch._actionable_mutation(output), output)
+
 
 if __name__ == "__main__":
     unittest.main()
