@@ -962,3 +962,24 @@ class BuiltinStorageGateTest(unittest.TestCase):
                 exits = [row for row in rows if row.get("stage") == "gate" and row.get("kind") == "exit"]
                 self.assertEqual(exits[-1]["reason"], "runner_storage_low")
                 self.assertEqual(exits[-1]["outcome"], "unknown")
+
+
+class ExpectedStorageReproductionTest(unittest.TestCase):
+    def test_expected_storage_exception_before_fix_is_product_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            (repo / "value.py").write_text(
+                "def value():\n    raise OSError(28, 'No space left on device')\n"
+            )
+            commit(repo, "storage handling bug")
+            git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+            add_repro(repo)
+            (repo / "value.py").write_text("def value():\n    return True\n")
+            commit(repo, "fix storage handling")
+
+            code, report = run_gate(repo, "--bug", "--repro-test", TEST_ID)
+
+            self.assertEqual(code, 0, report)
+            self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+            self.assertIn("- bug-repro-head: PASS", report)
+            self.assertNotIn("INFRA", report)

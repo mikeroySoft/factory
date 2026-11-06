@@ -425,3 +425,24 @@ class CompletedStorageErrorTest(unittest.TestCase):
             "2 failed in 0.01s\n"
         )
         self.assertTrue(storage_diagnostic(output))
+
+
+class QuotedStorageDiagnosticTest(unittest.TestCase):
+    def test_lint_source_quotes_remain_product_failures(self) -> None:
+        import json
+
+        for diagnostic in (
+            "366 |     (\"OSError: [Errno 28] No space left on device\", 1, 75),",
+            " 42 |     raise RuntimeError('No space left on device')",
+            " 43 |     message = 'fatal: cannot write: No space left on device'",
+        ):
+            with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
+                output = f"ISC004 Unparenthesized implicit string concatenation\n{diagnostic}\nFound 1 error."
+                command = [sys.executable, "-c", f"print({output!r}); raise SystemExit(1)"]
+                repo = repo_with_test(Path(directory), TOML + (
+                    '\n[[gate.check]]\nname = "ruff"\nrun = ' + json.dumps(command) + "\n"
+                ))
+                code, out, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+                self.assertEqual(code, 1, report + out)
+                self.assertIn("- ruff: FAIL", report)
+                self.assertNotIn("INFRA", report)
