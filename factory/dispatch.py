@@ -3789,7 +3789,7 @@ def merge_pass_locked(dry_run: bool) -> None:
             "--state",
             "open",
             "--json",
-            "number,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision",
+            "number,headRefName,headRefOid,baseRefName,isDraft,isCrossRepository,labels,reviewDecision",
         ]
     )
     from factory.learn import promote_pass
@@ -3809,7 +3809,7 @@ def merge_pass_locked(dry_run: bool) -> None:
             continue
         item = (pr["number"], int(m.group(1)), pr.get("headRefOid"))
         if FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}:
-            if pr["reviewDecision"] != "CHANGES_REQUESTED":
+            if not pr.get("isCrossRepository") and pr["reviewDecision"] != "CHANGES_REQUESTED":
                 waiting.append(item)
             continue
         if pr["reviewDecision"] == "CHANGES_REQUESTED":
@@ -3838,7 +3838,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 or issue.get("assignees")
             ):
                 continue
-            fields = "state,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision"
+            fields = "state,headRefName,headRefOid,baseRefName,isDraft,isCrossRepository,labels,reviewDecision"
             fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
             fresh_labels = {label["name"] for label in fresh.get("labels", [])}
             head = fresh.get("headRefOid")
@@ -3847,6 +3847,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 or fresh.get("headRefName") != f"agent/{n}"
                 or fresh.get("baseRefName") != cfg.main
                 or fresh.get("isDraft")
+                or fresh.get("isCrossRepository")
                 or FACTORY_APPROVED in fresh_labels
                 or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
                 or not head

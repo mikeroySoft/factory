@@ -1015,15 +1015,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    requeues. A closed ticket, exhausted gate rounds, or a protected/add-only failure
    without its authority label escalates immediately; escalation packets retain both
    reports and the same diff assessment.
-   Unapproved open `agent/<n>` PRs waiting on an open, unassigned
+   Unapproved open same-repository `agent/<n>` PRs waiting on an open, unassigned
    `ready-for-human` ticket are also refreshed on the next pass, before approved
    merge candidates, under the ticket lock. The same refresh step rebases (or
    sync-merges), re-gates, and lease-pushes the head, invalidating prior approval.
    A clean waiting refresh leaves issue labels/state unchanged, skips review
    and reapproval, and records no escalation or manager round. Conflicts and
    repeated gate failures use the same `conflict-requeue` and `gate-requeue`
-   paths above; active tickets, human change requests, drafts, and other targets
-   are not refreshed through this waiting path.
+   paths above; active tickets, fork PRs, human change requests, drafts, and other
+   targets are not refreshed through this waiting path.
    A waiting refresh that escalates is not repeated for the same PR, main,
    and kept-worktree heads; changed inputs make it eligible again. Unpublished
    kept heads are retained under `refs/factory-evidence/...` before restoring
@@ -1063,7 +1063,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    test and no other failure records `parked_test` (test ID, unambiguous source
    file, and observed main SHA), resolving source against the gated revision
    even when refresh restores the original PR head. Parameterized pytest IDs
-   retain their full ID, including spaces, while matching the unparameterized source. Complete
+   retain their full ID, including spaces, without capturing bracketed failure messages,
+   while matching the unparameterized source. Complete
    unittest, pytest, and cargo failure
    summaries are recognized; unittest skips and expected failures do not count
    as failures, but unexpected successes do. Ambiguous/truncated output, a failed
