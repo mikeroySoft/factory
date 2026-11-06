@@ -92,9 +92,9 @@ class LaunchdObserversTest(unittest.TestCase):
         path = directory / "1.lock"
         path.touch()
         with patch.object(sys, "platform", "darwin"), \
-                self.runner({"lsof": (0, f"f3\0l \0n{path}\0\n")}):
-            with self.assertRaisesRegex(runtime_local._Unavailable, "lock_state_unavailable"):
-                runtime_local._capacity(self.cfg)
+                self.runner({"lsof": (0, f"f3\0l \0n{path}\0\n")}), \
+                self.assertRaisesRegex(runtime_local._Unavailable, "lock_state_unavailable"):
+            runtime_local._capacity(self.cfg)
 
     def test_watch_reports_exit_and_log_but_not_retained_running_failure(self):
         log = self.root / "agent.err"

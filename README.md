@@ -2264,6 +2264,18 @@ not false; inactive service evidence alone does not establish unexpected stop.
 `paused` is null because the current producer has no recorded pause intention.
 No scheduled intention is inferred from a configured interval.
 
+On macOS, `launchctl print gui/<uid>/factory-<repo basename>` supplies loaded
+agent state: `running` is active, `not running`/`exited` is inactive, and
+transitional states remain unknown. A positive `run interval` makes
+`timer_active` true. Additive fields `last_exit_status` and `run_interval`
+report parsed integers or null. launchd exposes no next-fire timestamp here,
+so `next_at` stays null with `next_at_code: "not_applicable"` (not an error).
+`watch` checks this agent and its `-dashboard` sibling for nonzero last exit
+codes, including named codes such as `78: EX_CONFIG`, with the tail of
+`stderr path` (`StandardErrorPath`). Running agents' retained exit codes do not
+trigger failures. Doctor verifies occupied dashboard ports with
+`lsof -nP -iTCP:<port> -sTCP:LISTEN` and the running dashboard agent's PID.
+
 Each execution has the eight common F01 identity fields (`dispatcher_run_id`,
 `root_execution_id`, `execution_id`, `parent_execution_id`, `ticket`, `attempt`,
 `review_round`, `stage`) with their types above, plus `state` (`active`,
@@ -2305,16 +2317,23 @@ Each repository/host TOML read is capped at 256 KiB. Invalid runtime configurati
 produces `factory: runtime configuration unavailable or invalid`, without echoing
 the input. Unrelated worker/model/check settings are not evaluated.
 
-Three allowlisted `systemctl --user` queries read service state, timer state,
-and JSON timers. Each local command has a 0.5-second deadline, stdout strictly
-below 64 KiB, discarded stderr, and at most another 0.5 seconds for reap after
-kill. At most five commands run (four with an explicit slug). The D-Bus address
-is forced to a local Unix socket, never an inherited TCP address. Missing tools,
-unavailable units, invalid output, overflow and timeouts yield partial errors.
-Only explicit `ActiveState=active` is true; transitional states remain unknown.
-`next_at` requires an active timer and an explicitly returned future timestamp.
-Admission scans at most 1024 directory entries and a 256 KiB kernel lock window;
-unreadable/incomplete evidence returns null capacity, not a false zero.
+On Linux, three allowlisted `systemctl --user` queries read service state,
+timer state, and JSON timers; their argv is unchanged. On macOS, one
+allowlisted `launchctl print` query replaces these and, when ticket lock files
+exist, `lsof -nP -F0fln +d <locks directory>` observes admission without
+acquiring locks. Each local command has a 0.5-second deadline, output strictly
+below 64 KiB, and at most another 0.5 seconds for reap after kill. Stderr is
+discarded except for lsof, whose diagnostics make the observation unavailable.
+At most five commands run (four with an explicit slug). The systemd D-Bus
+address is forced to a local Unix socket, never an inherited TCP address.
+Missing tools, unavailable units, invalid output, overflow and timeouts yield
+partial errors. Only explicit `ActiveState=active` is true on Linux;
+transitional states remain unknown. `next_at` requires an active timer and an
+explicitly returned future timestamp.
+Admission scans at most 1024 directory entries and, on Linux, a 256 KiB kernel
+lock window; unreadable/incomplete evidence returns null capacity, not a false
+zero. Darwin lsof may omit flock information for an open ticket lock; that
+returns `lock_state_unavailable`, never probes by taking a lock.
 
 System query errors use source `systemctl`, scope `service`, `timer`, or
 `schedule`, and codes `invalid_unit`, `timeout`, `output_limit`, `command_failed`,
@@ -2323,6 +2342,9 @@ System query errors use source `systemctl`, scope `service`, `timer`, or
 scope `repository`, with `missing`, `unreadable`, `unsupported_file`, `byte_limit`,
 `entry_limit`, `changed`, or `invalid_kernel_locks`. Errors contain fixed codes
 only; raw stderr and arbitrary stored diagnostic text are never returned.
+macOS service query errors use source `launchctl`, scope `service`, and the
+same applicable command/state codes. macOS admission can also return command
+errors or `lock_state_unavailable`.
 
 The journal reader performs one `pread` of at most **1,048,576 bytes** at the
 end of the regular file, with no journal lock. It drops the first clipped line,
