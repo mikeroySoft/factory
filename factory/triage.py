@@ -369,21 +369,29 @@ class EndpointTimeout(SystemExit):
 
 def call_llm(messages: list[dict], execution=None) -> str:
     started = time.monotonic()
-    payload = json.dumps(
-        {
-            "model": LLM_MODEL,
-            "messages": messages,
-            "temperature": 0.1,
-        }
-    ).encode()
+    body = {
+        "model": LLM_MODEL,
+        "messages": messages,
+        "temperature": 0.1,
+        "max_tokens": cfg.triage_max_tokens,
+    }
+    if cfg.triage_chat_template_kwargs is not None:
+        body["chat_template_kwargs"] = cfg.triage_chat_template_kwargs
+    payload = json.dumps(body).encode()
     req = urllib.request.Request(
         LLM_URL,
         data=payload,
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
-            body = json.load(resp)
+        state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+        lock_path = state_home / "factory" / "triage-requests" / hashlib.sha256(LLM_URL.encode()).hexdigest()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Shared across repos and processes, including callers outside a triage pass.
+        with lock_path.open("a+b") as endpoint_lock:
+            fcntl.flock(endpoint_lock, fcntl.LOCK_EX)
+            with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
+                body = json.load(resp)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         timed_out = isinstance(exc, TimeoutError) or (
             isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
@@ -692,6 +700,9 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     configure(config.load())
+    if cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host:
+        print(f"triage: skipped, triage host is {cfg.triage_host}")
+        return 0
 
     recording = not (args.replay or args.dry_run)
     with (

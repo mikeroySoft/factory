@@ -46,6 +46,9 @@ class ReviewPolicyTest(unittest.TestCase):
         git(self.root, "commit", "-qm", "worker")
         self.head = git(self.root, "rev-parse", "HEAD")
         self.prompt = self.root / "prompt.txt"
+        self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
+            "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
+        }))
 
     def configure(self, output: str) -> None:
         script = (

@@ -85,7 +85,9 @@ class PromoteRegressionTest(unittest.TestCase):
     def test_promote_refreshes_a_behind_lessons_only_head_without_approval_receipt(self) -> None:
         self.journal(self.gate(), self.review())
         self.compare = {"behind_by": 3, "files": [{"filename": config.LESSONS_NAME}]}
-        self.run.side_effect = RuntimeError("the head branch is not up to date")
+        self.run.side_effect = RuntimeError(
+            'Repository rule violations found: Required status check "gate" is expected.'
+        )
 
         with mock.patch.object(learn, "refresh") as refresh:
             learn.promote_pass([self.pr])
@@ -100,18 +102,20 @@ class PromoteRegressionTest(unittest.TestCase):
 
         def reject_merge(args: list[str], **_kwargs) -> subprocess.CompletedProcess:
             if args[:3] == ["gh", "pr", "merge"]:
-                raise RuntimeError("the head branch is not up to date")
+                raise RuntimeError(
+                    'Repository rule violations found: Required status check "gate" is expected.'
+                )
             return subprocess.CompletedProcess(args, 0, "", "")
 
         self.run.side_effect = reject_merge
-        with mock.patch.object(learn, "refresh", side_effect=RuntimeError("rebase conflict")) as refresh:
+        with mock.patch.object(learn, "refresh", side_effect=RuntimeError("merge conflict")) as refresh:
             learn.promote_pass([self.pr])
             rows_after_failure = lifecycle.read_events(self.events)
             learn.promote_pass([self.pr])
             learn.promote_pass([self.pr])
 
         refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
-        self.assertEqual(self.run.call_count, 2)
+        self.run.assert_not_called()
         self.assertEqual(lifecycle.read_events(self.events), rows_after_failure)
         [blocked] = self.rows("promotion-blocked")
         self.assertEqual((blocked["pr"], blocked["head"], blocked["reason"]), (
@@ -345,6 +349,254 @@ class PromoteRegressionTest(unittest.TestCase):
         [opened] = self.rows("promotion-open")
         self.assertEqual(merged["by"], "human")
         self.assertEqual(opened["head"], self.HEAD)
+
+    def test_lessons_pr_head_gets_required_gate_check(self) -> None:
+        self.journal(self.gate(), self.review())
+        self.compare = {"behind_by": 4, "files": [{"filename": config.LESSONS_NAME}]}
+
+        def reject_merge(args: list[str], **_kwargs) -> subprocess.CompletedProcess:
+            if args[:3] == ["gh", "pr", "merge"]:
+                raise RuntimeError(
+                    'Repository rule violations found: Required status check "gate" is expected.'
+                )
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        self.run.side_effect = reject_merge
+        with mock.patch.object(learn, "refresh") as refresh:
+            learn.promote_pass([self.pr])
+
+        refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
+        self.assertFalse(any(
+            row["reason"].startswith("merge failed:") for row in self.rows("promotion-blocked")
+        ))
+        self.assertFalse(any(
+            call.args[0][:3] == ["gh", "pr", "merge"] for call in self.run.call_args_list
+        ))
+
+
+
+    def test_merge_refusals_refresh_instead_of_becoming_permanent(self) -> None:
+        for refusal, state in (
+            ('Repository rule violations found: Required status check "gate" is expected.', "BLOCKED"),
+            ("the head branch is not up to date", "BEHIND"),
+            ("Pull request is not mergeable", "BEHIND"),
+        ):
+            with self.subTest(refusal=refusal):
+                self.events.unlink(missing_ok=True)
+                self.journal(self.gate(), self.review())
+                self.gh.side_effect = lambda args, state=state: (
+                    self.compare if args[0] == "api" else {"mergeStateStatus": state}
+                )
+
+                def reject_merge(args: list[str], refusal=refusal, **_kwargs) -> subprocess.CompletedProcess:
+                    if args[:3] == ["gh", "pr", "merge"]:
+                        raise subprocess.CalledProcessError(1, args, stderr=refusal)
+                    return subprocess.CompletedProcess(args, 0, "", "")
+
+                self.run.side_effect = reject_merge
+                with mock.patch.object(learn, "refresh") as refresh:
+                    learn.promote_pass([self.pr])
+                refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
+                self.assertEqual(self.rows("promotion-blocked"), [])
+                self.assertEqual(self.rows("merged"), [])
+
+    def test_legacy_required_check_block_recovers_once_then_expires_on_new_head(self) -> None:
+        self.compare["behind_by"] = 4
+        self.journal(self.gate(), self.review(), {
+            "event": "promotion-blocked", "pr": 42, "branch": self.BRANCH, "head": self.HEAD,
+            "reason": 'merge failed: Required status check "gate" is expected.',
+        })
+        with mock.patch.object(learn, "refresh", side_effect=RuntimeError("merge conflict")) as refresh:
+            learn.promote_pass([self.pr])
+            after = lifecycle.read_events(self.events)
+            learn.promote_pass([self.pr])
+            learn.promote_pass([self.pr])
+            refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
+            self.assertEqual(lifecycle.read_events(self.events), after)
+            self.assertEqual(self.rows("promotion-blocked")[-1]["reason"], "refresh failed")
+
+        self.pr["headRefOid"] = new = "b" * 40
+        self.journal({**self.gate(), "head": new}, {**self.review(), "head": new})
+        self.compare["behind_by"] = 0
+        learn.promote_pass([self.pr])
+        self.assertEqual([row["head"] for row in self.rows("merged")], [new])
+
+    def test_legacy_required_check_block_refreshes_even_if_compare_is_current(self) -> None:
+        self.journal(self.gate(), self.review(), {
+            "event": "promotion-blocked", "pr": 42, "head": self.HEAD,
+            "reason": 'merge failed: Required status check "gate" is expected.',
+        })
+        with mock.patch.object(learn, "refresh") as refresh:
+            learn.promote_pass([self.pr])
+        refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
+        self.run.assert_not_called()
+
+    def test_lessons_and_curate_refresh_before_merge_including_dry_run(self) -> None:
+        for kind, behind, state in (("lessons", 4, "BEHIND"), ("curate", 0, "BEHIND")):
+            with self.subTest(kind=kind):
+                self.events.unlink(missing_ok=True)
+                branch = f"agent/{kind}-2026-10-27-t10"
+                self.pr.update(headRefName=branch, mergeStateStatus=state)
+                self.compare["behind_by"] = behind
+                self.journal({**self.gate(), "branch": branch}, self.review())
+                before = lifecycle.read_events(self.events)
+                with mock.patch.object(learn, "refresh") as refresh:
+                    learn.promote_pass([self.pr], dry_run=True)
+                    refresh.assert_not_called()
+                    self.assertEqual(lifecycle.read_events(self.events), before)
+                    learn.promote_pass([self.pr])
+                    refresh.assert_called_once_with(self.cfg, 42, branch, self.HEAD)
+                self.run.assert_not_called()
+
+
+    def test_refreshed_lessons_merge_unblocks_the_next_learning_pass(self) -> None:
+        self.compare["behind_by"] = 4
+        self.journal(self.gate(), self.review(), *(
+            {"event": "merged", "ticket": n} for n in range(1, 11)
+        ))
+        open_prs = [self.pr]
+        self.gh.side_effect = lambda args: self.compare if args[0] == "api" else open_prs
+        new = "b" * 40
+
+        def refreshed(*_args) -> None:
+            self.pr["headRefOid"] = new
+            self.compare["behind_by"] = 0
+            self.journal({**self.gate(), "head": new}, {**self.review(), "head": new})
+
+        def merged(args: list[str], **_kwargs) -> subprocess.CompletedProcess:
+            if args[:3] == ["gh", "pr", "merge"]:
+                self.assertEqual(args[-1], new)
+                open_prs.clear()
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch.object(learn, "refresh", side_effect=refreshed) as refresh, \
+                mock.patch.object(learn.score, "run"), \
+                mock.patch.object(learn, "decide_promotions", return_value=[]), \
+                mock.patch.object(learn, "run") as run_learn:
+            learn.promote_pass(open_prs)
+            self.run.assert_not_called()
+            learn.learn_pass()
+            run_learn.assert_not_called()
+            refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
+            self.run.side_effect = merged
+            learn.promote_pass(open_prs)
+            learn.learn_pass()
+            run_learn.assert_called_once_with(self.cfg, learn.AUTO_EVERY, trigger="auto")
+        self.assertEqual([row["head"] for row in self.rows("merged") if "pr" in row], [new])
+
+
+class MergeRefreshTest(unittest.TestCase):
+    def test_refresh_preserves_published_history_and_refuses_concurrent_commits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            origin, repo = root / "origin.git", root / "repo"
+
+            def git(*args: str, cwd: Path = repo) -> str:
+                return subprocess.run(
+                    ["git", "-C", str(cwd), *args], check=True, text=True, capture_output=True,
+                ).stdout.strip()
+
+            subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+            subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True, capture_output=True)
+            git("config", "user.email", "test@example.com")
+            git("config", "user.name", "Test")
+            git("config", "commit.gpgsign", "false")
+            (repo / "README.md").write_text("base\n")
+            git("add", "README.md")
+            git("commit", "-qm", "base")
+            branch = "agent/lessons-2026-11-04-t10"
+            git("checkout", "-qb", branch)
+            (repo / config.LESSONS_NAME).write_text("- Run the gate.\n")
+            git("add", config.LESSONS_NAME)
+            git("commit", "-qm", "lessons")
+            head = git("rev-parse", "HEAD")
+            git("push", "-q", "origin", branch)
+            git("checkout", "-q", "main")
+            (repo / "README.md").write_text("main advanced\n")
+            git("commit", "-qam", "main advanced")
+            tip = git("rev-parse", "HEAD")
+            git("push", "-q", "origin", "main")
+            cfg = config.Config(root=repo, repo="acme/widgets")
+            cfg.factory.mkdir()
+            with mock.patch.multiple(dispatch, create=True, cfg=cfg, EVENTS=cfg.factory / "events.jsonl"), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")) as gate, \
+                    mock.patch.object(dispatch, "review_external_pr") as review:
+                learn.refresh(cfg, 42, branch, head)
+                new = git("rev-parse", branch)
+                self.assertEqual(git("rev-parse", f"{new}^1"), head)
+                self.assertEqual(git("rev-parse", f"{new}^2"), tip)
+                self.assertEqual(git("rev-parse", branch, cwd=origin), new)
+                self.assertEqual(git("show", f"{new}:{config.LESSONS_NAME}"), "- Run the gate.")
+                self.assertEqual(git("show", f"{new}:README.md"), "main advanced")
+                review.assert_called_once_with(42, tip, new, branch)
+                [row] = [r for r in lifecycle.read_events(dispatch.EVENTS) if r.get("event") == "gate"]
+                self.assertEqual((row["head"], row["gate"]), (new, "PASS"))
+
+                # A missing required check cannot be repaired by merging the same main again.
+                real_run = dispatch.run
+
+                def required_check_refusal(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+                    if args[:3] == ["gh", "pr", "merge"]:
+                        raise subprocess.CalledProcessError(
+                            1, args,
+                            stderr='Repository rule violations found: Required status check "gate" is expected.',
+                        )
+                    if args[:3] == ["gh", "pr", "edit"]:
+                        return subprocess.CompletedProcess(args, 0, "", "")
+                    return real_run(args, **kwargs)
+
+                pr = {
+                    "number": 42, "headRefName": branch, "headRefOid": new,
+                    "baseRefName": "main", "isDraft": False,
+                }
+                for legacy in (False, True):
+                    with self.subTest(legacy=legacy):
+                        dispatch.EVENTS.write_text("")
+                        dispatch.record("gate", branch=branch, head=new, gate="PASS")
+                        dispatch.record("review-result", pr=42, head=new, verdict="APPROVE")
+                        if legacy:
+                            dispatch.record(
+                                "promotion-blocked", pr=42, head=new,
+                                reason='merge failed: Required status check "gate" is expected.',
+                            )
+                        gates_before, reviews_before = gate.call_count, review.call_count
+                        with mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}), \
+                                mock.patch.object(dispatch, "run", side_effect=required_check_refusal), \
+                                mock.patch.object(dispatch, "pr_checks", return_value=[{"bucket": "pass"}]), \
+                                mock.patch.object(dispatch, "gh_json", return_value={
+                                    "behind_by": 0, "files": [{"filename": config.LESSONS_NAME}],
+                                }):
+                            for _ in range(3):
+                                learn.promote_pass([pr])
+                        self.assertLessEqual(gate.call_count - gates_before, 1)
+                        self.assertEqual(review.call_count, reviews_before)
+                        blocked = [
+                            row for row in lifecycle.read_events(dispatch.EVENTS)
+                            if row.get("event") == "promotion-blocked" and row["reason"] == "refresh failed"
+                        ]
+                        self.assertEqual([row["head"] for row in blocked], [new])
+                        self.assertEqual(git("rev-parse", branch, cwd=origin), new)
+                        self.assertFalse((cfg.factory / f"wt-{branch.removeprefix('agent/')}").exists())
+
+                (repo / "README.md").write_text("main advanced again\n")
+                git("commit", "-qam", "another main commit")
+                git("push", "-q", "origin", "main")
+                concurrent = git(
+                    "-c", "user.email=test@example.com", "-c", "user.name=Test",
+                    "commit-tree", f"{new}^{{tree}}", "-p", new, "-m", "concurrent", cwd=origin,
+                )
+
+                def race(*_args, **_kwargs) -> tuple[bool, str]:
+                    git("update-ref", f"refs/heads/{branch}", concurrent, cwd=origin)
+                    return True, "PASS"
+
+                gate.side_effect = race
+                with self.assertRaises(subprocess.CalledProcessError) as refused:
+                    learn.refresh(cfg, 42, branch, new)
+                self.assertIn("[rejected]", refused.exception.stderr)
+                self.assertEqual(git("rev-parse", branch, cwd=origin), concurrent)
+                review.assert_called_once()
+                self.assertFalse((cfg.factory / f"wt-{branch.removeprefix('agent/')}").exists())
 
 
 class LessonsFileTest(unittest.TestCase):

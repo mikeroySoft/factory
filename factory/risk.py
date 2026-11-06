@@ -136,11 +136,15 @@ def classify(
     opinion: Callable[[str, list[str]], str | None] | None = None,
     cwd: Path | None = None,
 ) -> tuple[str, list[str]]:
-    """Return ``(tier, matched_rules)`` for ``base..head``.
+    """Return ``(tier, matched_rules)`` for branch-owned changes in ``base...head``.
 
     Path rules decide first. An optional model opinion may raise that result but
     cannot lower it; model failures leave the deterministic result unchanged.
     """
+    base = subprocess.run(
+        ["git", "merge-base", base, head], cwd=cwd,
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
     changes = _changes(base, head, cwd)
     high = [rule for _, path in changes if (rule := high_rule(path))]
     if high:

@@ -258,6 +258,20 @@ class ViabilityTest(unittest.TestCase):
         self.assertEqual([(d["request"], d["verdict"]) for d in self.decisions()],
                          [(2301, "BUILD"), (2401, "BUILD")])
 
+    def test_github_failure_retains_stderr_only_on_terminal_event(self) -> None:
+        self.add("issue", 23, "Fragile edit", "Direction is sound [S1]\nVERDICT: BUILD")
+        self.state["fail"] = {"issue edit 23": 1}
+        self.save()
+
+        manage.viability_pass()
+
+        rows = [row for row in self.events() if row.get("event") == "lifecycle"]
+        terminal = next(row for row in rows if row["kind"] == "exit")
+        self.assertEqual((terminal["outcome"], terminal["reason"], terminal.get("error")),
+                         ("mechanism_failure", "github_command_failed", "fixture mutation failure\n"))
+        self.assertTrue(any(row["kind"] == "lock_released" for row in rows))
+        self.assertTrue(all("error" not in row for row in rows if row["kind"] != "exit"))
+
     def test_pr_replay_is_suppressed_until_a_new_label_request(self) -> None:
         self.add("pr", 24, "Reconsider PR", "Promising [S1]\nVERDICT: BUILD", request=2401)
         self.state["outputs"]["Reconsider PR"].append("Costs changed [S1]\nVERDICT: DONT_BUILD")

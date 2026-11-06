@@ -267,18 +267,10 @@ def _snapshot(root: Path) -> dict:
         }
 
     workers = []
-    effective_workers = raw_repo.get("workers", {}) if isinstance(raw_repo.get("workers"), dict) else {}
     for label, argv in cfg.workers.items():
-        program, model = _argv_summary(argv)
-        if label in effective_workers:
-            worker_source = "Repository"
-        elif label in (host_repo.get("workers", {}) if isinstance(host_repo.get("workers"), dict) else {}):
-            worker_source = "Host repository override"
-        elif label in (host_defaults.get("workers", {}) if isinstance(host_defaults.get("workers"), dict) else {}):
-            worker_source = "Host default"
-        else:
-            worker_source = "Built-in default"
-        workers.append({"label": str(label), "program": program, "model": model, "source": worker_source})
+        program, _ = _argv_summary(argv)
+        workers.append({"label": str(label), "program": program, "model": _safe_model(cfg.worker_model(label)),
+                        "source": cfg.worker_source.get(label, "Built-in default")})
     reviewer_program, reviewer_model = _argv_summary(cfg.reviewer)
     reviewer_source = _source("review", "command", raw_repo, host_defaults, host_repo)
     triage_endpoint, endpoint_note = _origin(cfg.llm_url)
