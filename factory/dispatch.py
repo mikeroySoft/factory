@@ -3684,7 +3684,7 @@ def _required_ci(pr: int, expected: str | None = None, *, allow_behind: bool = F
         head, base = current["head"]["sha"], current["base"]["ref"]
         if not head or not base or (expected is not None and head != expected):
             return pending
-        states = {"clean", "unstable"} | ({"behind"} if allow_behind else set())
+        states = {"clean", "unstable"} | ({"behind", "dirty"} if allow_behind else set())
         rules = [rule for page in api(
             f"rules/branches/{quote(base, safe='')}?per_page=100", pages=True,
         ) for rule in page]
@@ -3707,8 +3707,8 @@ def _required_ci(pr: int, expected: str | None = None, *, allow_behind: bool = F
                     run["status"] == "completed"
                     and run["conclusion"] in ("success", "neutral", "skipped") for run in matches
                 )
-                legacy = [status for status in statuses
-                          if status["context"] == context and status["sha"] == head]
+                # Legacy statuses have no SHA field; the request is bound to this head.
+                legacy = [status for status in statuses if status["context"] == context]
                 # A legacy context cannot establish the identity of a pinned GitHub App.
                 if not app and legacy:
                     passed = (passed or not matches) and max(
@@ -3730,8 +3730,8 @@ def _required_ci(pr: int, expected: str | None = None, *, allow_behind: bool = F
 def pr_checks(pr: int) -> list[dict]:
     """Display CI plus source/SHA-bound ruleset checks; missing evidence blocks merging.
 
-    Behind-main heads remain eligible for the callers' existing refresh path,
-    never a merge; GitHub's other policy vetoes and unknown states fail closed.
+    Behind-main and conflicting heads remain eligible for the callers' existing
+    refresh path, never a merge; other policy vetoes and unknown states fail closed.
     """
     proc = run(
         ["gh", "pr", "checks", str(pr), "--repo", REPO, "--json", "name,bucket,link,completedAt"],

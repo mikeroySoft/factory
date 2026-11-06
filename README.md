@@ -420,12 +420,14 @@ next pass with `by: human` and opens the same promotion measurement.
 Merge CI and advisory review readiness verify each active base-branch ruleset's
 required context against check runs on the exact PR head, including its source
 GitHub App (`integration_id`). A same-name success from another app or SHA is
-not evidence. App-unpinned contexts may use exact-head legacy statuses; a pinned
-app requires check-run provenance even when other requirements are unpinned.
+not evidence. App-unpinned contexts may use legacy statuses fetched by exact head
+SHA (individual status objects have no SHA field); a pinned app requires check-run
+provenance even when other requirements are unpinned.
 Reads are paginated; a head/base change, unreadable evidence, or GitHub's
 blocked/unknown merge state keeps CI pending. Already pending or failed CI
 returns without fetching additional provenance.
-Behind-main heads remain eligible only for the existing refresh path, not merge.
+Behind-main and conflicting (`dirty`) heads remain eligible only for the existing
+merge callers' refresh path, not merge; advisory readiness still reports them pending.
 
 PR [#573](https://github.com/mikeroySoft/factory/pull/573)'s successful `gate`
 runs [125588773738](https://github.com/mikeroySoft/factory/actions/runs/41536267505/job/125588773738)
