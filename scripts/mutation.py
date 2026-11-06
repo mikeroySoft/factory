@@ -290,11 +290,10 @@ def main(argv: list[str] | None = None) -> int:
 
         queue = collections.deque(mutations)  # popleft is atomic under the GIL
         results = []
-        cut = []  # mutants whose run the deadline cut short: neither killed nor survived
+        cut = []  # budget-limited runs: neither killed nor survived
 
         def worker(copy: Path) -> None:
-            # Most mutants die before a full baseline-length run. Use the remaining
-            # budget, but never count a deadline-cut run as killed or survived.
+            # A timeout below baseline cannot disprove a survivor or equivalent.
             while (left := deadline - time.monotonic()) > 0:
                 try:
                     mutation = queue.popleft()
@@ -304,9 +303,12 @@ def main(argv: list[str] | None = None) -> int:
                 result = mutate_and_test(
                     [local], test_command(copy, str(mutation.module_path)), min(timeout, left),
                 )
-                if result.output == "timeout" and (left < timeout or time.monotonic() >= deadline):
+                if result.output == "timeout" and (
+                    timeout < baseline or left < timeout or time.monotonic() >= deadline
+                ):
                     cut.append(mutation)
-                    return
+                    if timeout >= baseline:
+                        return
                 else:
                     results.append((mutation, result))
 
