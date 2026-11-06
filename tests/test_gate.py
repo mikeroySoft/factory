@@ -231,6 +231,10 @@ class GateOutputEncodingTest(unittest.TestCase):
         self.assertIn("check timed out", result.stdout)
 
     def test_leak_scan_finds_pattern_beside_non_utf8_filename(self) -> None:
+        if sys.platform == "darwin":
+            # #638: APFS rejects byte filenames; exercise invalid diff content instead.
+            self.test_leak_scan_finds_pattern_in_non_utf8_content()
+            return
         with tempfile.TemporaryDirectory() as d:
             repo = repo_with_test(Path(d), TOML + '\n[leak_scan]\nextra = ["codename"]\n')
             git(repo, "config", "core.quotePath", "false")
@@ -248,6 +252,20 @@ class GateOutputEncodingTest(unittest.TestCase):
             self.assertEqual(code, 1, report + out)
             self.assertIn("- leak-scan: FAIL", report)
             self.assertIn("\ufffd-leak.txt:1: [codename] codename", report)
+
+    def test_leak_scan_finds_pattern_in_non_utf8_content(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            repo = repo_with_test(Path(d), TOML + '\n[leak_scan]\nextra = ["codename"]\n')
+            git(repo, "config", "core.quotePath", "false")
+            # Valid UTF-8 awkward path, invalid UTF-8 content: legal on APFS.
+            (repo / "\ufffd-leak.txt").write_bytes(b"codename \xff\n")
+            commit(repo)
+
+            code, out, report = gate(repo, "--skip", "conflict-markers")
+
+            self.assertEqual(code, 1, report + out)
+            self.assertIn("- leak-scan: FAIL", report)
+            self.assertIn("\ufffd-leak.txt:1: [codename] codename \ufffd", report)
 
 
 
