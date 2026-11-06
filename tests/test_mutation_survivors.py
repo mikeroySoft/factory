@@ -177,3 +177,81 @@ class MutationSurvivorHandoffTest(unittest.TestCase):
         self.assertNotIn("## Required mutation survivor findings", dispatch.build_prompt(7, self.wt))
         self.handoff = ""
         self.assertTrue(self.round()[0])
+
+    def test_mutation_survivor_real_report_excludes_other_check_output(self):
+        report = REPORT.replace("## mutation\n", "## mutation failure\n")
+        report += "\n## extra failure\n```\nfactory/other.py:1: NotAMutant\n```\n"
+        self.gate.return_value = (False, report)
+        dispatch.pr_gate_and_review(self.wt, 7, "", risk_tests.NEW_HEAD, {})
+        prompt = dispatch.build_prompt(7, self.wt)
+        for survivor in SURVIVORS:
+            self.assertIn(survivor, prompt)
+        self.assertNotIn("NotAMutant", prompt)
+
+    def test_mutation_survivor_tool_failure_cannot_erase_requirements(self):
+        self.gate.return_value = (False, "- mutation: FAIL\n\n## mutation failure\n```\nbaseline failed\n```\n")
+        dispatch.pr_gate_and_review(self.wt, 7, "", risk_tests.NEW_HEAD, {})
+        self.assertFalse(self.round()[0])
+
+    def test_mutation_survivor_invalid_disposition_type_is_rejected(self):
+        self.handoff = accounting([{"survivor": SURVIVORS[0], "disposition": {}, "reason": "not valid"}])
+        self.assertFalse(self.round()[0])
+
+    def test_mutation_survivor_manager_fix_cannot_proceed_with_omission(self):
+        from factory import manage
+
+        issue = {"title": "change", "body": "", "comments": [], "labels": []}
+        pr = {"state": "OPEN", "headRefName": "agent/7", "headRefOid": risk_tests.HEAD,
+              "baseRefName": "main", "reviewDecision": ""}
+        self.patch(dispatch, "gh_json", side_effect=lambda args: pr if args[0] == "pr" else issue)
+        self.patch(dispatch, "run", side_effect=lambda cmd, **_kw: subprocess.CompletedProcess(
+            cmd, 0, "agent/7" if cmd[:2] == ["git", "branch"] else
+            risk_tests.HEAD if cmd[:2] == ["git", "rev-parse"] else "", "",
+        ))
+        packet = self.root / "packet.md"
+        packet.write_text("Fix reviewer findings.")
+        push = self.patch(dispatch, "push_agent")
+        approve = self.patch(dispatch, "approve_pr")
+        escalate = self.patch(dispatch, "escalate")
+        manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "Fix"}, packet)
+        push.assert_not_called()
+        approve.assert_not_called()
+        self.assertEqual(escalate.call_args.kwargs["code"], "gate_failed")
+
+
+class MutationSurvivorCLITest(unittest.TestCase):
+    from test_dispatch_lifecycle import LocalCLI as _Fixture
+
+    setUp = _Fixture.setUp
+    git = _Fixture.git
+    write_config = _Fixture.write_config
+    cli = _Fixture.cli
+
+    def test_mutation_survivor_cli_rejects_omission_then_accepts_accounting(self):
+        lifecycle.append(self.events, {
+            "event": "mutation-survivors", "ticket": 7, "head": "previous",
+            "survivors": SURVIVORS,
+        })
+        self.worker.write_text(
+            "import json\nfrom pathlib import Path\n"
+            "prompt = Path('.factory-prompt.md').read_text()\n"
+            "required = prompt.split('## Required mutation survivor findings')[1]\n"
+            f"survivors = {SURVIVORS!r}\n"
+            "assert all(s in required for s in survivors)\n"
+            "counter = Path('.factory/rounds')\n"
+            "counter.parent.mkdir(exist_ok=True)\n"
+            "count = int(counter.read_text()) if counter.exists() else 0\n"
+            "counter.write_text(str(count + 1))\n"
+            "Path('change.txt').write_text(str(count))\n"
+            "rows = [{'survivor': s, 'disposition': 'killed', 'test': 'test_branch'} for s in survivors]\n"
+            "if count == 0: rows.pop()\n"
+            "Path('.factory/handoff-7.md').write_text('## Still unverified\\nNone.\\n## Accounting\\n```json\\n'\n"
+            "    + json.dumps({'mutation_survivors': rows}) + '\\n```\\n')\n"
+        )
+        self.cli("dispatch", "--ticket", "7")
+        rows = lifecycle.read_events(self.events)
+        attempts = [row for row in rows if row.get("event") == "attempt"]
+        self.assertEqual([row["gate"] for row in attempts], ["FAIL", "PASS", "PASS"])
+        self.assertFalse(attempts[0]["finished"])
+        self.assertTrue(any(row.get("event") == "approved" for row in rows))
+        self.assertFalse(any(row.get("event") == "escalate" for row in rows))

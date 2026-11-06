@@ -1083,6 +1083,18 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    charging one round before releasing its claim and clearing `ready-for-human`.
    Charges survive pass boundaries; the next worker receives the full packet.
    Rework after a merge-stage refresh uses the same mechanism and budget.
+   Failed PR-tier mutation checks also journal each survivor's exact location and
+   mutation as required findings, independently of reviewer verdicts or requeue
+   context. Both-REVISE bounces, deferred rework, escalation/requeue, and manager
+   FIX workers receive them. The worker handoff must include a fenced JSON object
+   with a `mutation_survivors` array: each entry copies the exact `survivor` string
+   and supplies either `"disposition": "killed"` with a `test` naming its killing
+   test, or `"disposition": "equivalent"` with a `reason` explaining equivalence.
+   Missing entries, unnamed killing tests, and bare equivalence claims fail the
+   worker round even if its gate passes; they cannot count as finished work.
+   A later failed mutation report replaces the list; a passing/skipped mutation
+   check clears it, while a tool failure without survivors preserves it.
+   Handoff accounting never bypasses blocking mutation checks.
    Protected-path blockers come from gate status rows, not quoted reviewer
    findings or surviving-mutant source text.
    Rejects, protected-path blockers and exhausted rounds still escalate.
