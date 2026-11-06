@@ -372,6 +372,8 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
         try:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(target)
+            # Darwin can accept bind beside a dual-stack listener but reject listen.
+            probe.listen()
             collision = False
         except OSError as exc:
             if exc.errno != errno.EADDRINUSE:
