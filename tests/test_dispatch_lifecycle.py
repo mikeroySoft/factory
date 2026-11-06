@@ -718,6 +718,24 @@ class LocalCLI(unittest.TestCase):
         reviews = [r for r in self.rows() if r["stage"] == "review" and r["kind"] == "exit"]
         self.assertEqual([r["outcome"] for r in reviews], ["unknown"])
 
+    def test_crash_with_partial_findings_records_no_actionable_feedback(self):
+        partial = (
+            '```json\n{"verdict":"REVISE","findings":[{"severity":"important",'
+            '"pass":"bug","path":"change.txt","line":1,"summary":"Incomplete review."}]}\n```'
+        )
+        self.assert_reviewer_unavailable(
+            f"print({partial!r})\nprint('retry-after-ms=0')\nraise SystemExit(1)\n",
+            "review_exit:1",
+        )
+        decisions = [
+            e for e in lifecycle.read_events(self.events)
+            if e.get("event") == "decision" and e.get("stage") == "review"
+        ]
+        self.assertTrue(decisions)
+        self.assertFalse(any(
+            item["kind"] == "finding" for decision in decisions for item in decision["inputs"]
+        ))
+
     def test_reviewer_exit_does_not_consume_a_review_round(self):
         self.assert_reviewer_unavailable("raise SystemExit(1)\n", "review_exit:1")
 
