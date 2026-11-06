@@ -101,7 +101,7 @@ KNOWN_KEYS = {
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
-    "triage": ("url", "model", "timeout", "service", "max_tokens", "chat_template_kwargs"),
+    "triage": ("url", "model", "timeout", "service", "max_tokens", "chat_template_kwargs", "allowed_user_ids"),
     "journal": ("max_mb", "retention"),
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
@@ -255,6 +255,7 @@ class Config:
     triage_max_tokens: int = 2048
     triage_chat_template_kwargs: dict | None = None
     triage_service: str | None = None  # systemd user service restarted by the optional liveness probe
+    triage_allowed_user_ids: list[int] = field(default_factory=list)
     manager_model: str | None = None  # dashboard's no-tools OMP briefing; never a command
     dashboard_port: int = 8765
     dashboard_theme: Path | None = None  # CSS file served after the built-in stylesheet
@@ -942,6 +943,10 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
     cfg.triage_timeout = int(triage.get("timeout", cfg.triage_timeout))
+    allowed_ids = triage.get("allowed_user_ids", [])
+    if not isinstance(allowed_ids, list) or any(type(uid) is not int or uid < 1 for uid in allowed_ids):
+        raise ConfigError("triage.allowed_user_ids must be an array of positive numeric GitHub user IDs")
+    cfg.triage_allowed_user_ids = allowed_ids
     max_tokens = triage.get("max_tokens", cfg.triage_max_tokens)
     if type(max_tokens) is not int or max_tokens < 1:
         raise ConfigError("triage.max_tokens must be a positive integer")

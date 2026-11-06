@@ -35,6 +35,7 @@ class TriagePass(unittest.TestCase):
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
         self.enterContext(patch.dict(triage.__dict__))
         cfg = Config(root=Path(temp.name), repo="local/triage")
+        cfg.triage_allowed_user_ids = [101]
         cfg.factory.mkdir(parents=True)
         triage.configure(cfg)
         self.events = cfg.factory / "events.jsonl"
@@ -45,6 +46,11 @@ class TriagePass(unittest.TestCase):
         self.decision: dict[int, str] = {}
 
     def gh(self, *args, execution=None):
+        if args[0] == "api":
+            if args[1].endswith("/timeline"):
+                return json.dumps([[{"event": "labeled", "label": {"name": LABEL_TRIAGE},
+                                     "actor": {"id": 101}}]])
+            return json.dumps({"user": {"id": 101}})
         if args[:2] == ("issue", "list"):
             return json.dumps([{"number": n} for n in self.listed if LABEL_TRIAGE in self.labels[n]])
         n = int(args[2])

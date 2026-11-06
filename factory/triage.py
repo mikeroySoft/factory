@@ -272,7 +272,9 @@ def deterministic_needs_info(body: str, comments: str) -> str | None:
 
 
 def gh(*args: str, execution=None) -> str:
-    command = ["gh", *args, "--repo", cfg.repo]
+    command = ["gh", *args]
+    if args[0] != "api":
+        command.extend(["--repo", cfg.repo])
     if execution:
         with subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=execution.env()
@@ -570,9 +572,36 @@ def triage_issue(issue: dict, execution=None) -> dict | None:
     return None
 
 
+def _promotion_refusal(number: int, execution=None) -> str | None:
+    """Authorize REST numeric IDs, never gh's GraphQL node IDs or mutable logins."""
+    allowed = cfg.triage_allowed_user_ids
+    if not allowed:
+        return "Triage promotion denied: author and label actor allowlist is empty."
+    try:
+        prefix = f"repos/{cfg.repo}/issues/{number}"
+        details = json.loads(gh("api", prefix, execution=execution))
+        author_id = (details.get("user") or {}).get("id")
+        if type(author_id) is not int or author_id not in allowed:
+            return f"Triage promotion denied: author ID {author_id!r} is not allowlisted."
+        pages = json.loads(gh("api", f"{prefix}/timeline", "--paginate", "--slurp", execution=execution))
+        event = next((item for page in reversed(pages) for item in reversed(page)
+                      if item.get("event") in {"labeled", "unlabeled"}
+                      and (item.get("label") or {}).get("name") == LABEL_TRIAGE), {})
+        actor_id = (event.get("actor") or {}).get("id")
+        if event.get("event") != "labeled" or type(actor_id) is not int or actor_id not in allowed:
+            return f"Triage promotion denied: needs-triage label actor ID {actor_id!r} is not allowlisted or label evidence is missing."
+    except (SystemExit, ValueError, TypeError, AttributeError):
+        return "Triage promotion denied: author or needs-triage label actor evidence is unavailable."
+    return None
+
+
 def apply_decision(
     number: int, decision: dict, dry_run: bool, execution=None, issue: dict | None = None,
-) -> None:
+) -> str:
+    if decision["decision"] == LABEL_AGENT and (refusal := _promotion_refusal(number, execution)):
+        decision = _Decision({
+            "decision": LABEL_HUMAN, "rationale": refusal, "question": "", "brief": "",
+        }, actor="deterministic", name="promotion_authorization", cost=getattr(decision, "trace_cost", None))
     label = decision["decision"]
     rationale = decision["rationale"]
     if label == LABEL_INFO and decision["question"]:
@@ -587,7 +616,7 @@ def apply_decision(
     if dry_run:
         print(f"#{number} [dry-run] decision: {json.dumps(decision)}")
         print(f"#{number} [dry-run] comment: {comment}")
-        return
+        return label
     from factory import __version__, dispatch, trace
 
     issue = issue or {}
@@ -651,6 +680,7 @@ def apply_decision(
                    "model": None, "version": __version__},
         )
         dispatch.record("decision", **terminal)
+    return label
 
 
 def list_needs_triage(execution=None) -> list[int]:
@@ -787,15 +817,16 @@ def execute(args: argparse.Namespace, execution) -> int:
                             )
                             exit_code = 1
                             continue
+                        label = decision["decision"]
                         if replay:
                             print(f"#{number}: {json.dumps(decision)}")
                         else:
-                            apply_decision(
+                            label = apply_decision(
                                 number, decision, args.dry_run, execution=ticket_execution, issue=issue,
                             )
                         if ticket_execution:
-                            ticket_execution.reason = decision["decision"]
-                            if decision["decision"] != LABEL_AGENT:
+                            ticket_execution.reason = label
+                            if label != LABEL_AGENT:
                                 ticket_execution.outcome = "product_feedback"
                                 if outcome == "completed":
                                     outcome, reason = "product_feedback", "triage_feedback"

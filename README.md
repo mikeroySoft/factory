@@ -210,9 +210,18 @@ No other ref is force-pushed.
 Review-request opt-in accepts requests naming either the dispatcher's or the
 dashboard's login.
 
+Before triage can promote issues, configure `[triage].allowed_user_ids = [12345]`
+in `.factory.toml` (or host triage config). Use numeric GitHub user IDs from
+`gh api users/LOGIN --jq .id`, not logins or GraphQL node IDs. Both the issue
+author and the actor on the latest `needs-triage` label application must be
+allowlisted. An empty/missing list, missing identity/history, or unauthorized
+author/actor routes a proposed promotion to `ready-for-human` with a journaled
+reason. Renaming a login changes no authorization; watch-filed issues use the
+same promotion check.
+
 Then file an issue with the **Agent task** template (Scope / Touches / Exit
 gate / Out of scope). It gets `needs-triage`; the next pass triages it; if it is
-fully specified it becomes `ready-for-agent` and is picked up.
+fully specified and authorized it becomes `ready-for-agent` and is picked up.
 
 For shared, longer-lived plans, file an issue with the **Initiative** template
 (Status / Outcome / Owner / Areas / Boundaries / Plan / Open decisions /
