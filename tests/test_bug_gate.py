@@ -383,6 +383,47 @@ class BugReproductionGateTest(unittest.TestCase):
                     repo, command, "suite/ns/tests/test_b.py::BTest::test_value"
                 )
 
+    def test_repro_outside_first_discovery_root_uses_its_own_directory(self) -> None:
+        for start in ("tests", "ns.tests"):
+            with self.subTest(start=start), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                command = [
+                    "env", "PYTHONPATH=suite", sys.executable, "-m", "unittest",
+                    "discover", "-s", start,
+                ]
+                second = [sys.executable, "-m", "unittest", "discover", "-s", "integration"]
+                (repo / ".factory.toml").write_text(
+                    '[leak_scan]\npattern = ""\n'
+                    '[[gate.check]]\nname = "test"\n'
+                    f"run = {command!r}\n"
+                    '[[gate.check]]\nname = "integration"\n'
+                    f"run = {second!r}\n"
+                )
+                (repo / "suite" / "ns" / "tests").mkdir(parents=True)
+                (repo / "suite" / "ns" / "tests" / "test_existing.py").write_text(
+                    (repo / "tests" / "test_existing.py").read_text()
+                )
+                cases = repo / "integration"
+                cases.mkdir()
+                (cases / "test_a.py").write_text("def helper():\n    return True\n")
+                commit(repo, "configure separate discovery roots")
+                git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+                (cases / "test_b.py").write_text(
+                    "import unittest, value\n"
+                    "from test_a import helper\n"
+                    "class BTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertTrue(helper())\n"
+                    "        self.assertTrue(value.value())\n"
+                )
+                commit(repo, "reproduce outside first discovery root")
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+
+                self._assert_discovery_repro(
+                    repo, second, "integration/test_b.py::BTest::test_value"
+                )
+
     def test_backticked_handoff_id_reaches_reproduction_gate_bare(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = repository(Path(directory))
