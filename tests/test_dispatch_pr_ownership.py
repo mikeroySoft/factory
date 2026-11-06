@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import unittest
+from datetime import UTC, datetime, timedelta
 
 from tests import test_host_claims
 
@@ -74,6 +75,18 @@ class DispatchPROwnershipTest(unittest.TestCase):
         local.process_ticket(copy.deepcopy(self.github.issue), 1, False, forced=True)
         self.assertEqual(self.launched, [None])
         self.assert_cross_repository_requested()
+
+    def test_expired_host_claim_does_not_let_a_fork_pr_hold_the_ticket(self):
+        module = self.dispatcher()
+        module.cfg.host_name = "tank"
+        self.github.add_claim("old-host", datetime.now(UTC) - timedelta(hours=3))
+        self.github.open_prs = [self.pr(70, foreign=True)]
+
+        self.assertNotIn("held", module.frontier()[0])
+
+        self.github.open_prs.append(self.pr(71, foreign=False))
+        self.assertEqual(module.frontier()[0].get("held"),
+                         "open agent PR #71 (awaiting merge or closure)")
 
     def test_discovered_requeue_closes_only_local_pr(self):
         module = self.dispatcher()
