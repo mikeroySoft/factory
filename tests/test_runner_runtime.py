@@ -108,6 +108,34 @@ class RunnerRuntimeTest(unittest.TestCase):
         self.assertIsNone(owner.poll())
         self.assertTrue(path.exists())
 
+    def test_normal_review_cleanup_leaves_no_runner_roots_with_unknown_visibility(self):
+        real_read = Path.read_bytes
+
+        def unreadable_process(path):
+            if str(path).startswith("/proc/") and path.name == "environ":
+                raise PermissionError("process environment unavailable")
+            return real_read(path)
+
+        with mock.patch.object(Path, "read_bytes", unreadable_process):
+            result = dispatch._run_reviewer([sys.executable, "-c", "print('reviewed')"])
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, "reviewed"))
+        self.assertEqual(list(self.base.glob("factory-runner-*")), [])
+
+    def test_preflight_checks_temp_filesystem_and_recovers_at_threshold(self):
+        from factory import runner
+
+        repository = self.base / "repo"
+        repository.mkdir()
+        healthy = SimpleNamespace(f_bavail=runner.MIN_FREE_BYTES, f_frsize=1,
+                                  f_favail=runner.MIN_FREE_INODES, f_files=10**7)
+        low_temp = SimpleNamespace(**(vars(healthy) | {"f_favail": runner.MIN_FREE_INODES - 1}))
+        with mock.patch.object(os, "statvfs", side_effect=[healthy, low_temp]):
+            failure = runner.preflight(repository)
+        self.assertEqual((failure["path"], failure["resource"], failure["available"]),
+                         (str(self.base), "inodes", runner.MIN_FREE_INODES - 1))
+        with mock.patch.object(os, "statvfs", return_value=healthy):
+            self.assertIsNone(runner.preflight(repository))
+
     def test_preflight_refuses_low_bytes_or_inodes_without_claim_or_strike(self):
         issue = {"number": 610, "title": "runner", "state": "OPEN", "body": "runner",
                  "labels": [{"name": config.LABEL_AGENT}], "assignees": [], "comments": []}
