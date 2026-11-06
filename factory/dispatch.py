@@ -37,6 +37,7 @@ from contextlib import contextmanager, nullcontext, suppress
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
+from urllib.parse import quote
 
 from factory import __version__, brief, config, generation, lifecycle, risk, runner
 from factory.config import (
@@ -968,7 +969,9 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
         elif confirmed and valid and checks.returncode == 0 and all(
             row["bucket"] == "pass" for row in rows
         ):
-            state = "ready"
+            rows += _required_ci(n, head)
+            if all(row["bucket"] == "pass" for row in rows):
+                state = "ready"
     record("review-readiness", pr=n, head=head, state=state,
            review_head=review.get("head"), checks=rows if valid else [])
 
@@ -3780,21 +3783,85 @@ def signoff() -> str:
     return f"Signed-off-by: {name} <{email}>"
 
 
-def pr_checks(pr: int) -> list[dict]:
-    """gh check rows [{name, bucket, link, completedAt}]; bucket: pass/fail/pending/skipping/cancel.
+def _required_ci(pr: int, expected: str | None = None, *, allow_behind: bool = False) -> list[dict]:
+    """Supplement display rows with exact-head ruleset evidence and GitHub's policy veto."""
+    pending = [{"name": "required CI evidence unavailable", "bucket": "pending", "link": ""}]
 
-    `gh pr checks` exits nonzero for failing or pending checks; that is data
-    here, not an error. Unparseable output returns [] which the caller treats
-    as "no passing CI" and refuses to merge — fail closed.
+    def api(endpoint: str, *, pages: bool = False):
+        proc = run(["gh", "api", f"repos/{REPO}/{endpoint}",
+                    *(["--paginate", "--slurp"] if pages else [])], check=False)
+        if proc.returncode:
+            raise ValueError("GitHub evidence unavailable")
+        return json.loads(proc.stdout)
+
+    try:
+        current = api(f"pulls/{pr}")
+        head, base = current["head"]["sha"], current["base"]["ref"]
+        if not head or not base or (expected is not None and head != expected):
+            return pending
+        states = {"clean", "unstable"} | ({"behind"} if allow_behind else set())
+        rules = [rule for page in api(
+            f"rules/branches/{quote(base, safe='')}?per_page=100", pages=True,
+        ) for rule in page]
+        required = [check for rule in rules if rule["type"] == "required_status_checks"
+                    for check in rule["parameters"]["required_status_checks"]]
+        rows = []
+        if required:
+            runs = [check for page in api(
+                f"commits/{head}/check-runs?per_page=100", pages=True,
+            ) for check in page["check_runs"]]
+            statuses = [status for page in api(
+                f"commits/{head}/statuses?per_page=100", pages=True,
+            ) for status in page] if any(not check.get("integration_id") for check in required) else []
+            for check in required:
+                context, app = check["context"], check.get("integration_id")
+                matches = [run for run in runs
+                           if run["name"] == context and run["head_sha"] == head
+                           and (not app or run["app"]["id"] == app)]
+                passed = bool(matches) and all(
+                    run["status"] == "completed"
+                    and run["conclusion"] in ("success", "neutral", "skipped") for run in matches
+                )
+                legacy = [status for status in statuses
+                          if status["context"] == context and status["sha"] == head]
+                # A legacy context cannot establish the identity of a pinned GitHub App.
+                if legacy:
+                    passed = (passed or not matches) and max(
+                        legacy, key=lambda status: status["id"],
+                    )["state"] == "success"
+                rows.append({"name": context, "bucket": "pass" if passed else "pending",
+                             "link": "", "head": head, "app": app})
+        fresh = api(f"pulls/{pr}")
+        if fresh["head"]["sha"] != head or fresh["base"]["ref"] != base:
+            return pending
+        if any(snapshot.get("mergeable_state") not in states for snapshot in (current, fresh)):
+            rows.append({"name": "GitHub merge policy", "bucket": "pending", "link": "",
+                         "head": head})
+        return rows
+    except (OSError, ValueError, TypeError, KeyError):
+        return pending
+
+
+def pr_checks(pr: int) -> list[dict]:
+    """Display CI plus source/SHA-bound ruleset checks; missing evidence blocks merging.
+
+    Behind-main heads remain eligible for the callers' existing refresh path,
+    never a merge; GitHub's other policy vetoes and unknown states fail closed.
     """
     proc = run(
         ["gh", "pr", "checks", str(pr), "--repo", REPO, "--json", "name,bucket,link,completedAt"],
         check=False,
     )
     try:
-        return json.loads(proc.stdout)
-    except ValueError:
+        rows = json.loads(proc.stdout)
+        if not isinstance(rows, list) or not all(
+            isinstance(row, dict) and row.get("bucket") in
+            ("pass", "fail", "pending", "skipping", "cancel") for row in rows
+        ):
+            return []
+    except (ValueError, TypeError):
         return []
+    return rows + _required_ci(pr, allow_behind=True)
 
 
 def _infra_cancel(check: dict) -> dict | None:

@@ -129,3 +129,63 @@ class ReadinessTest(unittest.TestCase):
         with mock.patch.object(dispatch, "record") as record:
             dispatch.review_readiness(573, self.HEAD, history)
         self.assertEqual(record.call_args.kwargs["state"], "ci_pending")
+
+    def test_matching_gate_can_report_ready(self):
+        history = [{"event": "review-result", "pr": 573, "head": self.HEAD,
+                    "verdict": "APPROVE"}]
+        with mock.patch.object(dispatch, "record") as record:
+            dispatch.review_readiness(573, self.HEAD, history)
+        self.assertEqual(record.call_args.kwargs["state"], "ready")
+
+    def test_push_during_provenance_read_invalidates_readiness(self):
+        original_run = self.run_gh
+        pulls = 0
+
+        def racing_run(cmd, **kwargs):
+            nonlocal pulls
+            if cmd[:2] == ["gh", "api"] and "/pulls/" in cmd[2]:
+                pulls += 1
+                if pulls == 2:
+                    self.pr["head"]["sha"] = "new-head"
+            return original_run(cmd, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=racing_run):
+            self.assert_pending()
+
+    def test_required_checks_on_later_api_pages_are_observed(self):
+        original_run = self.run_gh
+
+        def paginated_run(cmd, **kwargs):
+            if cmd[:2] == ["gh", "api"] and "/check-runs" in cmd[2]:
+                pages = [{"check_runs": [], "total_count": 101},
+                         {"check_runs": self.checks, "total_count": 101}]
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(pages), "")
+            return original_run(cmd, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=paginated_run):
+            self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573)}, {"pass"})
+
+    def test_unpinned_legacy_context_must_also_match_head(self):
+        self.rules[0]["parameters"]["required_status_checks"][0].pop("integration_id")
+        self.checks = []
+        self.statuses = [{"id": 20, "context": "gate", "state": "success", "sha": "old-head"}]
+        self.assert_pending()
+
+    def test_strict_base_refusal_still_refreshes_lessons_head(self):
+        self.pr["mergeable_state"] = "behind"
+        branch = "agent/lessons-2026-11-02-t517"
+        pr = {"number": 573, "headRefName": branch, "headRefOid": self.HEAD}
+        events = [{"event": "review-result", "pr": 573, "head": self.HEAD,
+                   "verdict": "APPROVE"},
+                  {"event": "gate", "branch": branch, "head": self.HEAD, "gate": "PASS"}]
+        original_run = self.run_gh
+
+        def behind_run(cmd, **kwargs):
+            if cmd[:2] == ["gh", "api"] and "/compare/" in cmd[2]:
+                return subprocess.CompletedProcess(cmd, 0, '{"behind_by":4}', "")
+            return original_run(cmd, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=behind_run), \
+                mock.patch.object(learn, "refresh") as refresh:
+            learn.promote(dispatch.cfg, pr, events, dry_run=False)
+        refresh.assert_called_once_with(dispatch.cfg, 573, branch, self.HEAD)
