@@ -383,6 +383,40 @@ class BugReproductionGateTest(unittest.TestCase):
                     repo, command, "suite/ns/tests/test_b.py::BTest::test_value"
                 )
 
+    @unittest.skipUnless(sys.version_info >= (3, 14), "namespace discovery needs Python 3.14+")
+    def test_repro_namespace_start_with_explicit_top_uses_namespace_root(self) -> None:
+        for top in ("suite", "suite/ns"):
+            with self.subTest(top=top), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                command = [
+                    "env", "PYTHONPATH=suite", sys.executable, "-m", "unittest",
+                    "discover", "-s", "ns.tests", "-t", top,
+                ]
+                (repo / ".factory.toml").write_text(
+                    '[leak_scan]\npattern = ""\n'
+                    '[[gate.check]]\nname = "test"\n'
+                    f"run = {command!r}\n"
+                )
+                cases = repo / "suite" / "ns" / "tests"
+                cases.mkdir(parents=True)
+                (cases.parent / "support.py").write_text("def helper():\n    return True\n")
+                (cases / "test_b.py").write_text(
+                    "import unittest, value\n"
+                    "from ..support import helper\n"
+                    "class BTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertEqual(__name__, 'ns.tests.test_b')\n"
+                    "        self.assertTrue(helper())\n"
+                    "        self.assertTrue(value.value())\n"
+                )
+                commit(repo, "reproduce namespace discovery with explicit top")
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+
+                self._assert_discovery_repro(
+                    repo, command, "suite/ns/tests/test_b.py::BTest::test_value"
+                )
+
     def test_repro_outside_first_discovery_root_uses_its_own_directory(self) -> None:
         starts = ("tests", "ns.tests") if sys.version_info >= (3, 14) else ("tests",)
         for start in starts:
