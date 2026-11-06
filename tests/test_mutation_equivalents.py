@@ -267,6 +267,19 @@ class MutationEquivalentsTest(unittest.TestCase):
                 self.assertEqual(status, 0, report)
                 self.assertNotIn("stale equivalent", report)
 
+    def test_zero_candidate_changed_line_is_stale(self):
+        entry = {**self.entry, "original": "# reviewed comment",
+                 "mutated": "# obsolete replacement"}
+        for blocking in (False, True):
+            with self.subTest(blocking=blocking):
+                status, report = self.run_gate(
+                    [entry], source="# reviewed comment\n", sampled=False, hot=0,
+                    blocking=blocking,
+                )
+                self.assertNotEqual(status, 0, report)
+                self.assertIn("stale equivalent: factory/example.py:1:", report)
+
+
 
 if __name__ == "__main__":
     unittest.main()
