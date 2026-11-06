@@ -1984,6 +1984,14 @@ Evidence kinds retain the common keys above and add these kind-specific keys:
 | Ordinary `exit` with unreaped children | `evidence`: object containing `children` (process identity/state objects as below). Default `completed` becomes `unknown`; a supported exception classification is retained. |
 | Reconciled `exit` | `reconciled`: true; `observer_process`: process identity object; `evidence`: the observation object described below. |
 
+Gate children record one `child_start` and one `child_exit`, not progress
+heartbeats; a successful child adds only `handoff` and `result` besides those
+transitions, regardless of runtime or output volume. Configured gate checks and
+mutation baseline/mutant test commands discard inherited
+`FACTORY_LIFECYCLE_CONTEXT`, so fixture executions use their own journal paths
+instead of the dispatcher's live journal. The gate itself retains its causal
+link to the dispatcher.
+
 ### Outcomes and uncertainty
 
 | `outcome` | Meaning |
