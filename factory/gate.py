@@ -477,17 +477,19 @@ if args and args[0] == "discover":
         parser.add_argument(dest, nargs="?", default=argparse.SUPPRESS)
     options, _ = parser.parse_known_args(args[1:])
     top = Path(options.top or options.start).resolve()
-    if not options.top and not Path(options.start).is_dir():
+    if not Path(options.start).is_dir():
         start = importlib.import_module(options.start)
         package = sys.modules[start.__name__.split(".")[0]]
         if start.__file__ is None:
             locations = (Path(root).resolve() for root in start.__path__)
-            location = next((root for root in locations if path.is_relative_to(root)), None)
+            location = next((root for root in locations
+                             if path.is_relative_to(root)
+                             and (not options.top or root.is_relative_to(top))), None)
             top = location.parents[len(start.__name__.split(".")) - 1] if location else path.parent
-        elif package.__file__ is None:
+        elif not options.top and package.__file__ is None:
             # unittest roots a regular start beneath a namespace at the start itself.
             top = Path(start.__file__).resolve().parent
-        else:
+        elif not options.top:
             top = Path(package.__file__).resolve().parent
             if hasattr(package, "__path__"):
                 top = top.parent
