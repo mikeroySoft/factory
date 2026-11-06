@@ -929,6 +929,8 @@ class EvidenceCliTest(unittest.TestCase):
                 self.assertFalse((self.root / "no-such-state-directory").exists())
                 self.assertFalse((self.root / "no-such-events-file").exists())
                 target.unlink()
+            # subTest records failures and continues; do not leak a dangling link.
+            target.unlink(missing_ok=True)
 
         # A genuinely empty trail (real .factory directory, no events yet) stays
         # "empty" -- read-only, not fabricated, and not claimed unavailable.
