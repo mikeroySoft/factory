@@ -1678,7 +1678,7 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         dispatch.log(f"PR #{n}: {branch} gate failed at {head[:12]}")
         _promotion_blocked(events, n, branch, head, "gate failed", dry_run)
         return
-    buckets = {check["bucket"] for check in dispatch.pr_checks(n)}
+    buckets = {check["bucket"] for check in dispatch.pr_checks(n, head)}
     if "pass" not in buckets or buckets - {"pass", "skipping"}:
         reason = f"CI {','.join(sorted(buckets)) or 'missing'}"
         dispatch.log(f"PR #{n}: {branch} {reason}; not merging")

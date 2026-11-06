@@ -63,7 +63,7 @@ class ReadinessTest(unittest.TestCase):
         return subprocess.CompletedProcess(cmd, 0, json.dumps(value), "")
 
     def assert_pending(self):
-        self.assertIn("pending", {row["bucket"] for row in dispatch.pr_checks(573)})
+        self.assertIn("pending", {row["bucket"] for row in dispatch.pr_checks(573, self.HEAD)})
 
     def test_wrong_app_or_sha_is_not_mergeable(self):
         for field, value in (("app", {"id": 99}), ("head_sha", "old-head"),
@@ -75,7 +75,7 @@ class ReadinessTest(unittest.TestCase):
                 self.checks[0][field] = original
 
     def test_exact_required_app_and_head_pass(self):
-        self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573)}, {"pass"})
+        self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573, self.HEAD)}, {"pass"})
 
     def test_missing_required_context_is_pending_despite_other_green_ci(self):
         self.rules[0]["parameters"]["required_status_checks"].append(
@@ -103,13 +103,13 @@ class ReadinessTest(unittest.TestCase):
         for state in ("behind", "dirty"):
             with self.subTest(state=state):
                 self.pr["mergeable_state"] = state
-                self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573)}, {"pass"})
+                self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573, self.HEAD)}, {"pass"})
 
     def test_unspecified_app_accepts_exact_head_status_context(self):
         self.rules[0]["parameters"]["required_status_checks"][0].pop("integration_id")
         self.checks = []
         self.statuses = [{"id": 20, "context": "gate", "state": "success"}]
-        self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573)}, {"pass"})
+        self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573, self.HEAD)}, {"pass"})
         self.rules[0]["parameters"]["required_status_checks"][0]["integration_id"] = self.APP
         self.assert_pending()
 
@@ -167,7 +167,7 @@ class ReadinessTest(unittest.TestCase):
             return original_run(cmd, **kwargs)
 
         with mock.patch.object(dispatch, "run", side_effect=paginated_run):
-            self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573)}, {"pass"})
+            self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573, self.HEAD)}, {"pass"})
 
     def test_latest_legacy_status_failure_blocks_old_success(self):
         self.rules[0]["parameters"]["required_status_checks"][0].pop("integration_id")
