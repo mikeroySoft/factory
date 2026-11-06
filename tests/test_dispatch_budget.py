@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest import mock
 
-import test_dispatch_lifecycle as fixtures
+from tests import test_dispatch_lifecycle as fixtures
 from factory import config, dispatch, lifecycle
 
 
