@@ -1484,7 +1484,7 @@ def _record_review_decision(
         {"kind": "review_comment",
          "ref": review_ref,
          "summary": "published review comment" if comment_url else "review comment target"},
-        *_required_fixes(findings, review_ref),
+        *(_required_fixes(findings, review_ref) if verdict is not None else []),
     ]
     payload = trace.decision(
         ticket=n,
@@ -1508,11 +1508,12 @@ def _record_review_decision(
         actor=_decision_actor("model", f"dispatch.review.{role}", model=model),
     )
     record("decision", **payload)
-    record(
-        "review-result", ticket=n, head=head, role=role, model=model,
-        verdict="APPROVE" if verdict == "APPROVE" else "REQUEST_CHANGES",
-        findings=findings, counts=counts, reason=rejection_reason,
-    )
+    if verdict is not None:
+        record(
+            "review-result", ticket=n, head=head, role=role, model=model,
+            verdict="APPROVE" if verdict == "APPROVE" else "REQUEST_CHANGES",
+            findings=findings, counts=counts, reason=rejection_reason,
+        )
     return payload["decision_id"]
 
 
@@ -2759,7 +2760,6 @@ def run_reviewer(
                 actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt, env=clean).stdout.strip()
             accepted = (
                 proc is not None
-                and proc.returncode == 0
                 and parsed
                 and parser_reason is None
                 and actual_head == expected_head
@@ -2782,7 +2782,7 @@ def run_reviewer(
             if actual_head != expected_head:
                 failure_reason = "state_changed"
                 break
-            if proc is not None and proc.returncode == 0 and parsed and parser_reason:
+            if proc is not None and parsed and parser_reason:
                 findings += f"\n\nFactory rejected reviewer evidence: {parser_reason}."
                 return {
                     "verdict": "REVISE",
