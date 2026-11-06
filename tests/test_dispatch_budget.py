@@ -1,15 +1,15 @@
 """Slow verification must not consume the worker allowance; total time stays bounded."""
-from contextlib import chdir
 import json
 import os
-from pathlib import Path
 import sys
 import time
 import unittest
+from contextlib import chdir
+from pathlib import Path
 from unittest import mock
 
-from tests import test_dispatch_lifecycle as fixtures
 from factory import config, dispatch, lifecycle
+from tests import test_dispatch_lifecycle as fixtures
 
 
 class DispatchBudgetTest(unittest.TestCase):
@@ -88,8 +88,8 @@ class DispatchBudgetTest(unittest.TestCase):
             if is_gate:
                 # The installed runner intentionally ignores PYTHONPATH; exercise this revision.
                 cmd = [sys.executable, "-c",
-                       f"import sys; sys.path.insert(0, {source!r}); "
-                       "from factory.cli import main; sys.exit(main())", *cmd[5:]]
+                       (f"import sys; sys.path.insert(0, {source!r}); "
+                        "from factory.cli import main; sys.exit(main())"), *cmd[5:]]
             return original_run(cmd, *args, **kwargs)
 
         def bounded_worker(*args, **kwargs):
