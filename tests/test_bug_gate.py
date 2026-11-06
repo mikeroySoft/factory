@@ -825,6 +825,45 @@ class AuthenticatedTriageGateTest(unittest.TestCase):
                 None, {"bug"}, "", "No repro test: worker reason", comments=[],
             ), {"protected_override": False, "bug": True})
 
+    def test_login_failure_rejects_comment_waiver_and_preserves_reproduction(self) -> None:
+        from factory import triage
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = repository(root)
+            add_repro(repo)
+            (repo / "value.py").write_text("def value():\n    return True\n")
+            commit(repo, "fix bug")
+            fake = root / "gh"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "echo 'error connecting to api.github.com' >&2\n"
+                "exit 1\n"
+            )
+            fake.chmod(0o755)
+            comments = [{
+                "author": {"login": "factory-bot"},
+                "body": "Triage: hardware failure\nNo repro test: requires unavailable hardware",
+            }]
+            with mock.patch.dict(os.environ, {"PATH": f"{root}{os.pathsep}{os.environ['PATH']}"}):
+                for handoff in ("", f"Repro test: {TEST_ID}"):
+                    with self.subTest(handoff=handoff), mock.patch.object(triage, "LOGIN", None):
+                        flags = dispatch.gate_flags(None, {"bug"}, handoff=handoff, comments=comments)
+                        self.assertNotIn("no_repro_test", flags)
+                        args = ["--bug"]
+                        if handoff:
+                            self.assertEqual(flags["repro_test"], TEST_ID)
+                            args += ["--repro-test", flags["repro_test"]]
+                        code, report = run_gate(repo, *args)
+                        self.assertNotIn("- bug-repro: SKIP", report)
+                        if handoff:
+                            self.assertEqual(code, 0, report)
+                            self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+                            self.assertIn("- bug-repro-head: PASS", report)
+                        else:
+                            self.assertEqual(code, 1, report)
+                            self.assertIn("bug ticket needs a `Repro test:` handoff line", report)
+
     def test_non_bug_ignores_comment_exemptions_and_does_not_lookup_identity(self) -> None:
         from factory import triage
 
