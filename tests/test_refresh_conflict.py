@@ -92,7 +92,7 @@ class FakeGitHub:
         self.calls.append(cmd)
         if cmd[1] == "api" and "/pulls/" in cmd[2]:
             value = {"head": {"sha": self.head()}, "base": {"ref": "main"},
-                     "mergeable_state": "behind" if git(
+                     "mergeable_state": "dirty" if git(
                          self.origin, "rev-list", "--count", f"{self.head()}..main",
                      ) != "0" else "clean"}
             return subprocess.CompletedProcess(cmd, 0, json.dumps(value), "")

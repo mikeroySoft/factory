@@ -50,6 +50,9 @@ class ReadinessTest(unittest.TestCase):
                 if "--slurp" in cmd:
                     value = [value]
             elif "/statuses" in endpoint:
+                self.assertEqual(
+                    endpoint, f"repos/acme/widgets/commits/{self.HEAD}/statuses?per_page=100",
+                )
                 value = [self.statuses] if "--slurp" in cmd else self.statuses
             elif "/compare/" in endpoint:
                 value = {"behind_by": 0, "files": []}
@@ -91,20 +94,21 @@ class ReadinessTest(unittest.TestCase):
         self.assert_pending()
 
     def test_github_policy_veto_blocks_even_matching_green_gate(self):
-        for state in ("blocked", "unknown", "dirty", None):
+        for state in ("blocked", "unknown", None):
             with self.subTest(state=state):
                 self.pr["mergeable_state"] = state
                 self.assert_pending()
 
     def test_behind_head_preserves_existing_refresh_path(self):
-        self.pr["mergeable_state"] = "behind"
-        self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573)}, {"pass"})
+        for state in ("behind", "dirty"):
+            with self.subTest(state=state):
+                self.pr["mergeable_state"] = state
+                self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573)}, {"pass"})
 
     def test_unspecified_app_accepts_exact_head_status_context(self):
         self.rules[0]["parameters"]["required_status_checks"][0].pop("integration_id")
         self.checks = []
-        self.statuses = [{"id": 20, "context": "gate", "state": "success",
-                          "sha": self.HEAD}]
+        self.statuses = [{"id": 20, "context": "gate", "state": "success"}]
         self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573)}, {"pass"})
         self.rules[0]["parameters"]["required_status_checks"][0]["integration_id"] = self.APP
         self.assert_pending()
@@ -165,23 +169,23 @@ class ReadinessTest(unittest.TestCase):
         with mock.patch.object(dispatch, "run", side_effect=paginated_run):
             self.assertEqual({row["bucket"] for row in dispatch.pr_checks(573)}, {"pass"})
 
-    def test_unpinned_legacy_context_must_also_match_head(self):
+    def test_latest_legacy_status_failure_blocks_old_success(self):
         self.rules[0]["parameters"]["required_status_checks"][0].pop("integration_id")
         self.checks = []
-        self.statuses = [{"id": 20, "context": "gate", "state": "success", "sha": "old-head"}]
+        self.statuses = [{"id": 20, "context": "gate", "state": "success"},
+                         {"id": 21, "context": "gate", "state": "failure"}]
         self.assert_pending()
 
     def test_unpinned_status_cannot_satisfy_a_pinned_gate(self):
         self.rules[0]["parameters"]["required_status_checks"].append({"context": "lint"})
         self.checks[0]["app"] = {"id": 99}
         self.statuses = [
-            {"id": 20, "context": "gate", "state": "success", "sha": self.HEAD},
-            {"id": 21, "context": "lint", "state": "success", "sha": self.HEAD},
+            {"id": 20, "context": "gate", "state": "success"},
+            {"id": 21, "context": "lint", "state": "success"},
         ]
         self.assert_pending()
 
     def test_strict_base_refusal_still_refreshes_lessons_head(self):
-        self.pr["mergeable_state"] = "behind"
         branch = "agent/lessons-2026-11-02-t517"
         pr = {"number": 573, "headRefName": branch, "headRefOid": self.HEAD}
         events = [{"event": "review-result", "pr": 573, "head": self.HEAD,
@@ -194,7 +198,18 @@ class ReadinessTest(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, '{"behind_by":4}', "")
             return original_run(cmd, **kwargs)
 
-        with mock.patch.object(dispatch, "run", side_effect=behind_run), \
-                mock.patch.object(learn, "refresh") as refresh:
-            learn.promote(dispatch.cfg, pr, events, dry_run=False)
-        refresh.assert_called_once_with(dispatch.cfg, 573, branch, self.HEAD)
+        for state in ("behind", "dirty"):
+            with self.subTest(state=state), \
+                    mock.patch.object(dispatch, "run", side_effect=behind_run), \
+                    mock.patch.object(learn, "refresh") as refresh:
+                self.pr["mergeable_state"] = state
+                learn.promote(dispatch.cfg, pr, events, dry_run=False)
+                refresh.assert_called_once_with(dispatch.cfg, 573, branch, self.HEAD)
+
+    def test_dirty_head_is_not_advisory_ready(self):
+        self.pr["mergeable_state"] = "dirty"
+        history = [{"event": "review-result", "pr": 573, "head": self.HEAD,
+                    "verdict": "APPROVE"}]
+        with mock.patch.object(dispatch, "record") as record:
+            dispatch.review_readiness(573, self.HEAD, history)
+        self.assertEqual(record.call_args.kwargs["state"], "ci_pending")
