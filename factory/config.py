@@ -89,7 +89,7 @@ HOST_SCALARS = ("host_name", "triage_host", "claim_ttl")
 KNOWN_KEYS = {
     "repo": ("slug", "upstream", "main"),
     "dispatch": ("max_active", "max_attempts", "budget_min", "idle_timeout", "exit_grace",
-                 "review_rounds", "cost_pattern", "signoff"),
+                 "review_rounds", "cost_pattern", "signoff", "setup"),
     "engine": ("yield_for_update",),
     "workers": None,
     "worker_wrap": ("command",),
@@ -193,6 +193,7 @@ class Config:
     engine_yield_for_update: bool = False
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges
     cost_pattern: str | None = None  # regex with one capture: dollars in the worker log
+    setup: list[str] | None = None  # optional argv run once per worktree/head before a worker
     workers: dict[str, list[str]] = field(
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
@@ -747,6 +748,14 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.review_rounds = int(dispatch.get("review_rounds", cfg.review_rounds))
     cfg.cost_pattern = dispatch.get("cost_pattern") or None
     cfg.signoff = bool(dispatch.get("signoff", cfg.signoff))
+    if "setup" in dispatch:
+        command = dispatch["setup"]
+        if (
+            not isinstance(command, list) or not command or not command[0]
+            or any(not isinstance(arg, str) or "\0" in arg for arg in command)
+        ):
+            raise ConfigError("dispatch.setup needs a non-empty command argv")
+        cfg.setup = command
     engine = raw.get("engine", {})
     if not isinstance(engine, dict):
         raise ConfigError("[engine] must be a table")

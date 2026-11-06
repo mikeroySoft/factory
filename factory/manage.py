@@ -841,11 +841,11 @@ CI_KINDS = ("check_run", "commit_status")
 
 
 def apply_fix(n: int, issue: dict, data: dict, packet: Path, **decided: object) -> None:
-    """Execute a journaled FIX. One that finds no healthy worker is a host defect (#662): it
-    stays pending for `resume_fix`, never a spent or failed decision."""
+    """Execute a journaled FIX; worker or setup infra failures stay pending for `resume_fix`,
+    never a spent or failed decision."""
     try:
         apply(n, issue, "FIX", "", data, packet)
-    except dispatch.WorkerUnavailable as exc:
+    except (dispatch.WorkerUnavailable, dispatch.WorktreeSetupFailed) as exc:
         dispatch.record("manage-pending", ticket=n, decision="FIX", worker=data["worker"],
                         guidance=data["guidance"], packet=str(packet), reason=str(exc), **decided)
         raise
@@ -1076,9 +1076,10 @@ def frontier_pass(dry_run: bool = False) -> None:
                     apply(n, issue, decision, body, data, packet)
                 else:
                     dispatch.escalate(n, f"PR #{number}: manager requires a human: {body}", None, code="manager_human")
-            except dispatch.WorkerUnavailable as exc:
+            except (dispatch.WorkerUnavailable, dispatch.WorktreeSetupFailed) as exc:
                 if not dry_run:
-                    execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
+                    execution.wait("setup_failed" if isinstance(exc, dispatch.WorktreeSetupFailed) else "worker_unavailable",
+                                   mode="retry_next_pass", detail=str(exc))
                 dispatch.log(f"PR #{number}: manager FIX waits for a healthy worker ({exc}); no round is spent")
             except (CalledProcessError, OSError, ValueError) as exc:
                 if not dry_run:
@@ -1151,8 +1152,9 @@ def escalation_pass(dry_run: bool = False) -> None:
                     execution.commit()
                     try:
                         resume_fix(n, issue, pending, round=round_number)
-                    except dispatch.WorkerUnavailable as exc:
-                        execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
+                    except (dispatch.WorkerUnavailable, dispatch.WorktreeSetupFailed) as exc:
+                        execution.wait("setup_failed" if isinstance(exc, dispatch.WorktreeSetupFailed) else "worker_unavailable",
+                                       mode="retry_next_pass", detail=str(exc))
                         dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
                     except (CalledProcessError, OSError, ValueError) as exc:
                         execution.outcome, execution.reason = "mechanism_failure", "github_command_failed"
@@ -1210,8 +1212,9 @@ def escalation_pass(dry_run: bool = False) -> None:
                         apply_fix(n, issue, data, packet, round=round_number)
                     else:
                         apply(n, issue, decision, body, data, packet)
-                except dispatch.WorkerUnavailable as exc:
-                    execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
+                except (dispatch.WorkerUnavailable, dispatch.WorktreeSetupFailed) as exc:
+                    execution.wait("setup_failed" if isinstance(exc, dispatch.WorktreeSetupFailed) else "worker_unavailable",
+                                   mode="retry_next_pass", detail=str(exc))
                     dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
                 except (CalledProcessError, OSError, ValueError) as exc:
                     # A partial SPLIT or REWRITE must not be replayed automatically.

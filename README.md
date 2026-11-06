@@ -1027,7 +1027,26 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    its lock is released, then the pass exits. Ticket `git fetch` and `git push`
    commands run one at a time, and every dispatcher log line from a ticket is
    tagged `#<n>` after the `[dispatch]` prefix.
-3. **Work.** The worker gets the issue, its comments, standing instructions
+3. **Work.** Optional `[dispatch].setup` argv runs in the worktree before the
+   worker, including retries, review bounces and manager FIX. A successful run
+   creates `<worktree Git dir>/factory-setup/<HEAD>`; the same worktree/head
+   skips setup on later launches, even across dispatcher passes. A different
+   worktree or head needs its own successful run. Setup commands must tolerate
+   retry after partial failure or interruption; changing the command alone
+   does not invalidate an existing head marker.
+   Each actual run journals `setup` with `head`, `exit_status`, `seconds` and a
+   `log` path (`.factory/logs/<n>-setup.log`, appended). Failure journals
+   `setup-infra` classified `env`, leaves no success marker, and spends no
+   worker attempt or strike; dispatch releases the claim for a later pass.
+   Manager FIX stays pending and resumes without another manager decision or
+   round. A review-bounce setup failure carries the findings to the next pass;
+   its already-charged rework runs before the review-round limit is enforced,
+   without charging it again. Setup shares the ticket's remaining wall-clock
+   budget (timeout status 124; launch failure 127). On timeout, its isolated
+   process group receives SIGTERM, then SIGKILL for any survivors after the
+   leader exits or a 10-second grace period, before failure is journaled or
+   the claim is released.
+   The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
    reviewer's findings. Up to `max_attempts` attempts within `budget_min`.
@@ -1387,6 +1406,7 @@ default model. Gate and safety policy remain file-managed.
 
 [dispatch]
 review_rounds = 1                # REVISE -> worker -> re-review cycles
+# setup = ["uv", "sync", "--frozen"]  # optional argv in the worktree, once per successful head
 # idle_timeout = 30              # minutes quiet mid-work = stuck; 0 disables
 # exit_grace = 300               # seconds quiet after commit/handoff before termination; 0 disables
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
@@ -2177,6 +2197,7 @@ not indefinitely active stages.
 | `capacity_reached` | Admission count reached `max_active`; `active` and `max_active` integers. Demand does not prove dispatcher liveness. |
 | `ticket_lock_contended` | Ticket preflight found the lock held or its nonblocking acquisition lost the race; retry next pass. |
 | `worker_unavailable` | A frontier claim found the ticket's worker executable (`executable` in details) missing from the dispatcher's PATH (e.g. mid-upgrade); the ticket is left unclaimed and retried next pass instead of failing after assignment. `dispatch --ticket` still launches and fails loudly. |
+| `setup_failed` | Per-worktree setup failed or timed out before a worker launched. An env/infra outcome, not an attempt or strike; dispatch releases the claim, and manager FIX waits in `retry_next_pass` mode to resume the same decision once setup succeeds. |
 | `claim_failed` | The claim command failed before assignment; the ticket is left unclaimed and retried next pass. |
 | `merge_lock_contended` | Nonblocking landing lock miss; skip this pass, retry next pass, never convert to a blocking wait. |
 | `exclusive_resource` | Gate observed its exclusive lock held before the unchanged blocking acquisition. |
