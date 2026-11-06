@@ -252,7 +252,10 @@ def watch_filed(issue: dict) -> bool:
                                if row.get("event") == "watch"}:
         return True
     author = (issue.get("author") or {}).get("login") or ""
-    return bool(author) and author.casefold() == login().casefold()
+    try:
+        return bool(author) and author.casefold() == login().casefold()
+    except subprocess.CalledProcessError:
+        return False
 
 def deterministic_needs_info(body: str, comments: str) -> str | None:
     """Cheap lint before the LLM: obviously under-specified -> needs-info."""
@@ -718,7 +721,14 @@ def execute(args: argparse.Namespace, execution) -> int:
     replay = bool(args.replay)
     from factory.plan import is_initiative  # plan -> evidence -> dashboard: import lazily
 
-    if not (replay or args.dry_run) and (refused := identity_mismatch()):
+    try:
+        refused = None if replay or args.dry_run else identity_mismatch()
+    except subprocess.CalledProcessError as exc:
+        print(f"triage refused to post: GitHub login lookup failed: {exc.stderr.strip()}", file=sys.stderr)
+        if execution:
+            execution.outcome, execution.reason = "mechanism_failure", "github_command_failed"
+        return 1
+    if refused:
         print(f"triage refused to post: {refused}. Run it from the factory unit, whose "
               "[install].dispatch_env selects the dispatcher's gh config.", file=sys.stderr)
         if execution:
