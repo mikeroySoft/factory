@@ -1,0 +1,879 @@
+{
+  "source_sha": "3c2c99140113aeae25fffc24b7666c9015428a21",
+  "outer_tests": 1522,
+  "passed_methods": 1426,
+  "failed_methods": 73,
+  "errored_methods": 16,
+  "methods_with_both_failure_and_error": 4,
+  "unsuccessful_methods": 85,
+  "skipped": 11,
+  "failure_reports": 78,
+  "error_reports": 18,
+  "nested_outcomes_excluded": true,
+  "outcomes": [
+    {
+      "outcome": "ERROR",
+      "name": "test_doctor_ignores_a_listener_on_an_unrelated_address (test_dashboard_port.DashboardPortTest.test_doctor_ignores_a_listener_on_an_unrelated_address)",
+      "id": "test_dashboard_port.DashboardPortTest.test_doctor_ignores_a_listener_on_an_unrelated_address",
+      "line": 1378,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_dashboard_port.py\", line 175, in test_doctor_ignores_a_listener_on_an_unrelated_address\n    listener = self.listener(\"127.0.0.2\")\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_dashboard_port.py\", line 34, in listener\n    listener.bind((host, 0))\n    ~~~~~~~~~~~~~^^^^^^^^^^^\nOSError: [Errno 49] Can't assign requested address\n\n",
+      "area": "socket-fixtures",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/637"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_install_refuses_foreign_holder_before_writing_or_mutating_systemd (test_dashboard_port.DashboardPortTest.test_install_refuses_foreign_holder_before_writing_or_mutating_systemd)",
+      "id": "test_dashboard_port.DashboardPortTest.test_install_refuses_foreign_holder_before_writing_or_mutating_systemd",
+      "line": 1389,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_dashboard_port.py\", line 208, in test_install_refuses_foreign_holder_before_writing_or_mutating_systemd\n    listener = self.listener(\"127.0.0.2\")\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_dashboard_port.py\", line 34, in listener\n    listener.bind((host, 0))\n    ~~~~~~~~~~~~~^^^^^^^^^^^\nOSError: [Errno 49] Can't assign requested address\n\n",
+      "area": "socket-fixtures",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/637"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_duplicate_restart_and_concurrent_apply_execute_each_step_once (test_decisions.DecisionTest.test_duplicate_restart_and_concurrent_apply_execute_each_step_once)",
+      "id": "test_decisions.DecisionTest.test_duplicate_restart_and_concurrent_apply_execute_each_step_once",
+      "line": 1400,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/factory/decisions.py\", line 867, in _lock_file\n    fd = os.open(\n        name,\n    ...<2 lines>...\n        dir_fd=directory,\n    )\nFileNotFoundError: [Errno 2] No such file or directory: 'apply-8d85d4a4aadd984d646cd937eca05c5f.lock'\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_decisions.py\", line 286, in test_duplicate_restart_and_concurrent_apply_execute_each_step_once\n    results = list(pool.map(lambda _: self.apply(preview), range(2)))\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/_base.py\", line 645, in result_iterator\n    yield _result_or_cancel(fs.pop())\n          ~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/_base.py\", line 312, in _result_or_cancel\n    return fut.result(timeout)\n           ~~~~~~~~~~^^^^^^^^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/_base.py\", line 447, in result\n    return self.__get_result()\n           ~~~~~~~~~~~~~~~~~^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/_base.py\", line 396, in __get_result\n    raise self._exception\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/thread.py\", line 86, in run\n    result = ctx.run(self.task)\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/thread.py\", line 73, in run\n    return fn(*args, **kwargs)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_decisions.py\", line 286, in <lambda>\n    results = list(pool.map(lambda _: self.apply(preview), range(2)))\n                                      ~~~~~~~~~~^^^^^^^^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_decisions.py\", line 148, in apply\n    return decisions.apply(self.cfg, preview[\"proposal_id\"], preview[\"confirmation\"])\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/factory/decisions.py\", line 1129, in apply\n    with _proposal_lock(directory, proposal_id, deadline):\n         ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/contextlib.py\", line 141, in __enter__\n    return next(self.gen)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/factory/decisions.py\", line 889, in _proposal_lock\n    fd = _lock_file(directory, f\"apply-{proposal_id}.lock\")\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/factory/decisions.py\", line 874, in _lock_file\n    raise DecisionError(\"decision lock is unavailable\", \"storage_unavailable\") from exc\nfactory.decisions.DecisionError: decision lock is unavailable\n\n",
+      "area": "decision-concurrency",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/678"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent (test_evidence.EvidenceCliTest.test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent) (linked=PosixPath('/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpqghbcto0/repo/.factory/events.jsonl'))",
+      "id": "test_evidence.EvidenceCliTest.test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent",
+      "line": 1449,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 917, in test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent\n    target.parent.mkdir()\n    ~~~~~~~~~~~~~~~~~~~^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/pathlib/__init__.py\", line 1011, in mkdir\n    os.mkdir(self, mode)\n    ~~~~~~~~^^^^^^^^^^^^\nFileExistsError: [Errno 17] File exists: '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpqghbcto0/repo/.factory'\n\n",
+      "area": "audit-symlink-cascade",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/639"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent (test_evidence.EvidenceCliTest.test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent)",
+      "id": "test_evidence.EvidenceCliTest.test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent",
+      "line": 1461,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 935, in test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent\n    self.journal.parent.mkdir(exist_ok=True)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/lib/python3.14/pathlib/__init__.py\", line 1011, in mkdir\n    os.mkdir(self, mode)\n    ~~~~~~~~^^^^^^^^^^^^\nFileExistsError: [Errno 17] File exists: '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpqghbcto0/repo/.factory'\n\n",
+      "area": "audit-symlink-cascade",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/639"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_byte_bounded_partial_preserves_useful_evidence (test_evidence_transport.EvidenceTransportTest.test_byte_bounded_partial_preserves_useful_evidence)",
+      "id": "test_evidence_transport.EvidenceTransportTest.test_byte_bounded_partial_preserves_useful_evidence",
+      "line": 1473,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 194, in kill_marker_pids\n    for pid in self.marker_pids():\n               ~~~~~~~~~~~~~~~~^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 180, in marker_pids\n    for entry in os.listdir(\"/proc\"):\n                 ~~~~~~~~~~^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: '/proc'\n\n",
+      "area": "transport-proc-cleanup",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/677"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_complete_page_reports_known_attention_not_null (test_evidence_transport.EvidenceTransportTest.test_complete_page_reports_known_attention_not_null)",
+      "id": "test_evidence_transport.EvidenceTransportTest.test_complete_page_reports_known_attention_not_null",
+      "line": 1485,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 194, in kill_marker_pids\n    for pid in self.marker_pids():\n               ~~~~~~~~~~~~~~~~^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 180, in marker_pids\n    for entry in os.listdir(\"/proc\"):\n                 ~~~~~~~~~~^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: '/proc'\n\n",
+      "area": "transport-proc-cleanup",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/677"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_direct_cli_sigint_unwounds_without_orphans (test_evidence_transport.EvidenceTransportTest.test_direct_cli_sigint_unwounds_without_orphans)",
+      "id": "test_evidence_transport.EvidenceTransportTest.test_direct_cli_sigint_unwounds_without_orphans",
+      "line": 1497,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 298, in test_direct_cli_sigint_unwounds_without_orphans\n    descended = bool(self.marker_pids())\n                     ~~~~~~~~~~~~~~~~^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 180, in marker_pids\n    for entry in os.listdir(\"/proc\"):\n                 ~~~~~~~~~~^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: '/proc'\n\n",
+      "area": "transport-proc-cleanup",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/677"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_direct_cli_sigint_unwounds_without_orphans (test_evidence_transport.EvidenceTransportTest.test_direct_cli_sigint_unwounds_without_orphans)",
+      "id": "test_evidence_transport.EvidenceTransportTest.test_direct_cli_sigint_unwounds_without_orphans",
+      "line": 1510,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 194, in kill_marker_pids\n    for pid in self.marker_pids():\n               ~~~~~~~~~~~~~~~~^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 180, in marker_pids\n    for entry in os.listdir(\"/proc\"):\n                 ~~~~~~~~~~^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: '/proc'\n\n",
+      "area": "transport-proc-cleanup",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/677"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_hung_read_kills_every_descendant_without_false_success (test_evidence_transport.EvidenceTransportTest.test_hung_read_kills_every_descendant_without_false_success)",
+      "id": "test_evidence_transport.EvidenceTransportTest.test_hung_read_kills_every_descendant_without_false_success",
+      "line": 1523,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 194, in kill_marker_pids\n    for pid in self.marker_pids():\n               ~~~~~~~~~~~~~~~~^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 180, in marker_pids\n    for entry in os.listdir(\"/proc\"):\n                 ~~~~~~~~~~^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: '/proc'\n\n",
+      "area": "transport-proc-cleanup",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/677"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_leak_scan_finds_pattern_beside_non_utf8_filename (test_gate.GateOutputEncodingTest.test_leak_scan_finds_pattern_beside_non_utf8_filename)",
+      "id": "test_gate.GateOutputEncodingTest.test_leak_scan_finds_pattern_beside_non_utf8_filename",
+      "line": 1535,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_gate.py\", line 237, in test_leak_scan_finds_pattern_beside_non_utf8_filename\n    descriptor = os.open(\n        os.path.join(os.fsencode(repo), b\"\\xff-leak.txt\"),\n        os.O_WRONLY | os.O_CREAT,\n        0o600,\n    )\nOSError: [Errno 92] Illegal byte sequence: b'/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpx3xr9zkl/repo/\\xff-leak.txt'\n\n",
+      "area": "apfs-filenames",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/638"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_reused_pid_is_not_live_and_missing_identity_is_unknown (test_lifecycle.LifecycleTest.test_reused_pid_is_not_live_and_missing_identity_is_unknown)",
+      "id": "test_lifecycle.LifecycleTest.test_reused_pid_is_not_live_and_missing_identity_is_unknown",
+      "line": 1547,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_lifecycle.py\", line 109, in test_reused_pid_is_not_live_and_missing_identity_is_unknown\n    entered[\"process\"][\"start_ticks\"] -= 1\nTypeError: unsupported operand type(s) for -=: 'NoneType' and 'int'\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_dead_holder_replacement_and_old_release_do_not_erase_new_owner (test_resources.ResourcesTest.test_dead_holder_replacement_and_old_release_do_not_erase_new_owner)",
+      "id": "test_resources.ResourcesTest.test_dead_holder_replacement_and_old_release_do_not_erase_new_owner",
+      "line": 1555,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_resources.py\", line 159, in test_dead_holder_replacement_and_old_release_do_not_erase_new_owner\n    self.assertEqual(after[\"owner\"][\"process\"][\"pid\"], replacement.pid)\n                     ~~~~~~~~~~~~~~^^^^^^^^^^^\nTypeError: 'NoneType' object is not subscriptable\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_killed_requester_loses_pending_wait_and_request_once (test_resources.ResourcesTest.test_killed_requester_loses_pending_wait_and_request_once)",
+      "id": "test_resources.ResourcesTest.test_killed_requester_loses_pending_wait_and_request_once",
+      "line": 1564,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_resources.py\", line 170, in test_killed_requester_loses_pending_wait_and_request_once\n    self.assertEqual(self.snapshot()[\"requests\"][0][\"process\"][\"pid\"], requester.pid)\n                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^\nIndexError: list index out of range\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_live_old_holder_cannot_own_external_replacement_during_release_gap (test_resources.ResourcesTest.test_live_old_holder_cannot_own_external_replacement_during_release_gap)",
+      "id": "test_resources.ResourcesTest.test_live_old_holder_cannot_own_external_replacement_during_release_gap",
+      "line": 1573,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_resources.py\", line 137, in test_live_old_holder_cannot_own_external_replacement_during_release_gap\n    self.assertEqual(self.snapshot()[\"owner\"][\"process\"][\"pid\"], old.pid)\n                     ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^\nTypeError: 'NoneType' object is not subscriptable\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_unknown_execution_and_malformed_waits_do_not_claim_pending_wait (test_resources.ResourcesTest.test_unknown_execution_and_malformed_waits_do_not_claim_pending_wait)",
+      "id": "test_resources.ResourcesTest.test_unknown_execution_and_malformed_waits_do_not_claim_pending_wait",
+      "line": 1582,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_resources.py\", line 250, in test_unknown_execution_and_malformed_waits_do_not_claim_pending_wait\n    self.assertEqual(lifecycle.observe(self.path)[0][\"wait\"][\"event_id\"], wait[\"event_id\"])\n                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^\nTypeError: 'NoneType' object is not subscriptable\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_lock_file_removed_after_release_is_not_a_reader_error (test_runtime.RuntimeCliTest.test_lock_file_removed_after_release_is_not_a_reader_error)",
+      "id": "test_runtime.RuntimeCliTest.test_lock_file_removed_after_release_is_not_a_reader_error",
+      "line": 1591,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_runtime.py\", line 407, in test_lock_file_removed_after_release_is_not_a_reader_error\n    removed = next(row for row in data[\"resources\"]\n                   if row[\"resource\"][\"lock\"][\"path\"] == str(ticket_lock))\nStopIteration\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "ERROR",
+      "name": "test_activity_replaces_non_utf8_git_output (test_subprocess_encoding.DispatchOutputEncodingTest.test_activity_replaces_non_utf8_git_output)",
+      "id": "test_subprocess_encoding.DispatchOutputEncodingTest.test_activity_replaces_non_utf8_git_output",
+      "line": 1600,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_subprocess_encoding.py\", line 46, in test_activity_replaces_non_utf8_git_output\n    descriptor = os.open(os.path.join(os.fsencode(root), b\"\\xff-status\"), os.O_WRONLY | os.O_CREAT, 0o600)\nOSError: [Errno 92] Illegal byte sequence: b'/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp0w346n3e/\\xff-status'\n\n",
+      "area": "apfs-filenames",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/638"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_active_contract_drift_and_explicit_new_slice (test_binding_cli.BindingCli.test_active_contract_drift_and_explicit_new_slice)",
+      "id": "test_binding_cli.BindingCli.test_active_contract_drift_and_explicit_new_slice",
+      "line": 1608,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_binding_cli.py\", line 155, in test_active_contract_drift_and_explicit_new_slice\n    original = self.proposed()\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_binding_cli.py\", line 144, in proposed\n    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 1 != 0 : {\"schema_version\":1,\"ok\":false,\"scope\":{\"repository\":\"acme/widgets\",\"initiative\":50},\"observation_id\":\"c24c0387caa14c778c4b03e0f3abd523\",\"coverage\":{\"status\":\"unavailable\",\"notices\":[\"Complete REST issue bodies and retained local evidence are read; nothing is mutated.\",\"Only normalized Outcome, Boundaries, Plan, and Success evidence sections determine drift.\",\"Plan history is not inferred; attribution remains unknown.\"]},\"sources\":[],\"errors\":[{\"source\":\"repos/acme/widgets/issues/50\",\"scope\":\"binding\",\"code\":\"source_unavailable\"}],\"baseline\":null,\"error\":{\"code\":\"source_unavailable\",\"message\":\"initiative #50 source is unavailable: github_unavailable\"},\"observed_at\":\"2026-11-06T07:36:54.781679+00:00\"}\n\n\n",
+      "area": "binding-interpreter",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/640"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_direct_prompt_cannot_bypass_admission (test_binding_cli.BindingCli.test_direct_prompt_cannot_bypass_admission)",
+      "id": "test_binding_cli.BindingCli.test_direct_prompt_cannot_bypass_admission",
+      "line": 1620,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_binding_cli.py\", line 216, in test_direct_prompt_cannot_bypass_admission\n    baseline = self.proposed()\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_binding_cli.py\", line 144, in proposed\n    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 1 != 0 : {\"schema_version\":1,\"ok\":false,\"scope\":{\"repository\":\"acme/widgets\",\"initiative\":50},\"observation_id\":\"d3d667f2f8fc44399f3a2c94be8a00af\",\"coverage\":{\"status\":\"unavailable\",\"notices\":[\"Complete REST issue bodies and retained local evidence are read; nothing is mutated.\",\"Only normalized Outcome, Boundaries, Plan, and Success evidence sections determine drift.\",\"Plan history is not inferred; attribution remains unknown.\"]},\"sources\":[],\"errors\":[{\"source\":\"repos/acme/widgets/issues/50\",\"scope\":\"binding\",\"code\":\"source_unavailable\"}],\"baseline\":null,\"error\":{\"code\":\"source_unavailable\",\"message\":\"initiative #50 source is unavailable: github_unavailable\"},\"observed_at\":\"2026-11-06T07:36:55.151616+00:00\"}\n\n\n",
+      "area": "binding-interpreter",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/640"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_invalid_baseline_refuses_before_claim_even_forced (test_binding_cli.BindingCli.test_invalid_baseline_refuses_before_claim_even_forced)",
+      "id": "test_binding_cli.BindingCli.test_invalid_baseline_refuses_before_claim_even_forced",
+      "line": 1632,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_binding_cli.py\", line 186, in test_invalid_baseline_refuses_before_claim_even_forced\n    baseline = self.proposed()\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_binding_cli.py\", line 144, in proposed\n    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 1 != 0 : {\"schema_version\":1,\"ok\":false,\"scope\":{\"repository\":\"acme/widgets\",\"initiative\":50},\"observation_id\":\"ad318852265e41ebba006ecce8e6b47f\",\"coverage\":{\"status\":\"unavailable\",\"notices\":[\"Complete REST issue bodies and retained local evidence are read; nothing is mutated.\",\"Only normalized Outcome, Boundaries, Plan, and Success evidence sections determine drift.\",\"Plan history is not inferred; attribution remains unknown.\"]},\"sources\":[],\"errors\":[{\"source\":\"repos/acme/widgets/issues/50\",\"scope\":\"binding\",\"code\":\"source_unavailable\"}],\"baseline\":null,\"error\":{\"code\":\"source_unavailable\",\"message\":\"initiative #50 source is unavailable: github_unavailable\"},\"observed_at\":\"2026-11-06T07:36:55.577495+00:00\"}\n\n\n",
+      "area": "binding-interpreter",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/640"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_stale_inaccessible_and_incomplete_sources_never_claim (test_binding_cli.BindingCli.test_stale_inaccessible_and_incomplete_sources_never_claim)",
+      "id": "test_binding_cli.BindingCli.test_stale_inaccessible_and_incomplete_sources_never_claim",
+      "line": 1644,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_binding_cli.py\", line 197, in test_stale_inaccessible_and_incomplete_sources_never_claim\n    self.ticket(7, self.proposed())\n                   ~~~~~~~~~~~~~^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_binding_cli.py\", line 144, in proposed\n    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 1 != 0 : {\"schema_version\":1,\"ok\":false,\"scope\":{\"repository\":\"acme/widgets\",\"initiative\":50},\"observation_id\":\"de0c1d49c56c4798a0e5ab3b67fb2f19\",\"coverage\":{\"status\":\"unavailable\",\"notices\":[\"Complete REST issue bodies and retained local evidence are read; nothing is mutated.\",\"Only normalized Outcome, Boundaries, Plan, and Success evidence sections determine drift.\",\"Plan history is not inferred; attribution remains unknown.\"]},\"sources\":[],\"errors\":[{\"source\":\"repos/acme/widgets/issues/50\",\"scope\":\"binding\",\"code\":\"source_unavailable\"}],\"baseline\":null,\"error\":{\"code\":\"source_unavailable\",\"message\":\"initiative #50 source is unavailable: github_unavailable\"},\"observed_at\":\"2026-11-06T07:36:55.969350+00:00\"}\n\n\n",
+      "area": "binding-interpreter",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/640"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_snapshot_reuses_passive_lock_evidence_without_coordination_calls (test_dashboard_passive.PassiveDashboardTest.test_snapshot_reuses_passive_lock_evidence_without_coordination_calls)",
+      "id": "test_dashboard_passive.PassiveDashboardTest.test_snapshot_reuses_passive_lock_evidence_without_coordination_calls",
+      "line": 1657,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_dashboard_passive.py\", line 167, in test_snapshot_reuses_passive_lock_evidence_without_coordination_calls\n    self.assertIs(tickets[7][\"lock_held\"], True)\n    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: None is not True\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_doctor_detects_dual_stack_wildcard_holder (test_dashboard_port.DashboardPortTest.test_doctor_detects_dual_stack_wildcard_holder)",
+      "id": "test_dashboard_port.DashboardPortTest.test_doctor_detects_dual_stack_wildcard_holder",
+      "line": 1666,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_dashboard_port.py\", line 204, in test_doctor_detects_dual_stack_wildcard_holder\n    self.assertEqual((code, row[\"status\"]), (1, \"FAIL\"))\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Tuples differ: (0, 'PASS') != (1, 'FAIL')\n\nFirst differing element 0:\n0\n1\n\n- (0, 'PASS')\n+ (1, 'FAIL')\n\n",
+      "area": "socket-fixtures",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/637"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_run_gate_uses_installed_runner_and_discards_stale_report (test_dispatch_lifecycle.LocalCLI.test_run_gate_uses_installed_runner_and_discards_stale_report)",
+      "id": "test_dispatch_lifecycle.LocalCLI.test_run_gate_uses_installed_runner_and_discards_stale_report",
+      "line": 1682,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_dispatch_lifecycle.py\", line 203, in test_run_gate_uses_installed_runner_and_discards_stale_report\n    self.assertEqual(check_cwd.read_text(), str(self.repo))\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpr9jgjnfd/repo' != '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpr9jgjnfd/repo'\n- /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpr9jgjnfd/repo\n? --------\n+ /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpr9jgjnfd/repo\n\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_lowering_retention_preserves_all_audit_rows (test_events_rotation.RotationTest.test_lowering_retention_preserves_all_audit_rows)",
+      "id": "test_events_rotation.RotationTest.test_lowering_retention_preserves_all_audit_rows",
+      "line": 1695,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_events_rotation.py\", line 143, in test_lowering_retention_preserves_all_audit_rows\n    self.assertEqual(state[\"state\"], \"active\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unknown' != 'active'\n- unknown\n+ active\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_rotation_keeps_record_rows_and_open_executions (test_events_rotation.RotationTest.test_rotation_keeps_record_rows_and_open_executions)",
+      "id": "test_events_rotation.RotationTest.test_rotation_keeps_record_rows_and_open_executions",
+      "line": 1707,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_events_rotation.py\", line 49, in test_rotation_keeps_record_rows_and_open_executions\n    self.assertEqual(active[\"state\"], \"active\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unknown' != 'active'\n- unknown\n+ active\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_audit_only_issue_without_label_is_observed_and_inspected (test_evidence.EvidenceCliTest.test_audit_only_issue_without_label_is_observed_and_inspected)",
+      "id": "test_evidence.EvidenceCliTest.test_audit_only_issue_without_label_is_observed_and_inspected",
+      "line": 1719,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 859, in test_audit_only_issue_without_label_is_observed_and_inspected\n    observed = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpz2di74bg/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpz2di74bg/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent (test_evidence.EvidenceCliTest.test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent) (linked=PosixPath('/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpqghbcto0/repo/.factory'))",
+      "id": "test_evidence.EvidenceCliTest.test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent",
+      "line": 1735,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 919, in test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent\n    observed = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpqghbcto0/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpqghbcto0/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_bounded_audit_membership_is_truthful_for_legacy_and_unreadable_trails (test_evidence.EvidenceCliTest.test_bounded_audit_membership_is_truthful_for_legacy_and_unreadable_trails)",
+      "id": "test_evidence.EvidenceCliTest.test_bounded_audit_membership_is_truthful_for_legacy_and_unreadable_trails",
+      "line": 1751,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 883, in test_bounded_audit_membership_is_truthful_for_legacy_and_unreadable_trails\n    observed = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpb4ql_5z2/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpb4ql_5z2/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_candidate_caps_report_which_count_coverage_is_incomplete (test_evidence.EvidenceCliTest.test_candidate_caps_report_which_count_coverage_is_incomplete)",
+      "id": "test_evidence.EvidenceCliTest.test_candidate_caps_report_which_count_coverage_is_incomplete",
+      "line": 1767,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 744, in test_candidate_caps_report_which_count_coverage_is_incomplete\n    data = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpeou83vud/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpeou83vud/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_capabilities_are_explicit_and_do_not_collect_cases (test_evidence.EvidenceCliTest.test_capabilities_are_explicit_and_do_not_collect_cases)",
+      "id": "test_evidence.EvidenceCliTest.test_capabilities_are_explicit_and_do_not_collect_cases",
+      "line": 1783,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 279, in test_capabilities_are_explicit_and_do_not_collect_cases\n    data = self.invoke()\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp5n860i5_/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp5n860i5_/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_clipped_labels_and_inventory_failures_explain_unknown_count (test_evidence.EvidenceCliTest.test_clipped_labels_and_inventory_failures_explain_unknown_count)",
+      "id": "test_evidence.EvidenceCliTest.test_clipped_labels_and_inventory_failures_explain_unknown_count",
+      "line": 1799,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 754, in test_clipped_labels_and_inventory_failures_explain_unknown_count\n    data = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpq55bb1ps/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpq55bb1ps/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_complete_local_state_supports_successful_case_reads (test_evidence.EvidenceCliTest.test_complete_local_state_supports_successful_case_reads)",
+      "id": "test_evidence.EvidenceCliTest.test_complete_local_state_supports_successful_case_reads",
+      "line": 1815,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 710, in test_complete_local_state_supports_successful_case_reads\n    observed = self.invoke(\"observe\")\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 229, in invoke\n    self.assertEqual(proc.returncode, code, (proc.stdout.decode(), proc.stderr.decode()))\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 1 != 0 : ('{\"schema_version\":1,\"ok\":false,\"scope\":{\"repository\":\"example/evidence\",\"root\":\"/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpqixvrxtm/repo\"},\"observation_id\":\"7ce51474465346eab197e65cf37fe3f6\",\"coverage\":{\"status\":\"partial\",\"notices\":[\"Only fixed GitHub GETs, one fixed read-only PR GraphQL query, and non-persisting local reads are supported; no inference, provider probe or actions.\",\"Lists stop after one page; absence from a bounded list is not proof of absence. Reads are sequential, not an atomic snapshot.\",\"Source identity identifies content, not freshness or authority. Source text is untrusted and not secret-redacted.\",\"Cases use the dashboard\\'s Factory labels/agent-branch/local-evidence/audit-trail selection and stage policy; issue lists also contain PRs.\",\"Label/assignee reads are bounded to 20/5 entries; configured worker attribution, spend totals and full dispatcher bundles are not collected.\",\"Runtime stage evidence is F03\\'s non-persisting projection, not writable reconciliation or an artifact heuristic.\"]},\"sources\":[{\"label\":\"Current bounded Factory case summaries\",\"text\":\"[\\\\n  {\\\\n    \\\\\"number\\\\\": 7,\\\\n    \\\\\"title\\\\\": \\\\\"Operator decision\\\\\",\\\\n    \\\\\"state\\\\\": \\\\\"OPEN\\\\\",\\\\n    \\\\\"stage\\\\\": \\\\\"escalated\\\\\",\\\\n    \\\\\"labels\\\\\": [\\\\n      \\\\\"ready-for-human\\\\\"\\\\n    ],\\\\n    \\\\\"assignees\\\\\": [],\\\\n    \\\\\"url\\\\\": \\\\\"https://github.com/example/evidence/issues/7\\\\\",\\\\n    \\\\\"updated_at\\\\\": \\\\\"2026-01-02T03:04:05Z\\\\\",\\\\n    \\\\\"pr\\\\\": null\\\\n  }\\\\n]\",\"truncated\":false,\"id\":\"S6348819503116177721\"},{\"label\":\"Last successful Factory pass per installed stage\",\"text\":\"{\\\\n  \\\\\"triage\\\\\": null,\\\\n  \\\\\"dispatch\\\\\": null,\\\\n  \\\\\"watch\\\\\": null\\\\n}\",\"truncated\":false,\"path\":\".factory/stage-success.json\",\"id\":\"S18101860913450518537\"},{\"label\":\"Local runtime observation\",\"text\":\"{\\\\n  \\\\\"executions\\\\\": [],\\\\n  \\\\\"resources\\\\\": [],\\\\n  \\\\\"events\\\\\": [],\\\\n  \\\\\"history\\\\\": {\\\\n    \\\\\"source\\\\\": \\\\\"events.jsonl\\\\\",\\\\n    \\\\\"status\\\\\": \\\\\"empty\\\\\",\\\\n    \\\\\"start_at\\\\\": null,\\\\n    \\\\\"end_at\\\\\": null,\\\\n    \\\\\"complete\\\\\": true,\\\\n    \\\\\"truncated\\\\\": false,\\\\n    \\\\\"gaps\\\\\": [],\\\\n    \\\\\"bytes_read\\\\\": 0,\\\\n    \\\\\"byte_limit\\\\\": 1048576,\\\\n    \\\\\"event_limit\\\\\": 512,\\\\n    \\\\\"retained_events\\\\\": 0\\\\n  },\\\\n  \\\\\"errors\\\\\": [\\\\n    {\\\\n      \\\\\"source\\\\\": \\\\\"proc\\\\\",\\\\n      \\\\\"scope\\\\\": \\\\\"identity\\\\\",\\\\n      \\\\\"code\\\\\": \\\\\"boot_unavailable\\\\\"\\\\n    },\\\\n    {\\\\n      \\\\\"source\\\\\": \\\\\"proc\\\\\",\\\\n      \\\\\"scope\\\\\": \\\\\"identity\\\\\",\\\\n      \\\\\"code\\\\\": \\\\\"namespace_unavailable\\\\\"\\\\n    },\\\\n    {\\\\n      \\\\\"source\\\\\": \\\\\"configuration\\\\\",\\\\n      \\\\\"scope\\\\\": \\\\\"resources\\\\\",\\\\n      \\\\\"code\\\\\": \\\\\"host_identity_unavailable\\\\\"\\\\n    }\\\\n  ],\\\\n  \\\\\"failures\\\\\": []\\\\n}\",\"truncated\":false,\"id\":\"S6503629992024506364\"},{\"label\":\"Bounded audit-trail membership\",\"text\":\"{\\\\n  \\\\\"status\\\\\": \\\\\"complete\\\\\",\\\\n  \\\\\"truncated\\\\\": false,\\\\n  \\\\\"tickets\\\\\": []\\\\n}\",\"truncated\":false,\"id\":\"S2617226233108512762\"}],\"errors\":[{\"source\":\"proc\",\"scope\":\"identity\",\"code\":\"boot_unavailable\"},{\"source\":\"proc\",\"scope\":\"identity\",\"code\":\"namespace_unavailable\"},{\"source\":\"configuration\",\"scope\":\"resources\",\"code\":\"host_identity_unavailable\"}],\"cases\":[{\"number\":7,\"title\":\"Operator decision\",\"state\":\"OPEN\",\"stage\":\"escalated\",\"labels\":[\"ready-for-human\"],\"assignees\":[],\"url\":\"https://github.com/example/evidence/issues/7\",\"updated_at\":\"2026-01-02T03:04:05Z\",\"pr\":null}],\"attention_count\":1,\"last_successful_pass\":{\"triage\":null,\"dispatch\":null,\"watch\":null},\"error\":{\"code\":\"partial_collection\",\"message\":\"Some sources were unavailable; usable evidence is retained. See errors for source and scope.\"},\"observed_at\":\"2026-11-06T07:40:38.470509+00:00\"}\\n', '')\n\n",
+      "area": "evidence-proc-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/626"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_cross_repository_response_cannot_relabel_foreign_run (test_evidence.EvidenceCliTest.test_cross_repository_response_cannot_relabel_foreign_run)",
+      "id": "test_evidence.EvidenceCliTest.test_cross_repository_response_cannot_relabel_foreign_run",
+      "line": 1826,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 687, in test_cross_repository_response_cannot_relabel_foreign_run\n    data = self.invoke(\"investigate\", kind=\"run\", run_id=55, code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpn187pg_z/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpn187pg_z/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_experiment_availability_states_stay_distinct_and_completion_is_not_acceptance (test_evidence.EvidenceCliTest.test_experiment_availability_states_stay_distinct_and_completion_is_not_acceptance)",
+      "id": "test_evidence.EvidenceCliTest.test_experiment_availability_states_stay_distinct_and_completion_is_not_acceptance",
+      "line": 1842,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 311, in test_experiment_availability_states_stay_distinct_and_completion_is_not_acceptance\n    detail = self.read_experiment(\"ok\")\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 306, in read_experiment\n    return self.invoke(\"investigate\", kind=\"experiment\", experiment=\"o1\", run=run, code=code)[\"investigation\"]\n           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp0ehsrns2/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp0ehsrns2/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_hung_command_is_killed_and_other_head_evidence_survives (test_evidence.EvidenceCliTest.test_hung_command_is_killed_and_other_head_evidence_survives)",
+      "id": "test_evidence.EvidenceCliTest.test_hung_command_is_killed_and_other_head_evidence_survives",
+      "line": 1861,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 653, in test_hung_command_is_killed_and_other_head_evidence_survives\n    data = self.invoke(\"investigate\", kind=\"checks\", number=17, code=1, timeout=27)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpmwo2hc1d/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpmwo2hc1d/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_incomplete_pr_selection_cannot_establish_case_absence (test_evidence.EvidenceCliTest.test_incomplete_pr_selection_cannot_establish_case_absence)",
+      "id": "test_evidence.EvidenceCliTest.test_incomplete_pr_selection_cannot_establish_case_absence",
+      "line": 1877,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 987, in test_incomplete_pr_selection_cannot_establish_case_absence\n    observed = self.invoke(\"inspect\", number=7, code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpifsz34vu/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpifsz34vu/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_independent_check_status_survives_permission_and_oversize_failures (test_evidence.EvidenceCliTest.test_independent_check_status_survives_permission_and_oversize_failures) (failure={'exit': 1, 'stderr': 'HTTP 403 credential=PRIVATE_TOKEN'})",
+      "id": "test_evidence.EvidenceCliTest.test_independent_check_status_survives_permission_and_oversize_failures",
+      "line": 1893,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 645, in test_independent_check_status_survives_permission_and_oversize_failures\n    data = self.invoke(\"investigate\", kind=\"checks\", number=17, code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpsaigia9c/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpsaigia9c/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_independent_check_status_survives_permission_and_oversize_failures (test_evidence.EvidenceCliTest.test_independent_check_status_survives_permission_and_oversize_failures) (failure={'repeat': 32})",
+      "id": "test_evidence.EvidenceCliTest.test_independent_check_status_survives_permission_and_oversize_failures",
+      "line": 1909,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 645, in test_independent_check_status_survives_permission_and_oversize_failures\n    data = self.invoke(\"investigate\", kind=\"checks\", number=17, code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpsaigia9c/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpsaigia9c/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_independent_check_status_survives_permission_and_oversize_failures (test_evidence.EvidenceCliTest.test_independent_check_status_survives_permission_and_oversize_failures) (failure={'raw': 'not json'})",
+      "id": "test_evidence.EvidenceCliTest.test_independent_check_status_survives_permission_and_oversize_failures",
+      "line": 1925,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 645, in test_independent_check_status_survives_permission_and_oversize_failures\n    data = self.invoke(\"investigate\", kind=\"checks\", number=17, code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpsaigia9c/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpsaigia9c/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_inspect_preserves_artifact_decisions_and_runtime_history_without_writes (test_evidence.EvidenceCliTest.test_inspect_preserves_artifact_decisions_and_runtime_history_without_writes)",
+      "id": "test_evidence.EvidenceCliTest.test_inspect_preserves_artifact_decisions_and_runtime_history_without_writes",
+      "line": 1941,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 801, in test_inspect_preserves_artifact_decisions_and_runtime_history_without_writes\n    first = self.invoke(\"inspect\", number=7, code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpj3689qzw/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpj3689qzw/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_log_prefixes_are_safe_capped_failed_first_and_partial (test_evidence.EvidenceCliTest.test_log_prefixes_are_safe_capped_failed_first_and_partial)",
+      "id": "test_evidence.EvidenceCliTest.test_log_prefixes_are_safe_capped_failed_first_and_partial",
+      "line": 1957,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 666, in test_log_prefixes_are_safe_capped_failed_first_and_partial\n    data = self.invoke(\"investigate\", kind=\"log\", run_id=55, code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpfzac0wwn/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpfzac0wwn/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_main_workflow_and_success_do_not_establish_pr_head_ci (test_evidence.EvidenceCliTest.test_main_workflow_and_success_do_not_establish_pr_head_ci)",
+      "id": "test_evidence.EvidenceCliTest.test_main_workflow_and_success_do_not_establish_pr_head_ci",
+      "line": 1973,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 573, in test_main_workflow_and_success_do_not_establish_pr_head_ci\n    workflows = self.invoke(\"investigate\", kind=\"workflows\")\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpxsqfyxae/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpxsqfyxae/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_missing_gh_retains_local_history_and_unknown_attention (test_evidence.EvidenceCliTest.test_missing_gh_retains_local_history_and_unknown_attention)",
+      "id": "test_evidence.EvidenceCliTest.test_missing_gh_retains_local_history_and_unknown_attention",
+      "line": 1989,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 734, in test_missing_gh_retains_local_history_and_unknown_attention\n    data = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpo1u_iq9p/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpo1u_iq9p/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_observe_is_compact_and_absent_state_is_never_created (test_evidence.EvidenceCliTest.test_observe_is_compact_and_absent_state_is_never_created)",
+      "id": "test_evidence.EvidenceCliTest.test_observe_is_compact_and_absent_state_is_never_created",
+      "line": 2005,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 692, in test_observe_is_compact_and_absent_state_is_never_created\n    first = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp44g94b08/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp44g94b08/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_pr_diff_keeps_head_base_and_omitted_patch_uncertainty (test_evidence.EvidenceCliTest.test_pr_diff_keeps_head_base_and_omitted_patch_uncertainty)",
+      "id": "test_evidence.EvidenceCliTest.test_pr_diff_keeps_head_base_and_omitted_patch_uncertainty",
+      "line": 2021,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 598, in test_pr_diff_keeps_head_base_and_omitted_patch_uncertainty\n    data = self.invoke(\"investigate\", kind=\"pr\", number=17)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp1gc8me5y/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp1gc8me5y/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_pr_query_gaps_and_oversized_required_fields_remain_unknown (test_evidence.EvidenceCliTest.test_pr_query_gaps_and_oversized_required_fields_remain_unknown) (expected='github_unavailable')",
+      "id": "test_evidence.EvidenceCliTest.test_pr_query_gaps_and_oversized_required_fields_remain_unknown",
+      "line": 2037,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 1004, in test_pr_query_gaps_and_oversized_required_fields_remain_unknown\n    observed = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpa7l2e94u/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpa7l2e94u/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_pr_query_gaps_and_oversized_required_fields_remain_unknown (test_evidence.EvidenceCliTest.test_pr_query_gaps_and_oversized_required_fields_remain_unknown) (expected='invalid_response')",
+      "id": "test_evidence.EvidenceCliTest.test_pr_query_gaps_and_oversized_required_fields_remain_unknown",
+      "line": 2053,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 1004, in test_pr_query_gaps_and_oversized_required_fields_remain_unknown\n    observed = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpa7l2e94u/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpa7l2e94u/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_pr_query_gaps_and_oversized_required_fields_remain_unknown (test_evidence.EvidenceCliTest.test_pr_query_gaps_and_oversized_required_fields_remain_unknown) (expected='pulls_incomplete')",
+      "id": "test_evidence.EvidenceCliTest.test_pr_query_gaps_and_oversized_required_fields_remain_unknown",
+      "line": 2069,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 1004, in test_pr_query_gaps_and_oversized_required_fields_remain_unknown\n    observed = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpa7l2e94u/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpa7l2e94u/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_pr_query_gaps_and_oversized_required_fields_remain_unknown (test_evidence.EvidenceCliTest.test_pr_query_gaps_and_oversized_required_fields_remain_unknown) (expected='response_too_large')",
+      "id": "test_evidence.EvidenceCliTest.test_pr_query_gaps_and_oversized_required_fields_remain_unknown",
+      "line": 2085,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 1004, in test_pr_query_gaps_and_oversized_required_fields_remain_unknown\n    observed = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpa7l2e94u/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpa7l2e94u/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_pr_repository_metadata_cannot_hide_merge_evidence (test_evidence.EvidenceCliTest.test_pr_repository_metadata_cannot_hide_merge_evidence)",
+      "id": "test_evidence.EvidenceCliTest.test_pr_repository_metadata_cannot_hide_merge_evidence",
+      "line": 2101,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 974, in test_pr_repository_metadata_cannot_hide_merge_evidence\n    observed = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpwqauhvpm/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpwqauhvpm/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_reader_build_identity_is_verifiable_and_never_fabricated (test_evidence.EvidenceCliTest.test_reader_build_identity_is_verifiable_and_never_fabricated)",
+      "id": "test_evidence.EvidenceCliTest.test_reader_build_identity_is_verifiable_and_never_fabricated",
+      "line": 2117,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 478, in test_reader_build_identity_is_verifiable_and_never_fabricated\n    reader = self.invoke()[\"capabilities\"][\"producers\"][\"reader\"]\n             ~~~~~~~~~~~^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpijekmlwb/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpijekmlwb/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_submodules_and_non_utf8_files_are_not_returned_as_text (test_evidence.EvidenceCliTest.test_submodules_and_non_utf8_files_are_not_returned_as_text)",
+      "id": "test_evidence.EvidenceCliTest.test_submodules_and_non_utf8_files_are_not_returned_as_text",
+      "line": 2134,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 629, in test_submodules_and_non_utf8_files_are_not_returned_as_text\n    data = self.invoke(\"investigate\", kind=\"file\", path=\"submodule\", ref=sha, code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpdr4_y1zo/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpdr4_y1zo/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_successful_log_capture_and_bounded_workflow_page (test_evidence.EvidenceCliTest.test_successful_log_capture_and_bounded_workflow_page)",
+      "id": "test_evidence.EvidenceCliTest.test_successful_log_capture_and_bounded_workflow_page",
+      "line": 2150,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 678, in test_successful_log_capture_and_bounded_workflow_page\n    data = self.invoke(\"investigate\", kind=\"log\", run_id=55)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpv_9qgn8f/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpv_9qgn8f/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_truncated_tree_is_not_cited_as_absence_and_links_are_never_dereferenced (test_evidence.EvidenceCliTest.test_truncated_tree_is_not_cited_as_absence_and_links_are_never_dereferenced)",
+      "id": "test_evidence.EvidenceCliTest.test_truncated_tree_is_not_cited_as_absence_and_links_are_never_dereferenced",
+      "line": 2166,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 610, in test_truncated_tree_is_not_cited_as_absence_and_links_are_never_dereferenced\n    data = self.invoke(\"investigate\", kind=\"file\", path=\"missing\", ref=\"topic\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpsw3c0tnp/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpsw3c0tnp/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_unavailable_github_is_unknown_attention_not_empty_success (test_evidence.EvidenceCliTest.test_unavailable_github_is_unknown_attention_not_empty_success)",
+      "id": "test_evidence.EvidenceCliTest.test_unavailable_github_is_unknown_attention_not_empty_success",
+      "line": 2182,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 719, in test_unavailable_github_is_unknown_attention_not_empty_success\n    data = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpf6941h39/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpf6941h39/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_unknown_investigation_kind_names_value_and_accepted_kinds (test_evidence.EvidenceCliTest.test_unknown_investigation_kind_names_value_and_accepted_kinds)",
+      "id": "test_evidence.EvidenceCliTest.test_unknown_investigation_kind_names_value_and_accepted_kinds",
+      "line": 2198,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 540, in test_unknown_investigation_kind_names_value_and_accepted_kinds\n    kinds = [row[\"kind\"] for row in self.invoke()[\"capabilities\"][\"reads\"] if row[\"op\"] == \"investigate\"]\n                                    ~~~~~~~~~~~^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpeelnh6wp/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpeelnh6wp/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_unknown_unscoped_executions_have_bounded_identity_diagnostics (test_evidence.EvidenceCliTest.test_unknown_unscoped_executions_have_bounded_identity_diagnostics)",
+      "id": "test_evidence.EvidenceCliTest.test_unknown_unscoped_executions_have_bounded_identity_diagnostics",
+      "line": 2215,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 774, in test_unknown_unscoped_executions_have_bounded_identity_diagnostics\n    data = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpyoe69svb/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpyoe69svb/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_fixture_commits_do_not_launch_detached_maintenance (test_evidence.EvidenceFixtureCleanupTest.test_fixture_commits_do_not_launch_detached_maintenance)",
+      "id": "test_evidence.EvidenceFixtureCleanupTest.test_fixture_commits_do_not_launch_detached_maintenance",
+      "line": 2231,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 1019, in test_fixture_commits_do_not_launch_detached_maintenance\n    self.assertTrue(result.wasSuccessful(), result.errors or result.failures)\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: False is not true : [(<test_evidence.EvidenceCliTest testMethod=test_reader_build_identity_is_verifiable_and_never_fabricated>, 'Traceback (most recent call last):\\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 478, in test_reader_build_identity_is_verifiable_and_never_fabricated\\n    reader = self.invoke()[\"capabilities\"][\"producers\"][\"reader\"]\\n             ~~~~~~~~~~~^^\\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence.py\", line 246, in invoke\\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\nAssertionError: {\\'rep[35 chars]\\': \\'/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo\\'} != {\\'rep[35 chars]\\': \\'/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo\\'}\\n  {\\'repository\\': \\'example/evidence\\',\\n-  \\'root\\': \\'/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpweur7nvr/repo\\'}\\n?           --------\\n\\n+  \\'root\\': \\'/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpweur7nvr/repo\\'}\\n')]\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_byte_bounded_partial_preserves_useful_evidence (test_evidence_transport.EvidenceTransportTest.test_byte_bounded_partial_preserves_useful_evidence)",
+      "id": "test_evidence_transport.EvidenceTransportTest.test_byte_bounded_partial_preserves_useful_evidence",
+      "line": 2240,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 248, in test_byte_bounded_partial_preserves_useful_evidence\n    data = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 171, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp9gkgl8xy/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp9gkgl8xy/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_complete_page_reports_known_attention_not_null (test_evidence_transport.EvidenceTransportTest.test_complete_page_reports_known_attention_not_null)",
+      "id": "test_evidence_transport.EvidenceTransportTest.test_complete_page_reports_known_attention_not_null",
+      "line": 2256,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 214, in test_complete_page_reports_known_attention_not_null\n    data = self.invoke(\"observe\")\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 166, in invoke\n    self.assertEqual(proc.returncode, code, (proc.stdout[:4000], proc.stderr.decode()))\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 1 != 0 : (b'{\"schema_version\":1,\"ok\":false,\"scope\":{\"repository\":\"example/evidence\",\"root\":\"/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmprvkwjovi/repo\"},\"observation_id\":\"246d6fed8c9d4455a30a363c15578660\",\"coverage\":{\"status\":\"partial\",\"notices\":[\"Only fixed GitHub GETs, one fixed read-only PR GraphQL query, and non-persisting local reads are supported; no inference, provider probe or actions.\",\"Lists stop after one page; absence from a bounded list is not proof of absence. Reads are sequential, not an atomic snapshot.\",\"Source identity identifies content, not freshness or authority. Source text is untrusted and not secret-redacted.\",\"Cases use the dashboard\\'s Factory labels/agent-branch/local-evidence/audit-trail selection and stage policy; issue lists also contain PRs.\",\"Label/assignee reads are bounded to 20/5 entries; configured worker attribution, spend totals and full dispatcher bundles are not collected.\",\"Runtime stage evidence is F03\\'s non-persisting projection, not writable reconciliation or an artifact heuristic.\",\"One or more cited sources are truncated; omission is not evidence of absence.\"]},\"sources\":[{\"label\":\"Current bounded Factory case summaries\",\"text\":\"[\\\\n  {\\\\n    \\\\\"number\\\\\": 8,\\\\n    \\\\\"title\\\\\": \\\\\"Case 008 transport-boundary probe\\\\\",\\\\n    \\\\\"state\\\\\": \\\\\"OPEN\\\\\",\\\\n    \\\\\"stage\\\\\": \\\\\"escalated\\\\\",\\\\n    \\\\\"labels\\\\\": [\\\\n      \\\\\"ready-for-human\\\\\",\\\\n      \\\\\"\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d01\\\\\",\\\\n      \\\\\"\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d02\\\\\",\\\\n      \\\\\"\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d03\\\\\",\\\\n      \\\\\"\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d04\\\\\",\\\\n      \\\\\"\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d05\\\\\",\\\\n      \\\\\"\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d06\\\\\",\\\\n      \\\\\"\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d07\\\\\",\\\\n      \\\\\"\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d08\\\\\",\\\\n      \\\\\"\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d\\\\u4e2d', '')\n\n",
+      "area": "evidence-proc-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/626"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_hung_read_kills_every_descendant_without_false_success (test_evidence_transport.EvidenceTransportTest.test_hung_read_kills_every_descendant_without_false_success)",
+      "id": "test_evidence_transport.EvidenceTransportTest.test_hung_read_kills_every_descendant_without_false_success",
+      "line": 2267,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 229, in test_hung_read_kills_every_descendant_without_false_success\n    data = self.invoke(\"observe\", code=1)\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_evidence_transport.py\", line 171, in invoke\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpjapbweca/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpjapbweca/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_defaults_from_origin (test_factory.ConfigTest.test_defaults_from_origin)",
+      "id": "test_factory.ConfigTest.test_defaults_from_origin",
+      "line": 2283,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_factory.py\", line 283, in test_defaults_from_origin\n    self.assertEqual(cfg.factory, repo / \".factory\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: PosixPath('/private/var/folders/bj/mg95_4md1_v1fqsnxk[37 chars]ory') != PosixPath('/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[29 chars]ory')\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_overrides_and_worktree_root (test_factory.ConfigTest.test_overrides_and_worktree_root)",
+      "id": "test_factory.ConfigTest.test_overrides_and_worktree_root",
+      "line": 2292,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_factory.py\", line 333, in test_overrides_and_worktree_root\n    self.assertEqual(config.load(wt).root, repo)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: PosixPath('/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo') != PosixPath('/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo')\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_worker_inherited_execution_uses_loaded_journal_settings (test_factory.ConfigTest.test_worker_inherited_execution_uses_loaded_journal_settings)",
+      "id": "test_factory.ConfigTest.test_worker_inherited_execution_uses_loaded_journal_settings",
+      "line": 2301,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_factory.py\", line 250, in test_worker_inherited_execution_uses_loaded_journal_settings\n    self.assertEqual(got, {\n    ~~~~~~~~~~~~~~~~^^^^^^^\n        \"root\": str(repo), \"path\": str(path), \"max_bytes\": 1024 * 1024,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n        \"retention\": 4, \"attempts\": 1,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    })\n    ^^\nAssertionError: {'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[180 chars]': 1} != {'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[172 chars]': 1}\n  {'attempts': 1,\n   'max_bytes': 1048576,\n   'path': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp4y2qwzpe/repo/.factory/events.jsonl',\n   'retention': 4,\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp4y2qwzpe/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp4y2qwzpe/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_doctor_json_reports_drift (test_factory.HostConfigTest.test_doctor_json_reports_drift)",
+      "id": "test_factory.HostConfigTest.test_doctor_json_reports_drift",
+      "line": 2324,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_factory.py\", line 886, in test_doctor_json_reports_drift\n    self.assertEqual((out[\"repo\"], out[\"root\"], out[\"version\"]), (\"acme/widgets\", str(repo), __version__))\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Tuples differ: ('acme/widgets', '/private/var/folders/bj/mg95_4md1_v1fqsnxk[37 chars]4.7') != ('acme/widgets', '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[29 chars]4.7')\n\nFirst differing element 1:\n'/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpecmy16oa/repo'\n'/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpecmy16oa/repo'\n\n  ('acme/widgets',\n-  '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpecmy16oa/repo',\n?   --------\n\n+  '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpecmy16oa/repo',\n   '0.4.7')\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_selected_interpreter_launchers_and_validation (test_factory.HostConfigTest.test_selected_interpreter_launchers_and_validation)",
+      "id": "test_factory.HostConfigTest.test_selected_interpreter_launchers_and_validation",
+      "line": 2344,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_factory.py\", line 699, in test_selected_interpreter_launchers_and_validation\n    assert_rejected(\"repository checkout\")\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_factory.py\", line 606, in assert_rejected\n    self.assertIn(problem, failed.stderr)\n    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'repository checkout' not found in \"factory: service interpreter: /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp4i7glcoh/selected/bin/python loaded Factory unknown at /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp4i7glcoh/repo/factory/__init__.py (factory=/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp4i7glcoh/repo/factory/__init__.py, factory.cli=None, factory.drain=None, factory.triage=None, factory.dispatch=None, factory.dashboard=None, purelib=/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp4i7glcoh/selected/lib/python3.14/site-packages, platlib=/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp4i7glcoh/selected/lib/python3.14/site-packages), but service commands failed: ModuleNotFoundError: No module named 'factory.cli'\\n\"\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_dead_holder_is_not_carried_into_external_or_new_gate_ownership (test_gate_resources.GateResourcesTest.test_dead_holder_is_not_carried_into_external_or_new_gate_ownership)",
+      "id": "test_gate_resources.GateResourcesTest.test_dead_holder_is_not_carried_into_external_or_new_gate_ownership",
+      "line": 2356,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_gate_resources.py\", line 256, in test_dead_holder_is_not_carried_into_external_or_new_gate_ownership\n    self.assertEqual(self.resource()[\"owner\"][\"execution_id\"], acquired[\"execution_id\"])\n                     ~~~~~~~~~~~~~^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_gate_resources.py\", line 142, in resource\n    self.assertEqual(len(observations), 1)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 2 != 1\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_interrupted_requester_exit_tolerates_cpu_load (test_gate_resources.GateResourcesTest.test_interrupted_requester_exit_tolerates_cpu_load)",
+      "id": "test_gate_resources.GateResourcesTest.test_interrupted_requester_exit_tolerates_cpu_load",
+      "line": 2368,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_gate_resources.py\", line 322, in test_interrupted_requester_exit_tolerates_cpu_load\n    self.test_uninstrumented_holder_and_killed_requester_remain_distinct()\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_gate_resources.py\", line 214, in test_uninstrumented_holder_and_killed_requester_remain_distinct\n    self.assertEqual((held[\"state\"], held[\"ownership\"], held[\"owner\"]), (\"held\", \"unknown\", None))\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Tuples differ: ('unknown', 'unknown', None) != ('held', 'unknown', None)\n\nFirst differing element 0:\n'unknown'\n'held'\n\n- ('unknown', 'unknown', None)\n+ ('held', 'unknown', None)\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_requests_are_not_owners_and_lock_outlives_exclusive_check (test_gate_resources.GateResourcesTest.test_requests_are_not_owners_and_lock_outlives_exclusive_check)",
+      "id": "test_gate_resources.GateResourcesTest.test_requests_are_not_owners_and_lock_outlives_exclusive_check",
+      "line": 2387,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_gate_resources.py\", line 162, in test_requests_are_not_owners_and_lock_outlives_exclusive_check\n    held = self.resource()\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_gate_resources.py\", line 142, in resource\n    self.assertEqual(len(observations), 1)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 2 != 1\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_uninstrumented_holder_and_killed_requester_remain_distinct (test_gate_resources.GateResourcesTest.test_uninstrumented_holder_and_killed_requester_remain_distinct)",
+      "id": "test_gate_resources.GateResourcesTest.test_uninstrumented_holder_and_killed_requester_remain_distinct",
+      "line": 2398,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_gate_resources.py\", line 214, in test_uninstrumented_holder_and_killed_requester_remain_distinct\n    self.assertEqual((held[\"state\"], held[\"ownership\"], held[\"owner\"]), (\"held\", \"unknown\", None))\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Tuples differ: ('unknown', 'unknown', None) != ('held', 'unknown', None)\n\nFirst differing element 0:\n'unknown'\n'held'\n\n- ('unknown', 'unknown', None)\n+ ('held', 'unknown', None)\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_abrupt_death_reconciles_once_at_observation_time (test_lifecycle.LifecycleTest.test_abrupt_death_reconciles_once_at_observation_time)",
+      "id": "test_lifecycle.LifecycleTest.test_abrupt_death_reconciles_once_at_observation_time",
+      "line": 2414,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_lifecycle.py\", line 88, in test_abrupt_death_reconciles_once_at_observation_time\n    self.assertEqual(lifecycle.observe(self.path)[0][\"state\"], \"active\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unknown' != 'active'\n- unknown\n+ active\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_exception_does_not_hide_unreaped_child (test_lifecycle.LifecycleTest.test_exception_does_not_hide_unreaped_child)",
+      "id": "test_lifecycle.LifecycleTest.test_exception_does_not_hide_unreaped_child",
+      "line": 2426,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_lifecycle.py\", line 282, in test_exception_does_not_hide_unreaped_child\n    self.assertEqual(state[\"evidence\"][\"children\"][0][\"state\"], \"alive\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unknown' != 'alive'\n- unknown\n+ alive\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_held_lock_blocks_interruption_after_owner_death (test_lifecycle.LifecycleTest.test_held_lock_blocks_interruption_after_owner_death)",
+      "id": "test_lifecycle.LifecycleTest.test_held_lock_blocks_interruption_after_owner_death",
+      "line": 2438,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_lifecycle.py\", line 141, in test_held_lock_blocks_interruption_after_owner_death\n    self.assertEqual(lifecycle.observe(self.path)[0][\"state\"], \"interrupted\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unknown' != 'interrupted'\n- unknown\n+ interrupted\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_live_child_survives_dead_parent (test_lifecycle.LifecycleTest.test_live_child_survives_dead_parent)",
+      "id": "test_lifecycle.LifecycleTest.test_live_child_survives_dead_parent",
+      "line": 2450,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_lifecycle.py\", line 163, in test_live_child_survives_dead_parent\n    self.assertEqual(state[\"state\"], \"active\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unknown' != 'active'\n- unknown\n+ active\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_live_grandchild_keeps_ancestors_observable (test_lifecycle.LifecycleTest.test_live_grandchild_keeps_ancestors_observable)",
+      "id": "test_lifecycle.LifecycleTest.test_live_grandchild_keeps_ancestors_observable",
+      "line": 2462,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_lifecycle.py\", line 272, in test_live_grandchild_keeps_ancestors_observable\n    self.assertEqual({state[\"stage\"]: state[\"state\"] for state in states},\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                     {\"dispatcher\": \"active\", \"worker\": \"active\"})\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'dispatcher': 'unknown', 'worker': 'unknown'} != {'dispatcher': 'active', 'worker': 'active'}\n- {'dispatcher': 'unknown', 'worker': 'unknown'}\n+ {'dispatcher': 'active', 'worker': 'active'}\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_nested_and_subprocess_scopes_preserve_causal_association (test_lifecycle.LifecycleTest.test_nested_and_subprocess_scopes_preserve_causal_association)",
+      "id": "test_lifecycle.LifecycleTest.test_nested_and_subprocess_scopes_preserve_causal_association",
+      "line": 2475,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_lifecycle.py\", line 211, in test_nested_and_subprocess_scopes_preserve_causal_association\n    self.assertEqual(active, {\"dispatcher\", \"ticket\", \"worker\"})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Items in the second set but not the first:\n'ticket'\n'worker'\n'dispatcher'\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_overlapping_producers_have_distinct_ordered_executions (test_lifecycle.LifecycleTest.test_overlapping_producers_have_distinct_ordered_executions)",
+      "id": "test_lifecycle.LifecycleTest.test_overlapping_producers_have_distinct_ordered_executions",
+      "line": 2487,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_lifecycle.py\", line 60, in test_overlapping_producers_have_distinct_ordered_executions\n    self.assertEqual({state[\"stage\"]: state[\"state\"] for state in active},\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n                     {\"worker\": \"active\", \"gate\": \"active\", \"review\": \"active\", \"merge\": \"active\"})\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'worker': 'unknown', 'gate': 'unknown', 'review': 'u[23 chars]own'} != {'worker': 'active', 'gate': 'active', 'review': 'act[19 chars]ive'}\n+ {'gate': 'active', 'merge': 'active', 'review': 'active', 'worker': 'active'}\n- {'gate': 'unknown',\n-  'merge': 'unknown',\n-  'review': 'unknown',\n-  'worker': 'unknown'}\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_snapshot_keeps_concurrent_and_no_ticket_executions_when_github_fails (test_lifecycle_consumers.LifecycleConsumersTest.test_snapshot_keeps_concurrent_and_no_ticket_executions_when_github_fails)",
+      "id": "test_lifecycle_consumers.LifecycleConsumersTest.test_snapshot_keeps_concurrent_and_no_ticket_executions_when_github_fails",
+      "line": 2503,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_lifecycle_consumers.py\", line 175, in test_snapshot_keeps_concurrent_and_no_ticket_executions_when_github_fails\n    self.assertEqual(len(held), 1)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^\nAssertionError: 0 != 1\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_capabilities_per_repository_and_scope_mismatch (test_mcp.McpServerTest.test_capabilities_per_repository_and_scope_mismatch)",
+      "id": "test_mcp.McpServerTest.test_capabilities_per_repository_and_scope_mismatch",
+      "line": 2512,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_mcp.py\", line 231, in test_capabilities_per_repository_and_scope_mismatch\n    self.assertEqual(data[\"scope\"], {\"repository\": REPO, \"root\": str(self.root)})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: {'rep[35 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[28 chars]epo'} != {'rep[35 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[20 chars]epo'}\n  {'repository': 'example/evidence',\n-  'root': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpwrmcimd0/repo'}\n?           --------\n\n+  'root': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpwrmcimd0/repo'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_label_rule_selects_versioned_worker_and_expands_contained_environment (test_prime_pilot.PrimePilotConfigTest.test_label_rule_selects_versioned_worker_and_expands_contained_environment)",
+      "id": "test_prime_pilot.PrimePilotConfigTest.test_label_rule_selects_versioned_worker_and_expands_contained_environment",
+      "line": 2526,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_prime_pilot.py\", line 46, in test_label_rule_selects_versioned_worker_and_expands_contained_environment\n    self.assertEqual(\n    ~~~~~~~~~~~~~~~~^\n        loaded.worker_environment(\"prime\", Path(\"/prompt\"), Path(\"/worktree\")),\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    ...<4 lines>...\n        },\n        ^^\n    )\n    ^\nAssertionError: {'DO_[76 chars]': '/private/var/folders/bj/mg95_4md1_v1fqsnxk[44 chars]ent'} != {'DO_[76 chars]': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs800[36 chars]ent'}\n  {'DO_NOT_TRACK': '1',\n-  'PRIME_AGENT_CODING_AGENT_DIR': '/private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp3gg8vlqa/.factory/prime-agent',\n?                                   --------\n\n+  'PRIME_AGENT_CODING_AGENT_DIR': '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp3gg8vlqa/.factory/prime-agent',\n   'PRIME_AGENT_TELEMETRY': '0'}\n\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_external_holder_is_unknown_and_observers_deduplicate (test_resources.ResourcesTest.test_external_holder_is_unknown_and_observers_deduplicate)",
+      "id": "test_resources.ResourcesTest.test_external_holder_is_unknown_and_observers_deduplicate",
+      "line": 2548,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_resources.py\", line 127, in test_external_holder_is_unknown_and_observers_deduplicate\n    self.assertEqual({snapshot[\"state\"] for snapshot in snapshots}, {\"held\"})\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Items in the first set but not the second:\n'unknown'\nItems in the second set but not the first:\n'held'\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_interrupted_release_is_observed_not_backdated_or_synthesized (test_resources.ResourcesTest.test_interrupted_release_is_observed_not_backdated_or_synthesized)",
+      "id": "test_resources.ResourcesTest.test_interrupted_release_is_observed_not_backdated_or_synthesized",
+      "line": 2560,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_resources.py\", line 192, in test_interrupted_release_is_observed_not_backdated_or_synthesized\n    self.assertEqual((observed[\"state\"], observed[\"owner\"]), (\"free\", None))\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Tuples differ: ('unknown', None) != ('free', None)\n\nFirst differing element 0:\n'unknown'\n'free'\n\n- ('unknown', None)\n+ ('free', None)\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_requester_is_not_owner_and_acquires_only_after_release (test_resources.ResourcesTest.test_requester_is_not_owner_and_acquires_only_after_release)",
+      "id": "test_resources.ResourcesTest.test_requester_is_not_owner_and_acquires_only_after_release",
+      "line": 2576,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_resources.py\", line 91, in test_requester_is_not_owner_and_acquires_only_after_release\n    self.assertEqual((first[\"state\"], first[\"ownership\"]), (\"held\", \"confirmed\"))\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Tuples differ: ('unknown', 'unknown') != ('held', 'confirmed')\n\nFirst differing element 0:\n'unknown'\n'held'\n\n- ('unknown', 'unknown')\n+ ('held', 'confirmed')\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_terminal_execution_is_not_owner_even_while_its_process_holds_lock (test_resources.ResourcesTest.test_terminal_execution_is_not_owner_even_while_its_process_holds_lock)",
+      "id": "test_resources.ResourcesTest.test_terminal_execution_is_not_owner_even_while_its_process_holds_lock",
+      "line": 2592,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_resources.py\", line 214, in test_terminal_execution_is_not_owner_even_while_its_process_holds_lock\n    self.assertEqual(self.snapshot()[\"ownership\"], \"confirmed\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unknown' != 'confirmed'\n- unknown\n+ confirmed\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_unavailable_attribution_never_confirms_even_a_live_acquisition (test_resources.ResourcesTest.test_unavailable_attribution_never_confirms_even_a_live_acquisition)",
+      "id": "test_resources.ResourcesTest.test_unavailable_attribution_never_confirms_even_a_live_acquisition",
+      "line": 2604,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_resources.py\", line 225, in test_unavailable_attribution_never_confirms_even_a_live_acquisition\n    self.assertEqual((observed[\"state\"], observed[\"ownership\"], observed[\"owner\"]), (\"held\", \"unknown\", None))\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Tuples differ: ('unknown', 'unknown', None) != ('held', 'unknown', None)\n\nFirst differing element 0:\n'unknown'\n'held'\n\n- ('unknown', 'unknown', None)\n+ ('held', 'unknown', None)\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_concurrency_wait_retry_ownership_and_source_freshness (test_runtime.RuntimeCliTest.test_concurrency_wait_retry_ownership_and_source_freshness)",
+      "id": "test_runtime.RuntimeCliTest.test_concurrency_wait_retry_ownership_and_source_freshness",
+      "line": 2620,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_runtime.py\", line 136, in test_concurrency_wait_retry_ownership_and_source_freshness\n    self.assertEqual(executions[worker.execution_id][\"state\"], \"active\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unknown' != 'active'\n- unknown\n+ active\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_conflicting_duplicate_cannot_confirm_activity (test_runtime.RuntimeCliTest.test_conflicting_duplicate_cannot_confirm_activity)",
+      "id": "test_runtime.RuntimeCliTest.test_conflicting_duplicate_cannot_confirm_activity",
+      "line": 2632,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_runtime.py\", line 347, in test_conflicting_duplicate_cannot_confirm_activity\n    self.assertEqual(data[\"executions\"][0][\"observation\"], \"partial\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unavailable' != 'partial'\n- unavailable\n+ partial\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_hung_service_queries_are_bounded_and_local_facts_survive (test_runtime.RuntimeCliTest.test_hung_service_queries_are_bounded_and_local_facts_survive)",
+      "id": "test_runtime.RuntimeCliTest.test_hung_service_queries_are_bounded_and_local_facts_survive",
+      "line": 2644,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_runtime.py\", line 304, in test_hung_service_queries_are_bounded_and_local_facts_survive\n    self.assertEqual(data[\"executions\"][0][\"state\"], \"active\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unknown' != 'active'\n- unknown\n+ active\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_missing_service_tool_preserves_local_execution (test_runtime.RuntimeCliTest.test_missing_service_tool_preserves_local_execution)",
+      "id": "test_runtime.RuntimeCliTest.test_missing_service_tool_preserves_local_execution",
+      "line": 2656,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_runtime.py\", line 319, in test_missing_service_tool_preserves_local_execution\n    self.assertEqual(data[\"executions\"][0][\"state\"], \"active\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unknown' != 'active'\n- unknown\n+ active\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_truncated_old_history_does_not_poison_current_observations (test_runtime.RuntimeCliTest.test_truncated_old_history_does_not_poison_current_observations)",
+      "id": "test_runtime.RuntimeCliTest.test_truncated_old_history_does_not_poison_current_observations",
+      "line": 2668,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_runtime.py\", line 276, in test_truncated_old_history_does_not_poison_current_observations\n    self.assertEqual(projected[\"state\"], \"active\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'unknown' != 'active'\n- unknown\n+ active\n\n\n",
+      "area": "process-lock-identity",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/632"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_full_suite_leaves_no_tempdirs_behind (test_tempdir_hygiene.TempdirHygieneTest.test_full_suite_leaves_no_tempdirs_behind)",
+      "id": "test_tempdir_hygiene.TempdirHygieneTest.test_full_suite_leaves_no_tempdirs_behind",
+      "line": 2680,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_tempdir_hygiene.py\", line 73, in test_full_suite_leaves_no_tempdirs_behind\n    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: child suite exited 1 (full child output retained in suite.log)\n",
+      "area": "hygiene-cascade",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/626"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_killed_gate_fixture_leaves_no_tempdirs_behind (test_tempdir_hygiene.TempdirHygieneTest.test_killed_gate_fixture_leaves_no_tempdirs_behind)",
+      "id": "test_tempdir_hygiene.TempdirHygieneTest.test_killed_gate_fixture_leaves_no_tempdirs_behind",
+      "line": 5552,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_tempdir_hygiene.py\", line 58, in test_killed_gate_fixture_leaves_no_tempdirs_behind\n    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: child suite exited 1 (full child output retained in suite.log)\n",
+      "area": "hygiene-cascade",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/626"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_suites_leave_no_tempdirs_behind (test_tempdir_hygiene.TempdirHygieneTest.test_suites_leave_no_tempdirs_behind)",
+      "id": "test_tempdir_hygiene.TempdirHygieneTest.test_suites_leave_no_tempdirs_behind",
+      "line": 5582,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_tempdir_hygiene.py\", line 25, in test_suites_leave_no_tempdirs_behind\n    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: child suite exited 1 (full child output retained in suite.log)\n",
+      "area": "hygiene-cascade",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/626"
+    },
+    {
+      "outcome": "FAIL",
+      "name": "test_evidence_requires_matching_repository_and_root (test_workspace.WorkspaceHTTPTest.test_evidence_requires_matching_repository_and_root) (repository='acme/widgets', root='/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpupsx5jj0/repo')",
+      "id": "test_workspace.WorkspaceHTTPTest.test_evidence_requires_matching_repository_and_root",
+      "line": 5771,
+      "traceback": "Traceback (most recent call last):\n  File \"/private/tmp/factory-572-z2uygc2o/checkout/tests/test_workspace.py\", line 154, in test_evidence_requires_matching_repository_and_root\n    self.assertIsNone(error)\n    ~~~~~~~~~~~~~~~~~^^^^^^^\nAssertionError: {'code': 'invalid_response', 'message': 'Evidence envelope did not match the selected repository.', 'operation': 'observe'} is not None\n\n----------------------------------------------------------------------\nRan 1522 tests in 1618.330s\n\nFAILED (failures=78, errors=18, skipped=11)\n",
+      "area": "canonical-paths",
+      "ticket": "https://github.com/mikeroySoft/factory/issues/641"
+    }
+  ]
+}
