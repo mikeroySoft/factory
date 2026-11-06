@@ -2034,11 +2034,13 @@ def setup_worktree(n: int, wt: Path, deadline: float) -> None:
     started = time.monotonic()
     with logfile.open("a") as output:
         try:
-            code = run(
-                cfg.setup, cwd=wt, check=False, stdout=output, stderr=subprocess.STDOUT,
-                timeout=max(0.001, deadline - time.monotonic()),
-            ).returncode
+            proc = subprocess.Popen(
+                cfg.setup, cwd=wt, stdout=output, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            code = proc.wait(timeout=max(0.001, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
+            _stop(proc)
             code = 124
             output.write("setup exceeded ticket wall-clock budget\n")
         except OSError as exc:
@@ -5250,7 +5252,7 @@ def process_ticket(
                     setup_worktree(n, wt, deadline)
                 except WorktreeSetupFailed:
                     _record_rework(n, gate_head, findings, deferred=True)
-                    raise
+                    return False
                 _record_rework(n, gate_head, findings, deferred=False)
                 rounds_used += 1
                 execution.review_round = bounce + 1

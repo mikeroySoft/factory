@@ -1042,7 +1042,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    round. A review-bounce setup failure carries the findings to the next pass;
    its already-charged rework runs before the review-round limit is enforced,
    without charging it again. Setup shares the ticket's remaining wall-clock
-   budget (timeout status 124; launch failure 127).
+   budget (timeout status 124; launch failure 127). On timeout, its isolated
+   process group receives SIGTERM, then SIGKILL for any survivors after the
+   leader exits or a 10-second grace period, before failure is journaled or
+   the claim is released.
    The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
@@ -2194,6 +2197,7 @@ not indefinitely active stages.
 | `capacity_reached` | Admission count reached `max_active`; `active` and `max_active` integers. Demand does not prove dispatcher liveness. |
 | `ticket_lock_contended` | Ticket preflight found the lock held or its nonblocking acquisition lost the race; retry next pass. |
 | `worker_unavailable` | A frontier claim found the ticket's worker executable (`executable` in details) missing from the dispatcher's PATH (e.g. mid-upgrade); the ticket is left unclaimed and retried next pass instead of failing after assignment. `dispatch --ticket` still launches and fails loudly. |
+| `setup_failed` | Per-worktree setup failed or timed out before a worker launched. An env/infra outcome, not an attempt or strike; dispatch releases the claim, and manager FIX waits in `retry_next_pass` mode to resume the same decision once setup succeeds. |
 | `claim_failed` | The claim command failed before assignment; the ticket is left unclaimed and retried next pass. |
 | `merge_lock_contended` | Nonblocking landing lock miss; skip this pass, retry next pass, never convert to a blocking wait. |
 | `exclusive_resource` | Gate observed its exclusive lock held before the unchanged blocking acquisition. |

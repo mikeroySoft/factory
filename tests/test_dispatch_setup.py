@@ -203,6 +203,12 @@ class DispatchSetupTest(unittest.TestCase):
         import os
         import signal
 
+        def running(pid):
+            try:
+                return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+            except FileNotFoundError:
+                return False
+
         dispatch.record("attempt", ticket=9, attempt=1, gate="FAIL")
         before = self.events("attempt")
         for ignore_term in (False, True):
@@ -230,15 +236,10 @@ class DispatchSetupTest(unittest.TestCase):
                     self.assertTrue(ready.exists(), "child did not reach its signal handler")
                     for pid_file in (parent, ready):
                         pid = int(pid_file.read_text())
-                        stat = Path(f"/proc/{pid}/stat")
                         until = time.monotonic() + 1
-                        while stat.exists() and time.monotonic() < until:
-                            if stat.read_text().rsplit(")", 1)[1].split()[0] == "Z":
-                                break
+                        while running(pid) and time.monotonic() < until:
                             time.sleep(0.01)
-                        if stat.exists():
-                            self.assertEqual(stat.read_text().rsplit(")", 1)[1].split()[0], "Z",
-                                             f"setup process {pid} is still running")
+                        self.assertFalse(running(pid), f"setup process {pid} is still running")
                     self.assertFalse(marker.exists())
                     self.assertEqual(self.events("setup")[-1]["exit_status"], 124)
                     infra = self.events("setup-infra")[-1]
