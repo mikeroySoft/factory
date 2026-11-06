@@ -647,11 +647,13 @@ The dispatcher supplies the issue title, body, and every comment inline as untru
 data: the worker's accepted snapshot for plan-bound tickets, otherwise its own
 `gh issue view --json title,body,comments` read. Reviewers use that supplied issue
 section, not GitHub or the worker's transcript. Learning-proposal reviews are unchanged.
-Ticket review retries snapshot, diff, launch, nonzero-exit, and unparseable-output failures up
+Ticket review retries snapshot, diff, launch, and unparseable-output failures up
 to three times, using exponential backoff unless the provider reports
-`retry-after` or `retry-after-ms`. Persistent failure records
-`reviewer_unavailable`, preserves stderr or a structured error event in the
-review findings and escalation packet, and consumes no `review_rounds` slot.
+`retry-after` or `retry-after-ms`. A nonzero exit with a validated verdict is
+handled as that verdict; without one, it is a tooling failure, not worker feedback.
+Persistent failure records `reviewer_unavailable`, preserves stderr or a structured
+error event in the review diagnostics and escalation packet, and consumes no
+`review_rounds` slot or change-request feedback event.
 
 Keep `{cwd}` in worker and manager commands, and configure the manager CLI in
 read-only/no-tools mode: the prompt prohibits file edits, but an arbitrary
@@ -1139,10 +1141,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    excuse a defect it did not detect. Net-new abstractions beyond the brief,
    whether the diff introduced them or the review asks for them, need that same
    justification, but a missing justification alone does not block. Reviews must
-   exit zero and end with exactly one final `VERDICT: APPROVE` or
-   `VERDICT: REVISE` line. Malformed, multiple, non-final, nonzero-exit, and
-   launch failures are reviewer tooling failures: Factory retries them, then
-   escalates persistent failure as `reviewer_unavailable` without sending work
+   end with exactly one final `VERDICT: APPROVE` or `VERDICT: REVISE` line and
+   a valid structured findings block. A validated verdict is handled even on a
+   nonzero exit. Malformed, multiple, non-final, and launch failures are reviewer
+   tooling failures: Factory retries them, then escalates persistent failure as
+   `reviewer_unavailable` without recording change-request feedback or sending work
    back to the worker. Each accepted `REVISE` sends the findings back to the
    worker, flagged so only the required fixes are binding (re-gate, push,
    re-review), up to `review_rounds` times; then it escalates. A manager `FIX`
