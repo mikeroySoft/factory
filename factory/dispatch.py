@@ -1904,7 +1904,10 @@ def set_worker_health(profile: str, reason: str | None, *, source: str, check: s
         UNAVAILABLE_WORKERS[profile] = reason
     last = last_worker_health(profile)
     available = reason is None
-    if (last["available"] if last else True) == available:
+    # A launch failure is journaled even on a profile already down for another reason: the
+    # next pass keeps a launch-sourced row sticky until a probe or a launch clears it.
+    relaunch = source == "launch" and not available and (last or {}).get("source") != "launch"
+    if (last["available"] if last else True) == available and not relaunch:
         return
     check = check or source
     fallback = None if available else fallback_worker(profile)
@@ -4797,7 +4800,6 @@ def process_ticket(
     labels = {label["name"] for label in issue.get("labels", [])}
     wt = FACTORY / f"wt-{n}"
     worker_key = cfg.worker_key(labels)
-    worker = cfg.worker_command(worker_key, wt / ".factory-prompt.md", wt)[0]
     lock_path = FACTORY / "locks" / f"{n}.lock"
     if lock_held(lock_path):
         log(f"#{n}: skipped (in flight, lock held on {lock_path})")
@@ -4887,16 +4889,15 @@ def process_ticket(
                 log(f"#{n}: skipped (worker `{profile}` unavailable: {UNAVAILABLE_WORKERS[profile]}); retry next pass")
                 execution.wait("worker_unavailable", mode="retry_next_pass", worker=profile)
                 return
-            if launch is not None and launch != profile:
-                worker = cfg.worker_command(launch, wt / ".factory-prompt.md", wt)[0]
-            if launch is not None:
-                worker = worker_missing(cfg.worker_spec(launch, wt / ".factory-prompt.md", wt), os.environ) or worker
-            if not forced and shutil.which(worker) is None:
+            launch_spec = None if launch is None else cfg.worker_spec(launch, wt / ".factory-prompt.md", wt)
+            # The PATH the launch itself gets: the host's plus the profile's [workers.env].
+            missing = launch_spec and worker_missing(launch_spec, {**os.environ, **launch_spec.env})
+            if not forced and missing:
                 # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
                 # ponytail: PATH probe only; a binary swapped out between here and Popen still
                 # fails the launch. Not claimed, so the next pass retries once it is back.
-                log(f"#{n}: skipped (worker executable not on PATH: {worker}); retry next pass")
-                execution.wait("worker_unavailable", mode="retry_next_pass", executable=worker)
+                log(f"#{n}: skipped (worker executable not on PATH: {missing}); retry next pass")
+                execution.wait("worker_unavailable", mode="retry_next_pass", executable=missing)
                 return
             if forced and admission_id is None:
                 admission_id = record_direct_admission({**fresh, "number": n})

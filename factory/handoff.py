@@ -66,9 +66,12 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     if pending_fix(since, round=r, pr=None) is not None:
         return None  # a FIX waiting for a healthy worker resumes on its own (#662)
     resumes = [e for e in since if e.get("event") == "manage-resume" and e.get("round") == r and not e.get("pr")]
+    # Once a resume took the FIX up, only the latest resume's own run decides: the deciding pass
+    # and any earlier resume that re-pended are superseded, however they ended.
+    judged = [resumes[-1]] if resumes else decided
     failed = next((e for e in events if e.get("event") == "lifecycle" and e.get("kind") == "exit"
                    and e.get("outcome") in ({"mechanism_failure", "interrupted", "unknown"} if resumes else {"mechanism_failure"})
-                   and e.get("execution_id") in {d.get("execution_id") for d in decided + resumes}), None)
+                   and e.get("execution_id") in {d.get("execution_id") for d in judged}), None)
     if failed:
         return f"the manager's {decided[-1].get('decision')} decision could not be applied to GitHub and is never replayed"
     return None  # handed back to automation; a later failure is a new escalation generation
