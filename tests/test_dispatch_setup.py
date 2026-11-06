@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch, lifecycle, manage
+from factory import config, dispatch, manage
 from tests import test_refresh_conflict as fixture
 
 
@@ -118,3 +118,21 @@ class DispatchSetupTest(unittest.TestCase):
                 with mock.patch.object(config, "host_config", return_value={}), \
                         self.assertRaisesRegex(config.ConfigError, "dispatch.setup"):
                     config.load(self.root)
+
+    def test_setup_launch_failure_and_timeout_are_env_and_leave_no_marker(self):
+        self.configure_setup("raise SystemExit(0)")
+        wt = dispatch.ensure_worktree(9)
+        for command, seconds, status in (
+            (["factory-606-nonexistent-setup-executable"], 10, 127),
+            ([sys.executable, "-c", "import time; time.sleep(30)"], 0.02, 124),
+        ):
+            with self.subTest(status=status):
+                self.cfg.setup = command
+                with self.assertRaises(dispatch.WorktreeSetupFailed):
+                    dispatch.setup_worktree(9, wt, time.monotonic() + seconds)
+                self.assertEqual(self.events("setup")[-1]["exit_status"], status)
+                self.assertEqual(self.events("setup-infra")[-1]["classification"], "env")
+        self.cfg.setup = [sys.executable, "-c", ""]
+        dispatch.setup_worktree(9, wt, time.monotonic() + 10)
+        self.assertEqual([e["exit_status"] for e in self.events("setup")], [127, 124, 0])
+        self.assertEqual(self.events("attempt"), [])

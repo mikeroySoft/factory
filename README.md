@@ -1027,7 +1027,20 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    its lock is released, then the pass exits. Ticket `git fetch` and `git push`
    commands run one at a time, and every dispatcher log line from a ticket is
    tagged `#<n>` after the `[dispatch]` prefix.
-3. **Work.** The worker gets the issue, its comments, standing instructions
+3. **Work.** Optional `[dispatch].setup` argv runs in the worktree before the
+   worker, including retries, review bounces and manager FIX. A successful run
+   creates `<worktree Git dir>/factory-setup/<HEAD>`; the same worktree/head
+   skips setup on later launches, even across dispatcher passes. A different
+   worktree or head needs its own successful run. Setup commands must tolerate
+   retry after partial failure or interruption; changing the command alone
+   does not invalidate an existing head marker.
+   Each actual run journals `setup` with `head`, `exit_status`, `seconds` and a
+   `log` path (`.factory/logs/<n>-setup.log`, appended). Failure journals
+   `setup-infra` classified `env`, leaves no success marker, and spends no
+   worker attempt or strike; dispatch releases the claim for a later pass.
+   Manager FIX defers without escalating. Setup shares the ticket's remaining
+   wall-clock budget (timeout status 124; launch failure 127).
+   The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
    reviewer's findings. Up to `max_attempts` attempts within `budget_min`.
@@ -1387,6 +1400,7 @@ default model. Gate and safety policy remain file-managed.
 
 [dispatch]
 review_rounds = 1                # REVISE -> worker -> re-review cycles
+# setup = ["uv", "sync", "--frozen"]  # optional argv in the worktree, once per successful head
 # idle_timeout = 30              # minutes quiet mid-work = stuck; 0 disables
 # exit_grace = 300               # seconds quiet after commit/handoff before termination; 0 disables
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)

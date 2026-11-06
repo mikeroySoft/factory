@@ -455,13 +455,17 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                 ["issue", "view", str(n), "--repo", dispatch.REPO, "--json", "comments"]
             )
             comments = fresh.get("comments")
-        ok, report, logfile, gate_head = dispatch.worker_round(
-            n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
-            issue["title"], extra, max(attempts, default=0) + 1,
-            time.monotonic() + cfg.budget_min * 60, body=issue.get("body") or "",
-            selected_worker=data["worker"],
-            comments=comments,
-        )
+        try:
+            ok, report, logfile, gate_head = dispatch.worker_round(
+                n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
+                issue["title"], extra, max(attempts, default=0) + 1,
+                time.monotonic() + cfg.budget_min * 60, body=issue.get("body") or "",
+                selected_worker=data["worker"],
+                comments=comments,
+            )
+        except dispatch.WorktreeSetupFailed as exc:
+            dispatch.log(f"#{n}: manager FIX deferred ({exc}); fix the environment before retrying")
+            return
         if not ok:
             reason = "gate failed after manager FIX"
             if already_human:
