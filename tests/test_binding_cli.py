@@ -61,6 +61,8 @@ elif a[:2] == ['issue', 'comment']:
 else:
     sys.exit('unexpected external operation: ' + repr(a))
 '''
+# Use the test runner's interpreter; the retained shebang below becomes a comment.
+GH = f'#!{sys.executable}\n' + GH
 WORKER = '''import json, os, subprocess, sys
 from pathlib import Path
 prompt = Path(sys.argv[1])
