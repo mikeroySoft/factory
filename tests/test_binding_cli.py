@@ -225,3 +225,15 @@ class BindingCli(unittest.TestCase):
         ):
             dispatch.build_prompt(7, self.repo)
         self.assertFalse((self.repo / '.factory/brief-7.md').exists())
+
+    def test_proposed_baseline_and_unchanged_drift(self):
+        baseline = self.proposed()
+        self.assertEqual(baseline['initiative'], 50)
+        self.assertEqual(baseline['sections']['Outcome'], 'Ship bounded work')
+        self.ticket(7, baseline)
+        result = self.cli('plan', 'drift', '7')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        drift = json.loads(result.stdout)['drift']
+        self.assertEqual(drift['status'], 'unchanged')
+        self.assertEqual(drift['changed_sections'], [])
+        self.assertEqual(drift['observed']['sha256'], baseline['sha256'])
