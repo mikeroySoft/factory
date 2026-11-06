@@ -33,7 +33,7 @@ The worker runs in the worktree with a prompt file. The dispatcher, not the work
 
 ## Reviewer
 
-The reviewer is a separate argv (`[review].command`). It reviews `git diff origin/<main>..HEAD`. It is told not to run builds or tests. The gate report is the build and test evidence.
+The reviewer is a separate argv (`[review].command`). It reviews `git diff origin/<main>...HEAD`, excluding newer main-only commits; explicit re-review bases retain `base..head`. Its snapshot is the exact gated head, not a synthetic merge. It is told not to run builds or tests. The gate report is the build and test evidence.
 
 A review counts only when all of these hold (`review` in `factory/dispatch.py`):
 

@@ -5,6 +5,7 @@ Run: python -m unittest discover -s tests
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -22,6 +23,7 @@ sys.path.insert(0, str(ROOT))
 # Never read the operator's real host config; HostConfigTest writes its own here.
 XDG = Path(tempfile.mkdtemp())
 os.environ["XDG_CONFIG_HOME"] = str(XDG)
+atexit.register(shutil.rmtree, XDG, ignore_errors=True)
 
 from datetime import UTC
 
@@ -31,6 +33,10 @@ from factory import __version__, config, lifecycle, manage, runtime_events
 # redirect every fixture's lifecycle rows (gate timeouts, review verdicts...) into the live
 # journal, where `factory watch` files them as factory bugs. Tests that need a context set one.
 os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
+def tearDownModule() -> None:
+    shutil.rmtree(XDG, ignore_errors=True)
+
 
 
 def host_file(text: str) -> None:
@@ -1879,8 +1885,14 @@ PY
         for decision, body, expected in cases:
             with self.subTest(decision=decision, body=body):
                 repo, stubs, _ = self.scenario()
+                # Only an installed worker whose probe proves its login can be routed to (#662).
+                (Path(stubs) / "droid").write_text("#!/bin/sh\n")
+                (Path(stubs) / "droid").chmod(0o755)
                 command = ["printf", "%s", f"DECISION: {decision}\n{body}"]
                 (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
+                with (repo / config.CONFIG_NAME).open("a") as settings:
+                    settings.write('[workers]\ndefault = ["false"]\n[workers.chore]\ncommand = ["droid"]\n'
+                                   "probe = " + json.dumps([sys.executable, "-c", "pass"]) + "\n")
                 result = factory(repo, "manage", path=stubs)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = (Path(stubs) / "gh.log").read_text()
@@ -1904,6 +1916,7 @@ PY
                 settings = "[manager]\ncommand = " + json.dumps(command) + '\n[workers]\ndefault = ["false"]\n'
                 if configured:
                     settings += '[workers.chore]\ncommand = ["true"]\nwhen = "Mechanical edits only"\n'
+                    settings += "probe = " + json.dumps([sys.executable, "-c", "pass"]) + "\n"  # proves the login (#662)
                 (repo / config.CONFIG_NAME).write_text(settings)
                 result = factory(repo, "manage", path=stubs)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -2155,6 +2168,7 @@ PY
         (repo / config.CONFIG_NAME).write_text(
             "[manager]\ncommand = " + json.dumps(command)
             + '\n[workers]\ndefault = ["false"]\n[workers.ci-fix]\ncommand = ["fix-worker", "{prompt}"]\nwhen = "Red CI"'
+            + "\nprobe = " + json.dumps([sys.executable, "-c", "pass"])  # proves the login (#662)
             + "\n[review]\ncommand = " + json.dumps(["printf", review_output])
             + '\n[[gate.check]]\nname = "unit"\nrun = ["true"]\n[repo]\nslug = "acme/widgets"\n'
         )
@@ -2230,6 +2244,7 @@ esac
                     "[manager]\ncommand = " + json.dumps(command)
                     + '\n[workers]\ndefault = ["false"]\nchore = ["false"]'
                     + f'\n[workers.{worker}]\ncommand = ["fix-worker", "{{prompt}}"]\nwhen = "Red CI"'
+                    + "\nprobe = " + json.dumps([sys.executable, "-c", "pass"])  # proves the login (#662)
                     + "\n[review]\ncommand = " + json.dumps(["printf", review_output])
                     + '\n[[gate.check]]\nname = "unit"\nrun = ["' + ("true" if gate_ok else "false") + '"]\n'
                     + '\n[repo]\nslug = "acme/widgets"\n'

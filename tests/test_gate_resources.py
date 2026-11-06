@@ -64,6 +64,7 @@ class GateResourcesTest(unittest.TestCase):
         self.env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
                     "XDG_CONFIG_HOME": str(self.base / "config"),
                     "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+        self.env["TMPDIR"] = str(self.base)
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.repo,
                        env=self.env, check=True, capture_output=True, timeout=10)
         checks = "".join(

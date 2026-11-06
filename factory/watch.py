@@ -134,7 +134,8 @@ def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
     names = [line.split()[0] for line in listed.splitlines() if line.split()]
     result = os.environ.get("SERVICE_RESULT")
     own = ""
-    if result and result != "success":
+    # ExecCondition exit 1 skips the pass without failing it; ExecStopPost still runs.
+    if result and result not in {"success", "exec-condition"}:
         names.append(f"{cfg.unit}.service")
         own = " ".join(f"{k}={os.environ.get(k, '')}" for k in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")) + "\n"
     units = []
@@ -579,6 +580,16 @@ def signals(
 ) -> list[dict]:
     """Every observed failure, newest journal evidence first within each fingerprint."""
     found: dict[str, dict] = {}
+    wait = next((r for r in reversed(events) if r.get("event") == "learn-wait"), None)
+    blocked = next((r for r in reversed(events) if r.get("event") == "learn-blocked"), None)
+    if (wait and blocked and wait.get("pr") is not None and wait.get("pr") == blocked.get("pr")
+            and wait.get("at") == blocked.get("since")):
+        key = fingerprint("learn-blocked", f"{cfg.repo}#{blocked['pr']}")
+        found[key] = {
+            "fingerprint": key, "kind": "learn-blocked", "stage": "learn",
+            "key": blocked["reason"], "rows": [blocked], "excerpt": None, "log": None,
+            "latest": blocked["at"], "command": "factory watch --dry-run",
+        }
     logs = {(r.get("ticket"), r.get("attempt")): r.get("log") for r in events if r.get("event") == "attempt"}
     stalled = {
         (row.get("ticket"), row.get("reason"))

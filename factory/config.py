@@ -78,16 +78,17 @@ DEFAULT_LLM_MODEL = "qwen3:30b"
 DEFAULT_INSTALL = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "python": None, "env": {}}
 ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engine_repo` default
 
-# Host-side layer: `$XDG_CONFIG_HOME/factory/config.toml`, same table shapes
-# as `.factory.toml`. `[defaults.*]` < `[repo."owner/name".*]` < the repo file.
-# Only these tables/keys are taken from the host: a clone on another machine
-# must run the same gate, so gate checks, leak scan and upstream never come
-# from here. Everything else in the host file is left for other tools (District).
+# Host-side layer: `$XDG_CONFIG_HOME/factory/config.toml`, shaped as
+# `[defaults]` < `[repo."owner/name"]` < the repo file.
+# Only these tables, nested keys, and scalars are taken from the host: a clone
+# on another machine must run the same gate, so gate checks, leak scan and
+# upstream never come from here. Everything else is left for other tools (District).
 # `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
 # `leak_scan.extra` is read from both and concatenated: host terms only add to the scan.
 HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "manager", "install", "prices"})
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",),
              "review": ("command", "second_command", "json_mode")}
+HOST_SCALARS = ("host_name", "triage_host", "claim_ttl")
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
 # `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive, when}.
@@ -95,6 +96,7 @@ KNOWN_KEYS = {
     "repo": ("slug", "upstream", "main"),
     "dispatch": ("max_active", "max_attempts", "budget_min", "idle_timeout", "exit_grace",
                  "review_rounds", "cost_pattern", "signoff"),
+    "engine": ("yield_for_update",),
     "workers": None,
     "worker_wrap": ("command",),
     "review": ("command", "second_command", "json_mode", "policy"),
@@ -106,7 +108,7 @@ KNOWN_KEYS = {
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths",
              "infra_retries", "infra_patterns"),
     "leak_scan": ("pattern", "exclude", "extra"),
-    "triage": ("url", "model", "timeout", "service"),
+    "triage": ("url", "model", "timeout", "service", "max_tokens", "chat_template_kwargs"),
     "journal": ("max_mb", "retention"),
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
@@ -171,6 +173,18 @@ class Band:
     rules: tuple[BandRule, ...]
 
 
+@dataclass(frozen=True)
+class WorkerSpec:
+    profile: str
+    argv: list[str]  # host `worker_wrap` first, then the launched profile command, expanded
+    model: str | None
+    version: str | None
+    env: dict[str, str]
+    transcript: str | None
+    wrap: int  # leading `argv` entries that are the host wrapper
+    source: str  # config layer whose `command` is launched (so also the model's); never a value from it
+
+
 @dataclass
 class Config:
     root: Path  # main checkout of the target repository (never a worktree)
@@ -183,6 +197,7 @@ class Config:
     idle_timeout: float = 30  # minutes without worker log output or worktree change = stuck; 0 off
     exit_grace: float = 300  # seconds a done (handoff/commit) worker may stay quiet before termination; 0 off
     review_rounds: int = 1  # REVISE -> worker -> re-review cycles before escalating
+    engine_yield_for_update: bool = False
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges
     cost_pattern: str | None = None  # regex with one capture: dollars in the worker log
     workers: dict[str, list[str]] = field(
@@ -199,6 +214,10 @@ class Config:
     worker_usage: dict[str, dict] = field(default_factory=dict)
     # Per worker label: compatible persisted transcript format; absent defaults by executable.
     worker_transcript: dict[str, str] = field(default_factory=dict)
+    # Per worker label: health/auth probe argv run before each pass; absent = no probe.
+    worker_probe: dict[str, list[str]] = field(default_factory=dict)
+    # Per worker label: the config layer that defined it; absent = built-in default.
+    worker_source: dict[str, str] = field(default_factory=dict)
     # Host `[prices."<model>"]`: USD per million prompt/completion/cached tokens; empty = no priced dollars.
     prices: dict[str, dict] = field(default_factory=dict)
     # Host-only argv prefix for every worker launch: a trusted operator executable, not a sandbox.
@@ -242,6 +261,8 @@ class Config:
     llm_url: str = DEFAULT_LLM_URL
     llm_model: str = DEFAULT_LLM_MODEL
     triage_timeout: int = 60  # seconds per triage model request
+    triage_max_tokens: int = 2048
+    triage_chat_template_kwargs: dict | None = None
     triage_service: str | None = None  # systemd user service restarted by the optional liveness probe
     manager_model: str | None = None  # dashboard's no-tools OMP briefing; never a command
     dashboard_port: int = 8765
@@ -256,6 +277,20 @@ class Config:
     watch_host_failure_minutes: int = 60
     watch_bands: list[Band] = field(default_factory=list)
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
+    host_name: str | None = None
+    triage_host: str | None = None
+    claim_ttl: str = "2h"
+
+    @property
+    def claim_ttl_seconds(self) -> int:
+        if not isinstance(self.claim_ttl, str) or re.fullmatch(r"(?:\d+[smhd])+", self.claim_ttl) is None:
+            raise ConfigError("claim_ttl must be a duration using s, m, h, or d (for example, 2h)")
+        multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+        seconds = sum(int(value) * multipliers[unit]
+                      for value, unit in re.findall(r"(\d+)([smhd])", self.claim_ttl))
+        if seconds <= 0:
+            raise ConfigError("claim_ttl must be a positive duration")
+        return seconds
 
     @property
     def name(self) -> str:
@@ -291,17 +326,34 @@ class Config:
         return self.worker_command(self.worker_key(labels), prompt, cwd)
 
     def worker_command(self, worker: str, prompt: Path, cwd: Path) -> list[str]:
-        """Expanded argv for an already selected worker profile."""
+        """Expanded configured argv for a worker profile; `worker_spec` is what launch runs."""
         return expand([*self.worker_wrap, *self.workers[worker]], prompt=str(prompt), cwd=str(cwd),
                       root=str(self.root), repo=self.repo, home=str(Path.home()))
 
-    def worker_model(self, worker: str) -> str | None:
-        """Explicit worker model, including the code-pinned built-in OMP default."""
+    def launch_command(self, worker: str) -> list[str]:
+        """The profile's command as launched: the built-in OMP default carries its pinned model."""
         command = self.workers[worker]
-        return (
-            DEFAULT_WORKER_MODEL
-            if command == DEFAULT_WORKER
-            else command_model(command)
+        if command == DEFAULT_WORKER:
+            return [*command[:2], "--model", DEFAULT_WORKER_MODEL, *command[2:]]
+        return list(command)
+
+    def worker_model(self, worker: str) -> str | None:
+        """Explicit model of the launched command, or None when the command leaves it implicit."""
+        return self.worker_spec(worker, Path("{prompt}"), Path("{cwd}")).model
+
+    def worker_spec(self, worker: str, prompt: Path, cwd: Path) -> WorkerSpec:
+        """Everything one launch of `worker` uses; selection, audit and launch read this value."""
+        argv = expand([*self.worker_wrap, *self.launch_command(worker)], prompt=str(prompt), cwd=str(cwd),
+                      root=str(self.root), repo=self.repo, home=str(Path.home()))
+        return WorkerSpec(
+            profile=worker,
+            argv=argv,
+            model=command_model(argv[len(self.worker_wrap):]),
+            version=self.worker_version.get(worker),
+            env=self.worker_environment(worker, prompt, cwd),
+            transcript=self.worker_transcript.get(worker),
+            wrap=len(self.worker_wrap),
+            source=self.worker_source.get(worker, "Built-in default"),
         )
 
     def worker_environment(self, worker: str, prompt: Path, cwd: Path) -> dict[str, str]:
@@ -395,6 +447,13 @@ def engine_commit() -> str | None:
     return name if re.fullmatch(r"[0-9a-f]{40}", name) else None
 
 
+def engine_target() -> str | None:
+    """District's recorded CI-green target; never resolve refs or CI in Factory."""
+    engine = host_config().get("defaults", {}).get("engine", {})
+    target = engine.get("target") if isinstance(engine, dict) else None
+    return target if isinstance(target, str) and re.fullmatch(r"[0-9a-f]{40}", target) else None
+
+
 def engine_drift(cfg: Config) -> str | None:
     """Warning when `cfg.root` is factory's own source and origin/<main> is not the installed engine."""
     try:
@@ -430,8 +489,9 @@ def local_endpoint(url: str) -> bool:
 
 
 def host_filter(table: dict) -> dict:
-    """Keep only the host-owned tables/keys of one host section."""
-    out = {k: table[k] for k in HOST_TABLES if isinstance(table.get(k), dict)}
+    """Keep only the host-owned tables, nested keys, and scalars of one host section."""
+    out = {k: table[k] for k in HOST_SCALARS if k in table}
+    out.update({k: table[k] for k in HOST_TABLES if isinstance(table.get(k), dict)})
     for name, keys in HOST_KEYS.items():
         sub = table.get(name)
         if isinstance(sub, dict) and (kept := {k: sub[k] for k in keys if k in sub}):
@@ -451,6 +511,8 @@ def unknown_keys(raw: dict) -> list[str]:
     """Dotted paths in a `.factory.toml`-shaped dict the loader does not read."""
     out = []
     for table, val in raw.items():
+        if table in HOST_SCALARS:
+            continue
         if table not in KNOWN_KEYS:
             out.append(table)
             continue
@@ -658,6 +720,10 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     layered = merge(host_filter(host_sections[0]), host_filter(host_sections[1]))
     host_review = layered.get("review", {})
     raw, raw_repo = merge(layered, raw), raw
+    for key in HOST_SCALARS:
+        if key in raw_repo:
+            raise ConfigError(f"{path}: {key} is host-only; set it in {host_config_path()} "
+                              f"[defaults] or [repo.\"<slug>\"]")
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
     manager = raw.get("manager", {})
@@ -671,6 +737,17 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
+    for key in ("host_name", "triage_host"):
+        value = layered.get(key)
+        if value is not None and (
+            not isinstance(value, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,44}", value) is None
+        ):
+            raise ConfigError(f"{key} must start with an ASCII letter or digit, contain only "
+                              "ASCII letters, digits, '.', '_' or '-', and be at most 45 characters")
+        setattr(cfg, key, value)
+    cfg.claim_ttl = layered.get("claim_ttl", cfg.claim_ttl)
+    _ = cfg.claim_ttl_seconds
     cfg.watch_bands = band_settings(root / BANDS_NAME)
     cfg.upstream = repo_t.get("upstream") or None
     cfg.main = repo_t.get("main", cfg.main)
@@ -684,6 +761,16 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.review_rounds = int(dispatch.get("review_rounds", cfg.review_rounds))
     cfg.cost_pattern = dispatch.get("cost_pattern") or None
     cfg.signoff = bool(dispatch.get("signoff", cfg.signoff))
+    engine = raw.get("engine", {})
+    if not isinstance(engine, dict):
+        raise ConfigError("[engine] must be a table")
+    host_engine = host.get("defaults", {}).get("engine", {})
+    # The one shared engine's host policy is authoritative, even over a repo opt-out.
+    cfg.engine_yield_for_update = engine.get("yield_for_update", cfg.engine_yield_for_update)
+    if isinstance(host_engine, dict):
+        cfg.engine_yield_for_update = host_engine.get("yield_for_update", cfg.engine_yield_for_update)
+    if not isinstance(cfg.engine_yield_for_update, bool):
+        raise ConfigError("engine.yield_for_update must be true or false")
     if workers:
         if "default" not in workers:
             raise ConfigError(f"{path}: [workers] needs a `default` command")
@@ -725,8 +812,23 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
                 if transcript != "omp-session":
                     raise ConfigError(f"workers.{label}.transcript must be \"omp-session\"")
                 cfg.worker_transcript[label] = transcript
+            if isinstance(entry, dict) and "probe" in entry:
+                probe = entry["probe"]
+                if not isinstance(probe, list) or not probe or any(not isinstance(arg, str) or not arg for arg in probe):
+                    raise ConfigError(f"{path}: workers.{label}.probe needs a non-empty argv array of strings")
+                cfg.worker_probe[label] = probe
             if when:
                 cfg.worker_when[label] = when
+    for label in cfg.workers:
+        # Layers merge per key: the effective command is the highest layer's that sets one.
+        cfg.worker_source[label] = next(
+            (name for name, layer in (("Repository", raw_repo), ("Host repository override", host_sections[1]),
+                                      ("Host default", host_sections[0]))
+             if isinstance(layer.get("workers"), dict) and (
+                 isinstance(entry := layer["workers"].get(label), list)
+                 or (isinstance(entry, dict) and "command" in entry))),
+            "Built-in default",
+        )
     if "worker_wrap" in raw_repo:
         raise ConfigError(f"{path}: [worker_wrap] is host-only; set it in {host_config_path()} "
                           "[defaults.worker_wrap] or [repo.\"<slug>\".worker_wrap]")
@@ -869,6 +971,19 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.llm_url = triage.get("url", cfg.llm_url)
     cfg.llm_model = triage.get("model", cfg.llm_model)
     cfg.triage_timeout = int(triage.get("timeout", cfg.triage_timeout))
+    max_tokens = triage.get("max_tokens", cfg.triage_max_tokens)
+    if type(max_tokens) is not int or max_tokens < 1:
+        raise ConfigError("triage.max_tokens must be a positive integer")
+    cfg.triage_max_tokens = max_tokens
+    if "chat_template_kwargs" in triage:
+        kwargs = triage["chat_template_kwargs"]
+        if not isinstance(kwargs, dict):
+            raise ConfigError("triage.chat_template_kwargs must be a table")
+        try:
+            json.dumps(kwargs, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError("triage.chat_template_kwargs must contain JSON-compatible values") from exc
+        cfg.triage_chat_template_kwargs = kwargs
     service = triage.get("service")
     if service is not None and (
         not isinstance(service, str)
