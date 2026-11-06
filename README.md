@@ -1280,11 +1280,35 @@ extra = ["\\bmyproduct\\b"]   # regexes ORed onto the pattern
 url = "http://127.0.0.1:11434/v1/chat/completions"
 model = "qwen3:30b"
 # timeout = 60                    # seconds per model request
+# max_tokens = 2048                 # positive output-token limit on every request
+# chat_template_kwargs = { enable_thinking = false }  # optional model-specific table
 
 [journal]
 max_mb = 64      # events.jsonl rolls into events.jsonl.N.gz past this size
 retention = 8    # gzip segments kept
 ```
+
+Triage sends `max_tokens` on every model completion (default 2048; must be a
+positive integer). Optional `chat_template_kwargs` is a JSON-compatible table
+passed through unchanged, including false values and an explicitly empty table;
+the key is omitted when unset. No model-specific template option is implicit.
+Completion requests to the same URL are serialized across repositories, threads,
+and processes for the same host user, using endpoint-keyed locks under
+`$XDG_STATE_HOME/factory/triage-requests` (default `~/.local/state/factory/triage-requests`).
+All processes sharing an endpoint must use the same state home.
+
+For a District-managed remote host, keep its request shape in the controller's
+shared host config so `sync_remote_config` preserves it:
+
+```toml
+[hosts.ultron.defaults.triage]
+max_tokens = 1024
+chat_template_kwargs = { enable_thinking = false }
+```
+
+District merges that host override into the remote `[defaults.triage]`; Factory
+also accepts `[repo."owner/name".triage]` overrides. Keep these settings out of
+the repository file when hosts need different request shapes.
 
 The shared host file is `$XDG_CONFIG_HOME/factory/config.toml` (default
 `~/.config/factory/config.toml`). `[defaults.engine]` belongs to District:

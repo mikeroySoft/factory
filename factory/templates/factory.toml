@@ -169,6 +169,9 @@ exclusive = false
 # url = "http://127.0.0.1:11434/v1/chat/completions"
 # model = "qwen3:30b"
 # timeout = 60         # seconds per model request; raise for slow local models
+# max_tokens = 2048    # positive output-token limit sent on every request
+# chat_template_kwargs = { enable_thinking = false }  # optional, passed through unchanged
+# Requests to the same URL queue across repositories/processes on this host user.
 # service = "my-model.service"  # opt in to a two-minute liveness timer installed by `factory install`
 
 [journal]
