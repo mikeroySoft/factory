@@ -1,6 +1,12 @@
 import importlib.util
+import io
+import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from factory import brief, lifecycle
 
 ROOT = Path(__file__).parents[1]
 EXP = ROOT / "experiments" / "jev-review-coverage"
@@ -128,6 +134,20 @@ new file mode 100644
         self.assertEqual(repeat["blocking_defects_missed"], 0)
         self.assertEqual(repeat["false_flags"], 2)
         self.assertEqual(repeat["false_flags_on_clean_after"], 2)
+
+    def test_brief_journals_provider_resolution_not_requested_alias(self):
+        response = {"model": "jev-1.13.0-build", "usage": {"input_tokens": 250},
+                    "answers": {"c0": {"noul": 0.9}}}
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"TYPESAFE_API_KEY": "test-key"}
+        ), patch.object(brief.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(response).encode())):
+            root = Path(directory)
+            self.assertEqual(brief.rerank(root, {}, ["gone.py"]), ["gone.py"])
+            row, = lifecycle.read_events(root / ".factory/events.jsonl")
+            self.assertEqual(row["model_requested"], "jev-1.13.0")
+            self.assertEqual(row["model_resolved"], "jev-1.13.0-build")
+            self.assertEqual(row["input_tokens"], 250)
+            self.assertAlmostEqual(row["cost"], 0.0000105)
 
 
 if __name__ == "__main__":

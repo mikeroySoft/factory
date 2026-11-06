@@ -1045,6 +1045,33 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    retried). One that committed or wrote its handoff, then stayed quiet for
    `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
    The attempt journal row and escalation packet name the timeout that fired.
+
+   **Brief retrieval.** With `TYPESAFE_API_KEY`, the noun-ranked top-40 pool is
+   reranked using `[brief] model = "jev-1.13.0"` and
+   `url = "https://api.typesafe.ai/v1/systemone"` (both configurable in
+   `.factory.toml`). Only the existing issue title/body and candidate paths
+   plus first nonblank lines (≤200 characters) go to the provider. Missing
+   keys or failed calls retain noun order; top 15 plus tracked README/CHANGELOG
+   remain the selection rule.
+
+   Each `brief-rerank` journal row records requested/resolved model,
+   `input_tokens`, estimated USD `cost` ($0.042/million input tokens), status,
+   candidate pool and top-k. Unreported usage/model values are null, not zero
+   or an inferred resolved version. Cost is no longer printed to worker stdout.
+   `.factory/brief-<n>.json` retains that retrieval alongside the cached Markdown.
+   After each worker, `brief-coverage` links the original `rerank_id` to the
+   attempt/head and PR merge-base diff, with per-file `in_candidate_pool` and
+   `in_top_k` booleans. `retrieval_misses` counts files outside the pool;
+   `ranking_misses` counts pool members outside the top 15 (before the docs rule).
+   Missing legacy metadata or an unavailable diff yields null coverage/counts.
+   These are retrieval evidence, separate from worker exit/gate outcomes in the
+   same ticket/attempt; changed files alone do not prove worker omissions.
+
+   Changing the model pin requires rerunning [#139's frozen Recall@5
+   evaluation](https://github.com/mikeroySoft/factory/issues/139) and recording
+   requested/resolved versions before adopting the change. Its runner/corpus
+   were owner-local, not bundled here; unavailable artifacts/key are a blocked
+   check, never a passing replay.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to

@@ -123,3 +123,33 @@ class BriefRerankTest(unittest.TestCase):
             self.assertEqual(coverage[1]["changed_files"]["f0.py"], {"in_candidate_pool": True, "in_top_k": True})
             self.assertEqual(coverage[0]["rerank_id"], rows[0]["rerank_id"])
             self.assertEqual(coverage[1]["rerank_id"], rows[0]["rerank_id"])
+
+    def test_missing_or_corrupt_snapshot_reports_unknown_not_zero_misses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = config.Config(root, "acme/repo")
+            path = root / ".factory/brief-7.md"
+            for attempt, snapshot in enumerate((None, "[]", '{"candidate_pool": null, "top_k": []}'), 1):
+                if snapshot is not None:
+                    path.with_suffix(".json").write_text(snapshot)
+                with patch.object(brief.subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, stdout="a.py\0", stderr=""
+                )):
+                    brief.journal_attempt(path, root, cfg, ticket=7, attempt=attempt, base="base", head="head")
+            for row in lifecycle.read_events(cfg.factory / "events.jsonl"):
+                self.assertEqual(row["status"], "unavailable")
+                self.assertIsNone(row["changed_files"])
+                self.assertIsNone(row["retrieval_misses"])
+                self.assertIsNone(row["ranking_misses"])
+
+    def test_invalid_brief_configuration_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for values in ('model = ""', 'url = "file:///tmp/provider"', 'url = "http://"',
+                           'url = "http://localhost:bad"'):
+                (root / ".factory.toml").write_text('[repo]\nslug = "acme/repo"\n[brief]\n' + values)
+                with self.subTest(values=values), patch.object(
+                    config, "repo_root", return_value=root
+                ), patch.object(config, "host_config", return_value={}):
+                    with self.assertRaises(config.ConfigError):
+                        config.load(root)

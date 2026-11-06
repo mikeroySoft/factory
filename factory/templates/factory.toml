@@ -25,6 +25,12 @@
 # each attempt and summed into .factory/events.jsonl and the dashboard.
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'      # Claude Code
 
+[brief]
+# Candidate issue briefs are reranked before dispatch by the configured System One endpoint.
+# Keep the model pinned; changing it requires rerunning #139's Recall@5 benchmark.
+# model = "jev-1.13.0"
+# url = "https://api.typesafe.ai/v1/systemone"
+
 [engine]
 # Emit engine-stale using District's recorded host target, not a separate ref/CI lookup.
 # When enabled, finish land/review intake, then exit without claims, manager or learning work.
