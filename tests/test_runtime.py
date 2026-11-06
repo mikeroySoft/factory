@@ -99,6 +99,21 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertFalse(data["history"]["complete"])
         self.assertFalse(self.journal.parent.exists())
 
+    def test_setup_failure_preserves_ticket_exit_and_manager_retry_reasons(self):
+        ticket = lifecycle.Execution(self.journal, "ticket", ticket=7)
+        ticket.emit("enter")
+        ticket.outcome, ticket.reason = "mechanism_failure", "setup_failed"
+        terminal = ticket.emit("exit")
+        manager = lifecycle.Execution(self.journal, "manage", ticket=7)
+        manager.emit("enter")
+        waiting = manager.wait("setup_failed", mode="retry_next_pass", detail="private setup output")
+        data = self.invoke()
+        events = {row["event_id"]: row for row in data["events"]}
+        self.assertEqual(events[terminal["event_id"]]["reason"], "setup_failed")
+        wait = events[waiting["event_id"]]["wait"]
+        self.assertEqual((wait["reason"], wait["mode"]), ("setup_failed", "retry_next_pass"))
+        self.assertNotIn("private setup output", json.dumps(data))
+
 
 
     def test_concurrency_wait_retry_ownership_and_source_freshness(self):

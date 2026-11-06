@@ -197,3 +197,80 @@ class DispatchSetupTest(unittest.TestCase):
 
     def test_escalation_fix_setup_failure_resumes_without_another_round(self):
         self.manager_setup_recovery(frontier=False)
+
+    @unittest.skipUnless(Path("/proc/self/stat").exists(), "requires Linux process state")
+    def test_setup_timeout_stops_children_before_returning_without_an_attempt(self):
+        import os
+        import signal
+
+        dispatch.record("attempt", ticket=9, attempt=1, gate="FAIL")
+        before = self.events("attempt")
+        for ignore_term in (False, True):
+            with self.subTest(ignore_term=ignore_term):
+                ready = self.tmp / f"child-{ignore_term}"
+                parent = self.tmp / f"parent-{ignore_term}"
+                child = (
+                    "import os, signal, time\nfrom pathlib import Path\n"
+                    + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
+                    + f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+                    + "time.sleep(60)\n"
+                )
+                self.configure_setup(
+                    "import os, subprocess, sys, time\nfrom pathlib import Path\n"
+                    f"Path({str(parent)!r}).write_text(str(os.getpid()))\n"
+                    f"subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+                    "time.sleep(60)\n"
+                )
+                wt = dispatch.ensure_worktree(9)
+                git_dir = Path(fixture.git(wt, "rev-parse", "--absolute-git-dir"))
+                marker = git_dir / "factory-setup" / fixture.git(wt, "rev-parse", "HEAD")
+                try:
+                    with self.assertRaises(dispatch.WorktreeSetupFailed):
+                        dispatch.worker_round(9, wt, set(), "change", "", 2, time.monotonic() + 2)
+                    self.assertTrue(ready.exists(), "child did not reach its signal handler")
+                    for pid_file in (parent, ready):
+                        pid = int(pid_file.read_text())
+                        stat = Path(f"/proc/{pid}/stat")
+                        until = time.monotonic() + 1
+                        while stat.exists() and time.monotonic() < until:
+                            if stat.read_text().rsplit(")", 1)[1].split()[0] == "Z":
+                                break
+                            time.sleep(0.01)
+                        if stat.exists():
+                            self.assertEqual(stat.read_text().rsplit(")", 1)[1].split()[0], "Z",
+                                             f"setup process {pid} is still running")
+                    self.assertFalse(marker.exists())
+                    self.assertEqual(self.events("setup")[-1]["exit_status"], 124)
+                    infra = self.events("setup-infra")[-1]
+                    self.assertEqual((infra["classification"], infra["reason"]), ("env", "setup_failed"))
+                    self.assertEqual(self.events("attempt"), before)
+                    self.assertEqual(self.events("escalate"), [])
+                finally:
+                    for pid_file in (parent, ready):
+                        if pid_file.exists():
+                            try:
+                                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+
+    def test_review_bounce_setup_failure_releases_claim_once_and_defers_findings(self):
+        self.configure_setup("raise SystemExit(23)")
+        self.github.assignees = []
+        wt = dispatch.ensure_worktree(9)
+        head = fixture.git(wt, "rev-parse", "HEAD")
+        findings = "Fix the setup boundary."
+        with self.patched(), \
+                mock.patch.object(dispatch, "worker_round", return_value=(True, "gate ok", None, head)), \
+                mock.patch.object(dispatch, "push_and_pr", return_value=True), \
+                mock.patch.object(dispatch, "record_risk"), \
+                mock.patch.object(dispatch, "pr_gate_and_review", return_value=("REVISE", findings, False)), \
+                mock.patch.object(dispatch, "unclaim", wraps=dispatch.unclaim) as unclaim:
+            dispatch.process_ticket(self.github.issue(), 1, False)
+        self.assertEqual(unclaim.call_count, 1)
+        self.assertEqual(self.github.assignees, [])
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+        [rework] = self.events("review-rework")
+        self.assertEqual((rework["head"], rework["findings"], rework["deferred"]),
+                         (head, findings, True))
+        self.assertEqual(self.events("attempt"), [])
+        self.assertEqual(self.events("escalate"), [])
