@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -289,6 +290,43 @@ class MutationEquivalentsTest(unittest.TestCase):
                 )
                 self.assertNotEqual(status, 0, report)
                 self.assertIn("stale equivalent: factory/example.py:1:", report)
+
+    def test_baseline_cache_cannot_hide_same_size_mutant(self):
+        repository = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix="mutation-bytecode-") as directory:
+            root = Path(directory)
+            for name in ("factory", "scripts", "tests"):
+                (root / name).mkdir()
+                (root / name / "__init__.py").touch()
+            shutil.copyfile(repository / "scripts/mutation.py", root / "scripts/mutation.py")
+            (root / "AGENTS.md").write_text("")
+            source = root / "factory/example.py"
+            source.write_text("value = 1\n")
+            timestamp = 1_700_000_000
+            os.utime(source, (timestamp, timestamp))
+            (root / "tests/test_example.py").write_text(
+                "import unittest\nfrom factory.example import value\n"
+                "class ExampleTest(unittest.TestCase):\n"
+                "    def test_value(self):\n        self.assertEqual(value, 1)\n"
+            )
+            # Permit baseline writes even when the parent test runner disables them.
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX")}
+            baseline = subprocess.run(
+                shlex.split(mutation.test_command(root)), env=env,
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
+            source.write_text("value = 0\n")
+            # Timestamp-based bytecode validation sees identical mtime and source size.
+            os.utime(source, (timestamp, timestamp))
+            mutant = subprocess.run(
+                shlex.split(mutation.test_command(root, "factory/example.py")),
+                env=env | {"PYTHONDONTWRITEBYTECODE": "1"},
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            self.assertEqual(mutant.returncode, 1, mutant.stdout + mutant.stderr)
+            self.assertIn("0 != 1", mutant.stderr)
 
 
 
