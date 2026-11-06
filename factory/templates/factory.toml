@@ -137,6 +137,9 @@
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks
+# fixups = [["cargo", "xtask", "manifest"]]  # opt-in mechanical repair before gate escalation
+# Commands run once in order, without a shell; stop on failure. Changed files are
+# committed and re-gated. Default []: no commands run. Uses the check timeout.
 # Review policy is read from the base ref, so a PR cannot change its own review rules.
 protected_paths = ["REVIEW.md"]
 
