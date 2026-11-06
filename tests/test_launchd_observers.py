@@ -44,8 +44,9 @@ class LaunchdObserversTest(unittest.TestCase):
             self.calls.append(argv)
             key = argv[0] if argv[0] == "lsof" else argv[-1]
             code, text = outputs.get(key, (1, ""))
-            return POPEN([sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1]); sys.exit(int(sys.argv[2]))",
-                          text, str(code)], **kwargs)
+            return POPEN([sys.executable, "-c",
+                          "import json, sys; sys.stdout.write(json.loads(sys.argv[1])); sys.exit(int(sys.argv[2]))",
+                          json.dumps(text), str(code)], **kwargs)
         return patch.object(subprocess, "Popen", side_effect=popen)
 
     def test_runtime_observes_launchd_instead_of_systemd(self):
@@ -78,12 +79,22 @@ class LaunchdObserversTest(unittest.TestCase):
         held, idle = directory / "1.lock", directory / "2.lock"
         held.touch()
         idle.touch()
-        output = f"f3\0lW\0n{held}\0\nf4\0l \0n{idle}\0\n"
+        output = f"f3\0lW\0n{held}\0\n"
         with patch.object(sys, "platform", "darwin"), self.runner({"lsof": (0, output)}), \
                 patch.object(fcntl, "flock", side_effect=AssertionError("observer took a ticket lock")):
             self.assertEqual(runtime_local._capacity(self.cfg), 1)
         self.assertEqual(self.calls[0][:3], ["lsof", "-nP", "-F0fln"])
-        self.assertEqual(set(self.calls[0][4:]), {str(held), str(idle)})
+        self.assertEqual(self.calls[0][3:], ["+d", str(directory)])
+
+    def test_capacity_does_not_mistake_unreported_flock_for_free(self):
+        directory = self.cfg.factory / "locks"
+        directory.mkdir(parents=True)
+        path = directory / "1.lock"
+        path.touch()
+        with patch.object(sys, "platform", "darwin"), \
+                self.runner({"lsof": (0, f"f3\0l \0n{path}\0\n")}):
+            with self.assertRaisesRegex(runtime_local._Unavailable, "lock_state_unavailable"):
+                runtime_local._capacity(self.cfg)
 
     def test_watch_reports_exit_and_log_but_not_retained_running_failure(self):
         log = self.root / "agent.err"

@@ -1,7 +1,7 @@
 """`factory watch`: file engine failures and persistent host conditions in the engine repo.
 
-One pass reads lifecycle failures, host-condition streaks, failed `factory-*` systemd
-units, `dashboard --runtime-json` failures, and escalation codes repeating across
+One pass reads lifecycle failures, host-condition streaks, failed `factory-*` user
+services (systemd or launchd), `dashboard --runtime-json` failures, and escalation codes repeating across
 REPEAT_MIN tickets within REPEAT_DAYS days. It fingerprints each by reason, unit,
 journal source or code, not by stage, reader code or install. Engine failures file as
 `bug`; host conditions file as `bug,host` only after their uninterrupted streak reaches
@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 
-from factory import config, dispatch, lifecycle, runtime_events, stats
+from factory import config, dispatch, launchd, lifecycle, runtime_events, runtime_local, stats
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
@@ -118,11 +118,27 @@ def persistent_host_conditions(events: list[dict], minutes: int) -> dict[str, li
 
 
 def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
-    """This repository's failed user units as (name, `systemctl status` excerpt).
+    """This repository's failed user services as (name, status/log excerpt).
 
     The pass unit runs `watch` from ExecStopPost=, so it is never listed as failed while
     watch looks; systemd reports its result through $SERVICE_RESULT instead.
     """
+    if sys.platform == "darwin":
+        units = []
+        for label in (cfg.unit, f"{cfg.unit}-dashboard"):
+            try:
+                props = launchd.parse(runtime_local._command("launchd", unit=label))
+            except (runtime_local._Unavailable, ValueError):
+                continue
+            code = launchd.number(props, "last exit code")
+            if props["state"] == "running" or code in (None, 0):
+                continue  # A restarted agent retains the previous run's exit status.
+            status = f"{label}\nstate = {props['state']}\nlast exit code = {props['last exit code']}"
+            tail = _tail(props.get("stderr path"))
+            if tail:
+                status += f"\n{tail}"
+            units.append((label, status))
+        return units
     try:
         listed = subprocess.run(
             ["systemctl", "--user", "list-units", "--failed", "--plain", "--no-legend", "factory-*"],
@@ -625,9 +641,12 @@ def signals(
     for name, status in failed_units(cfg):
         # Fingerprint the unit's role, not this install's unit name, so installs share one issue.
         key = fingerprint("unit", name.replace(cfg.unit, "factory-<repo>", 1))
-        found[key] = {"fingerprint": key, "kind": "unit", "stage": "systemd", "key": name, "rows": [],
-                      "excerpt": status, "log": None, "latest": None,
-                      "command": f"systemctl --user status {shlex.quote(name)}"}
+        darwin = sys.platform == "darwin"
+        command = (f"launchctl print {shlex.quote(launchd.target(name))}" if darwin
+                   else f"systemctl --user status {shlex.quote(name)}")
+        found[key] = {"fingerprint": key, "kind": "unit", "stage": "launchd" if darwin else "systemd",
+                      "key": name, "rows": [], "excerpt": status, "log": None, "latest": None,
+                      "command": command}
     by_source: dict[str, list[dict]] = {}
     for error in runtime_errors(cfg):
         by_source.setdefault(str(error.get("source")), []).append(error)
