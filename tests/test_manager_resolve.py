@@ -49,7 +49,7 @@ class ManagerResolveTest(unittest.TestCase):
 
     def test_apply_refuses_open_pr_with_changes(self) -> None:
         pr = {"number": 17, "state": "OPEN", "changedFiles": 2, "baseRefName": "main"}
-        with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+        with mock.patch.object(dispatch, "gh_json", side_effect=[{"labels": [], "comments": []}, pr]), \
                 mock.patch.object(dispatch, "run") as run, \
                 self.assertRaisesRegex(ValueError, "with changes"):
             manage.apply(7, {"title": "Not fixed"}, "RESOLVE", "Claimed present on main.", None, Path("unused"))
@@ -57,7 +57,7 @@ class ManagerResolveTest(unittest.TestCase):
 
     def test_apply_refuses_pushed_branch_without_pr(self) -> None:
         no_pr = subprocess.CalledProcessError(1, ["gh"], stderr='no pull requests found for branch "agent/7"')
-        with mock.patch.object(dispatch, "gh_json", side_effect=[no_pr, {"ahead_by": 2}]), \
+        with mock.patch.object(dispatch, "gh_json", side_effect=[{"labels": [], "comments": []}, no_pr, {"ahead_by": 2}]), \
                 mock.patch.object(dispatch, "run") as run, \
                 self.assertRaisesRegex(ValueError, "no PR"):
             manage.apply(7, {"title": "Already fixed"}, "RESOLVE", "Present on main.", None, Path("unused"))
@@ -65,7 +65,7 @@ class ManagerResolveTest(unittest.TestCase):
 
     def test_apply_refuses_empty_pr_on_another_base(self) -> None:
         pr = {"number": 17, "state": "OPEN", "changedFiles": 0, "baseRefName": "release"}
-        with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+        with mock.patch.object(dispatch, "gh_json", side_effect=[{"labels": [], "comments": []}, pr]), \
                 mock.patch.object(dispatch, "run") as run, \
                 self.assertRaisesRegex(ValueError, "another base"):
             manage.apply(7, {"title": "Already fixed"}, "RESOLVE", "Present on main.", None, Path("unused"))
@@ -73,11 +73,28 @@ class ManagerResolveTest(unittest.TestCase):
 
     def test_apply_does_not_close_when_pr_lookup_fails_for_another_reason(self) -> None:
         error = subprocess.CalledProcessError(1, ["gh"], stderr="error connecting to api.github.com")
-        with mock.patch.object(dispatch, "gh_json", side_effect=error), \
+        with mock.patch.object(dispatch, "gh_json", side_effect=[{"labels": [], "comments": []}, error]), \
                 mock.patch.object(dispatch, "run") as run, \
                 self.assertRaises(subprocess.CalledProcessError):
             manage.apply(7, {"title": "Already fixed"}, "RESOLVE", "Present on main.", None, Path("unused"))
         run.assert_not_called()
+
+    def test_apply_unreadable_owner_state_stops_before_pr_action(self) -> None:
+        error = subprocess.CalledProcessError(1, ["gh"], stderr="error connecting to api.github.com")
+        with mock.patch.object(dispatch, "gh_json", side_effect=error) as gh_json, \
+                mock.patch.object(dispatch, "run") as run:
+            manage.apply(7, {"title": "Already fixed"}, "RESOLVE", "Present on main.", None, Path("unused"))
+
+        gh_json.assert_called_once_with([
+            "issue", "view", "7", "--repo", dispatch.REPO, "--json", "state,labels,comments",
+        ])
+        run.assert_called_once_with([
+            "gh", "issue", "edit", "7", "--repo", dispatch.REPO, "--remove-assignee", "@me",
+        ], check=False)
+        results = [row for row in dispatch.lifecycle.read_events(dispatch.EVENTS)
+                   if row.get("event") == "pass-result"]
+        self.assertEqual([(row["action"], row["decision"], row["owner_state"]) for row in results],
+                         [("manage", "RESOLVE", "owner state unavailable")])
 
 
 if __name__ == "__main__":
