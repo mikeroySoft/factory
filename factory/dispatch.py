@@ -3842,8 +3842,8 @@ def _required_ci(pr: int, expected: str | None = None, *, allow_behind: bool = F
         return pending
 
 
-def pr_checks(pr: int) -> list[dict]:
-    """Display CI plus source/SHA-bound ruleset checks; missing evidence blocks merging.
+def pr_checks(pr: int, head: str) -> list[dict]:
+    """Display CI plus ruleset checks bound to the caller's head; missing evidence blocks merging.
 
     Behind-main and conflicting heads remain eligible for the callers' existing
     refresh path, never a merge; other policy vetoes and unknown states fail closed.
@@ -3865,7 +3865,7 @@ def pr_checks(pr: int) -> list[dict]:
         row["bucket"] not in ("pass", "skipping") for row in rows
     ):
         return rows
-    return rows + _required_ci(pr, allow_behind=True)
+    return rows + _required_ci(pr, expected=head, allow_behind=True)
 
 
 def _infra_cancel(check: dict) -> dict | None:
@@ -4534,7 +4534,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "initiative"
                 continue
-            checks = triage_cancelled(pr_num, pr_checks(pr_num), dry_run, n, listed_head)
+            checks = triage_cancelled(pr_num, pr_checks(pr_num, listed_head), dry_run, n, listed_head)
             buckets: dict[str, int] = {}
             for c in checks:
                 buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
@@ -4731,7 +4731,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 execution.outcome, execution.reason = "project_escalation", "state_changed"
                 continue
-            latest_checks = triage_cancelled(pr_num, pr_checks(pr_num), False, n, head)
+            latest_checks = triage_cancelled(pr_num, pr_checks(pr_num, head), False, n, head)
             latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
             latest_starved = [c for c in latest_checks if c["bucket"] == "infra"]
             if latest_failed:

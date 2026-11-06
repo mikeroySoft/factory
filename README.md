@@ -418,8 +418,10 @@ only after a successful merge. A human-merged lessons PR is reconciled on the
 next pass with `by: human` and opens the same promotion measurement.
 
 Merge CI and advisory review readiness verify each active base-branch ruleset's
-required context against check runs on the exact PR head, including its source
-GitHub App (`integration_id`). A same-name success from another app or SHA is
+required context against check runs on the caller's captured PR head, including
+its source GitHub App (`integration_id`). A push before the first provenance read
+keeps that head pending rather than borrowing the new head's green checks.
+A same-name success from another app or SHA is
 not evidence. App-unpinned contexts may use legacy statuses fetched by exact head
 SHA (individual status objects have no SHA field); a pinned app requires check-run
 provenance even when other requirements are unpinned.
