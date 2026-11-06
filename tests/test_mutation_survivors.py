@@ -216,6 +216,22 @@ class MutationSurvivorHandoffTest(unittest.TestCase):
         self.handoff = accounting([{"survivor": SURVIVORS[0], "disposition": {}, "reason": "not valid"}])
         self.assertFalse(self.round()[0])
 
+    def test_mutation_survivor_owner_resume_keeps_required_findings(self):
+        dispatch.record("generation", ticket=7, generation=1, intent="resume")
+        prompt = dispatch.build_prompt(7, self.wt)
+        self.assertIn(SURVIVORS[0], prompt)
+        self.assertFalse(self.round()[0])
+
+    def test_mutation_survivor_owner_fresh_discards_old_branch_findings(self):
+        dispatch.record("generation", ticket=7, generation=1, intent="fresh")
+        self.assertNotIn("## Required mutation survivor findings", dispatch.build_prompt(7, self.wt))
+        self.assertTrue(self.round()[0])
+        self.gate.return_value = (False, REPORT)
+        dispatch.pr_gate_and_review(self.wt, 7, "", risk_tests.NEW_HEAD, {})
+        self.gate.return_value = (True, "- test: PASS\n")
+        self.assertIn(SURVIVORS[0], dispatch.build_prompt(7, self.wt))
+        self.assertFalse(self.round()[0])
+
     def test_mutation_survivor_manager_fix_cannot_proceed_with_omission(self):
         from factory import manage
 
