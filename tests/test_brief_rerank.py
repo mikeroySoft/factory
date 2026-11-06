@@ -150,6 +150,5 @@ class BriefRerankTest(unittest.TestCase):
                 (root / ".factory.toml").write_text('[repo]\nslug = "acme/repo"\n[brief]\n' + values)
                 with self.subTest(values=values), patch.object(
                     config, "repo_root", return_value=root
-                ), patch.object(config, "host_config", return_value={}):
-                    with self.assertRaises(config.ConfigError):
-                        config.load(root)
+                ), patch.object(config, "host_config", return_value={}), self.assertRaises(config.ConfigError):
+                    config.load(root)
