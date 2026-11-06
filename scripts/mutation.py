@@ -107,7 +107,7 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
 def test_command(copy: Path, module: str | None = None) -> str:
     command = [
         "env", "-C", str(copy), f"PYTHONPATH={copy}", sys.executable,
-        "-m", "scripts.mutation", "--test-module", module or "",
+        "-B", "-m", "scripts.mutation", "--test-module", module or "",
     ]
     return shlex.join(command)
 

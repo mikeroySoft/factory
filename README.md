@@ -1183,6 +1183,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    a baseline that never passes within the deadline and tool failures still fail.
    Scratch workers use local shared clones with independent Git metadata and the
    current working files overlaid, so Git-dependent tests run without skips.
+   Baseline and mutant subprocesses disable bytecode writes, preventing cached
+   baseline code from masking same-size mutations in reused scratch copies.
    This repository's mutation command loads `mutation-equivalents.json` through
    `--equivalents FILE`. It is a JSON array; each reviewed entry has this shape:
 
