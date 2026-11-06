@@ -1104,7 +1104,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 5. **Review.** After the attempt gate passes, the dispatcher runs the
    `when = "pr"` checks once for the head about to be reviewed (same timeout and
    `exclusive` lock; a head is never re-run) and appends their report to the gate
-   report; that report keeps the output of passing pr checks too (last 80 lines),
+   report; that report keeps passing pr-check output too (last 80 lines, except
+   mutation output is retained in full),
    so report-only checks reach the reviewer. A pr-tier FAIL goes back to the worker like a `REVISE`, with that
    report as the findings, and uses one `review_rounds` slot; when the rounds run
    out (or the head came from a manager FIX) the ticket escalates with `pr checks failed`. Otherwise
@@ -1169,6 +1170,23 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    charging one round before releasing its claim and clearing `ready-for-human`.
    Charges survive pass boundaries; the next worker receives the full packet.
    Rework after a merge-stage refresh uses the same mechanism and budget.
+   Failed PR-tier mutation checks also journal each survivor's exact location and
+   mutation as required findings, independently of reviewer verdicts or requeue
+   context. Both-REVISE bounces, deferred rework, escalation/requeue, and manager
+   FIX workers receive them. The worker must write a fresh handoff during the current
+   round with a fenced JSON object containing a `mutation_survivors` array: each
+   entry copies the exact `survivor` string and supplies either
+   `"disposition": "killed"` with a `test` naming its killing Python test identifier
+   (`test_*` or unittest `testCamelCase`), or `"disposition": "equivalent"` with a
+   `reason` explaining equivalence. Missing entries, stale accounting, placeholder
+   evidence such as "N/A", unnamed killing tests, and bare equivalence claims
+   (including restatements such as "This is equivalent.") fail the worker round
+   even if its gate passes; they cannot count as finished work.
+   A later failed mutation report replaces the list; a passing/skipped mutation
+   check clears it, while a tool failure without survivors preserves it.
+   Owner requeues with `resume` retain unresolved survivors; `fresh` discards the
+   superseded branch's requirements, without hiding survivors on the new branch.
+   Handoff accounting never bypasses blocking mutation checks.
    Protected-path blockers come from gate status rows, not quoted reviewer
    findings or surviving-mutant source text.
    Rejects, protected-path blockers and exhausted rounds still escalate.

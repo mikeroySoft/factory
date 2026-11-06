@@ -1196,6 +1196,17 @@ def build_prompt(
         parts += ["", "## Brief", "", brief_text]
     if extra:
         parts += ["", extra]
+    if survivors := _mutation_survivors(n):
+        parts += ["", "## Required mutation survivor findings", "",
+                  ("Every survivor below is required work, in addition to reviewer fixes. "
+                   "Write a fresh handoff this round with a fenced `json` object containing a "
+                   "`mutation_survivors` array. Each entry must copy the exact `survivor` string "
+                   "below and set `disposition` to `killed` with a `test` naming the killing "
+                   "Python test identifier (`test_*` or `testCamelCase`), or `equivalent` with a "
+                   "`reason` explaining why the mutation cannot change behavior. Placeholders, "
+                   "bare equivalence claims and missing entries are rejected. This accounting "
+                   "does not override the gate."),
+                  "", *[f"- {survivor}" for survivor in survivors]]
     return "\n".join(parts) + "\n"
 
 
@@ -2790,6 +2801,72 @@ def _mutation_status(report: str) -> str:
     return match.group(1) if match else "MISSING"
 
 
+def _mutation_survivors(n: int) -> list[str]:
+    for row in reversed(lifecycle.read_events(EVENTS)):
+        if row.get("ticket") != n:
+            continue
+        if row.get("event") == "mutation-survivors":
+            return row["survivors"]
+        if row.get("event") == "generation" and row.get("intent") == "fresh":
+            break
+    return []
+
+
+def _record_mutation_survivors(n: int, head: str, report: str) -> None:
+    status = _mutation_status(report.split("```", 1)[0])
+    sections = re.findall(
+        r"^## mutation(?: failure| output)?[ \t]*\r?\n\s*```[^\n]*\n(.*?)^```",
+        report, re.MULTILINE | re.DOTALL,
+    )
+    survivors = list(dict.fromkeys(
+        survivor for section in sections
+        for survivor in re.findall(r"(?m)^factory/[^:\r\n]+:\d+: [^\r\n]+", section)
+    ))
+    # A failed tool without completed survivors cannot erase earlier requirements.
+    if status in {"PASS", "SKIP"}:
+        survivors = []
+    elif status != "FAIL" or not survivors:
+        return
+    if survivors != _mutation_survivors(n):
+        record("mutation-survivors", ticket=n, head=head, survivors=survivors)
+
+
+def _unaccounted_mutation_survivors(survivors: list[str], handoff: str) -> list[str]:
+    if not survivors:
+        return []
+    accounted = set()
+    for block in re.findall(r"```json[ \t]*\r?\n(.*?)\r?\n```", handoff, re.DOTALL):
+        try:
+            rows = json.loads(block).get("mutation_survivors", [])
+        except (AttributeError, json.JSONDecodeError):
+            continue
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("survivor"), str):
+                continue
+            disposition = row.get("disposition")
+            detail = row.get("test" if disposition == "killed" else "reason")
+            if not isinstance(disposition, str) or disposition not in {"killed", "equivalent"} or not isinstance(detail, str):
+                continue
+            if disposition == "killed":
+                if not re.search(r"\btest(?:_[A-Za-z0-9_]+|[A-Z]\w*)\b", detail):
+                    continue
+            else:
+                # Require content beyond placeholder words and equivalence assertions.
+                words = set(re.findall(r"[a-z]+", detail.casefold()))
+                if not words.difference({
+                    "a", "an", "the", "this", "these", "that", "those", "it", "they",
+                    "is", "are", "was", "were", "mutant", "mutants", "mutation", "mutations",
+                    "equivalent", "semantically", "functionally", "behaviorally",
+                    "n", "na", "none", "null", "not", "applicable", "available", "provided",
+                    "specified", "unknown", "tbd", "todo", "pending",
+                }):
+                    continue
+            accounted.add(row["survivor"])
+    return [survivor for survivor in survivors if survivor not in accounted]
+
+
 def _worker_model_for_head(n: int, head: str) -> str | None:
     events = lifecycle.read_events(EVENTS)
     exact = next((
@@ -2848,6 +2925,7 @@ def pr_gate_and_review(
                 wt, f"{n}-pr", tier="pr", blocking_mutation=policy_tier == "High",
             )
         ok, pr_report = pr_runs[head]
+        _record_mutation_survivors(n, head, pr_report)
         report = f"{report}\n{pr_report}"
         if not ok:
             statuses = dict(re.findall(
@@ -4550,6 +4628,7 @@ def worker_round(
         lifecycle.current().attempt = attempt
     plan_dir = attempt_plan_dir(wt, attempt)
     shutil.rmtree(plan_dir, ignore_errors=True)
+    survivors = _mutation_survivors(n)
     promptfile = wt / ".factory-prompt.md"
     promptfile.write_text(build_prompt(n, wt, extra, attempt=attempt, labels=labels))
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
@@ -4601,11 +4680,14 @@ def worker_round(
         set_worker_health(worker, f"{cause}: {detail}", source="launch")
     set_worker_health(worker, None, source="launch")
     worker_version = spec.version
+    fresh_handoff = handoff_path.exists() and handoff_path.stat().st_mtime_ns != handoff_start
+    handoff_text = handoff_path.read_text() if fresh_handoff else ""
+    unaccounted = _unaccounted_mutation_survivors(survivors, handoff_text)
     # Decide before commit_leftovers: dispatcher commits cannot turn unfinished work into done.
     finished = (
-        handoff_path.exists()
-        and handoff_path.stat().st_mtime_ns != handoff_start
+        fresh_handoff
         and _handoff_done(handoff_path)
+        and not unaccounted
         and not run([
             "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
             ":(exclude).factory-prompt.md", ":(exclude).factory",
@@ -4664,6 +4746,13 @@ def worker_round(
     if before_status or after_status:
         ok = False
         report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
+    if unaccounted:
+        ok = False
+        report += (
+            "\n\nHandoff rejected: required mutation survivors need a killed disposition naming "
+            "the test, or an equivalent disposition with reasoning:\n"
+            + "\n".join(f"- {survivor}" for survivor in unaccounted)
+        )
     if ok and tip and run(["git", "merge-base", "--is-ancestor", tip, head], cwd=wt, check=False).returncode:
         ok = False
         report += f"\n\nGate evidence rejected: HEAD {head} does not contain upstream tip {tip}."
