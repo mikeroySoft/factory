@@ -46,7 +46,7 @@ class MutationBudgetTest(unittest.TestCase):
         self.assertIn("0 timeouts", output)
         self.assertIn("incomplete: 0 mutants not started and 1 cut short", output)
 
-    def test_slow_baseline_caps_hang_and_leaves_budget_for_other_mutants(self) -> None:
+    def test_sub_baseline_timeouts_leave_equivalents_incomplete_and_continue(self) -> None:
         now = [0.0]
         timeouts = []
         completed = []
