@@ -169,9 +169,12 @@ for hard tickets is a `[workers]` entry with a `when` rule once #20 lands.
 
 ### 4.4 Loop-safety and trust rules
 
-- `manager_rounds` per ticket (default 1). Exhausted → `ready-for-human` with the manager's
+- `manager_rounds` per ticket generation (default 4 since #521). Exhausted → `ready-for-human` with the manager's
   diagnosis attached. A `manage` event is written *before* the `gh` mutation (decide → record →
   act).
+- `manager.human_on_repeat` (default true, #521) tells the manager to choose HUMAN
+  and cite both failures when the current failure repeats or contradicts the
+  previous round. Both reasons appear together in the packet and prompt.
 - If a human has commented or changed labels since the escalation, the manager skips the
   ticket: a human took it.
 - Manager comments carry a fixed prefix (`Factory manager:`) so `build_prompt`, the dashboard
@@ -236,7 +239,7 @@ human at the escalation point; later phases are gated on its metrics.
 
 **T3. `[manager]` config table** — Blocked by: none
 - Scope: `[manager] command = [...]` (argv template with `{prompt}`, `{cwd}`; default unset =
-  disabled), `rounds = 1`. Host-layer table like `review` (`HOST_TABLES`). `factory doctor`
+  disabled), `rounds = 4` (#521). Host-layer table like `review` (`HOST_TABLES`). `factory doctor`
   reports the binary; `dashboard --json` `config` includes it.
 - Touches: `config.py` (`KNOWN_KEYS`, `HOST_TABLES`, `Config`, loader), `onboard.py` doctor,
   `templates/factory.toml`, `dashboard.py`.

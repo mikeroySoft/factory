@@ -1163,6 +1163,14 @@ def escalation_pass(dry_run: bool = False) -> None:
                 parts = [MENU, "Worker labels:\n" + "\n".join(
                     f"- {k}: {cfg.worker_when.get(k) or '(no when rule)'}" for k in workers),
                          f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}", packet.read_text()]
+                if cfg.manager_human_on_repeat and round_number >= 2 and any(
+                    e.get("event") == "escalate" and e.get("round") == round_number - 1
+                    and e.get("reason") not in (None, "manager_failed") and not e.get("pr") for e in events
+                ):
+                    parts.insert(1, (
+                        "Policy (manager.human_on_repeat): If the current round's failure repeats or contradicts "
+                        "the previous round's failure, choose DECISION: HUMAN and cite both failures in the rationale."
+                    ))
                 notes_path = cfg.factory / NOTES_NAME
                 for path in (cfg.root / LESSONS_NAME, notes_path):
                     if path.is_file():
