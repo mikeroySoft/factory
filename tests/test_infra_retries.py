@@ -12,6 +12,7 @@ from unittest import mock
 
 from factory import config, dispatch, lifecycle
 from tests import test_dispatch_lifecycle as cli_fixture
+from tests import test_bug_gate as bug_fixture
 
 
 class GateInfraRetriesTest(unittest.TestCase):
@@ -440,6 +441,67 @@ class InfraOutcomeTest(unittest.TestCase):
             for ticket in (1, 2, 3)
         ]
         self.assertEqual(set(watch.repeated_escalations(rows)), {"reviewer_unavailable"})
+
+
+class ReproductionInfraRetriesTest(unittest.TestCase):
+    def repository(self, root, message, *, before=False):
+        repo = bug_fixture.repository(root)
+        if before:
+            (repo / "value.py").write_text(f"def value():\n    raise RuntimeError({message!r})\n")
+            bug_fixture.commit(repo, "configure unavailable dependency")
+            bug_fixture.git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        bug_fixture.add_repro(repo)
+        (repo / "value.py").write_text(
+            "def value():\n    return True\n" if before
+            else f"def value():\n    raise RuntimeError({message!r})\n"
+        )
+        bug_fixture.commit(repo, "fix bug")
+        return repo
+
+    def test_head_network_failure_is_infra_not_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.repository(Path(tmp), "HTTP/2 stream error: Connection reset by peer")
+            code, report = bug_fixture.run_gate(
+                repo, "--bug", "--repro-test", bug_fixture.TEST_ID, "--skip", "test",
+            )
+            self.assertEqual(code, 1, report)
+            self.assertIn("- bug-repro-before: EXPECTED FAIL\n", report)
+            self.assertIn("- bug-repro-head: FAIL (infra)\n", report)
+            self.assertIn("## bug-repro-head failure", report)
+            self.assertIn("Connection reset by peer", report)
+
+    def test_head_unmatched_failure_remains_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.repository(Path(tmp), "invalid widget state")
+            code, report = bug_fixture.run_gate(
+                repo, "--bug", "--repro-test", bug_fixture.TEST_ID, "--skip", "test",
+            )
+            self.assertEqual(code, 1, report)
+            self.assertIn("- bug-repro-head: FAIL\n", report)
+            self.assertNotIn("(infra)", report)
+
+    def test_network_failure_before_fix_is_not_reproduction_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.repository(Path(tmp), "Could not resolve host: index.crates.io", before=True)
+            code, report = bug_fixture.run_gate(
+                repo, "--bug", "--repro-test", bug_fixture.TEST_ID, "--skip", "test",
+            )
+            self.assertEqual(code, 1, report)
+            self.assertIn("- bug-repro-before: FAIL (infra)\n", report)
+            self.assertNotIn("EXPECTED FAIL", report)
+            self.assertNotIn("- bug-repro-head:", report)
+
+    def test_source_scan_matching_network_pattern_remains_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = bug_fixture.repository(Path(tmp))
+            path = repo / ".factory.toml"
+            path.write_text(path.read_text().replace('pattern = ""', 'pattern = "Connection reset by peer"'))
+            (repo / "notes.txt").write_text("Connection reset by peer\n")
+            bug_fixture.commit(repo, "add matching source text")
+            code, report = bug_fixture.run_gate(repo, "--skip", "test")
+            self.assertEqual(code, 1, report)
+            self.assertIn("- leak-scan: FAIL\n", report)
+            self.assertNotIn("(infra)", report)
 
 
 if __name__ == "__main__":
