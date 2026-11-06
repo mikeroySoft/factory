@@ -19,6 +19,7 @@ the worktree itself is never touched.
 from __future__ import annotations
 
 import argparse
+import ast
 import collections
 import json
 import os
@@ -71,6 +72,47 @@ def gate_timeout() -> int:
         return 1200
 
 
+def annotation_spans(source: str) -> list[tuple]:
+    """Annotation subtrees in cosmic-ray's character-based source coordinates."""
+    tree = ast.parse(source)
+    nodes = list(ast.walk(tree))
+    aliases = {"TypeAlias"}
+    modules = {"typing", "typing_extensions"}
+    for node in nodes:
+        if isinstance(node, ast.ImportFrom) and node.module in modules:
+            aliases.update(name.asname or name.name for name in node.names if name.name == "TypeAlias")
+        elif isinstance(node, ast.Import):
+            modules.update(name.asname or name.name for name in node.names if name.name in modules)
+
+    roots = []
+    for node in nodes:
+        if isinstance(node, (ast.arg, ast.AnnAssign)):
+            roots.append(node.annotation)
+        if isinstance(node, ast.AnnAssign):
+            marker = node.annotation
+            if (isinstance(marker, ast.Name) and marker.id in aliases) or (
+                isinstance(marker, ast.Attribute) and marker.attr == "TypeAlias"
+                and isinstance(marker.value, ast.Name) and marker.value.id in modules
+            ):
+                roots.append(node.value)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            roots.append(node.returns)
+        elif type(node).__name__ == "TypeAlias":
+            roots.append(node)
+        roots.extend(getattr(node, "type_params", ()))
+
+    rows = source.splitlines()
+
+    def position(row, column):
+        # Python AST columns count UTF-8 bytes; cosmic-ray/parso counts characters.
+        return row, len(rows[row - 1].encode("utf-8")[:column].decode("utf-8"))
+
+    return [
+        (position(node.lineno, node.col_offset), position(node.end_lineno, node.end_col_offset))
+        for node in roots if node is not None
+    ]
+
+
 def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
     """Deterministic mutant sample: mutants on changed lines first, then the rest of each
     file; sorted, then shuffled with a fixed seed within each group, capped at CAP."""
@@ -80,12 +122,22 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
     with use_db(scratch / "session.sqlite") as db:
         cosmic_ray.commands.init([Path(p) for p in lines], db, {})
         items = list(db.work_items)
-    source = {path: Path(path).read_text().splitlines() for path in lines}
+    text = {path: Path(path).read_text() for path in lines}
+    source = {path: code.splitlines() for path, code in text.items()}
+    annotations = {path: annotation_spans(code) for path, code in text.items()}
+    excluded = set()
+    excluded_mutants = 0
 
     def key(m):
         return (str(m.module_path), m.start_pos, m.end_pos, m.operator_name, m.occurrence)
 
     def applicable(m):
+        nonlocal excluded_mutants
+        if any(start <= m.start_pos and m.end_pos <= end
+               for start, end in annotations[str(m.module_path)]):
+            excluded.add((str(m.module_path), m.start_pos, m.end_pos))
+            excluded_mutants += 1
+            return False
         # cosmic-ray 8.7.0's ExceptionReplacer crashes on a dotted name (`config.ConfigError`)
         # in an except clause; its span is then not a bare identifier.
         if not m.operator_name.endswith("ExceptionReplacer"):
@@ -94,6 +146,7 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
         return source[str(m.module_path)][row - 1][start:end].isidentifier()
 
     mutations = sorted((item.mutations[0] for item in items if applicable(item.mutations[0])), key=key)
+    print(f"annotation sites excluded: {len(excluded)} ({excluded_mutants} mutants)")
     rng = random.Random(SEED)
     groups = [
         [m for m in mutations if on_changed_line(m, lines)],
