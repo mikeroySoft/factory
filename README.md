@@ -1173,13 +1173,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Failed PR-tier mutation checks also journal each survivor's exact location and
    mutation as required findings, independently of reviewer verdicts or requeue
    context. Both-REVISE bounces, deferred rework, escalation/requeue, and manager
-   FIX workers receive them. The worker handoff must include a fenced JSON object
-   with a `mutation_survivors` array: each entry copies the exact `survivor` string
-   and supplies either `"disposition": "killed"` with a `test` naming its killing
-   test, or `"disposition": "equivalent"` with a `reason` explaining equivalence.
-   Missing entries, unnamed killing tests, and bare equivalence claims (including
-   restatements such as "This mutant is equivalent.") fail the
-   worker round even if its gate passes; they cannot count as finished work.
+   FIX workers receive them. The worker must write a fresh handoff during the current
+   round with a fenced JSON object containing a `mutation_survivors` array: each
+   entry copies the exact `survivor` string and supplies either
+   `"disposition": "killed"` with a `test` naming its killing Python test identifier
+   (`test_*` or unittest `testCamelCase`), or `"disposition": "equivalent"` with a
+   `reason` explaining equivalence. Missing entries, stale accounting, placeholder
+   evidence such as "N/A", unnamed killing tests, and bare equivalence claims
+   (including restatements such as "This is equivalent.") fail the worker round
+   even if its gate passes; they cannot count as finished work.
    A later failed mutation report replaces the list; a passing/skipped mutation
    check clears it, while a tool failure without survivors preserves it.
    Owner requeues with `resume` retain unresolved survivors; `fresh` discards the

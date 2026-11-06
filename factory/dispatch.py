@@ -1199,11 +1199,13 @@ def build_prompt(
     if survivors := _mutation_survivors(n):
         parts += ["", "## Required mutation survivor findings", "",
                   ("Every survivor below is required work, in addition to reviewer fixes. "
-                   "In the handoff, include a fenced `json` object with a `mutation_survivors` array. "
-                   "Each entry must copy the exact `survivor` string below and set `disposition` to "
-                   "`killed` with a `test` naming the killing test, or `equivalent` with a `reason` "
-                   "explaining why the mutation cannot change behavior. Bare equivalence claims "
-                   "and missing entries are rejected. This accounting does not override the gate."),
+                   "Write a fresh handoff this round with a fenced `json` object containing a "
+                   "`mutation_survivors` array. Each entry must copy the exact `survivor` string "
+                   "below and set `disposition` to `killed` with a `test` naming the killing "
+                   "Python test identifier (`test_*` or `testCamelCase`), or `equivalent` with a "
+                   "`reason` explaining why the mutation cannot change behavior. Placeholders, "
+                   "bare equivalence claims and missing entries are rejected. This accounting "
+                   "does not override the gate."),
                   "", *[f"- {survivor}" for survivor in survivors]]
     return "\n".join(parts) + "\n"
 
@@ -2847,15 +2849,20 @@ def _unaccounted_mutation_survivors(survivors: list[str], handoff: str) -> list[
             detail = row.get("test" if disposition == "killed" else "reason")
             if not isinstance(disposition, str) or disposition not in {"killed", "equivalent"} or not isinstance(detail, str):
                 continue
-            if not detail.strip() or (
-                disposition == "equivalent"
-                and re.fullmatch(
-                    r"(?:(?:this|the) (?:mutant|mutation) (?:is )?|it is )?"
-                    r"(?:an? )?(?:(?:semantically|functionally|behaviorally) )?equivalent(?: mutant)?[.! ]*",
-                    detail.strip(), re.IGNORECASE,
-                )
-            ):
-                continue
+            if disposition == "killed":
+                if not re.search(r"\btest(?:_[A-Za-z0-9_]+|[A-Z]\w*)\b", detail):
+                    continue
+            else:
+                # Require content beyond placeholder words and equivalence assertions.
+                words = set(re.findall(r"[a-z]+", detail.casefold()))
+                if not words.difference({
+                    "a", "an", "the", "this", "these", "that", "those", "it", "they",
+                    "is", "are", "was", "were", "mutant", "mutants", "mutation", "mutations",
+                    "equivalent", "semantically", "functionally", "behaviorally",
+                    "n", "na", "none", "null", "not", "applicable", "available", "provided",
+                    "specified", "unknown", "tbd", "todo", "pending",
+                }):
+                    continue
             accounted.add(row["survivor"])
     return [survivor for survivor in survivors if survivor not in accounted]
 
@@ -4673,12 +4680,12 @@ def worker_round(
         set_worker_health(worker, f"{cause}: {detail}", source="launch")
     set_worker_health(worker, None, source="launch")
     worker_version = spec.version
-    handoff_text = handoff_path.read_text() if handoff_path.exists() else ""
+    fresh_handoff = handoff_path.exists() and handoff_path.stat().st_mtime_ns != handoff_start
+    handoff_text = handoff_path.read_text() if fresh_handoff else ""
     unaccounted = _unaccounted_mutation_survivors(survivors, handoff_text)
     # Decide before commit_leftovers: dispatcher commits cannot turn unfinished work into done.
     finished = (
-        handoff_path.exists()
-        and handoff_path.stat().st_mtime_ns != handoff_start
+        fresh_handoff
         and _handoff_done(handoff_path)
         and not unaccounted
         and not run([
