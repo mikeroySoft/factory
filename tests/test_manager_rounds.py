@@ -58,6 +58,51 @@ class ManagerRoundsTest(unittest.TestCase):
             self.assertIn(f"## Reason\n\n{reason}\n\n## Previous round failure\n\n{reason}\n\n", text)
         self.assert_rule(prompt)
 
+    def test_production_review_failures_retain_details_across_rounds(self) -> None:
+        reason = "REVISE verdict after 3 review round(s)"
+        findings = [
+            "F1: reject stale revisions\nF2: preserve the accepted baseline",
+            "F1: reject stale revisions\nF2: preserve the accepted baseline",
+            "F1: reject stale revisions",
+            "F1: accept stale revisions",
+        ]
+        wt = self.cfg.factory / "wt-7"
+        (wt / ".factory").mkdir(parents=True)
+        review = self.cfg.factory / "review-7.md"
+        packet = self.cfg.factory / "escalations" / "7.md"
+        for number, finding in enumerate(findings, 1):
+            with self.subTest(round=number):
+                gate = f"gate evidence for round {number}"
+                handoff = f"worker diagnosis for round {number}"
+                extra = f"PR-tier evidence for round {number}"
+                (wt / ".factory" / "gate-report-7.md").write_text(gate)
+                (wt / ".factory" / "handoff-7.md").write_text(handoff)
+                review.write_text(finding)
+                with mock.patch.object(dispatch, "run"), mock.patch.object(dispatch, "unclaim"):
+                    dispatch.escalate(7, reason, None, extra=extra, code="review_revise")
+                prompt = self.prompt()
+                for text in (packet.read_text(), prompt):
+                    if number == 1:
+                        self.assertNotIn("Previous round failure", text)
+                        continue
+                    previous = text.split("## Previous round failure\n\n", 1)[1].split("## Attempts", 1)[0]
+                    self.assertIn(reason, previous)
+                    self.assertIn(findings[number - 2], previous)
+                    self.assertIn(f"gate evidence for round {number - 1}", previous)
+                    self.assertIn(f"worker diagnosis for round {number - 1}", previous)
+                    self.assertIn(f"PR-tier evidence for round {number - 1}", previous)
+                    if number > 2:
+                        self.assertNotIn(f"gate evidence for round {number - 2}", previous)
+                    current = text.split("## Attempts", 1)[1]
+                    for detail in (finding, gate, handoff, extra):
+                        self.assertIn(detail, current)
+                if number >= 2:
+                    self.assert_rule(prompt)
+                if number == 1:
+                    with gzip.open(dispatch.EVENTS.with_name("events.jsonl.1.gz"), "wb") as stream:
+                        stream.write(dispatch.EVENTS.read_bytes())
+                    dispatch.EVENTS.write_text("")
+
     def test_distinct_previous_failure_survives_rotation_and_manager_transport_failure(self) -> None:
         previous = "review: remove the revision check"
         current = "review: restore the revision check"
