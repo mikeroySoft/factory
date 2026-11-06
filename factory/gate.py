@@ -458,11 +458,46 @@ def _matches_test_id(test_id: str, record: dict) -> bool:
     )
 
 
-_UNITTEST_ONE = """import importlib.util, sys, unittest
-path, name = sys.argv[1:]
-spec = importlib.util.spec_from_file_location("_factory_repro", path)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+_UNITTEST_ONE = """import argparse, importlib, sys, unittest
+from pathlib import Path
+path, name, *args = sys.argv[1:]
+path = Path(path).resolve()
+top = path.parent
+if args and args[0] == "discover":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-s", "--start-directory", dest="start", default=".")
+    parser.add_argument("-p", "--pattern")
+    parser.add_argument("-t", "--top-level-directory", dest="top")
+    parser.add_argument("-k", action="append")
+    parser.add_argument("--durations")
+    for flags in (("-v", "--verbose"), ("-q", "--quiet"), ("-f", "--failfast"),
+                  ("-c", "--catch"), ("-b", "--buffer"), ("--locals",)):
+        parser.add_argument(*flags, action="store_true")
+    for dest in ("start", "pattern", "top"):
+        parser.add_argument(dest, nargs="?", default=argparse.SUPPRESS)
+    options, _ = parser.parse_known_args(args[1:])
+    top = Path(options.top or options.start).resolve()
+    if not Path(options.start).is_dir():
+        start = importlib.import_module(options.start)
+        package = sys.modules[start.__name__.split(".")[0]]
+        if start.__file__ is None:
+            locations = (Path(root).resolve() for root in start.__path__)
+            location = next((root for root in locations
+                             if path.is_relative_to(root)
+                             and (not options.top or root.is_relative_to(top))), None)
+            top = location.parents[len(start.__name__.split(".")) - 1] if location else path.parent
+        elif not options.top and package.__file__ is None:
+            # unittest roots a regular start beneath a namespace at the start itself.
+            top = Path(start.__file__).resolve().parent
+        elif not options.top:
+            top = Path(package.__file__).resolve().parent
+            if hasattr(package, "__path__"):
+                top = top.parent
+if not path.is_relative_to(top):
+    top = path.parent
+sys.path.insert(0, str(top))
+module_name = ".".join(path.relative_to(top).with_suffix("").parts)
+module = importlib.import_module(module_name)
 result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromName(name, module))
 raise SystemExit(not result.wasSuccessful())
 """
@@ -481,7 +516,10 @@ def _repro_command(test_id: str, record: dict) -> tuple[list[str], bool]:
             runner = check.run.index("unittest")
             prefix = check.run[:runner - 1] if runner and check.run[runner - 1] == "-m" else check.run[:runner]
             return (
-                [*(prefix or [sys.executable]), "-c", _UNITTEST_ONE, record["path"], record["qualified"]],
+                [
+                    *(prefix or [sys.executable]), "-c", _UNITTEST_ONE,
+                    record["path"], record["qualified"], *check.run[runner + 1:],
+                ],
                 check.name in GPU_CHECKS,
             )
         if language == "rust" and "cargo" in check.run and "test" in check.run:
