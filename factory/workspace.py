@@ -801,12 +801,21 @@ class Workspace:
         if value is None:
             return None, error
         scope = value.get("scope")
+        reported_root = scope.get("root") if isinstance(scope, dict) else None
+        try:
+            same_root = (
+                isinstance(reported_root, str)
+                and Path(reported_root).is_absolute()
+                and Path(reported_root).resolve(strict=True) == root.resolve(strict=True)
+            )
+        except (OSError, RuntimeError, ValueError):
+            same_root = False
         if (
             value.get("schema_version") != 1
             or type(value.get("ok")) is not bool
             or not isinstance(scope, dict)
             or scope.get("repository") != slug
-            or scope.get("root") != str(root)
+            or not same_root
         ):
             return None, _problem(
                 "invalid_response", "Evidence envelope did not match the selected repository.", operation=operation

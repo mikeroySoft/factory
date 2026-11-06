@@ -91,6 +91,7 @@ class EvidenceCliTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
+        self.directory = self.directory.resolve()
         self.root = self.directory / "repo"
         self.root.mkdir()
         self.tools = self.directory / "bin"

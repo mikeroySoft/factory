@@ -53,6 +53,7 @@ def git(cwd: Path, *args: str) -> str:
 
 
 def make_repo(tmp: Path, toml: str = "") -> Path:
+    tmp = tmp.resolve()
     repo = tmp / "repo"
     repo.mkdir()
     git(repo, "init", "-q", "-b", "main")
@@ -171,6 +172,7 @@ def factory(cwd: Path, *argv: str, path: str | None = None) -> subprocess.Comple
 def installed_factory(environment: Path) -> tuple[Path, Path]:
     """Create a disposable environment containing this Factory snapshot."""
     import tomlkit
+    environment = environment.resolve()
 
     venv.EnvBuilder(with_pip=False).create(environment)
     python = environment / "bin" / "python"

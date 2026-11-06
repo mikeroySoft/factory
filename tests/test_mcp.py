@@ -30,6 +30,7 @@ class McpServerTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
+        self.directory = self.directory.resolve()
         self.tools = self.directory / "bin"
         self.tools.mkdir()
         (self.tools / "git").symlink_to(shutil.which("git"))
