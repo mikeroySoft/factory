@@ -33,6 +33,10 @@ class DispatchOutputEncodingTest(unittest.TestCase):
             self.assert_replaced_output(dispatch.run(INVALID_OUTPUT))
 
     def test_activity_replaces_non_utf8_git_output(self) -> None:
+        if sys.platform == "darwin":
+            # #638: APFS rejects byte filenames; emit raw git output instead.
+            self.test_activity_replaces_non_utf8_git_output_without_byte_filename()
+            return
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
@@ -65,6 +69,24 @@ class DispatchOutputEncodingTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("\ufffd-status", result.stdout)
+
+    def test_activity_replaces_non_utf8_git_output_without_byte_filename(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            command = root / "git"
+            command.write_text(
+                f"#!{sys.executable}\nimport os, sys\n"
+                "os.write(1, b'?? \\xff-status\\n' if 'status' in sys.argv else b'head\\n')\n"
+            )
+            command.chmod(0o755)
+            # Use the real subprocess pipe/decoder, not a decoded CompletedProcess mock.
+            with mock.patch.dict(os.environ, {"PATH": str(root)}):
+                activity = dispatch._activity(root, root / "worker.log", root / "handoff.md")
+
+            self.assertEqual(activity[1], "head\n")
+            self.assertEqual(activity[2], "?? \ufffd-status\n")
 
 
 class GateToolchainEncodingTest(unittest.TestCase):
