@@ -11,7 +11,6 @@ from unittest import mock
 from factory import dispatch, learn
 from factory.config import Config
 
-
 REAL_RUN = dispatch.run
 SIGNOFF_FORMAT = "%(trailers:key=Signed-off-by,valueonly)"
 
