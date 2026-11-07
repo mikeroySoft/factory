@@ -51,3 +51,24 @@ class DispatcherContextIsolationTest(unittest.TestCase):
             events = [row for row in rows if row["event"] == "lifecycle"]
             self.assertIn(10000, {row["ticket"] for row in events})
             self.assertEqual({row["dispatcher_run_id"] for row in events}, {None})
+
+    def test_standalone_modules_leave_inherited_live_journal_unchanged(self):
+        for module in ("test_prime_pilot", "test_stage_success", "test_subprocess_encoding"):
+            for args in ([module], ["discover", "-s", ".", "-p", f"{module}.py"]):
+                with self.subTest(module=module, args=args), tempfile.TemporaryDirectory() as directory:
+                    live = Path(directory) / "live" / ".factory" / "events.jsonl"
+                    live.parent.mkdir(parents=True)
+                    before = b'{"event":"claimed","ticket":620}\n'
+                    live.write_bytes(before)
+                    context = {"schema_version": 1, "path": str(live), "ticket": 620,
+                               "dispatcher_run_id": "outside-dispatcher",
+                               "root_execution_id": "outside-root",
+                               "parent_execution_id": "outside-worker", "locks": []}
+                    proc = subprocess.run(
+                        [sys.executable, "-m", "unittest", *args], cwd=ROOT / "tests",
+                        env={**os.environ, "PYTHONPATH": str(ROOT),
+                             lifecycle.CONTEXT_ENV: json.dumps(context)},
+                        capture_output=True, text=True, check=False, timeout=60,
+                    )
+                    self.assertEqual(live.read_bytes(), before, proc.stdout + proc.stderr)
+                    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
