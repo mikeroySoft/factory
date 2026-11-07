@@ -780,12 +780,12 @@ because a partial rewrite or split may already have changed GitHub.
 ### Owner requeues and ticket generations
 
 A human who moves an escalated ticket back to `ready-for-agent` (by relabeling or with
-the guarded `requeue_agent` action) opens a new **generation** for it. A live dispatcher
-pass journals observed owner resets before calling `land_pass`; land, manager and ticket
-stages also check at their first live ticket read. The receipt has `event` and `kind`
-both equal to `generation`, plus the fields documented in
+the guarded `requeue_agent` action) opens a new **generation** for it. Whichever stage
+first reads the live ticket in that state (land, manager or ticket) in a pass after the
+escalation's own journals one `generation` row with `generation`, `intent`, `source` (`label` or `requeue_agent`),
+`actor`, `decision` and `escalation_at`. Every round budget counts only the rows after
+it. The current receipt shape and the unresolved #671 contracts are documented in
 [Ticket flow: Owner requeues](docs/ticket-flow.md#owner-requeues).
-Every round budget counts only the rows from that receipt onward.
 That covers the escalation and manager rounds, frontier manager rounds,
 review-bounce rounds and conflict, gate and risk requeue rounds, so the ticket gets its
 full budget again. A factory release never opens a generation. The dispatcher and
