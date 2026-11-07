@@ -365,6 +365,21 @@ issue, worker- or human-owned, parks the stage until it closes. A persistent
 conflict therefore delays the whole upstream batch: a staged prefix is not
 landed on its own, and partial progress needs its own reviewed PR.
 
+Triage retries connection refusal, timeouts and HTTP 5xx on the completion POST,
+never a separate health request. Each request gets at most three serial attempts,
+with 1s then 2s backoff capped by `[triage].retry_cap` (default 5 seconds; finite,
+non-negative, 0 disables the delay). `[triage].timeout` applies per attempt.
+After exhaustion, the batch stops with try-later rather than a failure: the
+current and remaining tickets keep their labels, comments and verdicts, eligible
+for the next pass. The next batch tries other tickets first, then deferred tickets
+in oldest-deferral order, so one slow request cannot starve the queue; a successful
+attempt restores normal priority. `events.jsonl` records a lifecycle `try_later`
+row with `endpoint` and `attempts`, accepted by the runtime reader without a
+history gap, and `not_admitted` exits with reason `triage_endpoint_unavailable`.
+Initiative/unchanged guards and deterministic
+routing run before any completion request. The separate opt-in `triage-probe`
+timer remains independent.
+
 ## Commands
 
 | Command | What one invocation does |
@@ -2524,7 +2539,7 @@ unchanged storage/evidence. `latest_event_id`/`latest_at` use the greatest retai
 execution sequence; `dispatcher.latest_transition` uses physical order.
 
 Event common keys/types are F01 above. Supported kinds are `enter`, `exit`,
-`handoff`, `child_start`, `child_exit`, `check`, `result`, `timeout`,
+`handoff`, `child_start`, `child_exit`, `check`, `result`, `timeout`, `try_later`,
 `lock_acquired`, `lock_released`, `resource_requested`, `wait`, `wait_end`,
 `resource_observation`, and `scheduling_observation`. Kind-specific optional
 fields are `handoff_id`, `wait_event_id`, `acquisition_id` (identity strings,

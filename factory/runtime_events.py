@@ -24,7 +24,7 @@ IDENTITY = lifecycle._IDENTITY_FIELDS
 # A ticket scope advances attempt/review_round in place so its children inherit them.
 FIXED_IDENTITY = tuple(field for field in IDENTITY if field not in {"attempt", "review_round"})
 KINDS = {
-    "enter", "exit", "handoff", "child_start", "child_exit", "check", "result", "timeout",
+    "enter", "exit", "handoff", "child_start", "child_exit", "check", "result", "timeout", "try_later",
     "lock_acquired", "lock_released", "resource_requested", "wait", "wait_end",
     "resource_observation", "scheduling_observation", "toolchain",
 }
