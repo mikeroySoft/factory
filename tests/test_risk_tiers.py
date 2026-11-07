@@ -140,6 +140,7 @@ class LowPolicyTest(unittest.TestCase):
             "assignees": [{"login": "factory"}],
         }))
         self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value="factory"))
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
 
     def test_low_skips_pr_checks_and_runs_one_primary_review(self) -> None:
         cfg = config.Config(Path("."), "acme/widgets")

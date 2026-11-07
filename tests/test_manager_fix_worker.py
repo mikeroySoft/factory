@@ -38,6 +38,7 @@ class ManagerFixWorkerSelectionTest(unittest.TestCase):
                 "assignees": [{"login": "factory"}],
             }
         )).start()
+        mock.patch("factory.handoff.timeline", return_value=[]).start()
 
 
     def fix_round(self, ticket: int, labels: set[str], selected_worker: str) -> tuple[str, dict]:

@@ -196,6 +196,7 @@ class AgentPushLeaseTest(unittest.TestCase):
             dispatch, "_ticket_claim_state", side_effect=lambda n: self.github(["issue", "view"]),
         ))
         self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value="factory-bot"))
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
 
     @staticmethod
     def github(args):
