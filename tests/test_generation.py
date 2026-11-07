@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, generation, lifecycle, manage
@@ -425,6 +427,73 @@ class RequeueIntentActionTest(unittest.TestCase):
         self.assertEqual(self.apply_mcp(preview)["status"], "success")
         opened = generation.owner_requeue(lifecycle.read_events(journal), 7)
         self.assertEqual((opened["intent"], opened["source"], opened["actor"]), ("fresh", "requeue_agent", "alice"))
+
+
+class RequeueReceiptContractTest(unittest.TestCase):
+    """#671: literal receipt and pre-land ordering contracts, not just fresh round counts."""
+
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.enterContext(mock.patch.dict(dispatch.__dict__))
+        self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        self.cfg = config.Config(Path(temp.name), "acme/widgets")
+        dispatch.configure(self.cfg)
+        self.issue = {"number": 7, "state": "OPEN", "labels": [{"name": config.LABEL_AGENT}],
+                      "assignees": []}
+        self.escalation_at = "2026-11-05T00:00:00Z"
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "at": self.escalation_at})
+
+    def test_generation_receipt_has_one_kind_and_complete_shape(self) -> None:
+        for intent in ("resume", "fresh"):
+            with self.subTest(intent=intent):
+                if intent == "fresh":
+                    lifecycle.append(dispatch.EVENTS, {**ESCALATED, "at": self.escalation_at})
+                    dispatch.record(
+                        "human-decision", ticket=7, status="success", actor="alice", proposal_id="p1",
+                        action={"name": "requeue_agent", "args": {"number": 7, "intent": intent}},
+                    )
+                with lifecycle.scope(dispatch.EVENTS, "dispatcher", dispatcher=True) as execution:
+                    dispatch.observe_owner_requeue(7, self.issue)
+                    receipt = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                               if row.get("event") == "generation"][-1]
+                    self.assertEqual(receipt, {
+                        "at": receipt["at"], "event": "generation", "kind": "generation", "ticket": 7,
+                        "cause": "owner_requeue", "generation": 1 if intent == "resume" else 2,
+                        "intent": intent, "source": "label" if intent == "resume" else "requeue_agent",
+                        "actor": None if intent == "resume" else "alice",
+                        "decision": None if intent == "resume" else "p1",
+                        "escalation_at": self.escalation_at, "execution_id": execution.execution_id,
+                        "dispatcher_run_id": execution.dispatcher_run_id,
+                    })
+                    self.assertRegex(receipt["at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+    def test_owner_reset_is_persisted_before_land_pass_entry(self) -> None:
+        # Exhaust the old generation; a reset inside landing is too late for this contract.
+        for round_number in range(1, self.cfg.review_rounds + 1):
+            dispatch.record("conflict-requeue", ticket=7, round=round_number)
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "at": self.escalation_at})
+
+        def land(dry_run: bool) -> None:
+            self.assertFalse(dry_run)
+            opened = generation.current(lifecycle.read_events(dispatch.EVENTS), 7)
+            self.assertEqual(opened.number, 1, "owner reset must be journaled before land_pass starts")
+            self.assertEqual([row["event"] for row in opened.rows], ["generation"])
+
+        with mock.patch.object(dispatch, "pin_root", return_value=[]), \
+                mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.object(config, "engine_commit", return_value="same"), \
+                mock.patch.object(config, "engine_target", return_value="same"), \
+                mock.patch.object(dispatch, "_sweep_stale_factory_tempdirs"), \
+                mock.patch.object(dispatch, "worker_health_pass"), \
+                mock.patch.object(dispatch, "gh_json", return_value=[self.issue]), \
+                mock.patch.object(dispatch, "land_pass", side_effect=land) as landing, \
+                mock.patch.object(dispatch, "review_intake_pass"), \
+                mock.patch("factory.manage.manage_pass"), \
+                mock.patch.object(dispatch, "ticket_pass"), \
+                mock.patch("factory.learn.learn_pass"):
+            self.assertEqual(dispatch.main([]), 0)
+        landing.assert_called_once_with(False)
 
 
 if __name__ == "__main__":
