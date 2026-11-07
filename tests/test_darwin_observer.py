@@ -18,6 +18,8 @@ from factory import darwin_observer, lifecycle, platform_identity, runtime_event
 BOOT = "11111111-2222-3333-4444-555555555555"
 HOST = str(uuid.uuid5(uuid.NAMESPACE_URL, "factory:host:AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
 ENV = lifecycle.CONTEXT_ENV
+SUPPORTED_FACTS = ("darwin", "arm64", 8, "little", (27, 2))
+UNSUPPORTED_FACTS = ("darwin", "x86_64", 8, "little", (27, 2))
 
 
 def ident(pid, start=100, ppid=1, state="S"):
@@ -285,7 +287,12 @@ class ProcargsTest(unittest.TestCase):
         self.assertEqual(darwin_observer.LIST_RETRIES, 4)
         self.assertEqual(darwin_observer.SUPPORTED_MAC, (27, 2))
         self.assertEqual(darwin_observer.SUPPORTED_MACHINE, "arm64")
-        self.assertFalse(darwin_observer.abi_supported())
+        self.assertTrue(darwin_observer.abi_supported(SUPPORTED_FACTS))
+        self.assertFalse(darwin_observer.abi_supported(UNSUPPORTED_FACTS))
+        self.assertEqual(
+            darwin_observer.abi_supported(),
+            darwin_observer.abi_supported(darwin_observer.abi_facts()),
+        )
         root = Path(platform_identity.__file__).resolve().parent
         for name in ("platform_identity.py", "darwin_observer.py", "lifecycle.py"):
             text = (root / name).read_text()
@@ -343,19 +350,31 @@ class NativeSeamTest(unittest.TestCase):
             calls.append("lib")
             raise AssertionError("native read")
 
-        x86 = ("darwin", "x86_64", 8, "little", (27, 2))
-        self.assertFalse(darwin_observer.abi_supported(x86))
-        self.assertFalse(darwin_observer.abi_supported())
-        with patch.object(darwin_observer, "_lib", side_effect=forbidden):
-            with self.assertRaises(OSError):
+        self.assertTrue(darwin_observer.abi_supported(SUPPORTED_FACTS))
+        self.assertFalse(darwin_observer.abi_supported(UNSUPPORTED_FACTS))
+        with patch.object(darwin_observer, "abi_facts", return_value=UNSUPPORTED_FACTS), \
+                patch.object(darwin_observer, "_lib", side_effect=forbidden):
+            with self.assertRaises(OSError) as blocked:
                 darwin_observer.native_process(1, BOOT)
+            self.assertEqual(str(blocked.exception), "unsupported darwin ABI")
             self.assertEqual(darwin_observer._native_scan(ENV, {1}), ({}, {}, set(), False))
-            with self.assertRaises(OSError):
+            with self.assertRaises(OSError) as listed:
                 darwin_observer._list_pids(object())
+            self.assertEqual(str(listed.exception), "unsupported darwin ABI")
         self.assertEqual(calls, [])
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
+                patch.object(darwin_observer, "_lib", side_effect=forbidden):
+            with self.assertRaises(AssertionError):
+                darwin_observer.native_process(1, BOOT)
+            with self.assertRaises(AssertionError):
+                darwin_observer._native_scan(ENV, {1})
+            with self.assertRaises(OSError) as opened:
+                darwin_observer._list_pids(object())
+            self.assertEqual(str(opened.exception), "proc_listallpids is unavailable")
+        self.assertEqual(calls, ["lib", "lib"])
 
     def test_missing_library_and_symbol_fail_closed(self):
-        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
                 patch.object(ctypes, "CDLL", side_effect=OSError("libproc missing")):
             with self.assertRaises(OSError) as missing:
                 darwin_observer.native_process(4, BOOT)
@@ -364,7 +383,7 @@ class NativeSeamTest(unittest.TestCase):
         class Empty:
             pass
 
-        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
                 patch.object(darwin_observer, "_lib", return_value=(Empty(), Empty())):
             with self.assertRaises(OSError) as symbol:
                 darwin_observer.native_process(4, BOOT)
@@ -376,7 +395,7 @@ class NativeSeamTest(unittest.TestCase):
             pack_bsd(status=darwin_observer.SRUN, **common),
             pack_bsd(status=darwin_observer.SSLEEP, **common),
         ])
-        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
                 patch.object(darwin_observer, "_lib", return_value=(lib, None)):
             identity = darwin_observer.native_process(42, BOOT)
         self.assertEqual(identity["start_ticks"], 100)
@@ -387,7 +406,7 @@ class NativeSeamTest(unittest.TestCase):
             pack_bsd(status=darwin_observer.SRUN, **common),
             pack_bsd(status=darwin_observer.SRUN, **{**common, "ppid": 8}),
         ])
-        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
                 patch.object(darwin_observer, "_lib", return_value=(moved, None)):
             with self.assertRaises(OSError):
                 darwin_observer.native_process(42, BOOT)
@@ -404,7 +423,7 @@ class NativeSeamTest(unittest.TestCase):
             return 30, list(range(1, 31)), 0
 
         lib = _ListLib(grow)
-        with patch.object(darwin_observer, "abi_supported", return_value=True):
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS):
             pids, complete = darwin_observer._list_pids(lib)
         self.assertEqual(pids, list(range(1, 31)))
         self.assertTrue(complete)
@@ -419,7 +438,7 @@ class NativeSeamTest(unittest.TestCase):
             return cap, list(range(1, cap + 1)), 0
 
         full = _ListLib(always_full)
-        with patch.object(darwin_observer, "abi_supported", return_value=True):
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS):
             _pids, complete = darwin_observer._list_pids(full)
         self.assertFalse(complete)
         self.assertEqual(len(full.calls), 1 + darwin_observer.LIST_RETRIES)
@@ -427,7 +446,7 @@ class NativeSeamTest(unittest.TestCase):
         def broken(nbytes):
             return -1, None, 1
 
-        with patch.object(darwin_observer, "abi_supported", return_value=True):
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS):
             self.assertEqual(darwin_observer._list_pids(_ListLib(broken)), (None, False))
 
         def oversized(nbytes):
@@ -438,7 +457,7 @@ class NativeSeamTest(unittest.TestCase):
                 return cap + 50, list(range(1, cap + 1)), 0
             return 4, [1, 0, -5, 8], 0
 
-        with patch.object(darwin_observer, "abi_supported", return_value=True):
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS):
             pids, complete = darwin_observer._list_pids(_ListLib(oversized))
         self.assertEqual(pids, [1, 8])
         self.assertFalse(complete)
@@ -462,7 +481,7 @@ class NativeSeamTest(unittest.TestCase):
         def inputs():
             return pids, True, darwin_observer.ARGMAX_CAP, object(), object()
 
-        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
                 patch.object(darwin_observer, "_native_inputs", inputs), \
                 patch.object(darwin_observer, "_bsdinfo", info), \
                 patch.object(darwin_observer, "_procargs", args), \
@@ -486,7 +505,7 @@ class NativeSeamTest(unittest.TestCase):
         def crowded_inputs():
             return crowded, True, darwin_observer.ARGMAX_CAP, object(), object()
 
-        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
                 patch.object(darwin_observer, "_native_inputs", crowded_inputs), \
                 patch.object(darwin_observer, "_bsdinfo", crowded_info), \
                 patch.object(darwin_observer, "_procargs", crowded_args), \
