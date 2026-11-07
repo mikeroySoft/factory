@@ -1019,26 +1019,32 @@ def bounded_journal_rows() -> tuple[list[dict], dict]:
 
 
 def snapshot(*, measurements: dict | None = None) -> dict:
-    slots = threading.BoundedSemaphore(8)
     count_lock = threading.Lock()
     counts = {"github_calls": 0}
 
-    def read(**kwargs):
-        timeout = kwargs.get("timeout")
-        if timeout is not None:
-            started = time.monotonic()
-        acquired = slots.acquire(timeout=timeout)
-        if not acquired:
-            raise TimeoutError
-        try:
-            if timeout is not None:
-                kwargs["timeout"] = max(0, timeout - (time.monotonic() - started))
-            with count_lock:
-                counts["github_calls"] += 1
-            return github(**kwargs)
-        finally:
-            slots.release()
+    def fetch(queued, kwargs):
+        if (timeout := kwargs.get("timeout")) is not None:
+            remaining = timeout - (time.monotonic() - queued)
+            if remaining <= 0:
+                raise TimeoutError
+            kwargs["timeout"] = remaining
+        with count_lock:
+            counts["github_calls"] += 1
+        return github(**kwargs)
 
+    # FIFO transport scheduling keeps newly spawned detail readers from overtaking
+    # queued head reads. The same eight workers serve every ticket and correction.
+    with ThreadPoolExecutor(max_workers=8) as transport:
+        def read(**kwargs):
+            return transport.submit(fetch, time.monotonic(), kwargs).result()
+
+        result = _snapshot(read)
+    if measurements is not None:
+        measurements.update(counts)
+    return result
+
+
+def _snapshot(read) -> dict:
     errors = []
     issues: list[dict] = []
     prs: dict[int, dict] = {}
@@ -1047,8 +1053,16 @@ def snapshot(*, measurements: dict | None = None) -> dict:
     gh_upstream = None
     review_prs: list[dict] = []
     viewer = ""
+    # These local reads do not depend on GitHub; keep journal parsing off the
+    # request chain that unlocks every feedback and correction read.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        initial = pool.submit(read)
+        on_disk = disk_ticket_numbers()
+        rows, legacy_coverage = bounded_journal_rows()
+        audit = stats.audit_by_ticket(FACTORY / "events.jsonl", rows)
+        spend = spend_by_ticket(rows)
     try:
-        data = read()
+        data = initial.result()
         repo, gh_upstream = data["repository"], data.get("upstream")
         issues = repo["issues"]["nodes"]
         review_prs = repo["pullRequests"]["nodes"]
@@ -1066,7 +1080,6 @@ def snapshot(*, measurements: dict | None = None) -> dict:
     except (RuntimeError, ValueError, KeyError) as exc:
         errors.append(f"github: {exc}")
 
-    on_disk = disk_ticket_numbers()
     locks = FACTORY / "locks"
     ticket_lock_paths = {
         locks / f"{issue['number']}.lock"
@@ -1081,9 +1094,6 @@ def snapshot(*, measurements: dict | None = None) -> dict:
         *((path, "repository") for path in sorted(ticket_lock_paths, key=str)),
     ]
     runtime = runtime_events.project(dispatch.EVENTS, resource_paths)
-    rows, legacy_coverage = bounded_journal_rows()
-    audit = stats.audit_by_ticket(FACTORY / "events.jsonl", rows)
-    spend = spend_by_ticket(rows)
     dispatcher_state = dispatcher(runtime)
     execution_events: dict[str, list[dict]] = {}
     for event in runtime["events"]:
@@ -1226,9 +1236,6 @@ def snapshot(*, measurements: dict | None = None) -> dict:
         if not runtime_history["window_complete"] or len(bounded_executions) < len(executions)
         else "bounded"
     )
-
-    if measurements is not None:
-        measurements.update(counts)
 
     return {
         "generated_at": iso(time.time()),
