@@ -425,6 +425,8 @@ def save(root: Path, request: dict) -> dict:
             cfg, _, _, repo_bytes, _, current_revision = _state(Path(root))
             if revision != current_revision:
                 return _failure(SettingsError("Settings are stale; reload before saving"))
+            if changes.get("dispatch.budget_min", cfg.budget_min) > cfg.budget_cap_min:
+                raise SettingsError(f"dispatch.budget_min must be at most {cfg.budget_cap_min} (budget_cap_min)")
             path = cfg.root / config.CONFIG_NAME
             original = repo_bytes or b""
             document = _document(original.decode("utf-8"))

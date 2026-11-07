@@ -376,6 +376,19 @@ def _split_bodies(n: int, parent_body: str, children: list[dict]) -> list[dict]:
 
 
 def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
+    if decision != "FIX":
+        return _apply(n, issue, decision, body, data, packet)
+    try:
+        with dispatch.wall_budget(n, dispatch.cfg.budget_min):
+            return _apply(n, issue, decision, body, data, packet)
+    except dispatch.BudgetExceeded as exc:
+        if any(label.get("name") == LABEL_HUMAN for label in issue.get("labels", [])):
+            dispatch.log(f"#{n}: manager FIX failed (budget: {exc}); ticket is already ready-for-human")
+        else:
+            dispatch.escalate(n, str(exc), None, code="budget")
+
+
+def _apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
     def issue_action(action: str, *args: str) -> None:
         dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args])
 

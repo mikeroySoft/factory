@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from contextlib import suppress
 from pathlib import Path
 
 from factory import config, lifecycle
@@ -82,7 +83,11 @@ def timed(
             cmd, 124, f"{out}\ncheck timed out after {CHECK_TIMEOUT}s", ""
         )
     finally:
-        if execution and proc.poll() is not None:
+        # The group can outlive its leader while descendants still hold our pipes open.
+        with suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        if execution:
             execution.child_done(proc.pid)
 
 
@@ -609,6 +614,11 @@ def check_bug_reproduction(
             _release_exclusive(execution, gpu_lock)
 
 
+def _terminate(signum, _frame) -> None:
+    # Unwind timed() so separately-sessioned checks cannot outlive the gate.
+    raise SystemExit(128 + signum)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Quality gate for agent worktrees.")
     parser.add_argument("--base", default=None, help="base ref for leak scan and protected paths")
@@ -648,6 +658,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--blocking-mutation", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     configure(config.load())
+    previous_term = signal.signal(signal.SIGTERM, _terminate)
     previous_tmpdir = os.environ.get("TMPDIR")
     with tempfile.TemporaryDirectory(prefix="factory-gate-") as tmpdir:
         os.environ["TMPDIR"] = tmpdir
@@ -655,6 +666,7 @@ def main(argv: list[str]) -> int:
             with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
                 return execute(args, execution)
         finally:
+            signal.signal(signal.SIGTERM, previous_term)
             if previous_tmpdir is None:
                 os.environ.pop("TMPDIR", None)
             else:
