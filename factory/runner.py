@@ -50,8 +50,8 @@ def _users(root: Path) -> bool:
         try:
             if process.stat().st_uid != os.geteuid():
                 continue
-            stat = (process / "stat").read_text()
-            if stat[stat.rfind(")") + 2:].split()[0] in {"Z", "X"}:
+            stat = (process / "stat").read_bytes()
+            if stat[stat.rfind(b")") + 2:].split()[0] in {b"Z", b"X"}:
                 continue
         except (OSError, IndexError):
             continue

@@ -1886,8 +1886,10 @@ branches, or merge state.
   Reviewer, gate, and isolated GitHub-config roots hold directory flocks for their
   owner's lifetime. After normal exit or a crash, only confirmed live process use
   (cwd, open files, or inherited scratch environment) retains an unlocked root.
-  Unknown/unreadable process visibility alone never protects it. Read-only review
-  snapshots are removable, and legacy one-day temp sweeping remains in place.
+  Unknown/unreadable process visibility alone never protects it. Linux process
+  state is parsed as bytes so non-UTF-8 process names do not interrupt cleanup.
+  Read-only review snapshots are removable, and legacy one-day temp sweeping
+  remains in place.
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
   (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`, `conflict-requeue`,
   `merged`, `escalate`, `upstream-sync`, and `human-decision`; `gate`,
