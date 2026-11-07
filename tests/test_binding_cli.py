@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import binding, config, dispatch, lifecycle
+from tests.test_refresh_conflict import omp_command
 
 ROOT = Path(__file__).resolve().parents[1]
 GH = '''#!/usr/bin/python
@@ -111,7 +112,9 @@ class BindingCli(unittest.TestCase):
         self.git('config', 'user.email', 'test@example.invalid')
         settings = ('[repo]\nslug = "acme/widgets"\nmain = "main"\n'
                     '[dispatch]\nmax_attempts = 2\nsignoff = false\n'
-                    '[workers]\ndefault = ' + json.dumps([sys.executable, str(self.worker), '{prompt}']) + '\n'
+                    '[workers]\ndefault = { command = '
+                    + json.dumps(omp_command(self.bin, sys.executable, str(self.worker), '{prompt}'))
+                    + ', probe = ' + json.dumps([sys.executable, '-c', 'pass']) + ' }\n'
                     '[[gate.check]]\nname = "deliberate-stop"\nrun = ["false"]\n')
         (self.repo / '.factory.toml').write_text(settings)
         (self.repo / '.gitignore').write_text('.factory/\n.factory-prompt.md\n')

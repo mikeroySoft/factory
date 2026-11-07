@@ -231,7 +231,7 @@ class RefreshGenerationTest(unittest.TestCase):
             "subprocess.run(['git', 'add', 'fresh.txt'], check=True)\n"
             "subprocess.run(['git', 'commit', '-qm', 'fresh attempt'], check=True)\n"
         )
-        self.cfg.workers["default"] = [sys.executable, str(worker)]
+        self.cfg.workers["default"] = refresh_suite.omp_command(self.tmp / "fresh-bin", sys.executable, str(worker))
         self.github.assignees = []
         self.github.pr_labels = set()
         for row in ({"event": "escalate", "ticket": 9, "code": "gate_failed", "reason": "x", "round": 1},
@@ -272,7 +272,7 @@ class RefreshGenerationTest(unittest.TestCase):
             "subprocess.run(['git', 'add', 'work.txt'], check=True)\n"
             "subprocess.run(['git', 'commit', '-qm', 'work'], check=True)\n"
         )
-        return [sys.executable, str(worker)]
+        return refresh_suite.omp_command(self.tmp / "append-bin", sys.executable, str(worker))
 
     def process(self) -> bool | None:
         with self.patched(), mock.patch.object(dispatch, "run_gate", return_value=(True, "gate ok")):
@@ -323,7 +323,8 @@ class RefreshGenerationTest(unittest.TestCase):
         self.assertEqual(refresh_suite.git(dispatch.FACTORY / "wt-9", "rev-parse", "HEAD"), main)
 
     def test_a_healthy_retry_after_an_infra_only_fresh_claim_publishes_the_fresh_start(self) -> None:
-        old_head = self.fresh_requeue([sys.executable, "-c", "print('Authentication failed'); raise SystemExit(1)"])
+        old_head = self.fresh_requeue(refresh_suite.omp_command(
+            self.tmp / "auth-bin", sys.executable, "-c", "print('Authentication failed'); raise SystemExit(1)"))
         self.assertIs(self.process(), False)
         self.assertEqual((self.events("attempt"), len(self.events("worker-infra"))), ([], 1))
         dispatch.configure(self.cfg)
@@ -336,7 +337,8 @@ class RefreshGenerationTest(unittest.TestCase):
         self.assertEqual([claim["base"] for claim in self.events("claimed")], [main, main])
 
     def test_a_remote_commit_pushed_between_an_infra_only_claim_and_its_retry_is_never_overwritten(self) -> None:
-        self.fresh_requeue([sys.executable, "-c", "print('Authentication failed'); raise SystemExit(1)"])
+        self.fresh_requeue(refresh_suite.omp_command(
+            self.tmp / "auth-bin", sys.executable, "-c", "print('Authentication failed'); raise SystemExit(1)"))
         self.assertIs(self.process(), False)
         pushed = self.concurrent_push()
         dispatch.configure(self.cfg)

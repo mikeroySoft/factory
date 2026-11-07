@@ -13,6 +13,7 @@ from unittest import mock
 
 from factory import dispatch, lifecycle
 from factory.config import Config
+from tests.test_refresh_conflict import omp_command
 
 TOKEN = "ghp_" + "a1B2c3D4e5" * 3 + "xyz012"
 CLAIM = ["gh", "issue", "edit", "7", "--repo", "local/claims", "--add-assignee", "@me"]
@@ -49,7 +50,8 @@ class ClaimFailure(unittest.TestCase):
         self.cfg = Config(
             root=self.root,
             repo="local/claims",
-            workers={"default": [sys.executable, "{prompt}"]},
+            workers={"default": omp_command(self.root / "worker-bin", sys.executable, "{prompt}")},
+            worker_probe={"default": [sys.executable, "-c", "pass"]},
         )
         self.events = self.cfg.factory / "events.jsonl"
         self.enterContext(

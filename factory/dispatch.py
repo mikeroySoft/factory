@@ -764,7 +764,7 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
         elected = live_host_claims(host_claims(n))
         # Labels are advisory during a race, but escalation must still stop admission.
         ready = forced or any(label["name"] == LABEL_AGENT for label in current["labels"])
-        if not ready or not elected or elected[0]["id"] != claim.comment["id"]:
+        if worker_hold(current) or not ready or not elected or elected[0]["id"] != claim.comment["id"]:
             claim.release()
             record("claim_lost", ticket=n, host=cfg.host_name,
                    winner=elected[0]["host"] if elected else None)
@@ -815,6 +815,12 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
         delete_host_claim(n, owned)
 
 
+def worker_hold(issue: dict) -> str:
+    """Human/owner holds outrank agent labels, manager FIX and forced admission."""
+    labels = {label["name"] for label in issue.get("labels", [])}
+    return ", ".join(sorted(labels & {LABEL_HUMAN, "factory-held"}))
+
+
 def frontier() -> list[dict]:
     """Open `ready-for-agent` issues; an ineligible one carries `held` naming why, never ranked."""
     issues = gh_json(
@@ -835,7 +841,9 @@ def frontier() -> list[dict]:
     )
     for issue in issues:
         n = issue["number"]
-        if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
+        if held := worker_hold(issue):
+            issue["held"] = held
+        elif any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
             issue["held"] = "initiative record"
         elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
             issue["held"] = held
@@ -1953,6 +1961,21 @@ def _probe(argv: list[str], env: dict[str, str]) -> str | None:
         output.seek(max(0, output.seek(0, os.SEEK_END) - 64 * 1024))
         detail = output.read().decode(errors="replace").strip().splitlines()[-1:]
     return f"probe exited {code}" + "".join(f": {stderr_tail(line)[-200:]}" for line in detail)
+
+
+def require_worker(spec: config.WorkerSpec) -> None:
+    """Ticket workers require OMP and fresh credential proof; never substitute a runner."""
+    if Path(spec.argv[spec.wrap]).name != "omp":
+        raise WorkerUnavailable(f"worker `{spec.profile}` must use omp")
+    env = {**os.environ, **spec.env}
+    if missing := worker_missing(spec, env):
+        raise WorkerUnavailable(f"worker `{spec.profile}` executable `{missing}` not found")
+    probe = cfg.worker_probe.get(spec.profile)
+    if not probe:
+        raise WorkerUnavailable(f"worker `{spec.profile}` requires a credential probe")
+    argv = config.expand([*cfg.worker_wrap, *probe], root=str(ROOT), repo=REPO, home=str(Path.home()))
+    if reason := _probe(argv, env):
+        raise WorkerUnavailable(f"worker `{spec.profile}` credential check failed: {reason}")
 
 
 def worker_health_pass() -> None:
@@ -4682,6 +4705,7 @@ def worker_round(
         profile = cfg.worker_key(labels)
     else:
         profile = record_worker_selection(n, labels, selected_worker=selected_worker)
+    require_worker(cfg.worker_spec(profile, promptfile, wt))
     handoff_path = wt / ".factory" / f"handoff-{n}.md"
     handoff_start = handoff_path.stat().st_mtime_ns if handoff_path.exists() else None
     while True:
@@ -4689,6 +4713,8 @@ def worker_round(
         if worker is None:
             raise WorkerUnavailable(f"worker `{profile}` is unavailable: {UNAVAILABLE_WORKERS[profile]}")
         spec = cfg.worker_spec(worker, promptfile, wt)
+        if worker != profile:
+            require_worker(spec)
         identity = {
             "worker": worker, "worker_version": spec.version, "worker_model": spec.model,
             **({"fallback_from": profile} if worker != profile else {}),
@@ -4703,6 +4729,9 @@ def worker_round(
             run_options.update(worker=worker, worker_version=spec.version)
         launch_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         offset = logfile.stat().st_size if logfile.exists() else 0
+        current = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
+        if held := worker_hold(current):
+            raise WorkerUnavailable(f"ticket #{n} is held: {held}")
         try:
             code, fired = run_worker(argv, wt, logfile, handoff_path, deadline, **run_options)
         except FileNotFoundError as exc:
@@ -4937,7 +4966,10 @@ def process_ticket(
             return
         from factory import binding
 
-        fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "body"])
+        fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "body,labels"])
+        if held := worker_hold(fresh):
+            log(f"#{n}: skipped ({held})")
+            return
         try:
             admit_plan(n, fresh)
         except binding.BindingError as exc:
@@ -4988,6 +5020,10 @@ def process_ticket(
                     "state,labels,assignees,title,body,comments",
                 ]
             )
+            if held := worker_hold(fresh):
+                log(f"#{n}: skipped ({held})")
+                execution.outcome, execution.reason = "not_admitted", "held"
+                return
             if is_initiative(fresh):
                 log(f"#{n}: refused (initiative records are never executed)")
                 execution.outcome = "not_admitted"
@@ -5010,22 +5046,18 @@ def process_ticket(
                 execution.reason = "state_changed"
                 return
             labels = {label["name"] for label in fresh["labels"]}
-            observe_owner_requeue(n, fresh)
             profile = cfg.worker_key(labels)
+            try:
+                require_worker(cfg.worker_spec(profile, wt / ".factory-prompt.md", wt))
+            except WorkerUnavailable as exc:
+                log(f"#{n}: skipped ({exc}); retry next pass")
+                execution.wait("worker_unavailable", mode="retry_next_pass", worker=profile)
+                return False if forced else None
+            observe_owner_requeue(n, fresh)
             launch = fallback_worker(profile)
             if not forced and launch is None:
                 log(f"#{n}: skipped (worker `{profile}` unavailable: {UNAVAILABLE_WORKERS[profile]}); retry next pass")
                 execution.wait("worker_unavailable", mode="retry_next_pass", worker=profile)
-                return
-            launch_spec = None if launch is None else cfg.worker_spec(launch, wt / ".factory-prompt.md", wt)
-            # The PATH the launch itself gets: the host's, overridden by the profile's `env`.
-            missing = launch_spec and worker_missing(launch_spec, {**os.environ, **launch_spec.env})
-            if not forced and missing:
-                # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
-                # ponytail: PATH probe only; a binary swapped out between here and Popen still
-                # fails the launch. Not claimed, so the next pass retries once it is back.
-                log(f"#{n}: skipped (worker executable not on PATH: {missing}); retry next pass")
-                execution.wait("worker_unavailable", mode="retry_next_pass", executable=missing)
                 return
             if forced and admission_id is None:
                 admission_id = record_direct_admission({**fresh, "number": n})
@@ -5492,7 +5524,7 @@ def main(argv: list[str]) -> int:
             maintenance = results.prune(cfg)
             if maintenance["status"] != "complete":
                 log(f"Accepted-result expiry incomplete ({maintenance.get('reason')}); archive left for inspection")
-            if not args.ticket:  # `--ticket` is an operator's explicit ask: it launches and fails loudly
+            if not args.ticket:  # Forced admission still validates the selected profile before claiming.
                 worker_health_pass()
         if args.ticket and not yield_for_update:
             if not issue_is_open(args.ticket):

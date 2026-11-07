@@ -28,6 +28,7 @@ atexit.register(shutil.rmtree, XDG, ignore_errors=True)
 from datetime import UTC
 
 from factory import __version__, config, lifecycle, manage, runtime_events
+from tests.test_refresh_conflict import omp_command
 
 # A worker runs this suite inside the dispatcher's handoff env; an inherited context would
 # redirect every fixture's lifecycle rows (gate timeouts, review verdicts...) into the live
@@ -281,7 +282,6 @@ print(json.dumps({
             self.assertIsNone(cfg.upstream)
             self.assertEqual(cfg.checks, [])
             self.assertEqual(cfg.factory, repo / ".factory")
-            self.assertEqual(cfg.worker({"chore"}, Path("/p"), Path("/w"))[0], "droid")
             self.assertEqual(cfg.worker(set(), Path("/p"), Path("/w")), ["omp", "-p", "--cwd", "/w", "@/p"])
 
     def test_overrides_and_worktree_root(self) -> None:
@@ -457,7 +457,6 @@ class HostConfigTest(unittest.TestCase):
                         config.load(repo)
             (repo / config.CONFIG_NAME).unlink()
             host_file('[defaults.worker_wrap]\ncommand = ["dflt"]\n')
-            self.assertEqual(config.load(repo).worker({"chore"}, Path("/p"), Path("/w"))[:2], ["dflt", "droid"])
             for bad in ('command = "dflt"', 'command = []', 'command = [""]', 'command = ["a", 3]'):
                 with self.subTest(bad=bad):
                     host_file(f'[defaults.worker_wrap]\n{bad}\n')
@@ -1885,14 +1884,16 @@ PY
         for decision, body, expected in cases:
             with self.subTest(decision=decision, body=body):
                 repo, stubs, _ = self.scenario()
-                # Only an installed worker whose probe proves its login can be routed to (#662).
-                (Path(stubs) / "droid").write_text("#!/bin/sh\n")
-                (Path(stubs) / "droid").chmod(0o755)
+                worker = omp_command(
+                    Path(stubs).parent / "chore-worker", sys.executable, "-c", "pass",
+                )
                 command = ["printf", "%s", f"DECISION: {decision}\n{body}"]
-                (repo / config.CONFIG_NAME).write_text("[manager]\ncommand = " + json.dumps(command) + "\n")
-                with (repo / config.CONFIG_NAME).open("a") as settings:
-                    settings.write('[workers]\ndefault = ["false"]\n[workers.chore]\ncommand = ["droid"]\n'
-                                   "probe = " + json.dumps([sys.executable, "-c", "pass"]) + "\n")
+                (repo / config.CONFIG_NAME).write_text(
+                    "[manager]\ncommand = " + json.dumps(command)
+                    + '\n[workers]\ndefault = ["false"]\n[workers.chore]\ncommand = '
+                    + json.dumps(worker)
+                    + "\nprobe = " + json.dumps([sys.executable, "-c", "pass"]) + "\n"
+                )
                 result = factory(repo, "manage", path=stubs)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = (Path(stubs) / "gh.log").read_text()
@@ -1915,7 +1916,10 @@ PY
                            str(prompt), "{prompt}", output]
                 settings = "[manager]\ncommand = " + json.dumps(command) + '\n[workers]\ndefault = ["false"]\n'
                 if configured:
-                    settings += '[workers.chore]\ncommand = ["true"]\nwhen = "Mechanical edits only"\n'
+                    worker = omp_command(
+                        Path(stubs).parent / "chore-worker", sys.executable, "-c", "pass",
+                    )
+                    settings += '[workers.chore]\ncommand = ' + json.dumps(worker) + '\nwhen = "Mechanical edits only"\n'
                     settings += "probe = " + json.dumps([sys.executable, "-c", "pass"]) + "\n"  # proves the login (#662)
                 (repo / config.CONFIG_NAME).write_text(settings)
                 result = factory(repo, "manage", path=stubs)
@@ -1938,6 +1942,9 @@ PY
         for output in decisions:
             with self.subTest(output=output):
                 repo, stubs, _ = self.scenario()
+                worker = omp_command(
+                    Path(stubs).parent / "prime-worker", sys.executable, "-c", "pass",
+                )
                 prompt = repo / ".factory/manager-prompt.txt"
                 command = [
                     sys.executable, "-c",
@@ -1947,7 +1954,9 @@ PY
                 (repo / config.CONFIG_NAME).write_text(
                     "[manager]\ncommand = " + json.dumps(command)
                     + '\n[workers]\ndefault = ["false"]\n'
-                    + '[workers.prime]\nwhen = { label = "harness-pilot" }\ncommand = ["true"]\n'
+                    + '[workers.prime]\nwhen = { label = "harness-pilot" }\ncommand = '
+                    + json.dumps(worker)
+                    + "\nprobe = " + json.dumps([sys.executable, "-c", "pass"]) + "\n"
                 )
 
                 result = factory(repo, "manage", path=stubs)
@@ -2053,13 +2062,18 @@ PY
                 git(repo, "add", "checks/oracle.txt")
                 git(repo, "commit", "-q", "-m", "add oracle")
                 git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+                worker = omp_command(
+                    Path(d) / "ci-worker", sys.executable, "-c",
+                    "from pathlib import Path; Path('checks/oracle.txt').write_text('worker edit\\n')",
+                )
                 cfg = config.Config(
                     root=repo, repo="acme/widgets",
                     workers={
                         "default": ["false"],
                         "chore": ["false"],
-                        "ci-fix": ["sh", "-c", "printf 'worker edit\\n' > checks/oracle.txt"],
+                        "ci-fix": worker,
                     },
+                    worker_probe={"ci-fix": [sys.executable, "-c", "pass"]},
                 )
                 dispatch.configure(cfg)
                 wt = cfg.factory / "wt-7"
@@ -2131,9 +2145,14 @@ PY
             bare = Path(d) / "origin.git"
             git(repo, "init", "-q", "--bare", str(bare))
             git(repo, "remote", "set-url", "origin", str(bare))
+            worker = omp_command(
+                Path(d) / "worker", sys.executable, "-c",
+                "from pathlib import Path; Path('tests/test_old.py').write_text('assert False\\n')",
+            )
             cfg = config.Config(
                 root=repo, repo="acme/widgets",
-                workers={"default": ["sh", "-c", "printf 'assert False\\n' > tests/test_old.py"]},
+                workers={"default": worker},
+                worker_probe={"default": [sys.executable, "-c", "pass"]},
             )
             dispatch.configure(cfg)
             wt = cfg.factory / "wt-7"
@@ -2163,11 +2182,20 @@ PY
         """#15 exit gate: red CI withdrew the label; FIX + green gate + APPROVE relabel; next pass merges."""
         repo, stubs, packet = self.scenario()
         packet.write_text("PR #9: CI failed (unit); factory-approved label removed")
+        root = Path(stubs).parent
+        state = root / "state"
+        state.mkdir()
+        worker = omp_command(
+            root / "ci-worker", sys.executable, "-c",
+            "from pathlib import Path; Path('.factory').mkdir(exist_ok=True); "
+            "Path('README.md').write_text('fixed\\n'); "
+            f"Path({str(state / 'fixed')!r}).touch()",
+        )
         command = ["printf", "%s", "DECISION: FIX\n" + json.dumps({"worker": "ci-fix", "guidance": "Read the unit log"})]
         review_output = '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE'
         (repo / config.CONFIG_NAME).write_text(
             "[manager]\ncommand = " + json.dumps(command)
-            + '\n[workers]\ndefault = ["false"]\n[workers.ci-fix]\ncommand = ["fix-worker", "{prompt}"]\nwhen = "Red CI"'
+            + '\n[workers]\ndefault = ["false"]\n[workers.ci-fix]\ncommand = ' + json.dumps(worker) + '\nwhen = "Red CI"'
             + "\nprobe = " + json.dumps([sys.executable, "-c", "pass"])  # proves the login (#662)
             + "\n[review]\ncommand = " + json.dumps(["printf", review_output])
             + '\n[[gate.check]]\nname = "unit"\nrun = ["true"]\n[repo]\nslug = "acme/widgets"\n'
@@ -2184,11 +2212,8 @@ PY
         git(wt, "commit", "-qm", "Branch intent")
         git(wt, "push", "-u", "origin", "agent/7")
         git(repo, "push", "-q", "origin", "main")
-        state = Path(stubs).parent / "state"
-        state.mkdir()
         # The stub remembers the label and the merge, as GitHub would.
-        stub_bin(Path(stubs).parent, **{
-            "gh": f'''
+        stub_bin(Path(stubs).parent, gh=f'''
 head=$(git -C .factory/wt-7 rev-parse HEAD 2>/dev/null || git -C {remote} rev-parse agent/7)
 labels='[]'; [ -e {state}/approved ] && labels='[{{"name":"factory-approved"}}]'
 pr="{{\\"id\\":\\"PR_9\\",\\"number\\":9,\\"title\\":\\"Fix CI\\",\\"url\\":\\"https://github.com/acme/widgets/pull/9\\",\\"state\\":\\"OPEN\\",\\"headRefName\\":\\"agent/7\\",\\"headRefOid\\":\\"$head\\",\\"baseRefName\\":\\"main\\",\\"isCrossRepository\\":false,\\"isDraft\\":false,\\"labels\\":$labels,\\"reviewDecision\\":\\"\\",\\"updatedAt\\":\\"2026-09-12T00:00:00Z\\"}}"
@@ -2199,16 +2224,14 @@ case "$1 $2" in
   "pr edit") case "$*" in *--add-label*factory-approved*) touch {state}/approved;; *--remove-label*factory-approved*) rm -f {state}/approved;; esac;;
   "pr merge") touch {state}/merged;;
   "issue list") [ -e {state}/fixed ] && echo '[]' || echo '[{{"number":7,"title":"Fix CI","body":"Original","labels":[{{"name":"chore"}}]}}]';;
-  "issue view") echo '{{"id":"I_7","number":7,"url":"https://github.com/acme/widgets/issues/7","title":"Fix CI","body":"Original","state":"OPEN","labels":[{{"name":"ready-for-human"}}],"comments":[]}}';;
+  "issue view") echo '{{"id":"I_7","number":7,"url":"https://github.com/acme/widgets/issues/7","title":"Fix CI","body":"Original","state":"OPEN","labels":[{{"name":"chore"}}],"comments":[]}}';;
   "api repos/acme/widgets/issues/7/timeline") cat .factory/timeline.json;;
   "api repos/acme/widgets/compare/main...$head") echo '{{"behind_by":0}}';;
   "api repos/acme/widgets") echo '{{"id":"R_1"}}';;
   "api graphql") echo '{{"data":{{}}}}';;
   "api "*) echo '[]';;
 esac
-''',
-            "fix-worker": f'mkdir -p .factory\nprintf "fixed\\n" > README.md\ntouch {state}/fixed',
-        })
+''')
         result = factory(repo, "manage", path=stubs)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((state / "approved").exists())
@@ -2240,10 +2263,15 @@ esac
                         "line": 1, "summary": "CI fix still requires revision.",
                     }],
                 }) + "\n```\nVERDICT: " + verdict
+                script = ('git rebase origin/main || exit 1\n' if rebase else "")
+                script += 'mkdir -p .factory\ncat "$1" > .factory/worker-input\nprintf "fixed\\n" > README.md'
+                worker_command = omp_command(
+                    Path(stubs).parent / "fix-worker", "sh", "-c", script, "worker", "{prompt}",
+                )
                 (repo / config.CONFIG_NAME).write_text(
                     "[manager]\ncommand = " + json.dumps(command)
                     + '\n[workers]\ndefault = ["false"]\nchore = ["false"]'
-                    + f'\n[workers.{worker}]\ncommand = ["fix-worker", "{{prompt}}"]\nwhen = "Red CI"'
+                    + f'\n[workers.{worker}]\ncommand = ' + json.dumps(worker_command) + '\nwhen = "Red CI"'
                     + "\nprobe = " + json.dumps([sys.executable, "-c", "pass"])  # proves the login (#662)
                     + "\n[review]\ncommand = " + json.dumps(["printf", review_output])
                     + '\n[[gate.check]]\nname = "unit"\nrun = ["' + ("true" if gate_ok else "false") + '"]\n'
@@ -2263,8 +2291,7 @@ esac
                 git(repo, "add", "main.txt")
                 git(repo, "commit", "-qm", "Main intent")
                 git(repo, "push", "origin", "main")
-                stub_bin(Path(stubs).parent, **{
-                    "gh": '''
+                stub_bin(Path(stubs).parent, gh='''
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;
@@ -2276,10 +2303,7 @@ case "$1 $2" in
     printf '{%s"state":"OPEN","headRefName":"agent/7","headRefOid":"%s","baseRefName":"main","reviewDecision":""}\n' "$number" "$head";;
   "pr checks") echo '[{"name":"unit","bucket":"fail"}]';;
 esac
-''',
-                    "fix-worker": ('git rebase origin/main || exit 1\n' if rebase else "")
-                    + 'mkdir -p .factory\ncat "$1" > .factory/worker-input\nprintf "fixed\\n" > README.md',
-                })
+''')
                 result = factory(repo, "manage", path=stubs)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual((wt / "README.md").read_text(), "fixed\n")
@@ -3151,7 +3175,11 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
-            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            worker = omp_command(Path(d) / "worker")
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", workers={"default": worker},
+                worker_probe={"default": [sys.executable, "-c", "pass"]},
+            ))
             dispatch.LOGS.mkdir(parents=True)
             base = git(repo, "rev-parse", "HEAD")
             (repo / "u1.txt").write_text("u1")
@@ -3170,6 +3198,7 @@ class DispatchTest(unittest.TestCase):
                 with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
                         mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
                         mock.patch.object(dispatch, "commit_leftovers"), \
+                        mock.patch.object(dispatch, "gh_json", return_value={"labels": []}), \
                         mock.patch.object(dispatch, "run_gate", side_effect=gate):
                     return dispatch.worker_round(7, repo, set(), "ticket", "", attempt, float("inf"))
 
@@ -3508,10 +3537,15 @@ class DispatchTest(unittest.TestCase):
         for label, text in logs.items():
             with self.subTest(worker=label), tempfile.TemporaryDirectory() as d:
                 repo = make_repo(Path(d))
+                worker_command = omp_command(Path(d) / "worker")
                 dispatch.configure(config.Config(
                     root=repo, repo="acme/widgets", cost_pattern=r"Total cost:\s*\$([0-9.]+)",
-                    workers={"default": ["silent"], "structured": ["s"], "costonly": ["c"]},
+                    workers={"default": worker_command, "structured": worker_command, "costonly": worker_command},
                     worker_usage={"structured": spec},
+                    worker_probe={
+                        profile: [sys.executable, "-c", "pass"]
+                        for profile in ("default", "structured", "costonly")
+                    },
                 ))
                 dispatch.LOGS.mkdir(parents=True)
 
@@ -3522,6 +3556,7 @@ class DispatchTest(unittest.TestCase):
                 with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
                         mock.patch.object(dispatch, "run_worker", side_effect=worker), \
                         mock.patch.object(dispatch, "commit_leftovers"), \
+                        mock.patch.object(dispatch, "gh_json", return_value={"labels": []}), \
                         mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
                     dispatch.worker_round(7, repo, {label}, "ticket", "", 1, float("inf"))
                 events = lifecycle.read_events(dispatch.EVENTS)
@@ -3537,28 +3572,33 @@ class DispatchTest(unittest.TestCase):
 
         from factory import dispatch
 
-        cases = {  # worker argv -> session file expected under .factory/transcripts/7
-            "omp": (["nice", "omp", "-p", "@{prompt}"], True),
-            "ephemeral": (["omp", "-p", "--no-session", "@{prompt}"], False),
-            "other": (["droid", "exec", "{prompt}"], False),
+        cases = {  # OMP argv -> session file expected under .factory/transcripts/7
+            "omp": (["nice"], ["-p", "@{prompt}"], True),
+            "ephemeral": ([], ["-p", "--no-session", "@{prompt}"], False),
         }
-        for label, (argv, kept) in cases.items():
+        for label, (worker_wrap, args, kept) in cases.items():
             with self.subTest(worker=label), tempfile.TemporaryDirectory() as d:
                 repo = make_repo(Path(d))
-                dispatch.configure(config.Config(root=repo, repo="acme/widgets", workers={"default": argv}))
+                argv = [*omp_command(Path(d) / "worker"), *args]
+                dispatch.configure(config.Config(
+                    root=repo, repo="acme/widgets", workers={"default": argv},
+                    worker_probe={"default": [sys.executable, "-c", "pass"]},
+                    worker_wrap=worker_wrap,
+                ))
                 dispatch.LOGS.mkdir(parents=True)
 
                 def worker(cmd, _wt, logfile, *_args):
                     logfile.write_text("Working...\n")
                     if "--session-dir" in cmd:
                         where = Path(cmd[cmd.index("--session-dir") + 1])
-                        self.assertEqual(cmd[cmd.index("--session-dir") - 1], "omp")
+                        self.assertEqual(Path(cmd[cmd.index("--session-dir") - 1]).name, "omp")
                         (where / "2026-10-16T00-00-00-000Z_abc.jsonl").write_text('{"type": "session"}\n')
                     return 0, None
 
                 with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
                         mock.patch.object(dispatch, "run_worker", side_effect=worker), \
                         mock.patch.object(dispatch, "commit_leftovers"), \
+                        mock.patch.object(dispatch, "gh_json", return_value={"labels": []}), \
                         mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
                     dispatch.worker_round(7, repo, set(), "ticket", "", 1, float("inf"))
                 attempt = next(e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("event") == "attempt")
@@ -3574,7 +3614,11 @@ class DispatchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             repo = make_repo(Path(d))
-            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            worker = omp_command(Path(d) / "worker")
+            dispatch.configure(config.Config(
+                root=repo, repo="acme/widgets", workers={"default": worker},
+                worker_probe={"default": [sys.executable, "-c", "pass"]},
+            ))
             dispatch.LOGS.mkdir(parents=True)
             expected = git(repo, "rev-parse", "HEAD")
 
@@ -3587,6 +3631,7 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
                     mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
                     mock.patch.object(dispatch, "commit_leftovers"), \
+                    mock.patch.object(dispatch, "gh_json", return_value={"labels": []}), \
                     mock.patch.object(dispatch, "run_gate", side_effect=mutating_gate):
                 ok, report, _, gate_head = dispatch.worker_round(
                     7, repo, set(), "ticket", "", 1, float("inf"),
@@ -3611,7 +3656,11 @@ class DispatchTest(unittest.TestCase):
 
         dispatch.configure(config.Config(
             root=repo, repo="acme/widgets",
-            workers={"default": [sys.executable, "-c", script]}, **cfg,
+            workers={"default": omp_command(
+                repo.parent / "worker", sys.executable, "-c", script,
+            )},
+            worker_probe={"default": [sys.executable, "-c", "pass"]},
+            **cfg,
         ))
         dispatch.LOGS.mkdir(parents=True)
         gate_calls = []
@@ -3623,6 +3672,7 @@ class DispatchTest(unittest.TestCase):
         started = time.monotonic()
         with mock.patch.object(dispatch, "WATCH_POLL", 0.05), \
                 mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                mock.patch.object(dispatch, "gh_json", return_value={"labels": []}), \
                 mock.patch.object(dispatch, "run_gate", side_effect=gate):
             ok, report, _, _ = dispatch.worker_round(7, repo, set(), "ticket", "", 1, float("inf"))
         return ok, report, gate_calls, time.monotonic() - started
@@ -4973,23 +5023,25 @@ class InitiativeGuardTest(unittest.TestCase):
         self.root = Path(tmp.name)
 
     def stubs(self, listed_labels: str) -> str:
+        fresh = json.loads(self.INITIATIVE)
+        fresh["labels"] = [{"name": "initiative"}, *json.loads(f"[{listed_labels}]")]
         return stub_bin(self.root, gh=f'''
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{{"number":9,"title":"Plan","body":"Outcome","labels":[{listed_labels}],"assignees":[]}}]';;
-  "issue view") echo '{self.INITIATIVE}';;
+  "issue view") echo '{json.dumps(fresh)}';;
   "api repos/acme/widgets/issues/9/timeline") echo '[]';;
   "api repos/acme/widgets/issues/9/dependencies/blocked_by") echo '[]';;
 esac
-''', **{"worker-stub": "touch worker-ran", "manager-stub": "touch manager-ran; printf 'DECISION: HUMAN\\nno'"})
+''', omp="touch worker-ran", **{"manager-stub": "touch manager-ran; printf 'DECISION: HUMAN\\nno'"})
 
     def assert_untouched(self, repo: Path, stubs: str, result: subprocess.CompletedProcess) -> None:
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("refused", result.stdout + result.stderr)
         calls = (Path(stubs) / "gh.log").read_text()
         self.assertNotIn("issue edit", calls)
         self.assertNotIn("issue comment", calls)
         self.assertFalse((repo / "worker-ran").exists())
+        self.assertFalse((Path(stubs) / "omp.log").exists())
         self.assertFalse((repo / "manager-ran").exists())
         events = repo / ".factory/events.jsonl"
         if events.exists():
@@ -4998,7 +5050,10 @@ esac
                                  and r.get("at", "") > "2026-01-01T00:00:00Z" for r in rows))
 
     def test_forced_ticket_and_stale_frontier_never_claim_an_initiative(self) -> None:
-        toml = '[repo]\nslug = "acme/widgets"\n[workers]\ndefault = ["worker-stub", "{prompt}"]\n'
+        toml = (
+            '[repo]\nslug = "acme/widgets"\n[workers.default]\ncommand = ["omp", "{prompt}"]\n'
+            + "probe = " + json.dumps([sys.executable, "-c", "pass"]) + "\n"
+        )
         for argv, listed in ((("--ticket", "9"), '{"name":"ready-for-agent"}'),
                              (("--ticket", "9", "--dry-run"), '{"name":"ready-for-agent"}'),
                              ((), '{"name":"ready-for-agent"}'),                       # frontier row lags the label
@@ -5133,6 +5188,9 @@ class TriageProbeOnboardingTest(unittest.TestCase):
             root = Path(directory)
             repo = make_repo(root, '[triage]\nservice = "rocm-serve-ornith.service"\n')
             cfg = config.load(repo)
+            cfg.worker_probe = {
+                label: ["omp", "token", "openai-codex"] for label in cfg.workers
+            }
             cfg.raw_repo = {}
 
             def command(argv, cwd=None):
@@ -5234,7 +5292,7 @@ rules = [
             (repo / config.BANDS_NAME).write_text(self.CONFIG)
             git(repo, "add", config.BANDS_NAME)
             git(repo, "commit", "-q", "-m", "bands")
-            stubs = stub_bin(root, gh=gh, systemctl="echo inactive", omp="exit 0", droid="exit 0")
+            stubs = stub_bin(root, gh=gh, systemctl="echo inactive", omp="exit 0")
 
             result = factory(repo, "doctor", "--json", path=stubs)
 

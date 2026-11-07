@@ -19,6 +19,7 @@ from unittest import mock
 
 from factory import config, dispatch, gate, manage, onboard
 from scripts import mutation
+from tests.test_refresh_conflict import omp_command
 
 HEAD = "a" * 40
 NEW_HEAD = "b" * 40
@@ -539,7 +540,13 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.cfg = config.Config(self.root, "acme/widgets")
+        self.cfg = config.Config(
+            self.root, "acme/widgets",
+            workers={"default": omp_command(
+                self.root / "worker-bin", sys.executable, "-c", "pass",
+            )},
+            worker_probe={"default": [sys.executable, "-c", "pass"]},
+        )
         self.cfg.review_rounds = 1
         self.cfg.signoff = False
         self.cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]

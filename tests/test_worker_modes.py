@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -11,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, score, stats, triage
+from tests.test_refresh_conflict import omp_command
 
 
 class WorkerModesTest(unittest.TestCase):
@@ -38,11 +40,16 @@ class WorkerModesTest(unittest.TestCase):
         }))
 
     def write_config(self, worker_transcript: str = 'transcript = "omp-session"\n', review_mode: str = "json_mode = true\n") -> None:
+        binary = tempfile.TemporaryDirectory()
+        self.addCleanup(binary.cleanup)
+        command = omp_command(Path(binary.name), sys.executable, "-c", "pass")
+        probe = json.dumps([sys.executable, "-c", "pass"])
         (self.root / config.CONFIG_NAME).write_text(
             '[repo]\nslug = "acme/widgets"\n'
-            '[workers.default]\ncommand = ["renamed-worker", "@{prompt}"]\n'
-            + worker_transcript
-            + '[workers.silent]\ncommand = ["silent-worker", "{prompt}"]\n'
+            '[workers.default]\ncommand = ' + json.dumps([*command, "@{prompt}"]) + '\n'
+            'probe = ' + probe + '\n' + worker_transcript
+            + '[workers.silent]\ncommand = ' + json.dumps([*command, "--no-session", "{prompt}"]) + '\n'
+            'probe = ' + probe + '\n'
             '[review]\ncommand = ["renamed-reviewer", "--mode", "text", "{prompt}"]\n'
             + review_mode
         )
@@ -66,7 +73,7 @@ class WorkerModesTest(unittest.TestCase):
 
         def worker(argv: list[str], _wt: Path, logfile: Path, *_args: object) -> tuple[int, None]:
             logfile.write_text("worker output\n")
-            if argv[0] == "renamed-worker":
+            if "--no-session" not in argv:
                 self.assertEqual(argv[1:3], ["--session-dir", str(dispatch.FACTORY / "transcripts" / str(ticket))])
                 Path(argv[2], "session.jsonl").write_text(self.transcript())
             else:
@@ -82,7 +89,7 @@ class WorkerModesTest(unittest.TestCase):
         return next(row for row in lifecycle.read_events(dispatch.EVENTS)
                     if row.get("event") == "attempt" and row.get("ticket") == ticket)
 
-    def test_declared_modes_support_renamed_worker_and_reviewer_end_to_end(self) -> None:
+    def test_declared_modes_support_omp_worker_and_renamed_reviewer_end_to_end(self) -> None:
         attempt = self.run_worker_round(7, "default")
         self.assertIsNotNone(attempt["transcript"])
         usage = next(row for row in lifecycle.read_events(dispatch.EVENTS)
@@ -116,7 +123,7 @@ class WorkerModesTest(unittest.TestCase):
             verdict, _findings = dispatch.review(self.root, 7, "PASS", head)
         self.assertEqual(verdict, "APPROVE")
 
-    def test_undeclared_worker_reports_not_reported_in_by_worker_stats(self) -> None:
+    def test_disabled_worker_session_reports_not_reported_in_by_worker_stats(self) -> None:
         self.run_worker_round(7, "default")
         silent = self.run_worker_round(8, "silent")
         self.assertIsNone(silent["transcript"])
