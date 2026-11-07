@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle
+from tests.test_refresh_conflict import omp_command
 
 
 class ManagerFixWorkerSelectionTest(unittest.TestCase):
@@ -21,12 +23,11 @@ class ManagerFixWorkerSelectionTest(unittest.TestCase):
             root=self.root,
             repo="acme/widgets",
             workers={
-                "prime": ["prime-worker", "{prompt}"],
-                "chore": ["chore-worker", "{prompt}"],
-                "ci-fix": ["fix-worker", "{prompt}"],
-                "default": ["default-worker", "{prompt}"],
+                profile: omp_command(self.root / profile, sys.executable, "-c", "pass")
+                for profile in ("prime", "chore", "ci-fix", "default")
             },
             worker_select_label={"prime": "harness-pilot"},
+            worker_probe={profile: [sys.executable, "-c", "pass"] for profile in ("prime", "chore", "ci-fix", "default")},
         )
         self.cfg.factory.mkdir()
         dispatch.configure(self.cfg)
@@ -40,6 +41,7 @@ class ManagerFixWorkerSelectionTest(unittest.TestCase):
             return 0, None
 
         with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                mock.patch.object(dispatch, "gh_json", return_value={"labels": []}), \
                 mock.patch.object(dispatch, "run_worker", side_effect=run_worker), \
                 mock.patch.object(dispatch, "worker_usage", return_value={
                     "model": None,
@@ -86,36 +88,34 @@ class ManagerFixWorkerSelectionTest(unittest.TestCase):
             if row.get("stage") == "worker_select" and row.get("ticket") == 7
         ]
 
-        self.assertEqual(command, "prime-worker")
+        self.assertEqual(command, self.cfg.workers["prime"][0])
         self.assertEqual(selections, ["prime", "prime"])
         self.assertIn("sticky", follow_up["rationale"])
 
     def test_label_gated_override_resolves_with_ticket_labels(self) -> None:
         command, follow_up = self.fix_round(8, {"harness-pilot"}, "prime")
 
-        self.assertEqual(command, "prime-worker")
+        self.assertEqual(command, self.cfg.workers["prime"][0])
         self.assertEqual(follow_up["chosen"], "prime")
         self.assertNotEqual(follow_up["chosen"], "default")
 
     def test_non_gated_ticket_uses_manager_worker(self) -> None:
         command, follow_up = self.fix_round(9, {"chore"}, "ci-fix")
 
-        self.assertEqual(command, "fix-worker")
+        self.assertEqual(command, self.cfg.workers["ci-fix"][0])
         self.assertEqual(follow_up["chosen"], "ci-fix")
         self.assertIn("override", follow_up["rationale"])
 
     def test_label_gated_sticky_worker_ignores_worker_order(self) -> None:
         self.cfg.workers = {
-            "chore": ["chore-worker", "{prompt}"],
-            "prime": ["prime-worker", "{prompt}"],
-            "ci-fix": ["fix-worker", "{prompt}"],
-            "default": ["default-worker", "{prompt}"],
+            profile: self.cfg.workers[profile]
+            for profile in ("chore", "prime", "ci-fix", "default")
         }
         dispatch.record_worker_selection(10, {"bug", "harness-pilot"})
 
         command, follow_up = self.fix_round(10, {"bug", "harness-pilot"}, "chore")
 
-        self.assertEqual(command, "prime-worker")
+        self.assertEqual(command, self.cfg.workers["prime"][0])
         self.assertEqual(follow_up["chosen"], "prime")
 
 

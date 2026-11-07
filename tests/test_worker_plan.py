@@ -5,12 +5,14 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, trace
+from tests.test_refresh_conflict import omp_command
 
 ACTOR = {"kind": "deterministic", "name": "test", "model": None, "version": "1"}
 
@@ -45,7 +47,8 @@ class WorkerPlanTest(unittest.TestCase):
         self.cfg = config.Config(
             root=self.root,
             repo="acme/widgets",
-            workers={"default": ["worker"], "chore": ["chore-worker"]},
+            workers={profile: omp_command(self.root / profile, sys.executable, "-c", "pass") for profile in ("default", "chore")},
+            worker_probe={profile: [sys.executable, "-c", "pass"] for profile in ("default", "chore")},
             reviewer=["reviewer", "{prompt}"],
             reviewer_json_mode=False,
         )
