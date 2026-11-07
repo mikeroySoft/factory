@@ -1374,6 +1374,10 @@ with reason `github_write_failed`, never silently `project_escalation`.
 A persistent outage can prevent a remote comment or leave both old and replacement
 labels after a failed removal; it cannot silently remove the last queue label.
 
+`child_exit` rows retain the child command and actual return code, including failed
+and killed children. Credential arguments and inline comment bodies (both `--body`
+and GitHub API `body=...` fields) are redacted before journaling.
+
 ## Configuration
 
 `.factory.toml` at the repository root; every key is optional. The template

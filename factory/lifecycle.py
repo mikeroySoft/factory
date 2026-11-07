@@ -48,7 +48,7 @@ def redact_command(command: list[str]) -> list[str]:
     sensitive = re.compile(r"(?i)(?:token|password|secret|api[-_]key|authorization|credential)")
     for arg in command:
         key, separator, _ = arg.partition("=")
-        hide = sensitive.search(key) or key in {"-H", "--header", "--body", "--prompt"}
+        hide = sensitive.search(key) or key in {"-H", "--header", "--body", "--prompt", "body"}
         result.append("[REDACTED]" if hide_next else
                       f"{key}=[REDACTED]" if hide and separator else redact(arg))
         hide_next = bool(hide and not separator)
