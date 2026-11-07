@@ -1613,6 +1613,24 @@ class ManageTest(unittest.TestCase):
 
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
         host_file("")
+        from factory import dispatch
+
+        # These manager/gate scenarios assume a live claim; revocation has its own fixture.
+        self.enterContext(patch.object(dispatch, "_ticket_claim_state", return_value=claimed_issue()))
+        self.enterContext(patch.object(dispatch, "host_claim_login", return_value=CLAIM_LOGIN))
+        install = stub_bin
+
+        def claimed_stubs(tmp, **scripts):
+            if "gh" in scripts:
+                scripts["gh"] = '''
+if [ "$1 $2" = "api user" ]; then echo '{"login":"factory-bot"}'; exit; fi
+case "$1 $2 $*" in
+  "issue view "*state,labels,assignees*) echo '{"number":7,"state":"OPEN","labels":[],"assignees":[{"login":"factory-bot"}]}'; exit;;
+esac
+''' + scripts["gh"]
+            return install(tmp, **scripts)
+
+        self.enterContext(patch(__name__ + ".stub_bin", side_effect=claimed_stubs))
 
     def scenario(self, round_number: int = 1, activity: list | None = None) -> tuple:
         tmp = tempfile.TemporaryDirectory()
@@ -1632,10 +1650,6 @@ class ManageTest(unittest.TestCase):
                     *(activity or [])]
         (state / "timeline.json").write_text(json.dumps(timeline))
         stubs = stub_bin(root, gh=f'''
-if [ "$1 $2" = "api user" ]; then echo '{{"login":"{CLAIM_LOGIN}"}}'; exit; fi
-case "$1 $2 $*" in
-  "issue view "*state,labels,assignees*) echo '{{"number":7,"state":"OPEN","labels":[],"assignees":[{{"login":"{CLAIM_LOGIN}"}}]}}'; exit;;
-esac
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{{"number":7,"title":"Fix gate","body":"Original body","labels":[{{"name":"ready-for-human"}}]}}]';;
@@ -2048,8 +2062,6 @@ PY
                         dispatch, "review", return_value=("REVISE", "retargeted"),
                     ), mock.patch.object(dispatch, "pr_comment"), \
                     mock.patch.object(dispatch, "escalate"), \
-                    mock.patch.object(dispatch, "_ticket_claim_state", return_value=claimed_issue()), \
-                    mock.patch.object(dispatch, "host_claim_login", return_value=CLAIM_LOGIN), \
                     self.assertRaisesRegex(ValueError, "configured target"):
                 manage.apply(
                     7, {"title": "Fix CI"}, "FIX", "",
@@ -2107,10 +2119,6 @@ PY
                     return original_run(cmd, *args, **kwargs)
 
                 def fake_github(args, pr=pr, issue=issue):
-                    if args == ["api", "user"]:
-                        return {"login": CLAIM_LOGIN}
-                    if args[:2] == ["issue", "view"] and args[-1] == "state,labels,assignees":
-                        return claimed_issue(**issue)
                     return pr if args[:2] == ["pr", "view"] else issue
 
                 with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
@@ -2177,8 +2185,6 @@ PY
 
             with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
                     mock.patch.object(dispatch, "gh_json", return_value=issue), \
-                    mock.patch.object(dispatch, "_ticket_claim_state", return_value=claimed_issue()), \
-                    mock.patch.object(dispatch, "host_claim_login", return_value=CLAIM_LOGIN), \
                     mock.patch.object(dispatch, "run", side_effect=fake_run), \
                     mock.patch.object(dispatch, "escalate") as escalate:
                 dispatch.process_ticket(issue, 5, False)
@@ -2219,10 +2225,6 @@ PY
 head=$(git -C .factory/wt-7 rev-parse HEAD 2>/dev/null || git -C {remote} rev-parse agent/7)
 labels='[]'; [ -e {state}/approved ] && labels='[{{"name":"factory-approved"}}]'
 pr="{{\\"id\\":\\"PR_9\\",\\"number\\":9,\\"title\\":\\"Fix CI\\",\\"url\\":\\"https://github.com/acme/widgets/pull/9\\",\\"state\\":\\"OPEN\\",\\"headRefName\\":\\"agent/7\\",\\"headRefOid\\":\\"$head\\",\\"baseRefName\\":\\"main\\",\\"isCrossRepository\\":false,\\"isDraft\\":false,\\"labels\\":$labels,\\"reviewDecision\\":\\"\\",\\"updatedAt\\":\\"2026-09-12T00:00:00Z\\"}}"
-if [ "$1 $2" = "api user" ]; then echo '{{"login":"{CLAIM_LOGIN}"}}'; exit; fi
-case "$1 $2 $*" in
-  "issue view "*state,labels,assignees*) echo '{{"number":7,"state":"OPEN","labels":[{{"name":"chore"}}],"assignees":[{{"login":"{CLAIM_LOGIN}"}}]}}'; exit;;
-esac
 case "$1 $2" in
   "pr list") case "$*" in *needs-review*) echo '[]';; *) [ -e {state}/merged ] && echo '[]' || echo "[$pr]";; esac;;
   "pr view") echo "$pr";;
@@ -2296,10 +2298,6 @@ esac
                 git(repo, "push", "origin", "main")
                 stub_bin(Path(stubs).parent, **{
                     "gh": '''
-if [ "$1 $2" = "api user" ]; then echo '{"login":"factory-bot"}'; exit; fi
-case "$1 $2 $*" in
-  "issue view "*state,labels,assignees*) echo '{"number":7,"state":"OPEN","labels":[{"name":"chore"}],"assignees":[{"login":"factory-bot"}]}'; exit;;
-esac
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;

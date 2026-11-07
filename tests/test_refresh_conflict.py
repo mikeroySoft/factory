@@ -539,6 +539,10 @@ class RefreshGateFailureRecoveryTest(unittest.TestCase):
         self.github = FakeGitHub(self.origin, dispatch.run)
 
     def patched(self):
+        # Recovery scenarios start a new claimed pass after human requeue/assignment.
+        self.github.issue_labels = {config.LABEL_AGENT}
+        self.github.assignees = ["factory"]
+        dispatch.configure(self.cfg)
         return mock.patch.multiple(dispatch, gh_json=self.github.gh_json, run=self.github.run)
 
     def events(self, name: str) -> list[dict]:
@@ -583,9 +587,6 @@ class RefreshGateFailureRecoveryTest(unittest.TestCase):
     def test_manager_fix_after_refresh_gate_failure_runs_worker_instead_of_refresh_head(self) -> None:
         self.fail_refresh_gate()
         [escalation] = self.events("escalate")
-        self.github.issue_labels = {config.LABEL_AGENT}
-        self.github.assignees = ["factory"]
-        dispatch.configure(self.cfg)
         logfile = self.tmp / "manager.log"
         with self.patched(), mock.patch.object(
             dispatch,
