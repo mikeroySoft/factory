@@ -360,7 +360,16 @@ def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedP
         try:
             if execution:
                 execution.child(proc.pid)
-            out, err = proc.communicate(timeout=timeout)
+            deadline = time.monotonic() + timeout if timeout is not None else float("inf")
+            while True:
+                raise_if_interrupted()
+                try:
+                    out, err = proc.communicate(timeout=min(WATCH_POLL, max(0, deadline - time.monotonic())))
+                    break
+                except subprocess.TimeoutExpired as exc:
+                    raise_if_interrupted()
+                    if time.monotonic() >= deadline:
+                        raise subprocess.TimeoutExpired(cmd, timeout, output=exc.output, stderr=exc.stderr) from None
         except BaseException:
             if budget is not None:
                 _stop(proc)

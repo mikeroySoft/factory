@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from contextlib import suppress
 from pathlib import Path
 
 from factory import config, lifecycle
@@ -82,9 +83,10 @@ def timed(
             cmd, 124, f"{out}\ncheck timed out after {CHECK_TIMEOUT}s", ""
         )
     finally:
-        if proc.poll() is None:
+        # The group can outlive its leader while descendants still hold our pipes open.
+        with suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
-            proc.communicate()
+        proc.communicate()
         if execution:
             execution.child_done(proc.pid)
 
