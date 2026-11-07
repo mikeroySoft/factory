@@ -73,6 +73,8 @@ class FakeGitHub:
                 "labels": [{"name": label} for label in sorted(self.issue_labels)]}
 
     def gh_json(self, args: list[str]) -> object:
+        if args[0] == "api" and args[1].endswith("/timeline"):
+            return []
         if args == ["api", "user"]:
             return {"login": "factory"}
         if args[:2] == ["pr", "list"]:
@@ -196,6 +198,9 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertEqual(self.github.issue()["state"], "OPEN")
         self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
         wt = dispatch.ensure_worktree(9)
+        # A human requeues before a new claimed pass may refresh this old FIX head.
+        self.github.issue_labels = {config.LABEL_AGENT}
+        dispatch.configure(self.cfg)
         with self.patched(), \
                 mock.patch.object(dispatch, "run_gate", return_value=(True, "fresh gate ok")) as gate, \
                 mock.patch.object(dispatch, "review", wraps=dispatch.review) as review:
@@ -277,6 +282,9 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertEqual(self.events("conflict-requeue"), [])
 
         self.github.issue_labels = {config.LABEL_AGENT, config.LABEL_PROTECTED_OVERRIDE}
+        # Authorization accompanies a human requeue and a new dispatcher claim.
+        dispatch.configure(self.cfg)
+        self.github.assignees = ["factory"]
         with self.patched():
             dispatch.refresh_pr_branch(9, 102, False)
         self.assertEqual(len(self.events("escalate")), 1)
@@ -431,6 +439,7 @@ class ManagerFixAheadTest(unittest.TestCase):
     def setUp(self) -> None:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
         tmp = Path(temp.name)
         self.root, self.origin = build_fork(tmp)
         git(self.origin, "branch", "agent/7")
@@ -772,6 +781,8 @@ class TriageExemptionRegateTest(unittest.TestCase):
         self.addCleanup(self.login.stop)
 
     def gh_json(self, args):
+        if args[0] == "api" and args[1].endswith("/timeline"):
+            return []
         if args == ["api", "user"]:
             return {"login": "factory"}
         fields = args[args.index("--json") + 1].split(",")

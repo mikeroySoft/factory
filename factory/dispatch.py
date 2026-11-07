@@ -1780,7 +1780,7 @@ def require_ticket_claim(wt: Path, n: int, action: str) -> None:
             labels = {label["name"] for label in issue["labels"]}
             if LABEL_HUMAN in labels:
                 reason = "ready-for-human"
-            elif issue["state"].upper() != "OPEN":
+            elif issue["state"].upper() != "OPEN" and action != "refresh":
                 reason = "closed"
             elif not any(row["login"].casefold() == host_claim_login() for row in issue["assignees"]):
                 reason = "unassigned"
@@ -1793,7 +1793,8 @@ def require_ticket_claim(wt: Path, n: int, action: str) -> None:
     if reason is None:
         _REQUEUE_CHECKED.add(n)
         return
-    _STOPPED_TICKETS[n] = reason
+    if n in _REQUEUE_CHECKED:
+        _STOPPED_TICKETS[n] = reason
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     event = "worker-stopped" if action == "worker" else f"{action}-refused"
     record(event, ticket=n, head=head, reason=reason)
@@ -3894,40 +3895,32 @@ def _review_rounds_used(n: int) -> int:
 
 
 def _unassigned_run_held(n: int) -> bool:
-    """A cancelled claim is not fresh queue work; only an existing human requeue releases it."""
-    rows = _generation_rows(n)
-    claimed = next((i for i in range(len(rows) - 1, -1, -1)
-                    if rows[i].get("event") == "claimed"), -1)
-    stopped = next((row for row in rows[claimed + 1:] if (
-        row.get("event") in {"worker-stopped", "push-refused", "review-refused"}
-        and row.get("reason") == "unassigned"
-    )), None)
-    if stopped is None:
-        return False
-    if any(row.get("event") == "human-decision"
-           and (row.get("action") or {}).get("name") == "requeue_agent"
-           and row.get("status") in {"success", "partial", "uncertain"}
-           for row in rows[rows.index(stopped) + 1:]):
-        return False
+    """Shared unassignment history, not this host's observation time, controls admission."""
     from factory import handoff
 
     try:
-        items = handoff.timeline(n)
+        items = handoff.timeline(n, repo=REPO, read=gh_json)
+        if not items:
+            return False
         login = host_claim_login()
         removed = next((i for i in range(len(items) - 1, -1, -1)
                         if items[i].get("event") == "unassigned"
                         and (items[i].get("assignee") or {}).get("login", "").casefold() == login), None)
-        since = datetime.fromisoformat(stopped["at"]).replace(microsecond=0)
-        return removed is None or not any(
+        if removed is None:
+            return False
+        # The dispatcher also releases claims for normal retries and host failures.
+        # Those authenticated self-releases are not a human takeover.
+        if (items[removed].get("actor") or {}).get("login", "").casefold() == login:
+            return False
+        return not any(
             item.get("event") == "labeled"
             and (item.get("label") or {}).get("name") == LABEL_AGENT
             and (item.get("actor") or {}).get("login")
             and item["actor"]["login"].casefold() != login
             and item["actor"].get("type") != "Bot"
-            and datetime.fromisoformat(item["created_at"]) >= since
             for item in items[removed + 1:]
         )
-    except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError):
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
         return True
 
 
@@ -5203,6 +5196,7 @@ def process_ticket(
                 base=replay_base, generation=ticket_generation.number,
                 issue={key: fresh.get(key) for key in ("title", "body", "comments")},
             )
+            _REQUEUE_CHECKED.add(n)
             if admitted := issue.get("_factory_admitted"):
                 admitted.set()
             lease = agent_lease(wt, n, preserved=receipt["remote"]) if receipt else agent_lease(wt, n)

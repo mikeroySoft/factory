@@ -211,6 +211,9 @@ Every agent push also rechecks the live issue's dispatcher assignment and refuse
 `ready-for-human` tickets. A `push-refused` journal row records `ticket`, local
 `head` SHA and `reason`; local commits remain in the kept worktree. This ends the
 run without another escalation, including manager FIX and refresh pushes.
+Refresh checks ownership before changing the PR or worktree and after merge,
+gate and review operations. Revocation journals `refresh-refused`, preserves the
+local candidate, and blocks automatic conflict/gate/risk requeue transitions.
 Review-request opt-in accepts requests naming either the dispatcher's or the
 dashboard's login.
 
@@ -1059,11 +1062,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    local head and reason. A revoked run cannot start another worker in that pass,
    including manager FIX. An unreadable claim fails closed. No gate, push or new
    ticket review follows revocation; local work stays intact.
-   After an observed unassignment, a later pass does not silently reclaim an old
-   `ready-for-agent` label. The existing human requeue releases it: remove/re-add
-   `ready-for-agent` after the unassignment, or use the guarded `requeue_agent`
-   action. Reassignment alone is not a requeue. Unreadable timeline evidence keeps
-   the cancelled run stopped; no new approval or gate is introduced.
+   Admission reads GitHub's unassignment/requeue timeline, even on another host
+   with no local stop row. A human unassignment holds an old `ready-for-agent`
+   label until a later human requeue: remove/re-add `ready-for-agent`, or use the
+   guarded `requeue_agent` action. Timeline order—not when this host noticed the
+   removal—determines whether the requeue is later. Reassignment alone is not a
+   requeue. Authenticated dispatcher self-releases for normal retries remain
+   claimable. Refusing a pre-claim manager FIX creates no persistent hold.
+   Unreadable history fails closed; no new approval or gate is introduced.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to

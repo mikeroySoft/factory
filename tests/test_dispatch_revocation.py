@@ -352,5 +352,66 @@ class CrossHostRevocationTest(unittest.TestCase):
                              for row in lifecycle.read_events(replacement.EVENTS)))
 
 
+class ManagerReviewAllRevocationTest(unittest.TestCase):
+    from tests.test_frontier import FrontierTest as _harness
+
+    setUp = _harness.setUp
+    read, gh_json, fake_run = _harness.read, _harness.gh_json, _harness.fake_run
+    events, escalations = _harness.events, _harness.escalations
+    quiet_provider, approved_head = _harness.quiet_provider, _harness.approved_head
+
+    def test_review_all_preclaim_fix_refusal_leaves_normal_claim_admission_open(self):
+        import subprocess
+
+        from tests.test_frontier import H
+
+        self.cfg.manager_review = "all"
+        self.cfg.workers = {"default": [sys.executable, "-c", "pass"]}
+        self.cfg.workers["repair"] = self.cfg.workers["default"]
+        dispatch.VERIFIED_WORKERS.add("repair")
+        self.quiet_provider()
+        self.approved_head(H)
+        self.manager_output = 'DECISION: FIX\n{"worker":"repair","guidance":"fix"}'
+        wt = self.cfg.factory / "wt-79"
+        wt.mkdir()
+
+        def github(args):
+            if args == ["api", "user"]:
+                return {"login": "factory"}
+            result = self.gh_json(args)
+            return {**result, "assignees": []} if args[:2] == ["issue", "view"] else result
+
+        def run(cmd, *args, **kwargs):
+            if cmd[0] == "git":
+                return subprocess.CompletedProcess(cmd, 0, H, "")
+            return self.fake_run(cmd, *args, **kwargs)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "run", side_effect=run), \
+                mock.patch.object(dispatch, "worker_round") as refused:
+            manage.frontier_pass()
+        refused.assert_not_called()
+        self.assertEqual([row["reason"] for row in self.events()
+                          if row.get("event") == "worker-stopped"], ["unassigned"])
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "run", side_effect=run), \
+                mock.patch.object(dispatch, "ensure_worktree", return_value=wt), \
+                mock.patch.object(dispatch, "agent_lease", return_value=H), \
+                mock.patch.object(dispatch, "open_blockers", return_value=[]), \
+                mock.patch.object(dispatch, "worker_round", return_value=(True, "PASS", None, H)) as worker, \
+                mock.patch.object(dispatch, "push_and_pr", return_value=True) as push, \
+                mock.patch.object(dispatch, "record_risk"), \
+                mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "", False)), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True):
+            dispatch.process_ticket(github(["issue", "view"]), 1, False)
+        worker.assert_called_once()
+        push.assert_called_once()
+        self.assertTrue(any(cmd[1:3] == ["issue", "edit"] and "--add-assignee" in cmd
+                            for cmd in self.mutations))
+
+
+
 if __name__ == "__main__":
     unittest.main()

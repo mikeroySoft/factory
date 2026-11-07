@@ -32,8 +32,9 @@ def public(text: str) -> str:
     return MENTION.sub("&#64;", text)
 
 
-def timeline(n: int) -> list[dict]:
-    pages = dispatch.gh_json(["api", f"repos/{dispatch.REPO}/issues/{n}/timeline", "--paginate", "--slurp"])
+def timeline(n: int, *, repo: str | None = None, read=None) -> list[dict]:
+    pages = (read or dispatch.gh_json)(["api", f"repos/{repo or dispatch.REPO}/issues/{n}/timeline",
+                                       "--paginate", "--slurp"])
     return [item for page in pages for item in page] if pages and isinstance(pages[0], list) else pages
 
 

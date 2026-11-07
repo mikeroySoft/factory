@@ -199,6 +199,9 @@ class RefreshGenerationTest(unittest.TestCase):
             dispatch.configure(self.cfg)
             self.github.issue_labels = {config.LABEL_AGENT}  # the owner relabels; no ticket stage has run
             self.github.pr_labels.add(config.LABEL_APPROVED)
+            # Requeue admission observes the release before the next claimed refresh.
+            dispatch.observe_owner_requeue(9, self.github.issue())
+            self.github.assignees = ["factory"]
             self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
         self.assertEqual(len(self.events("escalate")), 1)
         self.assertEqual([e["round"] for e in self.events("conflict-requeue")], [1, 2, 3, 1])
