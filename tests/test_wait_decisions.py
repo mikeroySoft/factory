@@ -200,7 +200,9 @@ class WaitDecisions(unittest.TestCase):
         with patch.object(dispatch.config, "load", return_value=self.cfg), \
                 patch.object(dispatch, "sync_pass") as sync, \
                 patch.object(dispatch, "merge_pass_locked") as merge, \
-                patch.object(dispatch, "gh_json", return_value=[]), \
+                patch.object(dispatch, "gh_json", side_effect=lambda args: (
+                    {"body": "", "labels": []} if args[:2] == ["issue", "view"] else []
+                )), \
                 patch.object(dispatch, "frontier", return_value=[]):
             self.assertEqual(dispatch.main(["--dry-run"]), 0)
             dispatch.process_ticket(self.issue, 1, True)
