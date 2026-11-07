@@ -665,38 +665,80 @@ def _descendants(executions: list[dict]) -> dict[str, dict]:
             found[entry["execution_id"]]["complete"] = False
     processes = {}
     contexts = {}
-    try:
-        directories = list(Path("/proc").iterdir())
-    except OSError:
-        for evidence in found.values():
-            evidence["complete"] = False
-        return found
-    for directory in directories:
-        if not directory.name.isdecimal():
-            continue
+    # Linux: enumerate /proc and extract CONTEXT_ENV from environ for tagged causality.
+    if not platform_identity.darwin():
         try:
-            if directory.stat().st_uid not in uids:
+            directories = list(Path("/proc").iterdir())
+        except OSError:
+            for evidence in found.values():
+                evidence["complete"] = False
+            return found
+        for directory in directories:
+            if not directory.name.isdecimal():
                 continue
-            process = _process(int(directory.name))
-            if process["state"] in {"Z", "X"}:
-                continue
-            processes[process["pid"]] = process
-            data = (directory / "environ").read_bytes()
-            prefix = CONTEXT_ENV.encode() + b"="
-            for item in data.split(b"\x00"):
-                if item.startswith(prefix):
-                    try:
-                        context = json.loads(item[len(prefix):])
-                        if isinstance(context, dict):
-                            contexts[process["pid"]] = context
-                    except (ValueError, UnicodeError):
-                        pass
-                    break
-        except FileNotFoundError:
-            continue  # A process disappearing during enumeration cannot still be live.
-        except (OSError, ValueError, IndexError):
-            for entry in executions:
-                found[entry["execution_id"]]["complete"] = False
+            try:
+                if directory.stat().st_uid not in uids:
+                    continue
+                process = _process(int(directory.name))
+                if process["state"] in {"Z", "X"}:
+                    continue
+                processes[process["pid"]] = process
+                data = (directory / "environ").read_bytes()
+                prefix = CONTEXT_ENV.encode() + b"="
+                for item in data.split(b"\x00"):
+                    if item.startswith(prefix):
+                        try:
+                            context = json.loads(item[len(prefix):])
+                            if isinstance(context, dict):
+                                contexts[process["pid"]] = context
+                        except (ValueError, UnicodeError):
+                            pass
+                        break
+            except FileNotFoundError:
+                continue  # A process disappearing during enumeration cannot still be live.
+            except (OSError, ValueError, IndexError):
+                for entry in executions:
+                    found[entry["execution_id"]]["complete"] = False
+    else:
+        # Darwin: /proc is unavailable. Use ps to enumerate (pid, ppid, uid, state) and
+        # infer ancestry without mutating observers. Tagged causality via environment
+        # is not available; we preserve ancestry-based association and fail closed.
+        try:
+            proc = subprocess.run(
+                ["/bin/ps", "-Ao", "pid=,ppid=,uid=,stat="],
+                capture_output=True, text=True, check=False,
+                env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
+                timeout=2,
+            )
+            if proc.returncode != 0:
+                for evidence in found.values():
+                    evidence["complete"] = False
+                return found
+            table = []
+            for line in proc.stdout.splitlines():
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                try:
+                    pid, ppid, uid = int(parts[0]), int(parts[1]), int(parts[2])
+                    state = parts[3][0] if parts[3] else "?"
+                except (ValueError, IndexError):
+                    continue
+                if uid in uids and state not in {"Z", "X"} and pid > 0:
+                    table.append((pid, ppid, uid, state))
+            # Build a quick index and include only processes under our uids.
+            index = {pid: {"pid": pid, "ppid": ppid, "uid": uid, "state": state,
+                           "boot_id": boot_id(), "start_ticks": None, "pid_namespace": "darwin"}
+                     for pid, ppid, uid, state in table}
+            processes = {pid: {"pid": v["pid"], "ppid": v["ppid"], "uid": v["uid"], "state": v["state"],
+                               "boot_id": v["boot_id"], "start_ticks": v["start_ticks"], "pid_namespace": "darwin"}
+                         for pid, v in index.items()}
+            # No contexts on Darwin (cannot read other processes' env safely without privileges).
+            contexts = {}
+        except (OSError, subprocess.TimeoutExpired):
+            for evidence in found.values():
+                evidence["complete"] = False
+            return found
     for entry in executions:
         execution_id = entry["execution_id"]
         owner = entry.get("process") or {}
