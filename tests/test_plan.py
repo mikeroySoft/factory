@@ -16,8 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_evidence import GH, READ_GUARD, REPO
 
-from factory import binding
-from factory import config, lifecycle, onboard, plan
+from factory import binding, config, lifecycle, onboard, plan
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = f"repos/{REPO}/"
