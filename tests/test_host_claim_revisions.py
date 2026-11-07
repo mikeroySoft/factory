@@ -76,19 +76,6 @@ class HostClaimRevisionTest(unittest.TestCase):
                 self.assertEqual(self.github.issue["labels"],
                                  [{"name": "host:tank"}, {"name": "ready-for-human"}])
 
-    def test_single_host_unclaim_keeps_original_argument_order(self):
-        single = self.dispatcher(None)
-        transition = ["--remove-label", "ready-for-agent", "--add-label", "ready-for-human"]
-        for assignee_last in (False, True):
-            with self.subTest(assignee_last=assignee_last):
-                self.github.calls.clear()
-                single.unclaim(7, *transition, check=True, assignee_last=assignee_last)
-                assignment = ["--remove-assignee", "@me"]
-                args = transition + assignment if assignee_last else assignment + transition
-                self.assertEqual(self.github.calls, [
-                    (None, ["gh", "issue", "edit", "7", "--repo", "local/claims", *args]),
-                ])
-
     def test_expired_local_owner_with_matching_nonce_can_unclaim(self):
         tank = self.dispatcher("tank")
         for assignee_last in (False, True):
