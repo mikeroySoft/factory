@@ -177,6 +177,15 @@ class EvidenceTransportTest(unittest.TestCase):
     def marker_pids(self) -> list[int]:
         """Live PIDs whose cmdline carries this run's unique marker (ours only)."""
         found = []
+        if sys.platform == "darwin":
+            processes = subprocess.run(
+                ["ps", "-ww", "-axo", "pid=,stat=,command="],
+                check=True, capture_output=True, text=True, timeout=5)
+            for line in processes.stdout.splitlines():
+                pid, status, command = line.split(maxsplit=2)
+                if not status.startswith("Z") and self.marker in command:
+                    found.append(int(pid))
+            return found
         for entry in os.listdir("/proc"):
             if not entry.isdigit():
                 continue
@@ -202,6 +211,25 @@ class EvidenceTransportTest(unittest.TestCase):
         if proc.poll() is None:
             proc.kill()
         proc.wait()
+
+
+    def test_marker_discovery_and_cleanup_without_proc(self):
+        """macOS discovery must find and kill only this fixture's live child."""
+        sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+        marked = subprocess.Popen([*sleeper, "x" * 2048, self.marker])
+        self.addCleanup(self.reap_process, marked)
+        unrelated = subprocess.Popen([*sleeper, uuid.uuid4().hex])
+        self.addCleanup(self.reap_process, unrelated)
+        with patch.object(sys, "platform", "darwin"), patch.object(
+                os, "listdir", side_effect=FileNotFoundError("/proc")):
+            self.assertEqual(self.marker_pids(), [marked.pid])
+            self.kill_marker_pids()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and self.marker_pids():
+                time.sleep(0.05)
+            self.assertEqual(self.marker_pids(), [], "cleanup left a live marked child")
+            self.assertEqual(marked.wait(timeout=5), -signal.SIGKILL)
+            self.assertIsNone(unrelated.poll(), "cleanup killed an unrelated child")
 
 
     def test_complete_page_reports_known_attention_not_null(self):
