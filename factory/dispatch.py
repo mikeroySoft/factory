@@ -2157,6 +2157,7 @@ def run_gate(
     tier: str = "attempt", upstream: list[str] = (), bug: bool = False,
     repro_test: str | None = None, no_repro_test: str | None = None,
     base: str | None = None, timeout: float | None = None, blocking_mutation: bool = False,
+    protected_override_paths: list[str] = (),
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -2183,6 +2184,8 @@ def run_gate(
     # The gate process records its own stage and check boundaries.
     if protected_override:
         cmd.append("--protected-override")
+    for path in protected_override_paths:
+        cmd += ["--protected-override-path", path]
     if test_override:
         cmd.append("--test-override")
     if add_only_override:
@@ -2237,6 +2240,12 @@ def escalation_packet(
         for event in attempts
     ] or ["| — | — | — | — | — | none recorded |"]
     gate = wt / ".factory" / f"gate-report-{n}.md"
+    gate_text = gate.read_text() if gate.exists() else ""
+    override_scope = _ticket_line(gate_text, LABEL_PROTECTED_OVERRIDE)
+    override_event = next((
+        event for event in reversed(ticket_events)
+        if event.get("kind") == "protected-override" and event.get("stage") == "gate"
+    ), {})
     review = FACTORY / f"review-{n}.md"
     handoff = wt / ".factory" / f"handoff-{n}.md"
     logs = list(dict.fromkeys(
@@ -2254,7 +2263,15 @@ def escalation_packet(
         "|---:|---|---:|---|---:|---|\n"
         + "\n".join(rows)
         + "\n\n## Last gate report\n\n"
-        + ((gate.read_text() if gate.exists() else "").strip()[-6000:] or "(none recorded)")
+        + (gate_text.strip()[-6000:] or "(none recorded)")
+        + (
+            f"\n\n## Protected override scope\n\n{LABEL_PROTECTED_OVERRIDE}: {override_scope}\n\n"
+            + (
+                f"Protected paths outside override: {json.dumps(override_event['outside_scope'])}"
+                if override_event else "Protected paths outside override: see gate report."
+            )
+            if override_scope else ""
+        )
         + "\n\n## Latest review findings\n\n"
         + (review.read_text().strip()[-6000:] if review.exists() else "(none recorded)")
         + "\n\n## Handoff\n\n"
@@ -3285,17 +3302,37 @@ def _ticket_line(text: str, name: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def _protected_override_paths(labels: set[str], body: str) -> list[str]:
+    if LABEL_PROTECTED_OVERRIDE not in labels:
+        return []
+    try:
+        paths = json.loads(_ticket_line(body, LABEL_PROTECTED_OVERRIDE) or "null")
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(paths, list) or any(
+        not isinstance(path, str) or not path.strip() or "\0" in path
+        or path.startswith("/") or ".." in path.split("/")
+        for path in paths
+    ):
+        return []
+    return paths
+
+
 def gate_flags(
     sync: dict | None, labels: set[str], body: str = "", handoff: str = "",
     comments: list[dict] | None = None,
 ) -> dict:
     """`run_gate` keywords for a ticket, including bug-test evidence declarations."""
-    flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels}
+    # The unscoped flag belongs to trusted dispatcher operations, never a ticket label.
+    flags = {"protected_override": False}
+    if paths := _protected_override_paths(labels, body):
+        flags["protected_override_paths"] = paths
     if LABEL_ADD_ONLY_OVERRIDE in labels:
         flags["add_only_override"] = True
     if "bug" in labels:
         explicit_override = _ticket_line(body, LABEL_PROTECTED_OVERRIDE)
-        if explicit_override is not None and not flags["protected_override"]:
+        if (explicit_override is not None and LABEL_PROTECTED_OVERRIDE not in labels
+                and not explicit_override.startswith("[")):
             flags["test_override"] = True
         flags["bug"] = True
         no_repro = _ticket_line(body, "No repro test")
@@ -4015,21 +4052,30 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         # branch, bounded by `review_rounds` conflict rounds. A human gets it only for a protected
         # path without authority, rounds used up, or a ticket that is no longer open.
         # A manager-FIX-approved PR may still have a ready-for-human issue; restore agent flow.
-        issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels"])
+        issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels,body"])
         observe_owner_requeue(n, issue)
         labels = {label["name"] for label in issue.get("labels", [])}
         rounds = sum(e.get("event") == "conflict-requeue" for e in _generation_rows(n))
-        protected = [] if LABEL_PROTECTED_OVERRIDE in labels else [
-            path for path in conflicts if any(fnmatch.fnmatchcase(path, glob) for glob in cfg.protected_paths)
+        override_paths = _protected_override_paths(labels, issue.get("body") or "")
+        protected = [
+            path for path in conflicts
+            if any(fnmatch.fnmatchcase(path, glob) for glob in cfg.protected_paths)
+            and not any(fnmatch.fnmatchcase(path, glob) for glob in override_paths)
         ]
+        record("protected-override", ticket=n, paths=override_paths, outside_scope=protected,
+               phase="refresh-conflict")
         why = (
-            f"protected paths without `{LABEL_PROTECTED_OVERRIDE}`" if protected
+            f"protected paths outside named `{LABEL_PROTECTED_OVERRIDE}` scope" if protected
             else f"after {rounds} conflict-resolution round(s)" if rounds >= cfg.review_rounds
             else "ticket is not open" if issue.get("state") != "OPEN"
             else ""
         )
         if why:
             files = "## Conflicting files\n\n" + ("\n".join(f"- `{path}`" for path in conflicts) or "(none listed)")
+            files += (
+                f"\n\n{LABEL_PROTECTED_OVERRIDE}: {json.dumps(override_paths)}\n\n"
+                f"Protected paths outside override: {json.dumps(protected)}"
+            )
             withdraw(f"{verb} onto moved main conflicts ({why}); worktree {wt}", "refresh_conflict", extra=files)
             return False
         record_merge_decision(
@@ -4897,12 +4943,14 @@ def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
         return (
             f"Failed check: `{check}`. `{LABEL_ADD_ONLY_OVERRIDE}` is already present "
             "and cannot clear this failure; repeating manager AUTHORIZE cannot help. "
-            f"Human-only authority: add label `{LABEL_PROTECTED_OVERRIDE}` to clear it."
+            f"Human-only authority: add label `{LABEL_PROTECTED_OVERRIDE}` and name "
+            "the authorized paths in the ticket body's matching JSON-array line to clear it."
         )
     if structural or not (protected_tests or add_only):
         return (
             f"Failed check: `{check}`. Human-only authority: add label "
-            f"`{LABEL_PROTECTED_OVERRIDE}` to clear it; manager AUTHORIZE cannot "
+            f"`{LABEL_PROTECTED_OVERRIDE}` and name the authorized paths in the ticket body's "
+            "matching JSON-array line to clear it; manager AUTHORIZE cannot "
             "authorize protected paths, file deletions, renames, mode changes or binary changes."
         )
     return (

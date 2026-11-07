@@ -10,6 +10,7 @@ import argparse
 import ast
 import fcntl
 import fnmatch
+import json
 import os
 import re
 import signal
@@ -210,7 +211,8 @@ ADD_ONLY_NOTE = "add-only path removed or changed existing lines"
 
 
 def check_protected_paths(
-    base: str, upstream: list[str] = (), add_only_override: bool = False
+    base: str, upstream: list[str] = (), add_only_override: bool = False,
+    protected_override_paths: list[str] = (),
 ) -> tuple[bool, str, str]:
     """(passed, reason, detail): reason is `protected_paths`, or `add_only_paths` when
     every hit is an add-only glob whose change was not purely additive. With `upstream`
@@ -242,6 +244,8 @@ def check_protected_paths(
     hits, not_additive, additive = [], [], []  # additive: add-only files modified in place, pending numstat
     for meta, path in zip(fields[::2], fields[1::2]):
         old_mode, new_mode, _, _, status = meta.lstrip(":").split()
+        if any(fnmatch.fnmatchcase(path, glob) for glob in protected_override_paths):
+            continue
         if any(fnmatch.fnmatchcase(path, g) for g in protected):
             hits.append(path)
         elif any(fnmatch.fnmatchcase(path, g) for g in add_only):
@@ -278,6 +282,9 @@ def check_protected_paths(
                 added, deleted, path = line.split("\t")
                 if added == "-" or deleted == "-" or (not add_only_override and deleted != "0"):
                     not_additive.append(path)
+    if protected_override_paths and (execution := lifecycle.current()):
+        execution.emit("protected-override", paths=list(protected_override_paths),
+                       outside_scope=hits + not_additive)
     if not hits and not not_additive:
         return True, "", ""
     reason = "protected_paths" if hits else "add_only_paths"
@@ -411,6 +418,7 @@ def _rust_tests(path: str, source: str) -> dict[str, dict]:
             "aliases": {name},
             "language": "rust",
             "display": f"{path}:{name}",
+            "path": path,
         }
     return found
 
@@ -434,7 +442,7 @@ def _tests_at(ref: str) -> tuple[dict[str, dict], str]:
     return found, ""
 
 
-def check_existing_tests(base: str) -> tuple[bool, str]:
+def check_existing_tests(base: str, protected_override_paths: list[str] = ()) -> tuple[bool, str]:
     common = timed(["git", "merge-base", base, "HEAD"])
     if common.returncode:
         return False, common.stdout + common.stderr
@@ -447,7 +455,8 @@ def check_existing_tests(base: str) -> tuple[bool, str]:
     changed = [
         f"{record['display']}: {'deleted' if key not in after else 'modified'}"
         for key, record in before.items()
-        if key not in after or record["source"] != after[key]["source"]
+        if not any(fnmatch.fnmatchcase(record["path"], glob) for glob in protected_override_paths)
+        and (key not in after or record["source"] != after[key]["source"])
     ]
     return not changed, "\n".join(changed)
 
@@ -629,6 +638,8 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--protected-override", action="store_true",
                         help="human-authorized protected-path override")
+    parser.add_argument("--protected-override-path", action="append", default=[], metavar="GLOB",
+                        help="human-authorized path/glob override (repeatable); all other paths stay protected")
     parser.add_argument("--test-override", action="store_true",
                         help="ticket-authorized existing-test override")
     parser.add_argument("--add-only-override", action="store_true",
@@ -690,11 +701,15 @@ def execute(args: argparse.Namespace, execution) -> int:
     skip = {name.strip() for name in args.skip.split(",") if name.strip()}
     if LEAK_RE is None:
         skip.add("leak-scan")
+    scope_note = (
+        f"factory-protected-override: {json.dumps(args.protected_override_path)}\n\n"
+        if args.protected_override_path else ""
+    )
 
     if args.tier == "attempt":
         if not args.protected_override:
             passed, reason, detail = check_protected_paths(
-                args.base, args.upstream, args.add_only_override
+                args.base, args.upstream, args.add_only_override, args.protected_override_path
             )
             if not passed:
                 execution.outcome, execution.reason = "project_escalation", reason
@@ -702,13 +717,14 @@ def execute(args: argparse.Namespace, execution) -> int:
                 report.parent.mkdir(parents=True, exist_ok=True)
                 note = f" ({ADD_ONLY_NOTE})" if reason == "add_only_paths" else ""
                 report.write_text(f"# Gate report\n\n- protected-paths: FAIL{note}\n\n"
-                                  "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
+                                  + scope_note
+                                  + "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
                 print(f"report: {report}\ngate FAIL: protected-paths")
                 return 1
         if args.bug and not (
             args.protected_override or args.test_override or args.add_only_override
         ):
-            passed, detail = check_existing_tests(args.base)
+            passed, detail = check_existing_tests(args.base, args.protected_override_path)
             if not passed:
                 execution.outcome, execution.reason = "project_escalation", "protected_tests"
                 report = Path(args.report)
@@ -716,7 +732,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 report.write_text(
                     "# Gate report\n\n"
                     "- protected-tests: FAIL (existing test deleted or modified)\n\n"
-                    "## protected-tests failure\n\n```\n" + detail + "\n```\n"
+                    + scope_note + "## protected-tests failure\n\n```\n" + detail + "\n```\n"
                 )
                 print(f"report: {report}\ngate FAIL: protected-tests")
                 return 1
@@ -784,6 +800,8 @@ def execute(args: argparse.Namespace, execution) -> int:
         "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "", "## Host toolchain",
         f"ROCm: {host['rocm']}", f"Kernel: {host['kernel']}", f"amdgpu: {host['amdgpu']}", "",
     ]
+    if scope_note:
+        lines += [scope_note.rstrip(), ""]
     for name, status, _ in results:
         lines.append(f"- {name}: {status}")
     for name, status, output in results:

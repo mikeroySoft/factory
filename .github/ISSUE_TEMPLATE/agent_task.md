@@ -14,8 +14,9 @@ Conventions:
   blocked tickets until the blocker closes.
 - Add the `chore` label for mechanical work (renames, doc sync, version bumps);
   it routes to the chore worker.
-- Touching a `[gate].protected_paths` glob from `.factory.toml`? Add
-  `factory-protected-override` at filing, or the first gate escalates.
+- Touching a `[gate].protected_paths` glob from `.factory.toml`? A human must add
+  the `factory-protected-override` label and a ticket-body JSON-array line such as
+  `factory-protected-override: [".factory.toml"]`; a bare label grants nothing.
 -->
 
 **Scope**

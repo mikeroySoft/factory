@@ -94,6 +94,10 @@ class ScopedProtectedOverrideTest(unittest.TestCase):
         for body, labels in (
             ("", {config.LABEL_PROTECTED_OVERRIDE}),
             ('factory-protected-override: []', {config.LABEL_PROTECTED_OVERRIDE}),
+            ('factory-protected-override: [".factory.toml", null]', {config.LABEL_PROTECTED_OVERRIDE}),
+            ('factory-protected-override: [".factory.toml", ""]', {config.LABEL_PROTECTED_OVERRIDE}),
+            ('factory-protected-override: [".factory.toml", "../*"]', {config.LABEL_PROTECTED_OVERRIDE}),
+            ('factory-protected-override: .factory.toml', {config.LABEL_PROTECTED_OVERRIDE}),
             ('factory-protected-override: [".factory.toml"]', set()),
             ('factory-protected-override: [".factory.toml"]', {config.LABEL_ADD_ONLY_OVERRIDE}),
         ):
@@ -109,7 +113,7 @@ class ScopedProtectedOverrideTest(unittest.TestCase):
         passed, report = self.run_gate('factory-protected-override: [".factory.toml"]')
         self.assertFalse(passed, report)
         events = lifecycle.read_events(self.repo / ".factory/events.jsonl")
-        scoped = [event for event in events if event.get("event") == "protected-override"]
+        scoped = [event for event in events if event.get("kind") == "protected-override"]
         self.assertTrue(scoped, events)
         self.assertEqual(scoped[-1]["paths"], [".factory.toml"])
         self.assertEqual(scoped[-1]["outside_scope"], ["checks/review-prompt.txt"])
@@ -128,6 +132,68 @@ class ScopedProtectedOverrideTest(unittest.TestCase):
         passed, report = self.run_gate('factory-protected-override: ["**/acceptance/**"]')
         self.assertFalse(passed, report)
         self.assertIn("checks/review-prompt.txt", report)
+
+    def test_protected_override_keeps_existing_test_protection_outside_scope(self):
+        path = self.repo / "tests/test_existing.py"
+        path.parent.mkdir()
+        path.write_text("def test_existing():\n    assert True\n")
+        self.commit("existing test")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.change_config()
+        path.write_text("def test_existing():\n    assert False\n")
+        self.commit("change existing assertion")
+        labels = {"bug", config.LABEL_PROTECTED_OVERRIDE}
+        body = ('No repro test: existing-test protection fixture\n'
+                'factory-protected-override: [".factory.toml"]')
+        passed, report = self.run_gate(body, labels)
+        self.assertFalse(passed, report)
+        self.assertIn("- protected-tests: FAIL", report)
+        self.assertIn("tests/test_existing.py", report)
+        body = ('No repro test: existing-test protection fixture\n'
+                'factory-protected-override: [".factory.toml", "tests/test_existing.py"]')
+        passed, report = self.run_gate(body, labels)
+        self.assertTrue(passed, report)
+
+    def test_protected_override_refresh_conflicts_check_each_named_path(self):
+        self.git("checkout", "-qb", "agent/622")
+        path = self.repo / "checks/acceptance/oracle.txt"
+        path.write_text("worker\n")
+        self.commit("worker conflict")
+        self.git("update-ref", "refs/remotes/origin/agent/622", "HEAD")
+        self.git("checkout", "-q", "main")
+        path.write_text("main\n")
+        self.commit("main conflict")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self.git("checkout", "-q", "agent/622")
+        real_run = dispatch.run
+
+        def run(command, *args, **kwargs):
+            if command[0] == "gh" or command == ["git", "fetch", "origin"]:
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return real_run(command, *args, **kwargs)
+
+        for scope, blocked in ((".factory.toml", True), ("**/acceptance/**", False)):
+            with self.subTest(scope=scope):
+                issue = {
+                    "state": "OPEN", "labels": [{"name": config.LABEL_PROTECTED_OVERRIDE}],
+                    "body": f'factory-protected-override: ["{scope}"]',
+                }
+                with mock.patch.object(dispatch, "run", side_effect=run), \
+                        mock.patch.object(dispatch, "ensure_worktree", return_value=self.repo), \
+                        mock.patch.object(dispatch, "gh_json", side_effect=lambda command: (
+                            {"baseRefName": "main"} if command[0] == "pr" else issue
+                        )), mock.patch.object(dispatch, "escalate") as escalate:
+                    self.assertFalse(dispatch.refresh_pr_branch(622, 700, False))
+                events = lifecycle.read_events(dispatch.EVENTS)
+                scoped = [event for event in events if event.get("event") == "protected-override"][-1]
+                self.assertEqual(scoped["paths"], [scope])
+                self.assertEqual(scoped["outside_scope"], ["checks/acceptance/oracle.txt"] if blocked else [])
+                self.assertEqual(escalate.call_count, int(blocked))
+                if blocked:
+                    self.assertIn("checks/acceptance/oracle.txt", escalate.call_args.kwargs["extra"])
+                else:
+                    self.assertEqual(events[-1]["event"], "conflict-requeue")
+
 
 
 if __name__ == "__main__":
