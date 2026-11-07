@@ -13,7 +13,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from statistics import median
+from statistics import median, pstdev
 from typing import Any
 
 from factory import config, feedback, lifecycle, onboard, risk
@@ -169,6 +169,117 @@ def _stamp(value: datetime) -> str:
 def window_rows(rows: list[dict], start: datetime, end: datetime) -> list[dict]:
     """Rows whose timestamps fall inside the inclusive UTC window."""
     return [row for row in rows if (at := _timestamp(row.get("at"))) is not None and start <= at <= end]
+SKILL_AFTER_CALLS = 10
+
+
+def skill_coverage(rows: list[dict]) -> float | None:
+    attempts = [row for row in rows if row.get("event") == "attempt"]
+    return (sum(isinstance(row.get("transcript"), str) for row in attempts) / len(attempts)
+            if attempts else None)
+
+
+def _session_errors(rows: list[dict]) -> dict[str, list[bool]]:
+    sessions = {}
+    for row in rows:
+        errors = row.get("call_errors")
+        session = row.get("transcript")
+        if row.get("event") == "score" and isinstance(session, str) and isinstance(errors, list):
+            sessions[session] = [bool(value) for value in errors]
+    return sessions
+
+
+def _rate(samples: list[list[bool]]) -> float | None:
+    count = sum(len(sample) for sample in samples)
+    return sum(sum(sample) for sample in samples) / count if count else None
+
+
+def _skill_samples(
+    loads: list[dict], errors: dict[str, list[bool]], loaded_sessions: set[str],
+) -> tuple[list[list[bool]], list[list[bool]]]:
+    positioned = [(row, row["call_index"]) for row in loads if type(row.get("call_index")) is int]
+    loaded = [errors.get(row["session"], [])[index + 1:index + 1 + SKILL_AFTER_CALLS]
+              for row, index in positioned]
+    controls = [values for session, values in errors.items() if session not in loaded_sessions]
+    control = [values[index + 1:index + 1 + SKILL_AFTER_CALLS]
+               for _, index in positioned for values in controls]
+    return loaded, control
+
+
+def _skill_rates(
+    session_count: int, loaded: list[list[bool]], controls: list[list[bool]],
+) -> tuple[float | None, float | None, float | None, float | None]:
+    if session_count < 10:
+        return None, None, None, None
+    after, baseline = _rate(loaded), _rate(controls)
+    if after is None or baseline is None:
+        return None, None, None, None
+    loaded_rates = [_rate([sample]) for sample in loaded if sample]
+    control_rates = [_rate([sample]) for sample in controls if sample]
+    noise = max(pstdev(loaded_rates), pstdev(control_rates))
+    return after, baseline, after - baseline, noise
+
+
+def _skill_metric(name: str, loads: list[dict], errors: dict[str, list[bool]]) -> dict:
+    sessions = {row["session"] for row in loads}
+    tickets = {row.get("ticket") for row in loads if type(row.get("ticket")) is int}
+    tokens = max((row.get("tokens", 0) for row in loads
+                  if type(row.get("tokens")) is int), default=0)
+    loaded, controls = _skill_samples(loads, errors, sessions)
+    after, baseline, excess, noise = _skill_rates(len(sessions), loaded, controls)
+    failure_errors = list(dict.fromkeys(
+        row["error"] for row in loads if not row.get("ok") and isinstance(row.get("error"), str)
+    ))
+    return {
+        "skill": name,
+        "loads": len(loads),
+        "sessions": len(sessions),
+        "tickets": len(tickets),
+        "explicit_share": sum(bool(row.get("explicit")) for row in loads) / len(loads),
+        "reloads_per_session": (len(loads) - len(sessions)) / len(sessions),
+        "partial_share": sum(bool(row.get("partial")) for row in loads) / len(loads),
+        "load_failures": sum(not row.get("ok") for row in loads),
+        "load_failure_errors": failure_errors,
+        "tokens": tokens,
+        "context_spent": tokens * len(loads),
+        "after_load_error_rate": after,
+        "position_matched_baseline_error_rate": baseline,
+        "error_rate_excess": excess,
+        "noise_margin": noise,
+    }
+
+
+def skill_metrics(rows: list[dict]) -> list[dict]:
+    """Pure per-skill aggregation over journal rows produced by `factory score`."""
+    loads = [row for row in rows if row.get("event") == "skill-load"
+             and isinstance(row.get("skill"), str) and isinstance(row.get("session"), str)]
+    by_skill: dict[str, list[dict]] = {}
+    for row in loads:
+        by_skill.setdefault(row["skill"], []).append(row)
+    errors = _session_errors(rows)
+    result = [_skill_metric(name, skill_loads, errors) for name, skill_loads in by_skill.items()]
+    return sorted(result, key=lambda row: (-row["context_spent"], row["skill"]))
+
+
+def print_skills(rows: list[dict], coverage: float | None) -> None:
+    print("\nSkills")
+    if coverage is not None:
+        print(f"coverage: {coverage:.1%}")
+    if not rows:
+        print("no skill loads recorded")
+        return
+    selected = rows[:5]
+    selected += [row for row in rows[5:] if row["load_failures"]]
+    print("skill                 loads  sessions  context  failures  after/baseline")
+    for row in selected:
+        rate = ("n<10" if row["sessions"] < 10 else
+                f"{row['after_load_error_rate']:.1%}/{row['position_matched_baseline_error_rate']:.1%}"
+                if row["after_load_error_rate"] is not None else "n/a")
+        print(f"{row['skill']:<21} {row['loads']:>5}  {row['sessions']:>8}  "
+              f"{row['context_spent']:>7}  {row['load_failures']:>8}  {rate}")
+        for error in row["load_failure_errors"]:
+            print(f"  load failure: {error}")
+
+
 
 def reconcile_closed_prs(journal: Path, rows: list[dict], start: datetime) -> None:
     """Journal factory PRs GitHub shows as closed without merging, once per PR."""
@@ -213,9 +324,8 @@ def weekly_metrics(
     start: datetime,
     end: datetime,
     local_model: str | None,
-    prices: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
-    """Aggregate a journal snapshot; settlement windows still use earlier open/usage rows."""
+    """Aggregate windowed outcomes, joining merges to earlier PR-opened rows."""
     window = {"start": _stamp(start), "end": _stamp(end)}
     windowed = window_rows(rows, start, end)
 
@@ -254,27 +364,6 @@ def weekly_metrics(
         if merged_at is not None and opened is not None and merged_at >= opened:
             durations.append((merged_at - opened).total_seconds() / 3600)
     median_hours = median(durations) if durations else None
-
-    usage_for_merges = [
-        row for row in rows
-        if row.get("event") == "llm-usage" and row.get("ticket") in merged_tickets
-    ]
-    total_cost = 0.0
-    unpriced = set()
-    incomplete_cost = False
-    price_table = prices or {}
-    for row in usage_for_merges:
-        cost = priced(row, price_table)
-        if cost is None:
-            model = row.get("model")
-            if isinstance(model, str) and model and model in price_table:
-                incomplete_cost = True
-            else:
-                unpriced.add(model if isinstance(model, str) and model else "<missing>")
-        else:
-            total_cost += cost
-    known_cost = round(total_cost, 6) if usage_for_merges and not unpriced and not incomplete_cost else None
-    cost_per_merge = round(known_cost / merge_count, 6) if known_cost is not None and merge_count else None
 
     human_decisions = {
         ("decision", row["decision_id"]) if row.get("decision_id") else ("row", index)
@@ -318,8 +407,7 @@ def weekly_metrics(
         reported_tokens += prompt + completion
         if local:
             local_tokens += prompt + completion
-    local_share = round(local_tokens / reported_tokens, 6) if reported_tokens else None
-    return {
+    result = {
         "window": window,
         "merges": len(merged_tickets),
         "merge_rate": merge_count / settled if merge_count else None,
@@ -335,11 +423,6 @@ def weekly_metrics(
         "median_open_to_merge_hours_numerator": len(durations),
         "median_open_to_merge_hours_denominator": merge_count,
         "median_open_to_merge_hours_window": window,
-        "cost_per_merged_pr": cost_per_merge,
-        "cost_per_merged_pr_numerator": known_cost,
-        "cost_per_merged_pr_denominator": merge_count,
-        "cost_per_merged_pr_window": window,
-        "cost_unpriced": sorted(unpriced),
         "human_touches": touches,
         "human_touches_per_merge": touches / len(merged_tickets) if merged_tickets else None,
         "escalations_7d": len(escalations),
@@ -353,13 +436,12 @@ def weekly_metrics(
         "first_pass_denominator": len(attempts),
         "first_pass_window": window,
         "tokens": tokens,
-        "local_token_share": local_share,
-        "local_cost_share": local_share,
-        "local_cost_share_numerator": local_tokens,
-        "local_cost_share_denominator": reported_tokens,
-        "local_cost_share_window": window,
+        "local_token_share": round(local_tokens / reported_tokens, 6) if reported_tokens else None,
         "usage_missing": usage_missing,
     }
+    if any(row.get("event") in {"skill-load", "skill-coverage"} for row in windowed):
+        result.update(skills=skill_metrics(windowed), skill_coverage=skill_coverage(windowed))
+    return result
 
 
 def stuck_over_days(now: datetime, days: int = 7) -> list[dict] | str:
@@ -1006,11 +1088,13 @@ def main(argv: list[str]) -> int:
         start = now - timedelta(days=7)
         events = lifecycle.read_events(journal)
         reconcile_closed_prs(journal, events, start)
+        journal_rows = window_rows(events, start, now)
         rows = weekly_metrics(
             events, start, now,
             cfg.llm_model if config.local_endpoint(cfg.llm_url) else None,
-            cfg.prices,
         )
+        rows.setdefault("skills", skill_metrics(journal_rows))
+        rows.setdefault("skill_coverage", skill_coverage(journal_rows))
         rows["stuck_over_days"] = stuck_over_days(now)
         if args.json:
             print(json.dumps(rows, indent=2))
@@ -1020,9 +1104,8 @@ def main(argv: list[str]) -> int:
             print(f"Merge rate: {rows['merge_rate']} "
                   f"({rows['merge_rate_numerator']}/{rows['merge_rate_denominator']})")
             print(f"Closed unmerged: {rows['closed_unmerged']} ({rows['closed_unmerged_by']})")
-            print(f"Median open→merge: {rows['median_open_to_merge_hours']} hours")
-            print(f"Cost per merged PR: {rows['cost_per_merged_pr']} "
-                  f"(unpriced: {rows['cost_unpriced']})")
+            median_hours = rows["median_open_to_merge_hours"]
+            print(f"Median open→merge: {f'{median_hours} hours' if median_hours is not None else 'n/a'}")
             print(f"Human touches: {rows['human_touches']} ({rows['human_touches_per_merge']} per merge)")
             print(f"Escalations: {rows['escalations_7d']} ({rows['escalations_by_code']})")
             print(f"First pass: {rows['first_pass']} "
@@ -1032,6 +1115,7 @@ def main(argv: list[str]) -> int:
                   f"{rows['review_nonconvergence_share_denominator']})")
             print(f"Local token share: {rows['local_token_share']}; missing usage: {rows['usage_missing']}")
             print(f"Stuck over 7 days: {rows['stuck_over_days']}")
+            print_skills(rows["skills"], rows["skill_coverage"])
         return 0
     if args.stages:
         passes = lifecycle.last_successful_passes(journal)

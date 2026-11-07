@@ -130,7 +130,8 @@ Evidence, in order of authority:
    the worker's handoff notes (what it changed, what it left unverified), and, once
    automatic recovery is terminal, one `Factory handoff request <n>/<round>` naming
    the question, public evidence links, the routed decision owner and why. Replying
-   there is context only; re-label to retry.
+   there is context only; re-label to retry. A re-label opens a new generation with
+   fresh round budgets; its request is `<n>/g<generation>/<round>`.
 3. The gate report: `.factory/wt-<n>/.factory/gate-report-<n>.md` — PASS/FAIL per
    check with the failing tail. On the PR, the same report is in the body.
 4. The reviewer's findings: PR comments ending in `VERDICT: …`; each finding cites

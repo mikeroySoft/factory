@@ -648,8 +648,17 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--blocking-mutation", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     configure(config.load())
-    with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
-        return execute(args, execution)
+    previous_tmpdir = os.environ.get("TMPDIR")
+    with tempfile.TemporaryDirectory(prefix="factory-gate-") as tmpdir:
+        os.environ["TMPDIR"] = tmpdir
+        try:
+            with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
+                return execute(args, execution)
+        finally:
+            if previous_tmpdir is None:
+                os.environ.pop("TMPDIR", None)
+            else:
+                os.environ["TMPDIR"] = previous_tmpdir
 
 
 def toolchain() -> dict[str, str]:

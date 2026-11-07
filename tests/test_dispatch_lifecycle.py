@@ -358,6 +358,25 @@ class LocalCLI(unittest.TestCase):
         self.assertNotEqual(page["investigation"]["status"], "complete")
         self.assertIsNone(page["investigation"]["next_offset"])
 
+
+    def test_dispatch_sweeps_stale_factory_tempdirs_but_dry_run_does_not(self):
+        scratch = self.base / "tmp"
+        stale_review = scratch / "factory-review-stale"
+        stale_gate = scratch / "factory-gate-stale"
+        stale_review.mkdir(parents=True)
+        stale_gate.mkdir()
+        os.utime(stale_review, (0, 0))
+        os.utime(stale_gate, (0, 0))
+        self.env["TMPDIR"] = str(scratch)
+
+        self.cli("dispatch", "--dry-run")
+        self.assertTrue(stale_review.exists())
+        self.assertTrue(stale_gate.exists())
+        self.cli("dispatch")
+        self.assertFalse(stale_review.exists())
+        self.assertFalse(stale_gate.exists())
+
+
     def test_ticketless_invocations_and_side_effect_free_dry_run(self):
         self.cli("dispatch", "--dry-run")
         self.cli("dispatch", "--ticket", "7", "--dry-run")
@@ -1174,3 +1193,823 @@ class TriageExemptionLifecycleTest(unittest.TestCase):
         self.assertIn("bug ticket needs a `Repro test:` handoff line", report)
         self.assertNotIn("- bug-repro: SKIP", report)
         self.assertFalse(any(row.get("event") == "approved" for row in events))
+
+
+class LockfileDriftLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+    pr_config = LocalCLI.pr_config
+    upstream_fixture = LocalCLI.upstream_fixture
+
+    def set_lock_baseline(self, *, manifest=False):
+        (self.repo / "uv.lock").write_text("base\n")
+        paths = ["uv.lock"]
+        if manifest:
+            (self.repo / "pyproject.toml").write_text(
+                '[project]\nname = "demo"\ndependencies = []\n'
+            )
+            paths.append("pyproject.toml")
+        self.git("add", *paths)
+        self.git("commit", "-qm", "dependency baseline")
+        self.git("push", "-q", "origin", "main")
+
+    def pushed_lock(self):
+        return subprocess.run(
+            ["git", "--git-dir", str(self.base / "origin.git"), "show", "agent/7:uv.lock"],
+            env=self.env, check=True, capture_output=True, text=True,
+        ).stdout
+
+    def run_lockfile_worker(
+        self, plan, *, manifest=False, body=None, extra_change=False,
+    ):
+        self.set_lock_baseline(manifest=manifest)
+        if body is not None:
+            gh = self.bin / "gh"
+            gh.write_text(GH.replace(
+                '"body": "Acceptance: make the local change"',
+                '"body": ' + repr(body),
+            ))
+        self.reviewer.write_text(
+            'print(\'```json\\n{"verdict":"APPROVE","findings":[]}\\n```\\nVERDICT: APPROVE\')\n'
+        )
+        add = ["git", "add", "uv.lock"]
+        if manifest:
+            add.append("pyproject.toml")
+        if extra_change:
+            add.append("change.txt")
+        self.worker.write_text(
+            "import subprocess\n"
+            "from pathlib import Path\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            f"p.write_text({plan!r})\n"
+            "Path('uv.lock').write_text('worker drift\\n')\n"
+            + (
+                "Path('pyproject.toml').write_text("
+                "'[project]\\nname = \"demo\"\\ndependencies = [\"requests\"]\\n')\n"
+                if manifest else ""
+            )
+            + (
+                "Path('change.txt').write_text('planned change\\n')\n"
+                if extra_change else ""
+            )
+            + f"subprocess.run({add!r}, check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker dependency edit'], check=True)\n"
+        )
+
+        self.cli("dispatch", "--ticket", "7")
+        return self.pushed_lock()
+
+    def test_unplanned_uv_lock_drift_is_removed_before_push(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- change.txt\n", extra_change=True,
+        )
+
+        self.assertEqual(lock, "base\n")
+        changed = subprocess.run(
+            ["git", "--git-dir", str(self.base / "origin.git"), "diff", "--name-only",
+             "main...agent/7"],
+            env=self.env, check=True, capture_output=True, text=True,
+        ).stdout.splitlines()
+        self.assertNotIn("uv.lock", changed)
+        self.assertEqual(changed, ["change.txt"])
+
+    def test_unplanned_lockfile_rename_restores_source_and_removes_destination(self):
+        from factory import config, dispatch
+
+        self.set_lock_baseline()
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        self.git("-C", str(wt), "config", "diff.renames", "true")
+        (wt / "sub").mkdir()
+        (wt / "uv.lock").rename(wt / "sub" / "uv.lock")
+        self.git("-C", str(wt), "add", "-A")
+        self.git("-C", str(wt), "commit", "-qm", "worker lock rename")
+        dispatch.configure(config.load(self.repo))
+
+        dispatch.restore_unplanned_lockfiles(wt, 7, "origin/main")
+        dispatch.commit_leftovers(wt, 7, "restore lockfile")
+
+        self.assertEqual((wt / "uv.lock").read_text(), "base\n")
+        self.assertFalse((wt / "sub" / "uv.lock").exists())
+
+
+    def test_cleanup_removes_added_lockfile_after_restoring_tracked_lockfile(self):
+        from factory import config, dispatch
+
+        self.set_lock_baseline()
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        (wt / "uv.lock").write_text("worker drift\n")
+        added = wt / "web" / "package-lock.json"
+        added.parent.mkdir()
+        added.write_text("{}\n")
+        self.git("-C", str(wt), "add", "uv.lock", "web/package-lock.json")
+        self.git("-C", str(wt), "commit", "-qm", "worker lock edits")
+        dispatch.configure(config.load(self.repo))
+
+        restored = dispatch.restore_unplanned_lockfiles(wt, 7, "origin/main")
+
+        self.assertEqual(restored, ["uv.lock", "web/package-lock.json"])
+        self.assertEqual((wt / "uv.lock").read_text(), "base\n")
+        self.assertFalse(added.exists())
+
+    def test_manifest_change_preserves_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- pyproject.toml\n", manifest=True,
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
+    def test_annotated_lockfile_plan_preserves_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- `uv.lock` — refresh dependency pins\n",
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
+    def test_nonleading_lockfile_plan_preserves_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- `README.md`, `uv.lock`\n",
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
+    def test_mixed_bare_and_quoted_plan_preserves_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- uv.lock, `README.md`\n",
+        )
+
+        self.assertEqual(lock, "worker drift\n")
+
+    def test_root_lockfile_plan_does_not_authorize_nested_lockfile(self):
+        from factory import config, dispatch
+
+        self.set_lock_baseline()
+        nested = self.repo / "services" / "api" / "uv.lock"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("nested base\n")
+        self.git("add", "services/api/uv.lock")
+        self.git("commit", "-qm", "nested dependency baseline")
+        self.git("push", "-q", "origin", "main")
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        plan = self.repo / ".factory" / "plans" / "7" / "1.md"
+        plan.parent.mkdir(parents=True)
+        plan.write_text("## Files\n- uv.lock\n")
+        lifecycle.append(self.events, {
+            "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
+        })
+        (wt / "uv.lock").write_text("root worker edit\n")
+        (wt / "services" / "api" / "uv.lock").write_text("nested worker drift\n")
+        self.git("-C", str(wt), "add", "uv.lock", "services/api/uv.lock")
+        self.git("-C", str(wt), "commit", "-qm", "worker lock edits")
+        dispatch.configure(config.load(self.repo))
+
+        restored = dispatch.restore_unplanned_lockfiles(wt, 7, "origin/main")
+
+        self.assertEqual(restored, ["services/api/uv.lock"])
+        self.assertEqual((wt / "uv.lock").read_text(), "root worker edit\n")
+        self.assertEqual(
+            (wt / "services" / "api" / "uv.lock").read_text(), "nested base\n",
+        )
+
+    def test_recorded_plan_filter_requires_matching_event_ticket_and_status(self):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        dispatch.configure(config.load(self.repo))
+        plan = self.repo / "plan.md"
+        plan.write_text("## Files\n- uv.lock\n")
+        valid = {
+            "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
+        }
+        large_ticket = int("10000")
+        large_row_ticket = int("10000")
+        self.assertIsNot(large_ticket, large_row_ticket)
+        cases = (
+            ("event before", 7, {**valid, "event": "attempt"}, False),
+            ("event after", 7, {**valid, "event": "review"}, False),
+            ("ticket above", 7, {**valid, "ticket": 8}, False),
+            ("ticket below", 7, {**valid, "ticket": 6}, False),
+            ("status before", 7, {**valid, "status": "missing"}, False),
+            ("status after", 7, {**valid, "status": "skipped"}, False),
+            (
+                "equal large ticket", large_ticket,
+                {**valid, "ticket": large_row_ticket}, True,
+            ),
+        )
+        for case, ticket, row, expected in cases:
+            with self.subTest(case=case), mock.patch.object(
+                lifecycle, "read_events", return_value=[row],
+            ):
+                self.assertEqual(
+                    dispatch._recorded_plan_lists_lockfile(ticket, "uv.lock"), expected,
+                )
+        with mock.patch.object(lifecycle, "read_events", return_value=[valid]):
+            self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+    def test_recorded_plan_filter_skips_unreadable_plans(self):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        dispatch.configure(config.load(self.repo))
+        rows = [
+            {
+                "event": "plan", "ticket": 7, "status": "recorded",
+                "path": str(self.repo / "missing.md"),
+            },
+        ]
+        with mock.patch.object(lifecycle, "read_events", return_value=rows):
+            self.assertFalse(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+        unreadable = self.repo / "unreadable.md"
+        unreadable.write_text("## Files\n- uv.lock\n")
+        rows[0]["path"] = str(unreadable)
+        with mock.patch.object(lifecycle, "read_events", return_value=rows), \
+                mock.patch.object(
+                    Path, "read_text", side_effect=PermissionError("unreadable"),
+                ):
+            self.assertFalse(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+    def test_recorded_plan_filter_continues_after_unreadable_plans(self):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        dispatch.configure(config.load(self.repo))
+        valid_plan = self.repo / "valid.md"
+        valid_plan.write_text("## Files\n- uv.lock\n")
+        valid = {
+            "event": "plan", "ticket": 7, "status": "recorded",
+            "path": str(valid_plan),
+        }
+        missing = {**valid, "path": str(self.repo / "missing.md")}
+        with mock.patch.object(
+            lifecycle, "read_events", return_value=[missing, valid],
+        ):
+            self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+        unreadable = {**valid, "path": str(self.repo / "unreadable.md")}
+        with mock.patch.object(
+            lifecycle, "read_events", return_value=[unreadable, valid],
+        ), mock.patch.object(
+            Path, "read_text",
+            side_effect=[PermissionError("unreadable"), "## Files\n- uv.lock\n"],
+        ):
+            self.assertTrue(dispatch._recorded_plan_lists_lockfile(7, "uv.lock"))
+
+    def test_recorded_plan_filter_toggles_only_for_files_section(self):
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        dispatch.configure(config.load(self.repo))
+        plan = self.repo / "plan.md"
+        row = {
+            "event": "plan", "ticket": 7, "status": "recorded", "path": str(plan),
+        }
+        cases = (
+            ("- uv.lock\n## Files\n- change.txt\n", False),
+            ("## Changes\n- uv.lock\n## Files\n- change.txt\n", False),
+            ("## Risks\n- uv.lock\n## Files\n- change.txt\n", False),
+            ("## Files\n- change.txt\n## Proof\n- uv.lock\n", False),
+            ("## Risks\n- change.txt\n## Files\n- uv.lock\n", True),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                plan.write_text(text)
+                with mock.patch.object(lifecycle, "read_events", return_value=[row]):
+                    self.assertEqual(
+                        dispatch._recorded_plan_lists_lockfile(7, "uv.lock"), expected,
+                    )
+
+    def test_lockfile_mentions_outside_files_section_do_not_authorize_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- change.txt\n"
+            "## Risks\n- uv.lock may drift\n"
+            "## Proof\n- inspect uv.lock\n",
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_indented_heading_ends_files_section(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- change.txt\n"
+            "  ## Risks\n- uv.lock may drift\n",
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_longer_plan_filename_does_not_authorize_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- uv.lock.backup\n",
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_different_quoted_filename_does_not_authorize_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- `old uv.lock`\n",
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_ticket_wording_does_not_authorize_lockfile_edit(self):
+        lock = self.run_lockfile_worker(
+            "## Files\n- change.txt\n",
+            body="Update uv.lock for the planned dependency change.",
+        )
+
+        self.assertEqual(lock, "base\n")
+
+    def test_round_one_lockfile_plan_preserves_round_two_edit(self):
+        self.set_lock_baseline()
+        self.worker.write_text(
+            "import subprocess\n"
+            "from pathlib import Path\n"
+            "first = not Path('change.txt').exists()\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('## Files\\n- uv.lock\\n' if first "
+            "else '## Files\\n- change.txt\\n')\n"
+            "path = Path('change.txt' if first else 'uv.lock')\n"
+            "path.write_text('first round\\n' if first else 'worker drift\\n')\n"
+            "subprocess.run(['git', 'add', str(path)], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker round'], check=True)\n"
+        )
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertEqual(self.pushed_lock(), "worker drift\n")
+
+    def test_manager_fix_removes_unplanned_uv_lock_drift(self):
+        from unittest import mock
+
+        from factory import config, dispatch, manage
+
+        self.set_lock_baseline()
+        self.pr_config(fails=0)
+        self.state.write_text(json.dumps({"reviews": 1}))
+        self.worker.write_text(
+            "import subprocess\n"
+            "from pathlib import Path\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('## Files\\n- change.txt\\n')\n"
+            "Path('uv.lock').write_text('worker drift\\n')\n"
+            "subprocess.run(['git', 'add', 'uv.lock'], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker lock edit'], check=True)\n"
+        )
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        packet = self.repo / ".factory" / "packet.md"
+        packet.write_text("fix it")
+        issue = {"title": "local change", "body": "", "comments": [], "labels": []}
+        pr = {
+            "state": "OPEN", "headRefName": "agent/7", "headRefOid": head,
+            "baseRefName": "main", "reviewDecision": "",
+        }
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(
+                    dispatch, "gh_json",
+                    side_effect=lambda args: pr if args[:2] == ["pr", "view"] else issue,
+                ), \
+                mock.patch.object(dispatch, "push_agent", return_value=head), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True), \
+                mock.patch.object(dispatch, "escalate"):
+            dispatch.configure(config.load(self.repo))
+            manage.apply(
+                7, issue, "FIX", "",
+                {"worker": "default", "guidance": "fix"}, packet,
+            )
+
+        self.assertEqual((wt / "uv.lock").read_text(), "base\n")
+        changed = self.git(
+            "-C", str(wt), "diff", "--name-only", "origin/main...HEAD",
+        ).stdout.splitlines()
+        self.assertNotIn("uv.lock", changed)
+
+    def test_moving_main_does_not_replace_ticket_lockfile_base(self):
+        from factory import dispatch
+
+        self.set_lock_baseline()
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+
+        (self.repo / "uv.lock").write_text("new main lock\n")
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "advance main lock")
+        (wt / "uv.lock").write_text("worker drift\n")
+        self.git("-C", str(wt), "add", "uv.lock")
+        self.git("-C", str(wt), "commit", "-qm", "worker lock edit")
+
+        dispatch.restore_unplanned_lockfiles(wt, 7, "main")
+        dispatch.commit_leftovers(wt, 7, "restore lockfile")
+
+        self.assertEqual((wt / "uv.lock").read_text(), "base\n")
+        changed = self.git(
+            "-C", str(wt), "diff", "--name-only", "main...HEAD",
+        ).stdout.splitlines()
+        self.assertNotIn("uv.lock", changed)
+
+    def test_upstream_sync_skips_lockfile_guard(self):
+        self.set_lock_baseline()
+        self.worker.write_text(
+            "import subprocess\n"
+            "from pathlib import Path\n"
+            "p = Path('.factory/plans/current/1.md')\n"
+            "p.parent.mkdir(parents=True, exist_ok=True)\n"
+            "p.write_text('## Files\\n- fix.txt\\n')\n"
+            "Path('fix.txt').write_text('fixed\\n')\n"
+            "Path('uv.lock').write_text('worker drift\\n')\n"
+            "subprocess.run(['git', 'add', 'fix.txt', 'uv.lock'], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'worker sync repair'], check=True)\n"
+        )
+        tip, _ = self.upstream_fixture(
+            check=[sys.executable, "-c",
+                   "from pathlib import Path; raise SystemExit(not Path('fix.txt').exists())"],
+        )
+        (self.repo / "uv.lock").write_text("fork lock\n")
+        self.git("add", "uv.lock")
+        self.git("commit", "-qm", "fork dependency")
+        self.git("push", "-q", "origin", "main")
+
+        self.cli("dispatch")
+
+        self.assertEqual(self.pushed_lock(), "worker drift\n")
+        events = lifecycle.read_events(self.events)
+        sync = next(row for row in events if row.get("event") == "upstream-sync")
+        wt = self.repo / ".factory" / "wt-7"
+        self.assertEqual(
+            self.git("-C", str(wt), "show", f"{sync['head']}:uv.lock").stdout,
+            "fork lock\n",
+        )
+        self.git("-C", str(wt), "merge-base", "--is-ancestor", tip, "agent/7")
+
+
+class FinishedBudgetLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+    merge_accepted = LocalCLI.merge_accepted
+
+    def expired_pass(self, unverified="None.", *, committed=True, gate_fails=False, pr_fails=False):
+        from contextlib import chdir
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        self.state.write_text(json.dumps({"reviews": 1}))
+        handoff = "## Changed\nDone.\n## Still unverified\n" + unverified + "\n## Next\nNothing.\n"
+        self.worker.write_text(
+            WORKER + "\nimport subprocess\n"
+            + ("subprocess.run(['git', 'add', 'change.txt'], check=True)\n"
+               "subprocess.run(['git', 'commit', '-qm', 'finished'], check=True)\n" if committed else "")
+            + "Path('.factory').mkdir(exist_ok=True)\n"
+            + f"Path('.factory/handoff-7.md').write_text({handoff!r})\n"
+        )
+        extra = (
+            '\n[[gate.check]]\nname = "pr-proof"\nwhen = "pr"\nrun = '
+            + json.dumps([sys.executable, "-c", f"raise SystemExit({int(pr_fails)})"]) + "\n"
+        )
+        self.write_config(check=[sys.executable, "-c", f"raise SystemExit({int(gate_fails)})"], extra=extra)
+        self.commit_config()
+        clock = [0]
+        original_worker = dispatch.run_worker
+
+        def finish(*args, **kwargs):
+            result = original_worker(*args[:4], float("inf"), **kwargs)
+            self.assertEqual(result[0], 0, args[2].read_text())
+            clock[0] = 120
+            return result
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(dispatch, "run_worker", side_effect=finish), \
+                mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])):
+            dispatch.configure(config.load(self.repo))
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            dispatch.process_ticket(issue, 1, False, forced=True)
+        return list(lifecycle.read_events(self.events))
+
+    def test_expired_finished_worker_passes_both_gates_pushes_reviews_and_merges(self):
+        events = self.expired_pass()
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.assertFalse(any(row.get("event") == "review-rework" for row in events))
+        self.assertTrue(json.loads(self.state.read_text())["pr"])
+        self.assertEqual(json.loads(self.state.read_text())["reviews"], 2)
+        self.merge_accepted()
+
+    def test_expired_blocking_unverified_item_escalates(self):
+        events = self.expired_pass("Production migration still needs verification.")
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_expired_nested_unverified_blocker_escalates_before_publication(self):
+        events = self.expired_pass("### Production migration\n- Verify the migration.")
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertIsNone(attempt["gate"])
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+        self.assertFalse(any(row.get("event") == "approved" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_expired_deeply_nested_unverified_blocker_escalates_before_publication(self):
+        events = self.expired_pass("###### Production migration\n- Verify the migration.")
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertIsNone(attempt["gate"])
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+        self.assertFalse(any(row.get("event") == "approved" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_expired_ancestor_unverified_blocker_escalates_before_publication(self):
+        events = self.expired_pass("None.\n# Unverified\n## Production migration\n- Verify the migration.")
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertIsNone(attempt["gate"])
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+        self.assertFalse(any(row.get("event") == "approved" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_expired_uncommitted_work_escalates(self):
+        events = self.expired_pass(committed=False)
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_expired_failing_attempt_gate_escalates(self):
+        events = self.expired_pass(gate_fails=True)
+        self.assertTrue(any(row.get("event") == "escalate" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_expired_failing_pr_gate_escalates(self):
+        events = self.expired_pass(pr_fails=True)
+        self.assertTrue(any(row.get("event") == "escalate" for row in events))
+        self.assertFalse(any(row.get("event") == "approved" for row in events))
+
+    def test_expired_running_unfinished_worker_still_escalates(self):
+        from contextlib import chdir
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        self.worker.write_text(WORKER + "\nimport time\ntime.sleep(60)\n")
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch, "WATCH_POLL", 0.01):
+            dispatch.configure(config.load(self.repo))
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            dispatch.process_ticket(issue, 0, False, forced=True)
+        events = list(lifecycle.read_events(self.events))
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertEqual(attempt["timeout"], "budget_min")
+        self.assertIsNone(attempt["gate"])
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+
+class GateDeadlineLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+    merge_accepted = LocalCLI.merge_accepted
+
+    def dispatch_overrun(self, *, expire_during="gate", committed=True, unverified="None.",
+                         stale=False, worker_exit=0, bounce=False):
+        from contextlib import chdir
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        self.state.write_text(json.dumps({"reviews": 0 if bounce or expire_during == "review" else 1}))
+        handoff = "## Still unverified\n" + unverified + "\n"
+        self.worker.write_text(
+            WORKER + "\nimport subprocess\n"
+            + ("subprocess.run(['git', 'add', 'change.txt'], check=True)\n"
+               "subprocess.run(['git', 'commit', '-qm', 'worker done'], check=True)\n" if committed else "")
+            + ("" if stale else "Path('.factory').mkdir(exist_ok=True)\n"
+               f"Path('.factory/handoff-7.md').write_text({handoff!r})\n")
+            + f"raise SystemExit({worker_exit})\n"
+        )
+        self.write_config(extra='\n[[gate.check]]\nname = "pr-proof"\nwhen = "pr"\nrun = '
+                          + json.dumps([sys.executable, "-c", "print('PR gate passed')"]) + "\n")
+        self.commit_config()
+        clock = [0]
+        gate_calls = [0]
+        original_gate = dispatch.run_gate
+        original_review = dispatch.review
+
+        def gate(*args, **kwargs):
+            result = original_gate(*args, **kwargs)
+            if kwargs.get("tier") != "pr":
+                gate_calls[0] += 1
+                if expire_during == "gate" and gate_calls[0] == (2 if bounce else 1):
+                    clock[0] = 120
+            return result
+
+        def review(*args, **kwargs):
+            result = original_review(*args, **kwargs)
+            if expire_during == "review":
+                clock[0] = 120
+            return result
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(dispatch, "run_gate", side_effect=gate), \
+                mock.patch.object(dispatch, "review", side_effect=review), \
+                mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])):
+            dispatch.configure(config.load(self.repo))
+            if stale:
+                wt = dispatch.ensure_worktree(7)
+                (wt / ".factory").mkdir(exist_ok=True)
+                (wt / ".factory/handoff-7.md").write_text("## Still unverified\nNone.\n")
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            dispatch.process_ticket(issue, 1, False, forced=True)
+        return list(lifecycle.read_events(self.events))
+
+    def test_on_time_worker_gate_overrun_preserves_passing_gate(self):
+        events = self.dispatch_overrun(unverified="Hosted CI remains unverified.")
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertEqual(attempt["gate"], "PASS")
+        self.assertFalse(attempt["finished"])
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.merge_accepted()
+
+    def test_on_time_leftovers_gate_overrun_preserves_passing_gate(self):
+        events = self.dispatch_overrun(committed=False)
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.merge_accepted()
+
+    def test_on_time_bounce_gate_overrun_preserves_passing_gate(self):
+        events = self.dispatch_overrun(committed=False, bounce=True)
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertEqual(len([row for row in events if row.get("event") == "review-rework"]), 1)
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.merge_accepted()
+
+    def test_expired_review_cannot_use_stale_unfinished_handoff(self):
+        events = self.dispatch_overrun(expire_during="review", committed=False, stale=True, worker_exit=1)
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertEqual(attempt["gate"], "PASS")
+        self.assertFalse(attempt["finished"])
+        self.assertFalse(any(row.get("event") == "review-rework" for row in events))
+        self.assertTrue(any(row.get("event") == "escalate" and row["code"] == "budget" for row in events))
+
+
+class WorkerCompletionBoundaryLifecycleTest(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+
+    def controlled_dispatch(self, *, code, fired, finished_at, handoff="fresh"):
+        from contextlib import chdir
+        from unittest import mock
+
+        from factory import config, dispatch
+
+        self.state.write_text(json.dumps({"reviews": 1}))
+        self.write_config(extra='\n[[gate.check]]\nname = "pr-proof"\nwhen = "pr"\nrun = '
+                          + json.dumps([sys.executable, "-c", "print('PR gate passed')"]) + "\n")
+        self.commit_config()
+        clock = [0]
+        gate_tiers = []
+        round_results = []
+        worker_calls = []
+        complete = "## Still unverified\nNone.\n"
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            dispatch.configure(config.load(self.repo))
+            if handoff == "stale":
+                wt = dispatch.ensure_worktree(7)
+                stale = wt / ".factory" / "handoff-7.md"
+                stale.parent.mkdir(exist_ok=True)
+                stale.write_text(complete)
+
+            original_gate = dispatch.run_gate
+            original_round = dispatch.worker_round
+
+            def worker(_argv, wt, _logfile, handoff_path, _deadline, **_kwargs):
+                worker_calls.append(wt)
+                change = wt / f"change-{len(worker_calls)}.txt"
+                change.write_text("done\n")
+                dispatch.run(["git", "add", change.name], cwd=wt)
+                dispatch.run(["git", "commit", "-qm", f"worker {len(worker_calls)}"], cwd=wt)
+                if handoff == "fresh":
+                    handoff_path.parent.mkdir(exist_ok=True)
+                    handoff_path.write_text(complete)
+                clock[0] = finished_at
+                return code, fired
+
+            def gate(*args, **kwargs):
+                gate_tiers.append(kwargs.get("tier", "attempt"))
+                return original_gate(*args, **kwargs)
+
+            def worker_round(*args, **kwargs):
+                result = original_round(*args, **kwargs)
+                round_results.append(result)
+                return result
+
+            with mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                    mock.patch.object(dispatch, "run_gate", side_effect=gate), \
+                    mock.patch.object(dispatch, "worker_round", side_effect=worker_round), \
+                    mock.patch.object(
+                        dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"]),
+                    ):
+                issue = dispatch.gh_json(["issue", "view", "7"])
+                dispatch.process_ticket(issue, 1, False, forced=True)
+
+        return list(lifecycle.read_events(self.events)), gate_tiers, round_results
+
+    def assert_finished_proceeded(self, code, fired):
+        events, gate_tiers, round_results = self.controlled_dispatch(
+            code=code, fired=fired, finished_at=61,
+        )
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertEqual(attempt["worker_exit"], code)
+        self.assertTrue(attempt["finished"])
+        self.assertEqual(attempt.get("timeout"), fired)
+        self.assertEqual(gate_tiers, ["attempt", "pr"])
+        self.assertTrue(round_results[0][0], round_results[0][1])
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.assertTrue(json.loads(self.state.read_text())["pr"])
+
+    def assert_unfinished_expired(self, *, code, handoff="fresh"):
+        events, gate_tiers, round_results = self.controlled_dispatch(
+            code=code, fired=None, finished_at=61, handoff=handoff,
+        )
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertEqual(attempt["worker_exit"], code)
+        self.assertIsNone(attempt["gate"])
+        self.assertFalse(attempt.get("finished", False))
+        self.assertEqual(gate_tiers, [])
+        self.assertFalse(round_results[0][0])
+        self.assertEqual(round_results[0][1], "budget exceeded before gate")
+        self.assertTrue(any(
+            row.get("event") == "escalate" and row["code"] == "budget"
+            for row in events
+        ))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_missing_handoff_is_not_complete(self):
+        from factory import dispatch
+
+        self.assertFalse(dispatch._handoff_done(self.base / "missing-handoff.md"))
+
+    def test_unchanged_complete_handoff_does_not_finish_expired_worker(self):
+        self.assert_unfinished_expired(code=0, handoff="stale")
+
+    def test_zero_exit_finishes_after_budget_and_proceeds(self):
+        self.assert_finished_proceeded(0, None)
+
+    def test_positive_exit_without_completion_timeout_expires_before_gate(self):
+        self.assert_unfinished_expired(code=1)
+
+    def test_negative_signal_exit_without_completion_timeout_expires_before_gate(self):
+        self.assert_unfinished_expired(code=-15)
+
+    def test_exit_grace_accepts_nonzero_exit_as_finished(self):
+        self.assert_finished_proceeded(143, "exit_grace")
+
+    def test_budget_timeout_accepts_signal_exit_as_finished(self):
+        self.assert_finished_proceeded(-15, "budget_min")
+
+    def test_exact_deadline_still_runs_gate_for_unfinished_worker(self):
+        events, gate_tiers, round_results = self.controlled_dispatch(
+            code=1, fired=None, finished_at=60, handoff="missing",
+        )
+        attempt = next(row for row in events if row.get("event") == "attempt")
+        self.assertFalse(attempt["finished"])
+        self.assertEqual(attempt["gate"], "PASS")
+        self.assertEqual(gate_tiers, ["attempt", "pr"])
+        self.assertTrue(round_results[0][0], round_results[0][1])
+        self.assertFalse(any(row.get("event") == "escalate" for row in events))
+        self.assertTrue(any(row.get("event") == "approved" for row in events))
+        self.assertTrue(json.loads(self.state.read_text())["pr"])
+
+    def test_fenced_gate_details_do_not_become_protected_summary(self):
+        from factory import dispatch
+
+        report = (
+            "# Gate\n- code: FAIL\n\n"
+            "```text\n- protected-paths: FAIL (add-only existing file modified)\n```"
+        )
+        self.assertIsNone(dispatch._protected_gate_guidance(report, set()))

@@ -83,6 +83,26 @@ class ManagerResolveTest(unittest.TestCase):
             "pr": 17, "ticket": 7, "by": "manager", "reason": "close",
         }])
 
+    def test_failed_pr_close_is_not_journaled(self) -> None:
+        pr = {"number": 17, "state": "OPEN", "changedFiles": 0, "baseRefName": "main"}
+
+        def run(command, **_kwargs):
+            if command[1:3] == ["pr", "close"]:
+                raise subprocess.CalledProcessError(1, command, stderr="close refused")
+            return subprocess.CompletedProcess(command, 0, stdout="https://example.test/comment\n")
+
+        for decision in ("RESOLVE", "CLOSE"):
+            with self.subTest(decision=decision), \
+                    mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                    mock.patch.object(dispatch, "run", side_effect=run), \
+                    mock.patch.object(dispatch, "comment_receipt"), \
+                    self.assertRaises(subprocess.CalledProcessError):
+                manage.apply(7, {"title": "No change"}, decision, "No change needed.", None, Path("unused"))
+            self.assertEqual([
+                row for row in lifecycle.read_events(dispatch.EVENTS)
+                if row.get("event") == "pr-closed"
+            ], [])
+
     def test_apply_refuses_open_pr_with_changes(self) -> None:
         pr = {"number": 17, "state": "OPEN", "changedFiles": 2, "baseRefName": "main"}
         with mock.patch.object(dispatch, "gh_json", return_value=pr), \

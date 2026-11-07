@@ -51,7 +51,7 @@ class WeeklyAggregationTest(unittest.TestCase):
                                       NOW - timedelta(days=7), NOW, "local-model")
 
         window = {"start": "2026-10-20T12:00:00Z", "end": "2026-10-27T12:00:00Z"}
-        self.assertEqual(result, {
+        expected = {
             "window": window,
             "merges": 2,
             "merge_rate": 1.0,
@@ -67,11 +67,6 @@ class WeeklyAggregationTest(unittest.TestCase):
             "median_open_to_merge_hours_numerator": 0,
             "median_open_to_merge_hours_denominator": 2,
             "median_open_to_merge_hours_window": window,
-            "cost_per_merged_pr": None,
-            "cost_per_merged_pr_numerator": None,
-            "cost_per_merged_pr_denominator": 2,
-            "cost_per_merged_pr_window": window,
-            "cost_unpriced": [],
             "human_touches": 3,
             "human_touches_per_merge": 1.5,
             "escalations_7d": 3,
@@ -90,12 +85,10 @@ class WeeklyAggregationTest(unittest.TestCase):
                 "triage": {"local-model": {"prompt": 10, "completion": 5, "calls": 1, "local": True}},
             },
             "local_token_share": round(135 / 185, 6),
-            "local_cost_share": round(135 / 185, 6),
-            "local_cost_share_numerator": 135,
-            "local_cost_share_denominator": 185,
-            "local_cost_share_window": window,
             "usage_missing": 1,
-        })
+        }
+        for metric, value in expected.items():
+            self.assertEqual(result[metric], value, metric)
 
     def test_merge_rate_closed_count_and_median_open_to_merge(self) -> None:
         rows = [
@@ -119,7 +112,7 @@ class WeeklyAggregationTest(unittest.TestCase):
         self.assertEqual(result["closed_unmerged_by"], {"manager": 1})
         self.assertEqual(result["median_open_to_merge_hours"], 48.0)
 
-    def test_no_merges_returns_none_for_merge_rate_median_and_cost(self) -> None:
+    def test_no_merges_returns_none_for_merge_rate_and_median(self) -> None:
         rows = [{"at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": 4, "pr": 14,
                  "by": "external", "reason": "closed outside factory"}]
 
@@ -127,65 +120,11 @@ class WeeklyAggregationTest(unittest.TestCase):
 
         self.assertIsNone(result["merge_rate"])
         self.assertIsNone(result["median_open_to_merge_hours"])
-        self.assertIsNone(result["cost_per_merged_pr"])
 
-    def test_cost_per_merged_pr_requires_prices_for_every_model(self) -> None:
-        rows = [
-            {"at": at(timedelta(days=-2)), "event": "merged", "ticket": 1, "pr": 11},
-            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 2, "pr": 12},
-            {"at": at(timedelta(days=-3)), "event": "llm-usage", "ticket": 1, "stage": "worker",
-             "model": "m1", "prompt_tokens": 1_000_000, "completion_tokens": 0},
-            {"at": at(timedelta(days=-3)), "event": "llm-usage", "ticket": 2, "stage": "worker",
-             "model": "m2", "prompt_tokens": 0, "completion_tokens": 500_000},
-        ]
-        prices = {
-            "m1": {"prompt": 2.0, "completion": 4.0},
-            "m2": {"prompt": 3.0, "completion": 6.0},
-        }
-
-        priced = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None, prices)
-        unpriced = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None, {"m1": prices["m1"]})
-
-        self.assertEqual(priced["cost_per_merged_pr"], 2.5)
-        self.assertEqual(priced["cost_per_merged_pr_numerator"], 5.0)
-        self.assertEqual(priced["cost_unpriced"], [])
-        self.assertIsNone(unpriced["cost_per_merged_pr"])
-        self.assertEqual(unpriced["cost_unpriced"], ["m2"])
-
-    def test_priced_model_without_usage_values_is_not_unpriced(self) -> None:
-        rows = [
-            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 1, "pr": 11},
-            {"at": at(timedelta(days=-2)), "event": "llm-usage", "ticket": 1,
-             "stage": "worker", "model": "m1"},
-        ]
-
-        result = stats.weekly_metrics(
-            rows, NOW - timedelta(days=7), NOW, None,
-            {"m1": {"prompt": 2.0, "completion": 4.0}},
-        )
-
-        self.assertIsNone(result["cost_per_merged_pr"])
-        self.assertEqual(result["cost_unpriced"], [])
-
-    def test_cost_per_merged_pr_rounds_to_six_places(self) -> None:
-        rows = [
-            {"at": at(timedelta(days=-3)), "event": "merged", "ticket": 1, "pr": 11},
-            {"at": at(timedelta(days=-2)), "event": "merged", "ticket": 2, "pr": 12},
-            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 3, "pr": 13},
-            {"at": at(timedelta(days=-4)), "event": "llm-usage", "ticket": 1,
-             "stage": "worker", "model": "m1", "cost": 1.0},
-        ]
-
-        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
-
-        self.assertEqual(result["cost_per_merged_pr"], 0.333333)
-
-    def test_ticketless_merges_do_not_change_pr_outcomes_or_cost(self) -> None:
+    def test_ticketless_merges_do_not_change_pr_outcomes(self) -> None:
         rows = [
             {"at": at(timedelta(days=-2)), "event": "merged", "ticket": 1, "pr": 11},
             {"at": at(timedelta(days=-1)), "event": "merged", "pr": 99},
-            {"at": at(timedelta(days=-3)), "event": "llm-usage", "ticket": 1,
-             "stage": "worker", "model": "m1", "cost": 10.0},
         ]
 
         result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
@@ -193,15 +132,6 @@ class WeeklyAggregationTest(unittest.TestCase):
         self.assertEqual(result["merges"], 1)
         self.assertEqual(result["merge_rate"], 1.0)
         self.assertEqual(result["merge_rate_denominator"], 1)
-        self.assertEqual(result["cost_per_merged_pr"], 10.0)
-
-    def test_inferred_worker_model_is_not_missing_usage(self) -> None:
-        row = {"at": at(), "event": "llm-usage", "stage": "worker", "model": "configured",
-               "model_inferred": True, "prompt_tokens": 1, "completion_tokens": 1}
-
-        result = stats.weekly_metrics([row], NOW - timedelta(days=7), NOW, None)
-
-        self.assertEqual(result["usage_missing"], 0)
 
     def test_dashboard_metrics_expose_rate_counts_and_weekly_escalations(self) -> None:
         dashboard.MAX_ATTEMPTS = 3
@@ -259,6 +189,17 @@ class WeeklyCommandTest(unittest.TestCase):
         code, result, runner = self.run_week()
         self.assertEqual(code, 0)
         self.assertEqual(result["merges"], 2)
+        self.assertTrue({
+            "cost_per_merged_pr",
+            "cost_per_merged_pr_numerator",
+            "cost_per_merged_pr_denominator",
+            "cost_per_merged_pr_window",
+            "cost_unpriced",
+            "local_cost_share",
+            "local_cost_share_numerator",
+            "local_cost_share_denominator",
+            "local_cost_share_window",
+        }.isdisjoint(result))
         self.assertEqual(result["stuck_over_days"], [
             {"number": 7, "title": "old", "url": "https://example/7", "updatedAt": at(timedelta(days=-8))},
         ])
@@ -313,8 +254,9 @@ class WeeklyCommandTest(unittest.TestCase):
         code, output, _ = self.run_week(argv=["--week"])
 
         self.assertEqual(code, 0)
-        for label in ("Merge rate:", "Closed unmerged:", "Median open→merge:", "Cost per merged PR:"):
+        for label in ("Merge rate:", "Closed unmerged:"):
             self.assertIn(label, output)
+        self.assertIn("Median open→merge: n/a", output)
 
 
 class WeeklyBehaviorRegressionTest(unittest.TestCase):
@@ -534,6 +476,22 @@ class WeeklyBehaviorRegressionTest(unittest.TestCase):
         self.assertEqual(result["merges"], 0)
         self.assertEqual(result["merge_rate_denominator"], 0)
 
+    def test_skill_metrics_are_windowed_while_merge_duration_uses_history(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-8)), "event": "skill-load", "ticket": 1,
+             "session": "old-session", "skill": "old-skill", "ok": True, "tokens": 10},
+            {"at": at(timedelta(days=-8)), "event": "pr-opened", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-1)), "event": "skill-load", "ticket": 1,
+             "session": "recent-session", "skill": "recent-skill", "ok": True, "tokens": 5},
+            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 1, "pr": 11},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual([(row["skill"], row["loads"]) for row in result["skills"]],
+                         [("recent-skill", 1)])
+        self.assertEqual(result["median_open_to_merge_hours"], 168.0)
+
     def test_open_to_merge_duration_keeps_zero_and_fractional_hours(self) -> None:
         rows = [
             {"at": at(timedelta(hours=-4)), "event": "pr-opened", "ticket": 1, "pr": 11},
@@ -550,94 +508,17 @@ class WeeklyBehaviorRegressionTest(unittest.TestCase):
         self.assertEqual(result["median_open_to_merge_hours"], 0.75)
         self.assertEqual(result["median_open_to_merge_hours_numerator"], 2)
 
-    def test_cost_metadata_normalizes_models_and_rounds_the_numerator(self) -> None:
-        unpriced = stats.weekly_metrics([
-            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 1, "pr": 11},
-            {"at": at(timedelta(days=-2)), "event": "llm-usage", "ticket": 1,
-             "stage": "worker", "model": 42, "prompt_tokens": 1},
-        ], NOW - timedelta(days=7), NOW, None)
-        priced = stats.weekly_metrics([
-            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 1, "pr": 11},
-            {"at": at(timedelta(days=-2)), "event": "llm-usage", "ticket": 1,
-             "stage": "worker", "model": "m1", "cost": 0.1234566},
-        ], NOW - timedelta(days=7), NOW, None)
-
-        self.assertEqual(unpriced["cost_unpriced"], ["<missing>"])
-        self.assertEqual(priced["cost_per_merged_pr_numerator"], 0.123457)
-
-    def test_dynamic_attempt_event_and_local_share_precision(self) -> None:
+    def test_dynamic_attempt_event_is_counted(self) -> None:
         attempt = bytearray(b"attempt").decode()
-        rows = [
-            {"at": at(timedelta(days=-1)), "event": attempt,
-             "ticket": 1, "attempt": 1, "gate": "PASS"},
-            {"at": at(timedelta(days=-1)), "event": "llm-usage", "stage": "worker",
-             "model": "local", "prompt_tokens": 1, "completion_tokens": 0, "local": True},
-            {"at": at(timedelta(days=-1)), "event": "llm-usage", "stage": "review",
-             "model": "hosted", "prompt_tokens": 2, "completion_tokens": 0, "local": False},
-        ]
+        rows = [{
+            "at": at(timedelta(days=-1)), "event": attempt,
+            "ticket": 1, "attempt": 1, "gate": "PASS",
+        }]
 
         result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
 
         self.assertEqual(result["first_pass"], 1.0)
         self.assertEqual(result["first_pass_denominator"], 1)
-        self.assertEqual(result["local_cost_share"], 0.333333)
-
-    def test_worker_producer_infers_configured_model_and_reduces_missing_usage(self) -> None:
-        from factory import dispatch, lifecycle
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            spec = {
-                "match": {"type": "result"}, "model": "model",
-                "prompt_tokens": ["usage.input"], "completion_tokens": ["usage.output"],
-                "cached_tokens": [], "cost": [],
-            }
-            dispatch.configure(config.Config(
-                root, "acme/widgets",
-                workers={"default": ["harness", "--model", "configured-worker", "{prompt}"]},
-                worker_usage={"default": spec},
-            ))
-            dispatch.LOGS.mkdir(parents=True)
-
-            def worker(_command, _wt, logfile, *_args):
-                logfile.write_text(json.dumps({
-                    "type": "result", "usage": {"input": 10, "output": 2},
-                }) + "\n")
-                return 0, None
-
-            def git_result(command, **_kwargs):
-                stdout = "abc123\n" if command[1:3] == ["rev-parse", "HEAD"] else ""
-                return subprocess.CompletedProcess(command, 0, stdout, "")
-
-            with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
-                    mock.patch.object(dispatch, "run_worker", side_effect=worker), \
-                    mock.patch.object(dispatch, "commit_leftovers"), \
-                    mock.patch.object(dispatch, "run", side_effect=git_result), \
-                    mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
-                ok, _, logfile, _ = dispatch.worker_round(
-                    7, root, set(), "ticket", "", 1, float("inf"),
-                )
-            raw = dispatch.worker_usage(logfile, spec)
-            usage = [row for row in lifecycle.read_events(dispatch.EVENTS)
-                     if row.get("event") == "llm-usage"]
-
-        self.assertTrue(ok)
-        self.assertIsNone(raw["model"])
-        self.assertEqual(len(usage), 1)
-        self.assertEqual(usage[0]["model"], "configured-worker")
-        self.assertIs(usage[0]["model_inferred"], True)
-        end = datetime.now(UTC)
-        start = end - timedelta(days=7)
-        before = stats.weekly_metrics(
-            [{"at": usage[0]["at"], "event": "llm-usage", "stage": "worker", **raw}],
-            start, end, None,
-        )
-        after = stats.weekly_metrics(usage, start, end, None)
-        self.assertEqual(before["usage_missing"], 1)
-        self.assertEqual(after["usage_missing"], 0)
-        self.assertEqual(after["tokens"]["worker"]["configured-worker"]["prompt"], 10)
-        self.assertEqual(after["tokens"]["worker"]["configured-worker"]["completion"], 2)
-
 
 if __name__ == "__main__":
     unittest.main()

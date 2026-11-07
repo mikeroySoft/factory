@@ -219,9 +219,10 @@ def init(argv: list[str]) -> int:
 
 
 def committed_host_keys(raw: dict) -> list[str]:
-    """Host-owned tables/keys present in a repo file: the District adopt signal."""
+    """Host-owned tables, nested keys, and scalars present in a repo file."""
     out = [t for t in sorted(config.HOST_TABLES) if raw.get(t)]
     out += [f"{t}.{k}" for t, keys in config.HOST_KEYS.items() for k in keys if k in raw.get(t, {})]
+    out += [key for key in config.HOST_SCALARS if key in raw]
     return out
 
 
@@ -280,10 +281,14 @@ def relocation_fix(cfg: config.Config, *, reveal: bool) -> dict:
     hosted = config.host_filter(cfg.raw_repo)
     tables = sorted(t for t in config.HOST_TABLES if t in hosted)
     tables += [t for t in config.HOST_KEYS if t in hosted]
-    fix = {"kind": "relocate", "tables": [
+    entries = [
         {"table": f"[repo.{json.dumps(cfg.repo)}.{table}]", "keys": key_paths(hosted[table], table)}
         for table in tables
-    ]}
+    ]
+    scalars = [key for key in config.HOST_SCALARS if key in hosted]
+    if scalars:
+        entries.insert(0, {"table": f"[repo.{json.dumps(cfg.repo)}]", "keys": scalars})
+    fix = {"kind": "relocate", "tables": entries}
     if reveal:
         fix["toml"] = tomlkit.dumps({"repo": {cfg.repo: hosted}})
     return fix
@@ -518,6 +523,19 @@ def doctor(argv: list[str]) -> int:
             fix=template_fix(cfg.root, tmpl) if args.json and tmpl == ISSUE_TEMPLATE and ours != shipped else None,
         )
     host = config.host_config()
+    effective_host_sections = (
+        host.get("defaults", {}),
+        host.get("repo", {}).get(cfg.repo, {}),
+    )
+    if cfg.host_name is not None:
+        report(True, "host_name", cfg.host_name, info=True)
+    if cfg.triage_host is not None:
+        report(True, "triage_host", cfg.triage_host, info=True)
+    if cfg.host_name is not None or any(
+        isinstance(section, dict) and "claim_ttl" in section
+        for section in effective_host_sections
+    ):
+        report(True, "claim_ttl", cfg.claim_ttl, info=True)
     if host:
         sections = [("defaults", host.get("defaults", {}))] + [(f'repo."{s}"', t) for s, t in host.get("repo", {}).items()]
         foreign = [f"{name}.{k}" for name, sec in sections if isinstance(sec, dict) for k in foreign_host_keys(sec, defaults=name == "defaults")]
@@ -587,6 +605,10 @@ def doctor(argv: list[str]) -> int:
 
     for label, argv_t in cfg.workers.items():
         report(which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}", on_path)
+        probe = cfg.worker_probe.get(label)
+        report(True if probe else None, f"worker `{label}` login check", f"probe: {probe[0]}" if probe else (
+            f"no `[workers.{label}] probe`: its login is unverified until a launch fails, "
+            "and the manager cannot choose it"))
     if cfg.worker_wrap:
         report(which(cfg.worker_wrap[0]) is not None, f"worker wrap: {cfg.worker_wrap[0]}", on_path)
     report(which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}", on_path)
@@ -687,7 +709,7 @@ result = {
     "platlib": sysconfig.get_path("platlib"),
 }
 try:
-    for name in ("factory", "factory.cli", "factory.triage", "factory.dispatch", "factory.dashboard"):
+    for name in ("factory", "factory.cli", "factory.drain", "factory.triage", "factory.dispatch", "factory.dashboard"):
         spec = importlib.util.find_spec(name)
         result["origins"][name] = spec.origin if spec else None
         module = importlib.import_module(name)
@@ -695,7 +717,7 @@ try:
     import factory
     result["version"] = getattr(factory, "__version__", "unknown")
     from factory.cli import COMMANDS
-    for command in ("triage", "triage-probe", "dispatch", "dashboard"):
+    for command in ("drain-check", "triage", "triage-probe", "dispatch", "dashboard"):
         entry = COMMANDS.get(command)
         if not entry:
             raise RuntimeError(f"missing {command} command")
@@ -805,7 +827,7 @@ def interpreter_probe(cfg: config.Config) -> tuple[bool, str]:
     identity = f"Factory {version} at {location}" if location else "Factory not importable"
     details = ", ".join(
         f"{name}={origins.get(name)}"
-        for name in ("factory", "factory.cli", "factory.triage", "factory.dispatch", "factory.dashboard")
+        for name in ("factory", "factory.cli", "factory.drain", "factory.triage", "factory.dispatch", "factory.dashboard")
     )
     details += f", purelib={result.get('purelib')}, platlib={result.get('platlib')}"
     identity += f" ({details})"
@@ -861,6 +883,7 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
             f"[Unit]\nDescription=factory triage + dispatcher for {cfg.repo} (one pass)\n\n"
             # `-` prefix: an offline triage model must not stop the dispatch pass.
             f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
+            f"ExecCondition={exe} drain-check\n"
             f"ExecStart=-{exe} triage\nExecStart={exe} dispatch\n"
             # Post-pass monitor, after success or failure: systemd hands it $SERVICE_RESULT,
             # so a crashed pass files itself. `-`: the monitor never fails the unit.
@@ -930,6 +953,10 @@ def install(argv: list[str]) -> int:
         help="dashboard bind address; 0.0.0.0 exposes /api/act (mutates GitHub with your gh credentials) to the LAN",
     )
     parser.add_argument("--print", action="store_true", help="print the units instead of installing them")
+    parser.add_argument(
+        "--enable", action="store_true",
+        help="enable and start installed units even if previously stopped or disabled",
+    )
     cfg = config.load()
     parser.set_defaults(**{k: cfg.install[k] for k in ("every", "dashboard", "host")})
     args = parser.parse_args(argv)
@@ -960,6 +987,20 @@ def install(argv: list[str]) -> int:
             return 1
 
     udir = unit_dir()
+    prior = {}
+    for name in wanted:
+        enabled = sh(["systemctl", "--user", "is-enabled", name])
+        enabled_state = enabled.stdout.strip()
+        if enabled.returncode != 0 and not enabled_state:
+            # Older systemd reports missing units only on stderr.
+            loaded = sh(["systemctl", "--user", "show", "--property=LoadState", "--value", name])
+            if loaded.returncode != 0 or loaded.stdout.strip() != "not-found":
+                detail = loaded.stderr.strip() or enabled.stderr.strip() or "unit not confirmed missing"
+                raise ConfigError(f"cannot determine prior state of {name}: {detail}")
+            enabled_state = "not-found"
+        active = sh(["systemctl", "--user", "is-active", name])
+        existed = (udir / name).exists() or enabled_state != "not-found"
+        prior[name] = (existed, enabled.returncode == 0, active.returncode == 0)
     udir.mkdir(parents=True, exist_ok=True)
     changed = set()  # existing units whose content differs: these get restarted
     for name, body in wanted.items():
@@ -989,34 +1030,24 @@ def install(argv: list[str]) -> int:
                 (udir / name).unlink()
                 print(f"removed {udir / name}")
     systemctl("daemon-reload")
-    timer = f"{cfg.unit}.timer"
-    systemctl("enable", "--now", timer)
-    if timer in changed:
-        systemctl("restart", timer)
-    print(f"{'restarted' if timer in changed else 'started'} {timer}")
+    activation = [f"{cfg.unit}.timer"]
     if cfg.triage_service:
-        systemctl("enable", "--now", probe_timer)
-        if probe_timer in changed:
-            systemctl("restart", probe_timer)
-        print(f"{'restarted' if probe_timer in changed else 'started'} {probe_timer}")
+        activation.append(probe_timer)
     if cfg.eval_schedule:
-        systemctl("enable", "--now", eval_timer)
-        if eval_timer in changed:
-            systemctl("restart", eval_timer)
-        print(f"{'restarted' if eval_timer in changed else 'started'} {eval_timer}")
+        activation.append(eval_timer)
     if args.dashboard:
-        systemctl("enable", "--now", dash_unit)
-        if dash_unit in changed:
-            systemctl("restart", dash_unit)
-        print(f"{'restarted' if dash_unit in changed else 'started'} {dash_unit}")
+        activation.append(dash_unit)
+    for name in activation:
+        existed, enabled, active = prior[name]
+        if existed and not args.enable and not (enabled and active):
+            print(f"left paused {name}; resume with: systemctl --user enable --now {name} "
+                  "(or rerun factory install --enable)")
+            continue
+        systemctl("enable", "--now", name)
+        if name in changed:
+            systemctl("restart", name)
+        print(f"{'restarted' if name in changed else 'started'} {name}")
     if sh(["loginctl", "show-user", "--property=Linger", "--value", Path.home().name]).stdout.strip() != "yes":
         print("hint: `loginctl enable-linger` keeps user timers running after logout and at boot")
-    enabled = [f"{cfg.unit}.timer"]
-    if cfg.triage_service:
-        enabled.append(probe_timer)
-    if cfg.eval_schedule:
-        enabled.append(eval_timer)
-    if args.dashboard:
-        enabled.append(dash_unit)
-    print(f"stop with: systemctl --user disable --now {' '.join(enabled)}")
+    print(f"stop with: systemctl --user disable --now {' '.join(activation)}")
     return 0

@@ -34,7 +34,8 @@ QUIET_PERIOD = timedelta(hours=24)
 CLOSABLE = {config.LABEL_TRIAGE, config.LABEL_AGENT}
 MAX_ROWS = 20
 MAX_LOG_LINES = 40
-UNKNOWN_REASONS = ("check_timeout",)
+UNKNOWN_REASONS = ("check_timeout", "unparseable_decision")
+STREAKED_REASONS = ("unparseable_decision",)
 # Host conditions are ignored until their current uninterrupted failure streak crosses
 # `[watch].host_failure_minutes`.
 HOST_REASONS = ("worker_exit:", "triage_endpoint_", "github_command_failed")
@@ -132,7 +133,8 @@ def failed_units(cfg: config.Config) -> list[tuple[str, str]]:
     names = [line.split()[0] for line in listed.splitlines() if line.split()]
     result = os.environ.get("SERVICE_RESULT")
     own = ""
-    if result and result != "success":
+    # ExecCondition exit 1 skips the pass without failing it; ExecStopPost still runs.
+    if result and result not in {"success", "exec-condition"}:
         names.append(f"{cfg.unit}.service")
         own = " ".join(f"{k}={os.environ.get(k, '')}" for k in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")) + "\n"
     units = []
@@ -234,12 +236,29 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
         "rework_rounds",
     }
     names = set(sparse_names)
+    merged_heads = {
+        row["head"] for row in events
+        if row.get("event") == "merged" and isinstance(row.get("head"), str)
+    }
+    attempt_heads = {
+        (row.get("dispatcher_run_id"), row.get("ticket"), row.get("attempt")): row["head"]
+        for row in events
+        if row.get("event") == "attempt" and row.get("ticket") is not None
+        and row.get("attempt") is not None and isinstance(row.get("head"), str)
+    }
     failed = [
         row for row in events
         if row.get("event") == "lifecycle" and row.get("kind") == "result"
         and row.get("stage") == "gate-check" and row.get("passed") is False
         and isinstance(row.get("check"), str)
+        and (
+            row.get("ticket") is None or row.get("attempt") is None
+            or attempt_heads.get((
+                row.get("dispatcher_run_id"), row.get("ticket"), row.get("attempt"),
+            )) in merged_heads
+        )
     ]
+    failed_ids = {id(row) for row in failed}
     names.update(f"gate_failures_by_check:{row['check']}" for row in failed)
     names.update(
         f"gate_failures_by_test:{test}"
@@ -280,6 +299,7 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
     merged_by_tier: dict[str, dict[object, dict]] = {}
     escaped_by_tier: dict[str, dict[object, dict]] = {}
 
+    counted_failures = set()
     for day in days:
         key = day.isoformat()
         today = by_day.get(day, [])
@@ -352,20 +372,23 @@ def metric_series(events: list[dict], start: date, end: date) -> dict[str, dict[
                 "rows": cycle_rows,
             }
         for row in today:
-            if not (
-                row.get("event") == "lifecycle" and row.get("kind") == "result"
-                and row.get("stage") == "gate-check" and row.get("passed") is False
-                and isinstance(row.get("check"), str)
-            ):
+            if id(row) not in failed_ids:
                 continue
-            check = series[f"gate_failures_by_check:{row['check']}"][key]
-            check["value"] += 1
-            check["rows"].append(row)
+            identity = (row.get("ticket"), row.get("attempt"))
+            check_name = f"gate_failures_by_check:{row['check']}"
+            check_key = (check_name, *identity)
+            if None in identity or check_key not in counted_failures:
+                check = series[check_name][key]
+                check["value"] += 1
+                check["rows"].append(row)
+                counted_failures.add(check_key)
             for test in row.get("failed_tests", []):
                 name = f"gate_failures_by_test:{test}"
-                if name in series:
+                test_key = (name, *identity)
+                if name in series and (None in identity or test_key not in counted_failures):
                     series[name][key]["value"] += 1
                     series[name][key]["rows"].append(row)
+                    counted_failures.add(test_key)
     return series
 
 
@@ -556,11 +579,28 @@ def signals(
 ) -> list[dict]:
     """Every observed failure, newest journal evidence first within each fingerprint."""
     found: dict[str, dict] = {}
+    wait = next((r for r in reversed(events) if r.get("event") == "learn-wait"), None)
+    blocked = next((r for r in reversed(events) if r.get("event") == "learn-blocked"), None)
+    if (wait and blocked and wait.get("pr") is not None and wait.get("pr") == blocked.get("pr")
+            and wait.get("at") == blocked.get("since")):
+        key = fingerprint("learn-blocked", f"{cfg.repo}#{blocked['pr']}")
+        found[key] = {
+            "fingerprint": key, "kind": "learn-blocked", "stage": "learn",
+            "key": blocked["reason"], "rows": [blocked], "excerpt": None, "log": None,
+            "latest": blocked["at"], "command": "factory watch --dry-run",
+        }
     logs = {(r.get("ticket"), r.get("attempt")): r.get("log") for r in events if r.get("event") == "attempt"}
+    stalled = {
+        (row.get("ticket"), row.get("reason"))
+        for row in events
+        if row.get("event") == "triage_stalled"
+    }
     for row in events:
         if not _failing(row):
             continue
         stage, reason = str(row.get("stage")), str(row.get("reason"))
+        if reason in STREAKED_REASONS and (row.get("ticket"), reason) not in stalled:
+            continue
         key = fingerprint("lifecycle", reason)
         signal = found.setdefault(key, {
             "fingerprint": key, "kind": "lifecycle", "stage": {}, "key": reason, "rows": [],

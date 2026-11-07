@@ -6,7 +6,7 @@ journaling and receipts come from one path.
 """
 from __future__ import annotations
 
-from factory import decisions, dispatch
+from factory import decisions, dispatch, generation
 from factory.config import (
     LABEL_AGENT,
     LABEL_HUMAN,
@@ -84,8 +84,12 @@ def _request(args: dict, **effect: object) -> list[dict]:
 # Sync refusal for requeue_agent comes from decisions._sync_routing on the add of ready-for-agent.
 ACTIONS = {
     "requeue_agent": {
-        "description": f"Move an open {LABEL_HUMAN} issue back to {LABEL_AGENT} and unassign the actor; refuses upstream-sync issues.",
-        "schema": _schema(),
+        "description": (
+            f"Move an open {LABEL_HUMAN} issue back to {LABEL_AGENT} and unassign the actor; refuses upstream-sync "
+            "issues. Opens a new generation with fresh round budgets. intent `resume` (default) continues the kept "
+            "branch; `fresh` recuts agent/<n> from main, keeping the old heads as evidence refs."
+        ),
+        "schema": _schema(optional={"intent": {"type": "string", "enum": list(generation.INTENTS)}}),
         "check": _requeue_check,
         "compile": lambda args: _request(args, add=[LABEL_AGENT], remove=[LABEL_HUMAN], unassign=True),
     },

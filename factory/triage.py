@@ -201,6 +201,12 @@ LABEL_TABLE = "\n".join(
 )
 
 DECISIONS = (LABEL_AGENT, LABEL_INFO, LABEL_HUMAN, config.LABEL_WONTFIX)
+UNPARSEABLE_REASON = "unparseable_decision"
+TRIAGE_STALLED_COMMENT = (
+    "Factory triage stalled: the local model returned an unparseable decision on two "
+    "consecutive passes. The issue remains `needs-triage` and will be retried."
+)
+
 
 
 class _Decision(dict):
@@ -363,21 +369,29 @@ class EndpointTimeout(SystemExit):
 
 def call_llm(messages: list[dict], execution=None) -> str:
     started = time.monotonic()
-    payload = json.dumps(
-        {
-            "model": LLM_MODEL,
-            "messages": messages,
-            "temperature": 0.1,
-        }
-    ).encode()
+    body = {
+        "model": LLM_MODEL,
+        "messages": messages,
+        "temperature": 0.1,
+        "max_tokens": cfg.triage_max_tokens,
+    }
+    if cfg.triage_chat_template_kwargs is not None:
+        body["chat_template_kwargs"] = cfg.triage_chat_template_kwargs
+    payload = json.dumps(body).encode()
     req = urllib.request.Request(
         LLM_URL,
         data=payload,
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
-            body = json.load(resp)
+        state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+        lock_path = state_home / "factory" / "triage-requests" / hashlib.sha256(LLM_URL.encode()).hexdigest()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Shared across repos and processes, including callers outside a triage pass.
+        with lock_path.open("a+b") as endpoint_lock:
+            fcntl.flock(endpoint_lock, fcntl.LOCK_EX)
+            with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
+                body = json.load(resp)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         timed_out = isinstance(exc, TimeoutError) or (
             isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
@@ -462,6 +476,44 @@ def unchanged_since_triage(issue: dict) -> bool:
         return False
     posted = datetime.fromisoformat(comments[-1]["createdAt"])
     return datetime.fromisoformat(issue["updatedAt"]) - posted < SETTLE
+
+def _report_unparseable_streak(number: int, issue: dict, execution) -> None:
+    rows = lifecycle.read_events(cfg.factory / "events.jsonl")
+    previous = next(
+        (
+            row
+            for row in reversed(rows)
+            if row.get("event") == "lifecycle"
+            and row.get("kind") == "exit"
+            and row.get("stage") == "triage-ticket"
+            and row.get("ticket") == number
+        ),
+        None,
+    )
+    if previous is None or previous.get("reason") != UNPARSEABLE_REASON:
+        return
+    if not any(
+        comment.get("body", "").startswith(TRIAGE_STALLED_COMMENT)
+        for comment in issue.get("comments") or []
+    ):
+        gh(
+            "issue", "comment", str(number), "--body", TRIAGE_STALLED_COMMENT,
+            execution=execution,
+        )
+    if any(
+        row.get("event") == "triage_stalled"
+        and row.get("ticket") == number
+        and row.get("reason") == UNPARSEABLE_REASON
+        for row in rows
+    ):
+        return
+    from factory import dispatch
+
+    dispatch.configure(cfg)
+    dispatch.record(
+        "triage_stalled", ticket=number, stage="triage", reason=UNPARSEABLE_REASON,
+    )
+
 
 
 def triage_issue(issue: dict, execution=None) -> dict | None:
@@ -648,6 +700,9 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     configure(config.load())
+    if cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host:
+        print(f"triage: skipped, triage host is {cfg.triage_host}")
+        return 0
 
     recording = not (args.replay or args.dry_run)
     with (
@@ -723,8 +778,9 @@ def execute(args: argparse.Namespace, execution) -> int:
                         if decision is None:
                             if ticket_execution:
                                 ticket_execution.outcome = "unknown"
-                                ticket_execution.reason = "unparseable_decision"
-                            outcome, reason = "unknown", "unparseable_decision"
+                                ticket_execution.reason = UNPARSEABLE_REASON
+                                _report_unparseable_streak(number, issue, ticket_execution)
+                            outcome, reason = "unknown", UNPARSEABLE_REASON
                             print(
                                 f"#{number}: model returned unparseable JSON twice; skipping",
                                 file=sys.stderr,

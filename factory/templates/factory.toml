@@ -24,6 +24,14 @@
 # Regex with one capture group: dollars spent, read from the worker log after
 # each attempt and summed into .factory/events.jsonl and the dashboard.
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'      # Claude Code
+
+[engine]
+# Emit engine-stale using District's recorded host target, not a separate ref/CI lookup.
+# When enabled, finish land/review intake, then exit without claims, manager or learning work.
+# Set [defaults.engine].yield_for_update in the host file to govern EVERY repo sharing the engine;
+# that host policy takes precedence over this repository setting (including false).
+# yield_for_update = false
+
 [workers]
 # argv templates. {prompt} = path to the ticket prompt file, {cwd} = worktree.
 # OMP file prompts require `@{prompt}`; bare `{prompt}` passes the path as text.
@@ -40,8 +48,13 @@
 # `when = { label = "name" }` directly selects this profile for that ticket label.
 # Optional `env = { NAME = "value" }` applies only to that worker and expands
 # command placeholders; `version = "..."` records a pinned worker release in
-# claim, usage, attempt, and lifecycle evidence. Commands containing a binary
-# named `omp` default to transcript mode. Array and table forms can coexist; do
+# claim, usage, attempt, and lifecycle evidence. Optional `probe = [...]`
+# ({root}, {repo}, {home}) is a health/auth check run before each pass; a nonzero
+# exit keeps the profile from launching and its tickets fall back to `default`.
+# Only a passing probe proves a login: without one the manager cannot choose the
+# profile, and a login failure seen at launch stands until a launch works.
+# Commands containing a binary named `omp` default to transcript mode.
+# Array and table forms can coexist; do
 # not define a label twice. The manager lists configured profiles and their rules;
 # ROUTE and FIX cannot invent profiles or write host config. FIX uses
 # {"worker": "ci-fix", "guidance": "..."}.
@@ -66,28 +79,7 @@
 # model only as a `modelUsage` key, so no `model` path):
 # usage = { match = { type = "result" }, cost = "total_cost_usd", completion_tokens = "usage.output_tokens", cached_tokens = "usage.cache_read_input_tokens", prompt_tokens = ["usage.input_tokens", "usage.cache_read_input_tokens", "usage.cache_creation_input_tokens"] }
 # Host config `[defaults.prices."<model>"]` (prompt, completion, optional cached;
-# USD per million tokens) prices events that report tokens but no cost. Copy the
-# examples below to the host config, not this repository file. OMP reports model
-# ids without providers; an inferred worker row uses the configured full id.
-#
-# Hosted rates are illustrative USD per million tokens, not provider quotes.
-# Replace them with actual rates; only local triage is free.
-# [defaults.prices."gpt-5.6-sol"]                # OMP-reported worker
-# prompt = 2.0
-# completion = 8.0
-# [defaults.prices."openai-codex/gpt-5.6-sol"] # inferred worker; same rates
-# prompt = 2.0
-# completion = 8.0
-# [defaults.prices."claude-fable-5-1"]         # OMP-reported reviewer
-# prompt = 3.0
-# completion = 15.0
-# The default second reviewer (openai-codex/gpt-6-astra) emits gpt-6-astra.
-# [defaults.prices."gpt-6-astra"]             # high-risk second review
-# prompt = 2.0
-# completion = 8.0
-# [defaults.prices."qwen3:30b"]                # default local triage
-# prompt = 0.0
-# completion = 0.0
+# USD per million tokens) prices events that report tokens but no cost.
 
 [review]
 # {prompt} = inline review prompt text. Output ends with one fenced JSON findings tally,
@@ -182,6 +174,9 @@ exclusive = false
 # url = "http://127.0.0.1:11434/v1/chat/completions"
 # model = "qwen3:30b"
 # timeout = 60         # seconds per model request; raise for slow local models
+# max_tokens = 2048    # positive output-token limit sent on every request
+# chat_template_kwargs = { enable_thinking = false }  # optional, passed through unchanged
+# Requests to the same URL queue across repositories/processes on this host user.
 # service = "my-model.service"  # opt in to a two-minute liveness timer installed by `factory install`
 
 [journal]

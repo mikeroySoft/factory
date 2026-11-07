@@ -52,6 +52,9 @@ class WorkerPlanTest(unittest.TestCase):
         self.cfg.factory.mkdir()
         (self.cfg.factory / "logs").mkdir()
         dispatch.configure(self.cfg)
+        self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
+            "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
+        }))
 
     def events(self, event: str) -> list[dict]:
         return [row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("event") == event]

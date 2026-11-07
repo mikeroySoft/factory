@@ -1,12 +1,13 @@
 """Mutation testing of changed `factory/` files for the pr-tier gate.
 
-Mutates the Python files under `factory/` that changed in `origin/main..HEAD`, runs
+Mutates the Python files under `factory/` that changed in `origin/main...HEAD`, runs
 the full discovered unittest suite against each mutant (related tests first,
 stopping at the first failure), and prints
 every survivor as `path:line: <mutation>`. The default report-only mode exits zero
 after a complete trial even when mutants survive. ``--blocking`` exits nonzero for
-survivors on changed lines and for an incomplete run. Tool failures always exit
-nonzero. Mutants are sampled deterministically (sorted, then shuffled with a fixed
+completed survivors on changed lines, except exact reviewed ``--equivalents`` matches.
+Invalid or stale equivalent entries, tool and baseline failures always exit nonzero.
+Mutants are sampled deterministically (sorted, then shuffled with a fixed
 seed, capped at CAP). One absolute deadline, `[gate].timeout` - 60,
 covers preparation, the baseline and every mutant: each run is bounded by the time
 left, and mutants not started or cut short are reported as incomplete.
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import json
 import os
 import random
 import re
@@ -42,7 +44,7 @@ COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", ".factory", "__pycache__",
 def changed_lines() -> dict[str, set[int]]:
     """Changed `factory/*.py` files (added or modified) -> line numbers added or modified."""
     out = subprocess.run(
-        ["git", "diff", "--unified=0", "--no-renames", "--diff-filter=AM", "origin/main..HEAD", "--", "factory/*.py"],
+        ["git", "diff", "--unified=0", "--no-renames", "--diff-filter=AM", "origin/main...HEAD", "--", "factory/*.py"],
         capture_output=True, text=True, check=True,
     ).stdout
     lines: dict[str, set[int]] = {}
@@ -105,7 +107,7 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
 def test_command(copy: Path, module: str | None = None) -> str:
     command = [
         "env", "-C", str(copy), f"PYTHONPATH={copy}", sys.executable,
-        "-m", "scripts.mutation", "--test-module", module or "",
+        "-B", "-m", "scripts.mutation", "--test-module", module or "",
     ]
     return shlex.join(command)
 
@@ -145,13 +147,83 @@ def describe(diff: str) -> str:
     return f"`{old[:80]}` -> `{new[:80]}`"
 
 
+def load_equivalents(path: str | None) -> dict[tuple, dict]:
+    """Load reviewed identities; never match the truncated display description."""
+    if path is None:
+        return {}
+    entries = json.loads(Path(path).read_text())
+    if not isinstance(entries, list):
+        raise TypeError("expected an array of reviewed equivalents")
+    reviewed = {}
+    fields = ("file", "line", "operator", "original", "mutated")
+    for index, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict) or not {*fields, "argument", "reviewer"} <= entry.keys():
+            raise ValueError(f"entry {index}: requires file, line, operator, original, mutated, argument, reviewer")
+        for field in ("file", "operator", "argument", "reviewer"):
+            value = entry[field]
+            if not isinstance(value, str) or not value.strip() or value.splitlines() != [value]:
+                raise ValueError(f"entry {index}: {field} must be a nonempty single line")
+        file = Path(entry["file"])
+        if file.is_absolute() or ".." in file.parts or file.as_posix() != entry["file"]:
+            raise ValueError(f"entry {index}: file must be a repository-relative path")
+        if type(entry["line"]) is not int or entry["line"] < 1:
+            raise ValueError(f"entry {index}: line must be a positive integer")
+        if any(not isinstance(entry[field], str) for field in ("original", "mutated")):
+            raise ValueError(f"entry {index}: original and mutated must be exact source strings")
+        if entry["original"] == entry["mutated"]:
+            raise ValueError(f"entry {index}: original and mutated must differ")
+        key = tuple(entry[field] for field in fields)
+        if key in reviewed:
+            raise ValueError(f"entry {index}: duplicate equivalent")
+        reviewed[key] = entry
+    return reviewed
+
+
+def mutation_key(mutation, result) -> tuple:
+    lines = (result.diff or "").splitlines()
+    # Ignore unified-diff headers, preserving all changed source lines verbatim.
+    start = next((i + 1 for i, line in enumerate(lines) if line.startswith("@@")), 0)
+    changes = lines[start:]
+    original = "\n".join(line[1:] for line in changes if line.startswith("-"))
+    mutated = "\n".join(line[1:] for line in changes if line.startswith("+"))
+    return (str(mutation.module_path), mutation.start_pos[0], mutation.operator_name,
+            original, mutated)
+
+
+def stale_equivalents(reviewed: dict[tuple, dict], disproven: set[tuple]) -> bool:
+    # Sampling/deadlines leave entries untested, but source invalidation is deterministic.
+    stale = reviewed.keys() & disproven
+    sources = {}
+    for key in reviewed:
+        file, line, _, original, _ = key
+        if file not in sources:
+            try:
+                sources[file] = Path(file).read_text().splitlines()
+            except (OSError, UnicodeError):
+                sources[file] = []
+        expected = original.split("\n")
+        if sources[file][line - 1:line - 1 + len(expected)] != expected:
+            stale.add(key)
+    for file, line, operator, original, mutated in sorted(stale):
+        print(f"stale equivalent: {file}:{line}: {operator} {original!r} -> {mutated!r}")
+    return bool(stale)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--blocking", action="store_true")
+    parser.add_argument("--equivalents", metavar="FILE", help="reviewed equivalent-mutants JSON file")
     parser.add_argument("--test-module", default=None)
     args = parser.parse_args(argv)
     if args.test_module is not None:
         return run_tests(args.test_module)
+    try:
+        reviewed = load_equivalents(args.equivalents)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"invalid equivalents: {exc}")
+        return 1
+    if stale_equivalents(reviewed, set()):
+        return 1
     lines = changed_lines()
     if not lines:
         print("no mutable files")
@@ -167,10 +239,26 @@ def main(argv: list[str] | None = None) -> int:
         mutations, hot = sample(lines, scratch)
         if args.blocking:
             mutations = mutations[:hot]
+
+        def baseline_timed_out() -> int:
+            print(f"baseline suite did not finish before the {deadline - started:.0f}s deadline")
+            print(f"incomplete: {len(mutations)} mutants not started and 0 cut short by the "
+                  f"{deadline - started:.0f}s deadline")
+            return 1
+
         workers = max(1, min(WORKERS, len(mutations)))
         copies = [scratch / f"copy{i}" for i in range(workers)]
         for copy in copies:
-            shutil.copytree(root, copy, ignore=COPY_IGNORE)
+            # Isolate Git metadata, but overlay current files rather than checking out HEAD:
+            # baselines must include uncommitted edits/deletions and untracked files too.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return baseline_timed_out()
+            subprocess.run(
+                ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(copy)],
+                check=True, timeout=remaining,
+            )
+            shutil.copytree(root, copy, ignore=COPY_IGNORE, dirs_exist_ok=True)
         print(f"files: {', '.join(lines)}")
         print(f"mutants: {len(mutations)} sampled (seed {SEED}, cap {CAP}), "
               f"{min(hot, len(mutations))} on changed lines first, {workers} workers")
@@ -178,28 +266,34 @@ def main(argv: list[str] | None = None) -> int:
         # Baseline once, unmutated, in the first copy: proves the suite passes under this
         # harness and sizes the per-mutant timeout. unittest reports on stderr, so merge it.
         baseline_started = time.monotonic()
+
+        remaining = deadline - baseline_started
+        if remaining <= 0:
+            return baseline_timed_out()
         try:
             proc = subprocess.run(shlex.split(test_command(copies[0])), stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True, check=False,
-                                  timeout=max(deadline - baseline_started, 1))
+                                  timeout=remaining)
         except subprocess.TimeoutExpired:
-            print(f"baseline suite did not finish before the {deadline - started:.0f}s deadline")
-            return 1
-        baseline = time.monotonic() - baseline_started
+            return baseline_timed_out()
+        baseline_finished = time.monotonic()
+        if baseline_finished >= deadline:
+            return baseline_timed_out()
+        baseline = baseline_finished - baseline_started
         if proc.returncode:
             print(f"baseline suite failed:\n{proc.stdout[-3000:]}")
             return 1
-        timeout = max(60.0, 3 * baseline)
+        remaining = deadline - baseline_finished
+        timeout = min(max(60.0, 3 * baseline), remaining / 4)
         print(f"baseline: {baseline:.0f}s, per-mutant timeout {timeout:.0f}s, "
-              f"{deadline - time.monotonic():.0f}s left before the deadline")
+              f"{remaining:.0f}s left before the deadline")
 
         queue = collections.deque(mutations)  # popleft is atomic under the GIL
         results = []
-        cut = []  # mutants whose run the deadline cut short: neither killed nor survived
+        cut = []  # budget-limited runs: neither killed nor survived
 
         def worker(copy: Path) -> None:
-            # Most mutants die before a full baseline-length run. Use the remaining
-            # budget, but never count a deadline-cut run as killed or survived.
+            # A timeout below baseline cannot disprove a survivor or equivalent.
             while (left := deadline - time.monotonic()) > 0:
                 try:
                     mutation = queue.popleft()
@@ -209,8 +303,12 @@ def main(argv: list[str] | None = None) -> int:
                 result = mutate_and_test(
                     [local], test_command(copy, str(mutation.module_path)), min(timeout, left),
                 )
-                if left < timeout and result.output == "timeout":
+                if result.output == "timeout" and (
+                    timeout < baseline or left < timeout or time.monotonic() >= deadline
+                ):
                     cut.append(mutation)
+                    if timeout >= baseline:
+                        return
                 else:
                     results.append((mutation, result))
 
@@ -218,23 +316,41 @@ def main(argv: list[str] | None = None) -> int:
             list(pool.map(worker, copies))
 
     survivors = [(m, r) for m, r in results if r.test_outcome == TestOutcome.SURVIVED]
+    accepted = {mutation_key(m, r) for m, r in survivors} & reviewed.keys()
     hot_survivors = [
         (mutation, result) for mutation, result in survivors
-        if on_changed_line(mutation, lines)
+        if on_changed_line(mutation, lines) and mutation_key(mutation, result) not in accepted
     ]
     for mutation, result in sorted(survivors, key=lambda mr: (str(mr[0].module_path), mr[0].start_pos)):
         print(f"{mutation.module_path}:{mutation.start_pos[0]}: {mutation.operator_name} "
               f"{describe(result.diff or '')}")
+        if (key := mutation_key(mutation, result)) in accepted:
+            entry = reviewed[key]
+            print(f"  accepted equivalent: {entry['argument']} (reviewer: {entry['reviewer']})")
     counts: dict[str, int] = {}
     for _, result in results:
         name = (result.test_outcome or result.worker_outcome).value
         counts[name] = counts.get(name, 0) + 1
     summary = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"
+    timeouts = sum(result.output == "timeout" for _, result in results)
     print(f"ran {len(results)} of {len(mutations)} mutants in {time.monotonic() - started:.0f}s: "
-          f"{summary}; {len(survivors)} survived")
+          f"{timeouts} timeouts (included in killed); {summary}; {len(survivors)} survived")
     if queue or cut:
         print(f"incomplete: {len(queue)} mutants not started and {len(cut)} cut short by the "
               f"{deadline - started:.0f}s deadline")
+    disproven = {
+        mutation_key(m, r) for m, r in results if r.test_outcome == TestOutcome.KILLED
+    }
+    if hot <= len(mutations) and not queue and not cut and all(
+        r.test_outcome in (TestOutcome.KILLED, TestOutcome.SURVIVED) for _, r in results
+    ):
+        # All changed-line candidates were sampled and tested. Enumeration also
+        # proves absence on changed lines that generated no candidates.
+        disproven.update(
+            key for key in reviewed
+            if key[1] in lines.get(key[0], ()) and key not in accepted
+        )
+    stale = stale_equivalents(reviewed, disproven)
     # cosmic-ray swallows its own failures (a mutation it could not write, a test command it
     # could not launch) into INCOMPETENT results. NO_TEST also leaves the sampled
     # mutation untested; neither is evidence of a killed or surviving mutant.
@@ -247,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mutation check broke on {len(broken)} mutants; first at "
               f"{mutation.module_path}:{mutation.start_pos[0]}:\n{(result.output or '')[-3000:]}")
         return 1
-    if args.blocking and (hot_survivors or queue or cut):
+    if stale or (args.blocking and hot_survivors):
         return 1
     return 0
 
