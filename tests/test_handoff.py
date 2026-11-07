@@ -554,18 +554,23 @@ class ReceiptTest(unittest.TestCase):
             root = Path(d)
             dispatch.configure(config.Config(root, REPO))
             outputs = iter([subprocess.CompletedProcess([], 0, f"{ISSUE_URL}#issuecomment-4242\n", ""),
+                            subprocess.CompletedProcess([], 1, "", "boom"),
                             subprocess.CompletedProcess([], 1, "", "boom")])
 
             def run(cmd, *args, **kwargs):
                 return next(outputs) if cmd[:3] == ["gh", "issue", "comment"] else subprocess.CompletedProcess(cmd, 0, "", "")
 
-            with patch.object(dispatch, "run", side_effect=run):
+            with patch.object(dispatch, "run", side_effect=run), patch.object(dispatch.time, "sleep"):
                 dispatch.escalate(7, "gate failed", None, code="gate_failed")
-                dispatch.escalate(7, "gate failed again", None, code="gate_failed")
+                with self.assertRaises(dispatch.GitHubWriteFailed):
+                    dispatch.escalate(7, "gate failed again", None, code="gate_failed")
             rows = lifecycle.read_events(dispatch.EVENTS)
             self.assertEqual([(e["kind"], e["comment"], e["round"], e["url"]) for e in rows if e.get("event") == "comment"],
                              [("escalation", 4242, 1, f"{ISSUE_URL}#issuecomment-4242")])
             self.assertEqual([e["round"] for e in rows if e.get("event") == "escalate"], [1, 2])
+            failures = [e for e in rows if e.get("event") == "github-write-failed"]
+            self.assertEqual([(e["attempt"], e["returncode"]) for e in failures], [(1, 1), (2, 1)])
+            self.assertTrue(all(e["command"][:3] == ["gh", "issue", "comment"] for e in failures))
 
     def test_terminal_reasons_and_public_redaction(self) -> None:
         cfg = config.Config(Path("/nonexistent"), REPO, manager=["m"], manager_rounds=1)

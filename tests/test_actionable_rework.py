@@ -76,7 +76,20 @@ class ActionableReworkTest(unittest.TestCase):
         self.assertTrue(rows[0]["deferred"])
         self.assertIn("Handle the missing branch", rows[0]["findings"])
         self.assertIn("NumberReplacer", rows[0]["findings"])
-        self.assertIn("--remove-assignee", self.command.call_args.args[0])
+        labels, assigned = {dispatch.LABEL_AGENT}, True
+        for call in self.command.call_args_list:
+            command = call.args[0]
+            if command[:3] != ["gh", "issue", "edit"]:
+                continue
+            if "--remove-assignee" in command:
+                assigned = False
+            if "--remove-label" in command:
+                labels.discard(command[command.index("--remove-label") + 1])
+                self.assertTrue(labels, "queue must survive every removal")
+            if "--add-label" in command:
+                labels.add(command[command.index("--add-label") + 1])
+        self.assertFalse(assigned)
+        self.assertEqual(labels, {dispatch.LABEL_AGENT})
         # The next pass receives the packet, and cannot reset the ticket's round budget.
         self.clock = 0
         self.expire = False
