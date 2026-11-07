@@ -37,22 +37,24 @@
 # OMP file prompts require `@{prompt}`; bare `{prompt}` passes the path as text.
 # The key is a ticket label; `default` is required. First matching label wins.
 # default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
-# chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
-# Other agents work the same way, e.g.
-# default = ["claude", "-p", "--dangerously-skip-permissions", "{prompt}"]  # reads the path as text: use a wrapper
-# default = ["codex", "exec", "--full-auto", "-C", "{cwd}", "@{prompt}"]
+# chore   = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
+# Ticket workers must use omp; missing credentials fail closed before launch.
+# Define a table with a credential probe for each selected profile, e.g.
+# [workers.default]
+# command = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
+# probe = ["omp", "token", "openai-codex"]
 #
-# A worker may also be a table with `command` argv, an optional `when`, and
-# `transcript = "omp-session"` when its differently named binary accepts OMP's
-# `--session-dir` and writes compatible JSONL. A text `when` is manager guidance;
+# A worker may also be a table with `command` argv and optional `when`.
+# `transcript = "omp-session"` captures OMP-compatible JSONL for replays.
+# A text `when` is manager guidance;
 # `when = { label = "name" }` directly selects this profile for that ticket label.
 # Optional `env = { NAME = "value" }` applies only to that worker and expands
 # command placeholders; `version = "..."` records a pinned worker release in
-# claim, usage, attempt, and lifecycle evidence. Optional `probe = [...]`
-# ({root}, {repo}, {home}) is a health/auth check run before each pass; a nonzero
-# exit keeps the profile from launching and its tickets fall back to `default`.
-# Only a passing probe proves a login: without one the manager cannot choose the
-# profile, and a login failure seen at launch stands until a launch works.
+# claim, usage, attempt, and lifecycle evidence. `probe = [...]`
+# ({root}, {repo}, {home}) must check the selected model/profile credentials.
+# It runs before each pass and again before ticket launch. Missing/failed proof
+# refuses launch, including `dispatch --ticket`; no fallback to a non-OMP runner.
+# Only a passing probe proves a login; the manager cannot choose an unverified profile.
 # Commands containing a binary named `omp` default to transcript mode.
 # Array and table forms can coexist; do
 # not define a label twice. The manager lists configured profiles and their rules;

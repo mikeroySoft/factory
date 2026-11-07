@@ -32,8 +32,8 @@ npx skills add mikeroysoft/factory
 
 **Or by hand.** Linux, Python ≥ 3.11, `git`, `gh` (authenticated with push access), and:
 
-- a **worker** agent CLI that accepts a prompt file and works in a directory
-  (default `omp -p`; `droid`, `codex exec`, `claude -p`, … work the same way)
+- an **OMP worker** that accepts a prompt file and works in a directory, with a
+  configured credential probe (see worker configuration below)
 - optionally, a **manager** agent CLI that accepts a prompt file and works in a directory
 - a **reviewer** CLI that answers an inline prompt on stdout (default `omp -p --model anthropic/claude-fable-5-1`; `codex exec` works the same way)
 - optionally, an OpenAI-compatible local model for triage (Ollama, vLLM,
@@ -680,6 +680,22 @@ Factory restores its lifecycle context and strips GitHub credentials. A pinned
 lifecycle entry. The prompt lists routable profiles with their `when` rules;
 neither ROUTE nor FIX accepts unlisted profiles.
 
+Tickets carrying `ready-for-human` or `factory-held` are never worker-eligible,
+even alongside `ready-for-agent` or under `dispatch --ticket`. The dispatcher
+checks the frontier, fresh admission, host election and the labels immediately
+before each worker spawn. This also prevents manager FIX from launching while
+the issue remains held; an owner must release the hold first.
+
+Ticket worker commands must name `omp` (absolute paths and host wrappers are
+supported). The built-in default and chore profiles both use OMP. Each selected
+profile requires a configured `probe` that checks credentials for its model and
+OMP profile, for example `["omp", "token", "openai-codex"]`. A missing probe,
+failed probe, missing executable or non-OMP command refuses the ticket worker
+before spawn. Probes run again at launch, with the worker environment and
+without GitHub credentials. The selected profile is validated before considering
+any fallback, and a fallback must independently pass the same checks; there is
+no fallback to Droid. Learning/eval replays retain their isolated transport.
+
 Each launch resolves one worker spec (`Config.worker_spec`): the host wrapper,
 the profile command, its model, version, environment, transcript mode and
 provenance (`Repository`, `Host repository override`, `Host default` or
@@ -699,15 +715,12 @@ The worker's PATH is the one its launch gets, including the profile's `env`,
 both in this check and when a ticket is claimed.
 The probe is the only check that proves a login, so the manager is offered only
 profiles whose probe passed this pass, and `factory doctor` warns about each
-profile without one. A profile without a probe can still launch, but its login
-is unverified, and a failure seen at launch stands across passes until its probe
-passes or a launch works (`dispatch --ticket N` after fixing the host); PATH
-alone never clears it. `dispatch --ticket` skips the pre-pass check: an
-operator's explicit ask launches and fails loudly, still classified as below. A
-failing profile is not launched that pass and is not offered to the manager. A
-ticket that profile owns runs on `default` instead, unless the profile is chosen
-by a `when = { label = ... }` selector or `default` is down too. In that case the
-ticket waits unclaimed (`worker_unavailable`). A launch that exits nonzero
+profile without one. Ticket launches require fresh passing credential proof;
+`dispatch --ticket` skips the pre-pass check but cannot bypass launch validation.
+A failing profile is not offered to the manager. A validated profile can use
+an available `default` fallback unless selected by a `when = { label = ... }`
+selector; the fallback must independently satisfy the OMP/credential policy.
+Otherwise the ticket waits (`worker_unavailable`). A launch that exits nonzero
 without a timeout, makes no commit and leaves a clean worktree is an
 infrastructure outcome when it logs an authentication failure (`auth_failed`)
 or exits 127, the POSIX code a wrapper or launcher returns when the worker it
@@ -1391,17 +1404,14 @@ review_rounds = 1                # REVISE -> worker -> re-review cycles
 # exit_grace = 300               # seconds quiet after commit/handoff before termination; 0 disables
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
-[workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree
-default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
-chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+[workers.default]
+command = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
+probe = ["omp", "token", "openai-codex"]  # validates credentials; successful output is discarded
 
-# A differently named OMP-compatible worker selected by a separate pilot label:
-# [workers.prime]
-# when = { label = "harness-pilot" }
-# command = ["factory-prime-agent", "-p", "--cwd", "{cwd}", "@{prompt}", "--mode", "json"]
-# transcript = "omp-session"
-# version = "0.10.0"
-# env = { DO_NOT_TRACK = "1", PRIME_AGENT_TELEMETRY = "0", PRIME_AGENT_CODING_AGENT_DIR = "{root}/.factory/prime-agent" }
+[workers.chore]
+command = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
+probe = ["omp", "token", "openai-codex"]
+
 [review]
 command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]   # {prompt} = review prompt text
 # json_mode = true   # required for an OMP-compatible reviewer not named `omp`

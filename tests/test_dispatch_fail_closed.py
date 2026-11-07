@@ -49,12 +49,15 @@ class DispatchFailClosedTest(unittest.TestCase):
 
     def test_worker_round_rechecks_labels_before_every_spawn(self) -> None:
         self.ticket()
+        self.cfg.workers = {"default": ["omp", "-p", "@{prompt}"]}
+        self.cfg.worker_probe = {"default": [sys.executable, "-c", "pass"]}
         wt = dispatch.ensure_worktree(9)
         dispatch.LOGS.mkdir(parents=True, exist_ok=True)
         for label in (config.LABEL_HUMAN, "factory-held"):
             with self.subTest(label=label):
                 self.github.issue_labels = {config.LABEL_AGENT, label}
                 with self.patched(), mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                        mock.patch.object(dispatch.shutil, "which", return_value="/bin/omp"), \
                         mock.patch.object(dispatch, "run_worker", side_effect=AssertionError("ticket worker spawned")) as worker:
                     with self.assertRaisesRegex(dispatch.WorkerUnavailable, label):
                         dispatch.worker_round(9, wt, {config.LABEL_AGENT}, "ticket", "", 2, float("inf"))
