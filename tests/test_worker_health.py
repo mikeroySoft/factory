@@ -182,9 +182,10 @@ class WorkerHealthTest(unittest.TestCase):
         [down] = self.events("worker-health")
         self.assertEqual((down["worker"], down["available"], down["source"]), ("droid", False, "probe"))
         self.assertIn(str(missing), down["reason"])
-        self.assertIs(self.process(), False)
+        self.assertIsNone(self.process())
         self.assertEqual((self.events("attempt"), self.events("worker-infra")), ([], []))
         self.assertEqual(self.github.assignees, [])
+        self.assertEqual(self.events("claimed"), [])
         self.launches.assert_not_called()
 
     def test_launch_auth_failure_recovers_only_after_its_probe_passes(self) -> None:
@@ -241,9 +242,10 @@ class WorkerHealthTest(unittest.TestCase):
         self.ticket("droid", droid=self.omp("droid", sys.executable, "-c", "pass"))
         dispatch.worker_health_pass()
         self.assertNotIn("droid", manage.selectable_workers(self.cfg))
-        self.assertIs(self.process(), False)
+        self.assertIsNone(self.process())
         self.assertEqual(self.events("attempt"), [])
         self.assertEqual(self.github.assignees, [])
+        self.assertEqual(self.events("claimed"), [])
         self.launches.assert_not_called()
 
     def test_present_wrapper_does_not_mask_missing_worker(self) -> None:

@@ -664,8 +664,8 @@ complete replacement issue body. SPLIT uses a JSON array of
 `{title, body, blocked_by}` children, with `blocked_by` containing 1-based
 indexes of earlier children. ROUTE uses `{add, remove, guidance}`, with label
 arrays restricted to configured worker labels (not `default`).
-Workers can use either the legacy argv array or a `[workers.<profile>]` table with
-`command = [...]`, optional `when`, and optional `transcript = "omp-session"`.
+Worker profiles use `[workers.<profile>]` tables with required `command = [...]`
+and `probe = [...]`, plus optional `when` and `transcript = "omp-session"`.
 A text `when` value is manager routing guidance. `when = { label = "name" }`
 selects the profile directly when that ticket label is present, while keeping
 the profile name stable for `factory stats --by-worker`; otherwise the profile
@@ -690,11 +690,13 @@ Ticket worker commands must name `omp` (absolute paths and host wrappers are
 supported). The built-in default and chore profiles both use OMP. Each selected
 profile requires a configured `probe` that checks credentials for its model and
 OMP profile, for example `["omp", "token", "openai-codex"]`. A missing probe,
-failed probe, missing executable or non-OMP command refuses the ticket worker
-before spawn. Probes run again at launch, with the worker environment and
-without GitHub credentials. The selected profile is validated before considering
-any fallback, and a fallback must independently pass the same checks; there is
-no fallback to Droid. Learning/eval replays retain their isolated transport.
+failed probe, missing executable or non-OMP command blocks the ticket before
+claim. This validation includes forced `dispatch --ticket` and runs again
+immediately before launch, with the worker environment and without GitHub
+credentials. An available default cannot mask an invalid selected profile.
+There is no fallback to Droid; only launch-time infrastructure fallback between
+independently validated OMP profiles remains. Learning/eval replays retain their
+isolated transport.
 
 Each launch resolves one worker spec (`Config.worker_spec`): the host wrapper,
 the profile command, its model, version, environment, transcript mode and
@@ -703,24 +705,21 @@ provenance (`Repository`, `Host repository override`, `Host default` or
 Dispatch, `factory learn` replays, dry runs and the settings view all use that
 same value; the model shown and recorded is read from the expanded command, and
 the provenance names the layer whose `command` is launched (a higher layer that
-adds only `probe` or `env` does not change it). Before any stage, each dispatcher
-and `factory manage` pass health-checks every configured profile. A table may set
-`probe = [...]`, a health or auth check whose argv takes `{root}`, `{repo}` and
-`{home}`; it runs once under the host wrapper and the profile's environment,
-without GitHub credentials, and exit 0 means available. Only its last 64 KiB of
-output is read, and a probe past 60 s is stopped with its process group. Before
-the probe, the host wrapper and the profile's own executable must each resolve
-on the worker's PATH; a wrapper on PATH says nothing about the worker it runs.
-The worker's PATH is the one its launch gets, including the profile's `env`,
-both in this check and when a ticket is claimed.
+adds only `probe` or `env` does not change it). The required `probe = [...]`
+accepts `{root}`, `{repo}` and `{home}` placeholders. Each check runs under the
+host wrapper and profile environment, without GitHub credentials; exit 0 means
+available. Only its last 64 KiB of output is read, and a probe past 60 s is
+stopped with its process group. Before the probe, the host wrapper and the
+profile's own executable must each resolve on the worker's PATH; a wrapper on
+PATH says nothing about the worker it runs. The worker's PATH is the one its
+launch gets, including the profile's `env`, both before claim and before launch.
 The probe is the only check that proves a login, so the manager is offered only
-profiles whose probe passed this pass, and `factory doctor` warns about each
-profile without one. Ticket launches require fresh passing credential proof;
-`dispatch --ticket` skips the pre-pass check but cannot bypass launch validation.
-A failing profile is not offered to the manager. A validated profile can use
-an available `default` fallback unless selected by a `when = { label = ... }`
-selector; the fallback must independently satisfy the OMP/credential policy.
-Otherwise the ticket waits (`worker_unavailable`). A launch that exits nonzero
+profiles whose probe passed and `factory doctor` reports every missing probe as
+a blocking failure. An invalid selected profile cannot fall back to an available
+`default`. After the selected profile passes validation, an infrastructure
+failure discovered at launch may use an independently validated `default`
+unless `when = { label = ... }` requires that profile. Otherwise the ticket
+waits (`worker_unavailable`). A launch that exits nonzero
 without a timeout, makes no commit and leaves a clean worktree is an
 infrastructure outcome when it logs an authentication failure (`auth_failed`)
 or exits 127, the POSIX code a wrapper or launcher returns when the worker it
@@ -1637,16 +1636,15 @@ OMP-compatible session totals instead. `factory stats --by-worker` attributes
 those totals to the worker's claim label; workers with neither source remain
 `n/a (not reported)`.
 
-```toml
-[workers.claude]   # Claude Code `-p --output-format json` prints one result object (paths checked on 2.1.292)
-command = ["claude-worker", "--output-format", "json", "{prompt}"]
+OMP ticket workers do not need a structured-log mapper. Factory inserts
+`--session-dir .factory/transcripts/<ticket>/` and reads OMP-compatible JSONL:
+each assistant `type = "message"` entry supplies `message.model` and
+`message.usage` fields (`input`, `output`, `cacheRead`, and `cacheWrite`).
 
-[workers.claude.usage]
-match = { type = "result" }
-cost = "total_cost_usd"
-completion_tokens = "usage.output_tokens"
-cached_tokens = "usage.cache_read_input_tokens"
-prompt_tokens = ["usage.input_tokens", "usage.cache_read_input_tokens", "usage.cache_creation_input_tokens"]
+```toml
+[workers.default]
+command = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
+probe = ["omp", "token", "openai-codex"]
 ```
 
 `[prices."<model>"]` (host config, e.g. `[defaults.prices."qwen3:30b"]`) gives

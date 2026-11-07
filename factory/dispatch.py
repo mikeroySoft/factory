@@ -4965,7 +4965,10 @@ def process_ticket(
             return
         from factory import binding
 
-        fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "body"])
+        fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "body,labels"])
+        if held := worker_hold(fresh):
+            log(f"#{n}: skipped ({held})")
+            return
         try:
             admit_plan(n, fresh)
         except binding.BindingError as exc:
@@ -5037,22 +5040,18 @@ def process_ticket(
                 execution.reason = "state_changed"
                 return
             labels = {label["name"] for label in fresh["labels"]}
-            observe_owner_requeue(n, fresh)
             profile = cfg.worker_key(labels)
+            try:
+                require_worker(cfg.worker_spec(profile, wt / ".factory-prompt.md", wt))
+            except WorkerUnavailable as exc:
+                log(f"#{n}: skipped ({exc}); retry next pass")
+                execution.wait("worker_unavailable", mode="retry_next_pass", worker=profile)
+                return False if forced else None
+            observe_owner_requeue(n, fresh)
             launch = fallback_worker(profile)
             if not forced and launch is None:
                 log(f"#{n}: skipped (worker `{profile}` unavailable: {UNAVAILABLE_WORKERS[profile]}); retry next pass")
                 execution.wait("worker_unavailable", mode="retry_next_pass", worker=profile)
-                return
-            launch_spec = None if launch is None else cfg.worker_spec(launch, wt / ".factory-prompt.md", wt)
-            # The PATH the launch itself gets: the host's, overridden by the profile's `env`.
-            missing = launch_spec and worker_missing(launch_spec, {**os.environ, **launch_spec.env})
-            if not forced and missing:
-                # Frontier claims only: `--ticket` is an operator's explicit ask and fails loudly.
-                # ponytail: PATH probe only; a binary swapped out between here and Popen still
-                # fails the launch. Not claimed, so the next pass retries once it is back.
-                log(f"#{n}: skipped (worker executable not on PATH: {missing}); retry next pass")
-                execution.wait("worker_unavailable", mode="retry_next_pass", executable=missing)
                 return
             if forced and admission_id is None:
                 admission_id = record_direct_admission({**fresh, "number": n})
@@ -5519,7 +5518,7 @@ def main(argv: list[str]) -> int:
             maintenance = results.prune(cfg)
             if maintenance["status"] != "complete":
                 log(f"Accepted-result expiry incomplete ({maintenance.get('reason')}); archive left for inspection")
-            if not args.ticket:  # `--ticket` is an operator's explicit ask: it launches and fails loudly
+            if not args.ticket:  # Forced admission still validates the selected profile before claiming.
                 worker_health_pass()
         if args.ticket and not yield_for_update:
             if not issue_is_open(args.ticket):

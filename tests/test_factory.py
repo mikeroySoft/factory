@@ -5188,6 +5188,9 @@ class TriageProbeOnboardingTest(unittest.TestCase):
             root = Path(directory)
             repo = make_repo(root, '[triage]\nservice = "rocm-serve-ornith.service"\n')
             cfg = config.load(repo)
+            cfg.worker_probe = {
+                label: ["omp", "token", "openai-codex"] for label in cfg.workers
+            }
             cfg.raw_repo = {}
 
             def command(argv, cwd=None):
