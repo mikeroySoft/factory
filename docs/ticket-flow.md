@@ -97,7 +97,7 @@ flowchart TB
   MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
   PUSH -->|"agent/<n> push refused, remote moved since the lease was read or leased head absent from starting and final history while starting head remains an ancestor of final: dispatch.push_agent"| ESC
   CLAIM -->|"any other dispatcher exception after the claim, then re-raised: dispatch.process_ticket"| ESC
-  CLAIM -->|"kept HEAD has local-only commits relative to journaled dispatcher push: preserve and escalate before worker: dispatch.ensure_worktree"| ESC
+  CLAIM -->|"kept HEAD and journaled dispatcher push have diverged: preserve and escalate before worker: dispatch.ensure_worktree"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
   FA -->|"dispatch.pr_checks"| CI
   CI -->|"pending: dispatch.merge_pass_locked waits"| FA

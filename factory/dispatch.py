@@ -2000,7 +2000,7 @@ def _launch_failure(wt: Path, logfile: Path, offset: int, launch_head: str, code
 
 
 class WorktreeDiverged(RuntimeError):
-    """A kept worktree has local-only commits relative to a journaled dispatcher push."""
+    """A kept worktree and a journaled dispatcher push have diverged."""
 
 
 def ensure_worktree(n: int) -> Path:
@@ -2024,6 +2024,8 @@ def ensure_worktree(n: int) -> Path:
             row.get("event") == "agent-pushed" and row.get("ticket") == n and row.get("head") == remote
             for row in rows
         ):
+            if run(["git", "merge-base", "--is-ancestor", remote, head], cwd=wt, check=False).returncode == 0:
+                return wt
             if run(["git", "merge-base", "--is-ancestor", head, remote], cwd=wt, check=False).returncode:
                 local_only = run(["git", "log", "--format=%H %s", f"{remote}..HEAD"], cwd=wt).stdout.strip()
                 raise WorktreeDiverged(
@@ -3978,6 +3980,13 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     if target.get("baseRefName") != cfg.main:
         log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
         return False
+    removed = run(
+        ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
+        check=False,
+    )
+    if removed.returncode:
+        escalate(n, f"PR #{pr}: could not remove stale `{FACTORY_APPROVED}` approval", None, code="gh_failed")
+        return False
     try:
         wt = ensure_worktree(n)
     except WorktreeDiverged as exc:
@@ -4030,13 +4039,6 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             evidence_ref=evidence_ref,
         )
 
-    removed = run(
-        ["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED],
-        check=False,
-    )
-    if removed.returncode:
-        escalate(n, f"PR #{pr}: could not remove stale `{FACTORY_APPROVED}` approval", None, code="gh_failed")
-        return False
     run(["git", "fetch", "origin"], cwd=wt)
     local_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     remote_head = run(["git", "rev-parse", f"origin/agent/{n}"], cwd=wt).stdout.strip()
