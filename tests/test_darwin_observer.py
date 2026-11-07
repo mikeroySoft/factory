@@ -804,6 +804,143 @@ class NativeSeamTest(unittest.TestCase):
         self.assertEqual(found["exec-b"]["processes"], [])
         self.assertFalse(found["exec-b"]["complete"])
 
+    def test_saved_hand_is_read_after_it_arrives(self):
+        """Newer A, older B, then newer C. One context read each observation.
+
+        The failed premise is that one timestamp can both rank arrivals and
+        name the pending process. Call 1 reads A and leaves the hand on B.
+        C arrives. Call 2 must read B. Call 3 must read C even though C is
+        still newer than A and no further process arrives.
+        """
+        clock = {"now": 0}
+        present = [1, 2]
+        seen = []
+        sec = {1: 30, 2: 20, 3: 40}
+
+        def mono():
+            return clock["now"]
+
+        def info(pid, lib=None):
+            return {"pid": pid, "ppid": 1, "uid": 501, "status": 2, "sec": sec[pid], "usec": 1}
+
+        def args(_libc, pid, _capacity):
+            clock["now"] += darwin_observer.SCAN_DEADLINE_SECONDS + 1
+            seen.append(pid)
+            return pack_args(1, [b"x"], [b"PATH=/bin"])
+
+        def inputs():
+            return list(present), True, darwin_observer.ARGMAX_CAP, object(), object()
+
+        origins = [{
+            "execution_id": "exec-a", "boot_id": BOOT, "pid": 11,
+            "start_ticks": 0, "uid": 501,
+        }]
+
+        def once():
+            clock["now"] = 0
+            with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
+                    patch.object(darwin_observer, "_native_inputs", inputs), \
+                    patch.object(darwin_observer, "_bsdinfo", info), \
+                    patch.object(darwin_observer, "_procargs", args), \
+                    patch("factory.platform_identity.boot_id", return_value=BOOT), \
+                    patch("factory.darwin_observer.time.monotonic", mono):
+                darwin_observer._native_scan(ENV, {501}, origins)
+
+        once()
+        present.append(3)
+        once()
+        once()
+        self.assertEqual(seen, [1, 2, 3])
+
+    def test_mixed_uid_hand_follows_pending_order(self):
+        clock = {"now": 0}
+        seen = []
+
+        def mono():
+            return clock["now"]
+
+        def info(pid, lib=None):
+            if pid == 3:
+                return {"pid": 3, "ppid": 1, "uid": 502, "status": 2, "sec": 500, "usec": 1}
+            return {"pid": pid, "ppid": 1, "uid": 501, "status": 2, "sec": 50, "usec": 1}
+
+        def args(_libc, pid, _capacity):
+            clock["now"] += darwin_observer.SCAN_DEADLINE_SECONDS + 1
+            seen.append(pid)
+            return pack_args(1, [b"x"], [b"PATH=/bin"])
+
+        def inputs():
+            return [2, 3], True, darwin_observer.ARGMAX_CAP, object(), object()
+
+        origins = [
+            {"execution_id": "exec-a", "boot_id": BOOT, "pid": 10, "start_ticks": 10, "uid": 501},
+            {"execution_id": "exec-b", "boot_id": BOOT, "pid": 12, "start_ticks": None, "uid": 502},
+        ]
+
+        def once():
+            clock["now"] = 0
+            with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
+                    patch.object(darwin_observer, "_native_inputs", inputs), \
+                    patch.object(darwin_observer, "_bsdinfo", info), \
+                    patch.object(darwin_observer, "_procargs", args), \
+                    patch("factory.platform_identity.boot_id", return_value=BOOT), \
+                    patch("factory.darwin_observer.time.monotonic", mono):
+                darwin_observer._native_scan(ENV, {501, 502}, origins)
+
+        once()
+        once()
+        self.assertEqual(seen, [2, 3])
+
+    def test_missing_hand_continues_at_the_next_pending_process(self):
+        clock = {"now": 0}
+        seen = []
+        rows = {2: (80, 501), 1: (50, 501), 3: (500, 502)}
+        present = [2, 1, 3]
+
+        def mono():
+            return clock["now"]
+
+        def info(pid, lib=None):
+            sec, uid = rows[pid]
+            return {"pid": pid, "ppid": 1, "uid": uid, "status": 2, "sec": sec, "usec": 1}
+
+        def args(_libc, pid, _capacity):
+            clock["now"] += darwin_observer.SCAN_DEADLINE_SECONDS + 1
+            seen.append(pid)
+            return pack_args(1, [b"x"], [b"PATH=/bin"])
+
+        def inputs():
+            return list(present), True, darwin_observer.ARGMAX_CAP, object(), object()
+
+        origins = [
+            {"execution_id": "exec-a", "boot_id": BOOT, "pid": 10, "start_ticks": 10, "uid": 501},
+            {"execution_id": "exec-b", "boot_id": BOOT, "pid": 12, "start_ticks": None, "uid": 502},
+        ]
+
+        def once():
+            clock["now"] = 0
+            with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
+                    patch.object(darwin_observer, "_native_inputs", inputs), \
+                    patch.object(darwin_observer, "_bsdinfo", info), \
+                    patch.object(darwin_observer, "_procargs", args), \
+                    patch("factory.platform_identity.boot_id", return_value=BOOT), \
+                    patch("factory.darwin_observer.time.monotonic", mono):
+                darwin_observer._native_scan(ENV, {501, 502}, origins)
+
+        once()
+        present.remove(1)
+        once()
+        self.assertEqual(seen, [2, 3])
+
+        darwin_observer._resume = {}
+        seen = []
+        present = [2, 1, 3]
+        rows[1] = (50, 501)
+        once()
+        rows[1] = (900, 501)
+        once()
+        self.assertEqual(seen, [2, 3])
+
     def test_deadline_advances_only_attempted_reads(self):
         count = 512
         clock = {"now": 0}

@@ -21,7 +21,8 @@ Context reads stay capped at 256. A same-uid process that started after that
 uid's known process-start second is read newest first. The same second and any
 earlier start stay deferred at lower priority; they are not dropped. An
 unknown origin keeps that uid deferred, and another uid's start is not a
-cutoff. A private per-scope hand records only context reads that were started.
+cutoff. The continuation hand is the saved process identity, not a timestamp,
+and a newer arrival does not remove it.
 """
 from __future__ import annotations
 
@@ -437,11 +438,30 @@ def _priority(info: dict, known: dict) -> bool:
     return any(info["sec"] > start for start in starts)
 
 
-def _hand_index(sequence: list, hand: tuple) -> int:
-    for index, info in enumerate(sequence):
-        if _stamp(info) <= hand:
+def _identity(info: dict) -> tuple:
+    return (info["sec"], info["usec"], info["pid"])
+
+
+def _pending_key(band: int, info: dict) -> tuple:
+    """Position in the actual read order: priority band, then deferred band."""
+    return (band, -info["sec"], -info["usec"], -info["pid"])
+
+
+def _locate_hand(sequence: list, hand: dict) -> int:
+    """Exact saved process, or the next later item in the pending order.
+
+    ``sequence`` is ``(band, info)`` pairs. A timestamp cutoff is not a
+    position: a lower-stamp priority row precedes a higher-stamp deferred row.
+    """
+    want = (hand.get("sec"), hand.get("usec"), hand.get("pid"))
+    for index, (_band, info) in enumerate(sequence):
+        if _identity(info) == want:
             return index
-    return 0
+    saved = (hand.get("band"), -hand.get("sec", 0), -hand.get("usec", 0), -hand.get("pid", 0))
+    for index, (band, info) in enumerate(sequence):
+        if _pending_key(band, info) > saved:
+            return index
+    return len(sequence)
 
 
 def _resume_row(scope: tuple, boot: str):
@@ -454,46 +474,59 @@ def _resume_row(scope: tuple, boot: str):
 
 
 def _plan_reads(priority: list, deferred: list, scope: tuple, boot: str) -> dict:
-    """Choose context reads. The hand moves only after an attempt starts.
+    """Choose context reads. Pending progress is one process identity.
 
-    Priority is newest first. Deferred follows, also newest first, and includes
-    the same second and any earlier start. When a hand exists, new arrivals
-    cannot take the whole budget: SCAN_CONTINUATION_RESERVE stays with the hand.
+    A newer timestamp can add opportunistic arrivals. It does not remove the
+    saved process from the continuation, and that process is attempted first.
     """
-    sequence = priority + deferred
+    sequence = [(0, info) for info in priority] + [(1, info) for info in deferred]
     row = _resume_row(scope, boot)
     hand = row.get("hand") if row else None
     newest = row.get("newest") if row else None
-    arrivals = []
-    if newest is not None:
-        arrivals = [info for info in sequence if _stamp(info) > newest]
+    if not isinstance(hand, dict):
+        hand = None
     if hand is None:
-        chosen = list(sequence[:SCAN_CONTEXT_LIMIT])
+        chosen = [info for _band, info in sequence[:SCAN_CONTEXT_LIMIT]]
         return {
             "sequence": sequence, "chosen": chosen, "cont_start": 0,
             "hand": None, "newest": newest, "scope": scope, "boot": boot,
         }
-    start = _hand_index(sequence, hand)
-    continuation = []
-    arrival_ids = {_stamp(info) for info in arrivals}
-    for info in sequence[start:]:
-        if _stamp(info) not in arrival_ids:
-            continuation.append(info)
+    start = _locate_hand(sequence, hand)
+    if start >= len(sequence):
+        start = 0
+    continuation = [info for _band, info in sequence[start:]]
+    hand_id = (hand.get("sec"), hand.get("usec"), hand.get("pid"))
+    arrivals = []
+    if newest is not None:
+        for _band, info in sequence:
+            if _stamp(info) > newest and _identity(info) != hand_id:
+                arrivals.append(info)
     if arrivals:
         reserve = min(SCAN_CONTINUATION_RESERVE, len(continuation))
-        picked_arrivals = arrivals[:SCAN_CONTEXT_LIMIT - reserve]
+        picked = arrivals[:SCAN_CONTEXT_LIMIT - reserve]
     else:
-        picked_arrivals = []
-    room = SCAN_CONTEXT_LIMIT - len(picked_arrivals)
-    chosen = continuation[:room] + picked_arrivals
+        picked = []
+    room = SCAN_CONTEXT_LIMIT - len(picked)
+    chosen = []
+    seen = set()
+    for info in continuation[:room] + picked:
+        key = _identity(info)
+        if key in seen or len(chosen) >= SCAN_CONTEXT_LIMIT:
+            continue
+        seen.add(key)
+        chosen.append(info)
     return {
         "sequence": sequence, "chosen": chosen, "cont_start": start,
         "hand": hand, "newest": newest, "scope": scope, "boot": boot,
     }
 
 
+def _hand_record(band: int, info: dict) -> dict:
+    return {"band": band, "sec": info["sec"], "usec": info["usec"], "pid": info["pid"]}
+
+
 def _commit_reads(plan: dict, attempted: list) -> bool:
-    """Remember the next unattempted candidate. Returns whether any remain."""
+    """Remember the next process that was not read. Returns whether any remain."""
     global _resume
     sequence = plan["sequence"]
     scope = plan["scope"]
@@ -502,36 +535,40 @@ def _commit_reads(plan: dict, attempted: list) -> bool:
     else:
         _resume.pop(scope, None)
     attempted_ids = set(attempted)
-    if not sequence or all(_stamp(info) in attempted_ids for info in sequence):
+    if not sequence or all(_identity(info) in attempted_ids for _band, info in sequence):
         return False
     start = 0 if plan["hand"] is None else plan["cont_start"]
     pending = None
     progressed = False
-    for info in sequence[start:]:
-        if _stamp(info) in attempted_ids:
+    for band, info in sequence[start:]:
+        if _identity(info) in attempted_ids:
             progressed = True
             continue
-        pending = _stamp(info)
+        pending = (band, info)
         break
-    if pending is None and not progressed:
+    if pending is None and not progressed and isinstance(plan["hand"], dict):
         pending = plan["hand"]
     elif pending is None:
-        for info in sequence:
-            if _stamp(info) not in attempted_ids:
-                pending = _stamp(info)
+        for band, info in sequence:
+            if _identity(info) not in attempted_ids:
+                pending = (band, info)
                 break
     newest = plan["newest"]
     if newest is None:
-        if sequence and _stamp(sequence[0]) in attempted_ids:
-            newest = _stamp(sequence[0])
+        if sequence and _identity(sequence[0][1]) in attempted_ids:
+            newest = _stamp(sequence[0][1])
     else:
-        arrivals = [info for info in sequence if _stamp(info) > newest]
-        attempted_arrivals = [info for info in arrivals if _stamp(info) in attempted_ids]
-        if attempted_arrivals:
-            newest = max(_stamp(info) for info in attempted_arrivals)
+        arrivals = [info for _band, info in sequence if _stamp(info) > newest]
+        done = [info for info in arrivals if _identity(info) in attempted_ids]
+        if done:
+            newest = max(_stamp(info) for info in done)
     if pending is None:
         return True
-    _resume[scope] = {"boot": plan["boot"], "hand": pending, "newest": newest}
+    if isinstance(pending, dict):
+        hand = pending
+    else:
+        hand = _hand_record(pending[0], pending[1])
+    _resume[scope] = {"boot": plan["boot"], "hand": hand, "newest": newest}
     while len(_resume) > _RESUME_SCOPES:
         _resume.pop(next(iter(_resume)))
     return True

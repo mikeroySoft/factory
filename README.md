@@ -2042,11 +2042,11 @@ reads follow kernel order up to 4096 pids. Context reads stay capped at 256.
 Processes that started after their own uid's known process-start second are
 read newest first. The same second and any earlier start stay deferred, and
 an unknown origin keeps that uid deferred. Another uid's start is not a
-cutoff. Membership is a context tag or a start-validated ancestor. A private
-per-scope hand continues only through context reads that were started, so a
-deadline does not skip a process and a later observation does not repeat the
-same prefix. Past either cap, or while any deferred process is unread, the
-scan is incomplete. `pid_namespace` is `"darwin"`.
+cutoff. Membership is a context tag or a start-validated ancestor. The
+continuation hand is that process's pid and start. It stays eligible when the
+same process is also newer than the previous read, and a deadline does not
+skip it. Past either cap, or while any deferred process is unread, the scan
+is incomplete. `pid_namespace` is `"darwin"`.
 Host IDs hash the IOKit `IOPlatformUUID` with the same UUIDv5 scheme as Linux
 machine-id. The guarded observer never runs `ps`, `lsof`, `sysctl`, or
 `ioreg`. Denied, malformed, empty, or truncated reads are unknown, not absence.
