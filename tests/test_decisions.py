@@ -1,6 +1,7 @@
 """Deterministic contracts for restart-safe human decisions; no live mutations."""
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -286,6 +287,54 @@ class DecisionTest(unittest.TestCase):
             results = list(pool.map(lambda _: self.apply(preview), range(2)))
         self.assertEqual(results[0], results[1])
         self.assertEqual(self.mutations(), ["comment"])
+
+    def test_concurrent_first_lock_creation_preserves_exactly_once_receipt(self) -> None:
+        real_open = os.open
+        # Exercise real native collisions first, then model Darwin's losing
+        # non-exclusive create so Linux also enforces the failing-first contract.
+        for model_race in (False, True):
+            for attempt in range(16 if not model_race else 1):
+                with self.subTest(model_race=model_race, attempt=attempt):
+                    self.calls.clear()
+                    preview = self.proposal([{
+                        "op": "issue", "number": 7, "comment": "Concurrent once",
+                        "add": [config.LABEL_INFO],
+                    }])
+                    name = f"apply-{preview['proposal_id']}.lock"
+                    barrier = threading.Barrier(2, timeout=10)
+
+                    def simultaneous_open(
+                        path, flags, mode=0o777, *, dir_fd=None,
+                        name=name, barrier=barrier, model_race=model_race,
+                    ):
+                        if path == name and flags & os.O_CREAT:
+                            barrier.wait()
+                            if model_race and not flags & os.O_EXCL:
+                                try:
+                                    return real_open(path, flags | os.O_EXCL, mode, dir_fd=dir_fd)
+                                except FileExistsError as exc:
+                                    # XNU's internal create-race restart loses
+                                    # the relative lookup anchor before flock.
+                                    raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path) from exc
+                        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+                    with (
+                        mock.patch.object(decisions.os, "open", side_effect=simultaneous_open),
+                        ThreadPoolExecutor(max_workers=2) as pool,
+                    ):
+                        results = list(pool.map(lambda _, preview=preview: self.apply(preview), range(2)))
+                    self.assertEqual(results[0], results[1])
+                    self.assertEqual(results[0]["status"], "success")
+                    self.assertEqual([step["status"] for step in results[0]["steps"]], ["applied", "applied"])
+                    self.assertEqual(self.mutations(), ["comment", "edit"])
+                    receipt = self.cfg.factory / "decisions" / f"receipt-{preview['proposal_id']}.json"
+                    contents, info = receipt.read_bytes(), receipt.stat()
+                    self.assertEqual(self.apply(preview), results[0])
+                    self.assertEqual(self.mutations(), ["comment", "edit"])
+                    self.assertEqual(receipt.read_bytes(), contents)
+                    retained = receipt.stat()
+                    self.assertEqual((retained.st_ino, retained.st_mtime_ns), (info.st_ino, info.st_mtime_ns))
+                    self.assertEqual(retained.st_mode & 0o222, 0)
 
     def test_crash_or_ambiguous_transport_after_intent_is_uncertain_and_never_retried(self) -> None:
         preview = self.proposal([{"op": "issue", "number": 7, "comment": "May have arrived"}])
