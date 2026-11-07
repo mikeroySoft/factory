@@ -222,6 +222,7 @@ event. `{}` is a runtime value.
 
 | Code | Reason | Edge |
 |------|--------|------|
+| `dispatch.escalate` | ``worker killed by {} (budget_exceeded) before gate; last gate passed; worktree kept at {}`` | Budget-killed worker after the current generation's last passing gate → escalate (`budget`, not `gate_failed`) |
 | `dispatch.process_ticket` | ``worker edited protected paths`` | worker round → escalate |
 | `dispatch.process_ticket` | ``worker removed or changed existing tests`` | worker round → escalate (add-only or protected-tests check; the escalation detail names the check and clearing label) |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded`` | worker round → escalate |
