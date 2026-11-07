@@ -77,6 +77,7 @@ class ReviewMergeBaseTest(unittest.TestCase):
             "state": "OPEN", "labels": [{"name": config.LABEL_AGENT}],
             "assignees": [{"login": "factory"}],
         }))
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
         self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value="factory"))
 
     def advance_main(self) -> str:
