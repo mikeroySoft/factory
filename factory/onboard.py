@@ -370,7 +370,9 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
 
     with probe:
         try:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Darwin's SO_REUSEADDR permits a specific bind beside a dual-stack holder.
+            if sys.platform != "darwin":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(target)
             collision = False
         except OSError as exc:
