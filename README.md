@@ -1054,7 +1054,7 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    keys or failed calls retain noun order; top 15 plus tracked README/CHANGELOG
    remain the selection rule.
 
-   Each `brief-rerank` journal row records requested/resolved model,
+   Each `brief-rerank` row in `.factory/brief-rerank.jsonl` records requested/resolved model,
    `input_tokens`, estimated USD `cost` ($0.042/million input tokens), status,
    candidate pool and top-k. Unreported usage/model values are null, not zero
    or an inferred resolved version. Cost is no longer printed to worker stdout.
@@ -1064,8 +1064,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `in_top_k` booleans. `retrieval_misses` counts files outside the pool;
    `ranking_misses` counts pool members outside the top 15 (before the docs rule).
    Missing legacy metadata or an unavailable diff yields null coverage/counts.
-   These are retrieval evidence, separate from worker exit/gate outcomes in the
-   same ticket/attempt; changed files alone do not prove worker omissions.
+   Both event kinds use this separate, flock-serialized retrieval journal,
+   leaving lifecycle consumers of `events.jsonl` unchanged. They link to worker
+   exit/gate outcomes by ticket/attempt; changed files alone do not prove worker omissions.
 
    Changing the model pin requires rerunning [#139's frozen Recall@5
    evaluation](https://github.com/mikeroySoft/factory/issues/139) and recording

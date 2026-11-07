@@ -67,12 +67,11 @@ def _journal(cfg: Config, event: str, **fields) -> None:
     row = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event, **fields}
     execution = lifecycle.current()
     if execution is not None:
-        execution.commit()
         row.update(execution_id=execution.execution_id, dispatcher_run_id=execution.dispatcher_run_id)
         for key in ("ticket", "attempt"):
             if row.get(key) is None:
                 row[key] = getattr(execution, key)
-    lifecycle.append(cfg.factory / "events.jsonl", row)
+    lifecycle.append(cfg.factory / "brief-rerank.jsonl", row)
 
 
 def rerank(cwd: Path, issue: dict, paths: list[str], *, cfg: Config | None = None,
