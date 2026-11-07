@@ -36,12 +36,11 @@ class StatsCycleTargetConfigTest(unittest.TestCase):
 
     def test_cycle_target_hours_rejects_invalid_values(self) -> None:
         for value in ("true", '"6.6"', "0", "-1", "nan", "inf"):
-            with self.subTest(value=value):
-                with self.assertRaisesRegex(
-                    config.ConfigError,
-                    r"stats\.cycle_target_hours must be a positive finite number",
-                ):
-                    self.load(f"[stats]\ncycle_target_hours = {value}\n")
+            with self.subTest(value=value), self.assertRaisesRegex(
+                config.ConfigError,
+                r"stats\.cycle_target_hours must be a positive finite number",
+            ):
+                self.load(f"[stats]\ncycle_target_hours = {value}\n")
 
     def test_stats_must_be_a_table(self) -> None:
         with self.assertRaisesRegex(config.ConfigError, r"\[stats\] must be a table"):

@@ -75,6 +75,15 @@ class WeeklyCycleTest(unittest.TestCase):
         self.assertEqual(result["cycle_median_hours"], 4.5)
         self.assertEqual(result["cycle_ci95"], [1, 30])
 
+    def test_fixed_seed_bootstrap_interpolates_percentile_endpoints(self) -> None:
+        durations = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610,
+                     987, 1597, 2584, 4181, 6765, 10946]
+        rows = [row for ticket, duration in enumerate(durations, 1)
+                for row in (ready(ticket, 0), event("merged", ticket, duration / 100))]
+        result = stats.weekly_cycle_metrics(rows, START, END, 6.6)
+        self.assertEqual(result["cycle_median_hours"], 1.165)
+        self.assertEqual(result["cycle_ci95"], [0.16999999999999998, 8.002999999999998])
+
 
 class WeeklyOutcomeTest(unittest.TestCase):
     def metrics(self, rows):
@@ -133,6 +142,30 @@ class WeeklyOutcomeTest(unittest.TestCase):
         self.assertEqual(empty["cases"], 0)
         self.assertTrue(empty["pass_k_reason"])
 
+    def test_eval_latest_profile_and_run_replaces_older_case_evidence(self) -> None:
+        rows = [event("eval", 1, 1, case="case", profile="old", run="old",
+                      repeat=i, status="completed", approved=True)
+                for i in range(1, promotion.MIN_REPEATS + 1)]
+        rows += [event("eval", 1, 3, case="case", profile="new", run="new",
+                       repeat=1, status="completed", approved=False)]
+        result = self.metrics(rows)
+        self.assertIsNone(result["pass_k"])
+        self.assertEqual(result["cases"], 0)
+        self.assertEqual(result["pass_k_excluded"], 1)
+
+    def test_eval_timestamp_offsets_and_window_end_are_respected(self) -> None:
+        rows = [event("eval", 1, 1, case="case", run="a", repeat=i,
+                      status="completed", approved=True)
+                for i in range(1, promotion.MIN_REPEATS + 1)]
+        rows += [{**event("eval", 1, 0, case="case", run="b", repeat=1,
+                         status="completed", approved=False),
+                  "at": "2026-10-26T00:00:00-03:00"},
+                 event("eval", 1, 168, case="case", run="c", repeat=1,
+                       status="completed", approved=True)]
+        result = self.metrics(rows)
+        self.assertIsNone(result["pass_k"])
+        self.assertEqual(result["pass_k_excluded"], 1)
+
 
 class WeeklyOutcomeCommandTest(unittest.TestCase):
     def test_text_and_json_use_history_target_and_explicit_null_reasons(self) -> None:
@@ -166,6 +199,8 @@ class WeeklyOutcomeCommandTest(unittest.TestCase):
         rows = [event("pr-opened", 1, -50, pr=11), event("merged", 1, 10, pr=11),
                 event("pr-opened", 2, 1, pr=12)]
         def gh(*args):
+            if args[0:2] == ("issue", "list"):
+                return [{"number": 3}]
             if args[0] == "api":
                 ticket = int(args[1].split("/")[-2])
                 return [[{"event": "labeled", "created_at": (START - timedelta(hours=1)).isoformat(),
@@ -180,7 +215,7 @@ class WeeklyOutcomeCommandTest(unittest.TestCase):
         result = stats.weekly_cycle_metrics(enriched, START, END, 6.6)
         self.assertEqual(result["cycle_median_hours"], 6)
         self.assertEqual(result["cycle_n"], 1)
-        self.assertEqual(result["cycle_open"], 1)
+        self.assertEqual(result["cycle_open"], 2)
 
     def test_github_failure_is_missing_evidence_not_claim_time(self) -> None:
         cfg = config.Config(Path("/unused"), "acme/widgets")
@@ -189,6 +224,12 @@ class WeeklyOutcomeCommandTest(unittest.TestCase):
             result = stats.weekly_cycle_metrics(stats.cycle_events(cfg, rows, START, END), START, END, 6.6)
         self.assertIsNone(result["cycle_median_hours"])
         self.assertTrue(result["cycle_reason"])
+
+    def test_prs_after_window_and_old_merges_do_not_trigger_reads(self) -> None:
+        cfg = config.Config(Path("/unused"), "acme/widgets")
+        rows = [event("pr-opened", 1, 168, pr=11), event("merged", 2, -1, pr=12)]
+        with mock.patch.object(stats, "gh", side_effect=AssertionError("network")):
+            self.assertEqual(stats.cycle_events(cfg, rows, START, END), rows)
 
 
 if __name__ == "__main__":

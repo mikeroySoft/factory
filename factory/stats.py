@@ -6,6 +6,7 @@ import argparse
 import functools
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -13,10 +14,10 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from statistics import pstdev
+from statistics import median, pstdev, quantiles
 from typing import Any
 
-from factory import config, feedback, lifecycle, onboard, risk
+from factory import config, feedback, lifecycle, onboard, promotion, risk
 from factory.config import LABEL_AGENT, LABEL_HUMAN, USAGE_FIELDS, Config
 
 cfg: Config
@@ -349,6 +350,153 @@ def weekly_metrics(
     if any(row.get("event") in {"skill-load", "skill-coverage"} for row in rows):
         result.update(skills=skill_metrics(rows), skill_coverage=skill_coverage(rows))
     return result
+
+
+def weekly_cycle_metrics(
+    events: list[dict], start: datetime, end: datetime, target: float,
+) -> dict:
+    """Ready-label to merge durations in [start, end), retaining pre-window labels."""
+    ready: dict[int, list[datetime]] = {}
+    merges: dict[int, datetime] = {}
+    for row in events:
+        ticket, at = row.get("ticket"), _timestamp(row.get("at"))
+        if type(ticket) is not int or at is None or at >= end:
+            continue
+        if row.get("event") == "labeled" and (row.get("label") or {}).get("name") == LABEL_AGENT:
+            ready.setdefault(ticket, []).append(at)
+        elif row.get("event") == "merged":
+            merges[ticket] = max(merges.get(ticket, at), at)
+    durations = sorted(
+        (merged - max(before)).total_seconds() / 3600
+        for ticket, merged in merges.items() if start <= merged
+        if (before := [at for at in ready.get(ticket, []) if at < merged])
+    )
+    interval = None
+    if durations:
+        rng = random.Random(0)
+        samples = [median(rng.choices(durations, k=len(durations))) for _ in range(2000)]
+        percentiles = quantiles(samples, n=40, method="inclusive")
+        interval = [percentiles[0], percentiles[-1]]
+    return {
+        "cycle_median_hours": median(durations) if durations else None,
+        "cycle_ci95": interval,
+        "cycle_n": len(durations),
+        "cycle_target_hours": target,
+        "cycle_open": len(ready.keys() - merges.keys()),
+        "cycle_reason": None if durations else "no merged tickets with pre-merge ready-for-agent label evidence",
+    }
+
+
+def cycle_events(c: Config, events: list[dict], start: datetime, end: datetime) -> list[dict]:
+    """Enrich journal PR identities with paginated labels and the actual PR merge time.
+
+    Legacy rows without a PR identity cannot establish an actual PR merge timestamp.
+    Missing GitHub evidence never falls back to a claim as the readiness timestamp.
+    """
+    configure(c)
+    identities = {}
+    finished = {}
+    for row in events:
+        at = _timestamp(row.get("at"))
+        if type(row.get("ticket")) is not int or at is None or at >= end:
+            continue
+        if row.get("event") == "merged":
+            finished[row["ticket"]] = at
+        if row.get("event") == "claimed":
+            identities.setdefault(row["ticket"], None)
+        if row.get("event") in {"merged", "pr-opened"} and type(row.get("pr")) is int:
+            identities[row["ticket"]] = row["pr"]
+    identities = {ticket: pr for ticket, pr in identities.items()
+                  if ticket not in finished or finished[ticket] >= start and pr is not None}
+    if not identities:
+        return list(events)
+    try:
+        queued = gh("issue", "list", "--state", "open", "--label", LABEL_AGENT,
+                    "--limit", "1000", "--json", "number")
+    except (SystemExit, OSError, ValueError, subprocess.SubprocessError):
+        queued = []
+    for issue in queued:
+        identities.setdefault(issue["number"], None)
+    result = list(events)
+    for ticket, pr in identities.items():
+        try:
+            labels = timeline(ticket)
+            merged = gh("pr", "view", str(pr), "--json", "mergedAt") if pr is not None else None
+        except (SystemExit, OSError, ValueError, subprocess.SubprocessError):
+            continue
+        if merged is not None:
+            result = [row for row in result
+                      if not (row.get("ticket") == ticket and row.get("event") == "merged")]
+        result.extend(
+            {"event": "labeled", "ticket": ticket, "at": item["createdAt"], "label": item["label"]}
+            for item in labels if item["__typename"] == "LabeledEvent"
+        )
+        if merged is not None and _timestamp(merged.get("mergedAt")) is not None:
+            result.append({"event": "merged", "ticket": ticket, "pr": pr, "at": merged["mergedAt"]})
+    return result
+
+
+def _pass_k(events: list[dict], end: datetime) -> dict:
+    # Each case uses its newest run; never fill a short run with older repeats.
+    latest: dict[str, dict] = {}
+    dated = [(at, row) for row in events
+             if row.get("event") == "eval" and (at := _timestamp(row.get("at"))) is not None and at < end]
+    for _, row in sorted(dated, key=lambda item: item[0]):
+        if (not isinstance(row.get("case"), str) or not isinstance(row.get("run"), str)
+                or type(row.get("repeat")) is not int or not 1 <= row["repeat"] <= promotion.MIN_REPEATS):
+            continue
+        key = row["case"]
+        run = (row.get("profile"), row["run"])
+        previous = latest.get(key)
+        if previous is None or previous["run"] != run:
+            latest[key] = {"run": run, "repeats": {}}
+        latest[key]["repeats"][row["repeat"]] = row
+    complete = [case["repeats"] for case in latest.values()
+                if all(repeat in case["repeats"] for repeat in range(1, promotion.MIN_REPEATS + 1))]
+    passes = sum(
+        all(case[repeat].get("status") == "completed" and case[repeat].get("approved") is True
+            for repeat in range(1, promotion.MIN_REPEATS + 1))
+        for case in complete
+    )
+    return {
+        "pass_k": passes / len(complete) if complete else None,
+        "k": promotion.MIN_REPEATS,
+        "cases": len(complete),
+        "pass_k_excluded": len(latest) - len(complete),
+        "pass_k_reason": None if complete else "no complete eval cases",
+    }
+
+
+def weekly_outcome_metrics(
+    events: list[dict], start: datetime, end: datetime, target: float,
+) -> dict:
+    """Weekly outcome metrics composed with the existing journal-rate aggregation."""
+    rows = [row for row in window_rows(events, start, end)
+            if _timestamp(row["at"]) < end]
+    merged = {row["ticket"] for row in rows
+              if row.get("event") == "merged" and type(row.get("ticket")) is int}
+    # Worker llm-usage and attempt carry the same charge. Legacy attempts stand alone.
+    worker_costs = Counter(
+        (row.get("ticket"), row.get("attempt"))
+        for row in rows if row.get("event") == "llm-usage" and row.get("stage") == "worker"
+        and type(row.get("cost")) in (int, float)
+    )
+    costs = []
+    for row in rows:
+        if type(row.get("cost")) not in (int, float):
+            continue
+        key = (row.get("ticket"), row.get("attempt"))
+        if row.get("event") == "attempt" and worker_costs[key]:
+            worker_costs[key] -= 1
+            continue
+        costs.append(row["cost"])
+    return {
+        **weekly_cycle_metrics(events, start, end, target),
+        "cost_per_merged_ticket": sum(costs) / len(merged) if costs and merged else None,
+        "cost_n": len(costs),
+        "cost_reason": "no merged tickets" if not merged else "no journaled cost" if not costs else None,
+        **_pass_k(events, end),
+    }
 
 
 def stuck_over_days(now: datetime, days: int = 7) -> list[dict] | str:
@@ -993,11 +1141,16 @@ def main(argv: list[str]) -> int:
     if args.week:
         now = _now()
         start = now - timedelta(days=7)
-        journal_rows = window_rows(lifecycle.read_events(journal), start, now)
+        history = lifecycle.read_events(journal)
+        journal_rows = window_rows(history, start, now)
         rows = weekly_metrics(
             journal_rows, start, now,
             cfg.llm_model if config.local_endpoint(cfg.llm_url) else None,
         )
+        outcomes = weekly_outcome_metrics(
+            cycle_events(cfg, history, start, now), start, now, cfg.stats_cycle_target_hours,
+        )
+        rows.update(outcomes)
         rows.setdefault("skills", skill_metrics(journal_rows))
         rows.setdefault("skill_coverage", skill_coverage(journal_rows))
         rows["stuck_over_days"] = stuck_over_days(now)
@@ -1006,6 +1159,8 @@ def main(argv: list[str]) -> int:
         else:
             print(f"Window: {rows['window']['start']} to {rows['window']['end']}")
             print(f"Merges: {rows['merges']}")
+            for key, value in outcomes.items():
+                print(f"{key}: {json.dumps(value)}")
             print(f"Human touches: {rows['human_touches']} ({rows['human_touches_per_merge']} per merge)")
             print(f"Escalations: {rows['escalations_7d']} ({rows['escalations_by_code']})")
             print(f"First pass: {rows['first_pass']} "
