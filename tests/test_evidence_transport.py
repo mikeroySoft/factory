@@ -204,6 +204,25 @@ class EvidenceTransportTest(unittest.TestCase):
         proc.wait()
 
 
+    def test_marker_discovery_and_cleanup_without_proc(self):
+        """macOS discovery must find and kill only this fixture's live child."""
+        sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+        marked = subprocess.Popen([*sleeper, "x" * 2048, self.marker])
+        self.addCleanup(self.reap_process, marked)
+        unrelated = subprocess.Popen([*sleeper, uuid.uuid4().hex])
+        self.addCleanup(self.reap_process, unrelated)
+        with patch.object(sys, "platform", "darwin"), patch.object(
+                os, "listdir", side_effect=FileNotFoundError("/proc")):
+            self.assertEqual(self.marker_pids(), [marked.pid])
+            self.kill_marker_pids()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and self.marker_pids():
+                time.sleep(0.05)
+            self.assertEqual(self.marker_pids(), [], "cleanup left a live marked child")
+            self.assertEqual(marked.wait(timeout=5), -signal.SIGKILL)
+            self.assertIsNone(unrelated.poll(), "cleanup killed an unrelated child")
+
+
     def test_complete_page_reports_known_attention_not_null(self):
         self.responses[PREFIX + "issues"] = {"json": build_issues(8)}
         (self.root / ".factory").mkdir()
