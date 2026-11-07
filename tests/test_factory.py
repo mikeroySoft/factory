@@ -68,6 +68,21 @@ def make_repo(tmp: Path, toml: str = "") -> Path:
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
     return repo
 
+CLAIM_LOGIN = "factory-bot"
+
+
+def claimed_issue(number: int = 7, **fields) -> dict:
+    return {
+        "number": number,
+        "title": "Fixture issue",
+        "body": "Fixture acceptance criteria",
+        "comments": [],
+        "state": "OPEN",
+        "labels": [],
+        "assignees": [{"login": CLAIM_LOGIN}],
+        **fields,
+    }
+
 
 def curate_diff(*paths: str) -> str:
     """A unified diff creating each path with one line, as a manager's CURATE body."""
@@ -1598,6 +1613,48 @@ class ManageTest(unittest.TestCase):
 
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
         host_file("")
+        from factory import dispatch, manage
+
+        # These manager/gate scenarios assume a live claim; revocation has its own fixture.
+        apply = manage.apply
+        process_ticket = dispatch.process_ticket
+
+        def claimed_manager(n, *args, **kwargs):
+            with patch.object(
+                dispatch, "_ticket_claim_state", return_value=claimed_issue(n),
+            ), patch.object(
+                dispatch, "host_claim_login", return_value=CLAIM_LOGIN,
+            ), patch("factory.handoff.timeline", return_value=[]):
+                return apply(n, *args, **kwargs)
+
+        def claimed_process(issue, *args, **kwargs):
+            with patch.object(
+                dispatch, "_ticket_claim_state", return_value=claimed_issue(issue["number"]),
+            ), patch.object(
+                dispatch, "host_claim_login", return_value=CLAIM_LOGIN,
+            ), patch("factory.handoff.timeline", return_value=[]):
+                return process_ticket(issue, *args, **kwargs)
+
+        self.enterContext(patch.object(manage, "apply", side_effect=claimed_manager))
+        self.enterContext(patch.object(dispatch, "process_ticket", side_effect=claimed_process))
+        install = stub_bin
+
+        def claimed_stubs(tmp, **scripts):
+            if "gh" in scripts:
+                timeline = "" if "timeline" in scripts["gh"] else '''
+if [ "$1" = api ]; then
+  case "$2" in */issues/*/timeline) echo '[]'; exit;; esac
+fi
+'''
+                scripts["gh"] = '''
+if [ "$1 $2" = "api user" ]; then echo '{"login":"factory-bot"}'; exit; fi
+case "$1 $2 $*" in
+  "issue view "*state,labels,assignees*) echo '{"number":7,"state":"OPEN","labels":[],"assignees":[{"login":"factory-bot"}]}'; exit;;
+esac
+''' + timeline + scripts["gh"]
+            return install(tmp, **scripts)
+
+        self.enterContext(patch(__name__ + ".stub_bin", side_effect=claimed_stubs))
 
     def scenario(self, round_number: int = 1, activity: list | None = None) -> tuple:
         tmp = tempfile.TemporaryDirectory()
@@ -2442,11 +2499,30 @@ class DispatchTest(unittest.TestCase):
         real_gh_json = dispatch.gh_json
 
         def github(args, *positional, **kwargs):
+            if args == ["api", "user"]:
+                return {"login": CLAIM_LOGIN}
+            if args[:2] == ["issue", "view"] and args[-1] == "state,labels,assignees":
+                return claimed_issue()
             if args[:2] == ["issue", "view"] and args[-2:] == ["--json", "title,body,comments"]:
                 return {"title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": []}
+            if args[0] == "api" and args[1].endswith("/issues/7/timeline"):
+                return []
             return real_gh_json(args, *positional, **kwargs)
 
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=github))
+        refresh_pr_branch = dispatch.refresh_pr_branch
+
+        def claimed_refresh(n, *args, **kwargs):
+            with mock.patch.object(
+                dispatch, "_ticket_claim_state", return_value=claimed_issue(n),
+            ), mock.patch.object(
+                dispatch, "host_claim_login", return_value=CLAIM_LOGIN,
+            ), mock.patch("factory.handoff.timeline", return_value=[]):
+                return refresh_pr_branch(n, *args, **kwargs)
+
+        self.enterContext(mock.patch.object(
+            dispatch, "refresh_pr_branch", side_effect=claimed_refresh,
+        ))
 
     def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
         from unittest import mock

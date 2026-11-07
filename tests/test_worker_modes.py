@@ -36,6 +36,12 @@ class WorkerModesTest(unittest.TestCase):
         self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
             "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
         }))
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
+        self.enterContext(mock.patch.object(dispatch, "_ticket_claim_state", return_value={
+            "state": "OPEN", "labels": [{"name": config.LABEL_AGENT}],
+            "assignees": [{"login": "factory"}],
+        }))
+        self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value="factory"))
 
     def write_config(self, worker_transcript: str = 'transcript = "omp-session"\n', review_mode: str = "json_mode = true\n") -> None:
         (self.root / config.CONFIG_NAME).write_text(

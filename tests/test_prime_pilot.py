@@ -54,6 +54,9 @@ class PrimePilotConfigTest(unittest.TestCase):
 
 
 class PrimePilotLifecycleTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
+
     def test_worker_environment_and_version_are_present_on_lifecycle_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

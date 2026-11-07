@@ -55,6 +55,12 @@ class WorkerPlanTest(unittest.TestCase):
         self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
             "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
         }))
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
+        self.enterContext(mock.patch.object(dispatch, "_ticket_claim_state", return_value={
+            "state": "OPEN", "labels": [{"name": config.LABEL_AGENT}],
+            "assignees": [{"login": "factory"}],
+        }))
+        self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value="factory"))
 
     def events(self, event: str) -> list[dict]:
         return [row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("event") == event]

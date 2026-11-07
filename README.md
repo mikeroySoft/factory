@@ -207,6 +207,13 @@ absent locally. Linear work is refused if it still omits a leased head absent
 from its starting history. Starting-history state ends at the first push or
 ticket exit, so it cannot affect later refresh or manager FIX pushes.
 No other ref is force-pushed.
+Every agent push also rechecks the live issue's dispatcher assignment and refuses
+`ready-for-human` tickets. A `push-refused` journal row records `ticket`, local
+`head` SHA and `reason`; local commits remain in the kept worktree. This ends the
+run without another escalation, including manager FIX and refresh pushes.
+Refresh checks ownership before changing the PR or worktree and after merge,
+gate and review operations. Revocation journals `refresh-refused`, preserves the
+local candidate, and blocks automatic conflict/gate/risk requeue transitions.
 Review-request opt-in accepts requests naming either the dispatcher's or the
 dashboard's login.
 
@@ -739,7 +746,13 @@ the ticket to `ready-for-agent`. It is limited to required add-only edits or
 removal of obsolete wording-only assertions, and never authorizes protected
 paths. The normal gate and independent review run again. FIX uses
 `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
-in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels.
+in the kept `agent/<n>` worktree for its open PR, ignoring other worker labels.
+FIX requires the live dispatcher claim and a ticket not labelled `ready-for-human`;
+it cannot restart an escalated or unassigned ticket. Requeue to `ready-for-agent`
+through the existing human workflow before a subsequent pass claims it again.
+A refused manager FIX is terminal for its decision: `manage-terminal` records
+the reason and the existing routed human handoff runs instead of silently
+spending the manager round.
 A kept head ahead of the remote PR head is pushed first
 (`--force-with-lease` against the recorded PR head) when it is a head a
 journaled worker attempt of this ticket produced; any other kept head
@@ -1045,6 +1058,23 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    retried). One that committed or wrote its handoff, then stayed quiet for
    `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
    The attempt journal row and escalation packet name the timeout that fired.
+   Before launch, after exit and at each worker poll (5 s), the dispatcher checks
+   the live issue. `ready-for-human`, removal of its assignee, or loss of its
+   elected host claim ends the run; a running worker's whole process group is
+   stopped with SIGTERM (SIGKILL after 10 s). `worker-stopped` records the ticket,
+   local head and reason. A revoked run cannot start another worker in that pass,
+   including manager FIX. An unreadable claim fails closed; the ticket pass
+   releases its claim and records a retry-next-pass wait, keeping local work.
+   No gate, push or new ticket review follows revocation.
+   Admission and subsequent live checks read GitHub's unassignment/requeue
+   timeline, even on another host
+   with no local stop row. A human unassignment holds an old `ready-for-agent`
+   label until a later human requeue: remove/re-add `ready-for-agent`, or use the
+   guarded `requeue_agent` action. Timeline order—not when this host noticed the
+   removal—determines whether the requeue is later. Reassignment alone is not a
+   requeue. Authenticated dispatcher self-releases for normal retries remain
+   claimable. Refusing a pre-claim manager FIX creates no persistent hold.
+   Unreadable history fails closed; no new approval or gate is introduced.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
@@ -1145,10 +1175,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    escalates persistent failure as `reviewer_unavailable` without sending work
    back to the worker. Each accepted `REVISE` sends the findings back to the
    worker, flagged so only the required fixes are binding (re-gate, push,
-   re-review), up to `review_rounds` times; then it escalates. A manager `FIX`
-   failure leaves an already-`ready-for-human` ticket on its existing escalation
-   instead of posting another escalation comment or consuming another manager
-   round.
+   re-review), up to `review_rounds` times; then it escalates. Live claim checks
+   before ticket review also cover manager FIX, refresh and both High-risk lanes.
    `APPROVE` adds the `factory-approved` label only while the remote PR still
    points to the exact commit that passed the gate and review. The successful
    label operation and gate/review commit are recorded in `.factory/events.jsonl`.
@@ -1314,8 +1342,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    label kept, so a later green rerun still merges.
    Existing behind PRs re-earn bound evidence through that automatic refresh.
    An up-to-date PR carrying a pre-upgrade unbound approval is withdrawn and
-   escalated once; use the existing manager `FIX` path to re-run its worker,
-   gate, push, and review. Do not hand-edit the journal or fabricate SHA fields.
+   escalated once; requeue through the existing human workflow so the next claim
+   re-runs its worker, gate, push and review. Do not hand-edit the journal or
+   fabricate SHA fields.
    PR creation explicitly selects `[repo].main` (default `main`), independently
    of the installed engine channel and GitHub's default branch. Approval and merge
    eligibility require that same PR target; existing wrong-target PRs are left
@@ -1917,8 +1946,10 @@ branches, or merge state.
 - **Logs**: `.factory/logs/<n>-attempt-<k>.log` per worker round;
   `.factory/wt-<n>/.factory/gate-report-<n>.md` per gate;
   `journalctl --user -u factory-<repo>.service` for dispatcher passes.
-- **Re-run one ticket by hand**: `factory dispatch --ticket N` (bypasses the
-  frontier and its label checks; respects the in-flight lock).
+- **Re-run one ticket by hand**: `factory dispatch --ticket N` bypasses frontier
+  selection, assignment and intake-label checks, but respects the in-flight lock,
+  `ready-for-human` and run-revocation guards. Human requeue is still required
+  after escalation or removal of the dispatcher's claim.
 - **Stop everything**: `systemctl --user disable --now factory-<repo>.timer`.
   In-flight tickets finish their current pass; nothing new is claimed.
 - **Tear down a ticket**: verify any accepted handoff is retained before manually

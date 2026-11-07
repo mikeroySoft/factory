@@ -46,6 +46,7 @@ The ticket returns to ready-for-agent; the normal gate and independent review ru
 FIX: JSON object {"worker": "label", "guidance": "..."}.
 Dispatch exactly one round of that listed worker in the kept agent worktree for its open PR.
 Code re-gates, pushes and re-reviews; approval requires a passing gate and fresh APPROVE.
+FIX requires a live dispatcher claim and no ready-for-human label; otherwise no worker runs.
 HUMAN: plain-text diagnosis; leave the ticket with the human.
 CLOSE: plain-text diagnosis; closes the ticket's open PR when present. With or without one,
 a human's issue stays open with `wontfix-proposal`; a factory-created SPLIT child closes as not planned.
@@ -375,7 +376,85 @@ def _split_bodies(n: int, parent_body: str, children: list[dict]) -> list[dict]:
     return prepared
 
 
-def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
+def _fix(n: int, issue: dict, data: dict, packet: Path) -> None:
+    cfg = dispatch.cfg
+    wt = cfg.factory / f"wt-{n}"
+    pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
+                           "--json", "state,headRefName,headRefOid,baseRefName,reviewDecision"])
+    if pr.get("baseRefName") != cfg.main:
+        raise ValueError(f"FIX requires a PR targeting the configured target `{cfg.main}`")
+    if not wt.is_dir() or pr["state"] != "OPEN" or pr["headRefName"] != f"agent/{n}" or pr["reviewDecision"] == "CHANGES_REQUESTED":
+        raise ValueError("FIX requires a kept factory worktree and an open PR without requested changes")
+    dispatch.require_ticket_claim(wt, n, "worker")
+    if dispatch.run(["git", "branch", "--show-current"], cwd=wt).stdout.strip() != f"agent/{n}":
+        raise ValueError("FIX worktree is not on the ticket branch")
+    lease = pr.get("headRefOid")
+    local = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    events = lifecycle.read_events(dispatch.EVENTS)
+    if local != lease:
+        # Publish only the worker's journaled commits, never an unrelated kept head.
+        own = any(e.get("event") == "attempt" and e.get("ticket") == n and e.get("head") == local for e in events)
+        ahead = dispatch.run(["git", "merge-base", "--is-ancestor", lease or "", "HEAD"], cwd=wt, check=False).returncode == 0
+        if not (own and ahead):
+            dispatch.escalate(
+                n, f"FIX worktree head {local} is not the PR head {lease} plus the worker's own commits; "
+                f"worktree kept at {wt}", None, code="refresh_head",
+            )
+            return
+        if dispatch.push_agent(wt, n, lease, check=False) is None:
+            dispatch.escalate(
+                n, f"FIX could not push the worker's own commits: origin/agent/{n} moved since {lease}; "
+                f"worktree kept at {wt}", None, code="lease_refused",
+            )
+            return
+        lease = local
+    dispatch.LOGS.mkdir(parents=True, exist_ok=True)
+    attempts = [e.get("attempt", 0) for e in events
+                if e.get("event") == "attempt" and e.get("ticket") == n]
+    extra = f"## Manager FIX guidance\n\n{data['guidance']}\n\n{packet.read_text()}"
+    comments = None
+    if any(label["name"] == "bug" for label in issue.get("labels", [])):
+        fresh = dispatch.gh_json(
+            ["issue", "view", str(n), "--repo", dispatch.REPO, "--json", "comments"]
+        )
+        comments = fresh.get("comments")
+    ok, report, logfile, gate_head = dispatch.worker_round(
+        n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
+        issue["title"], extra, max(attempts, default=0) + 1,
+        time.monotonic() + cfg.budget_min * 60, body=issue.get("body") or "",
+        selected_worker=data["worker"], comments=comments,
+    )
+    dispatch.require_ticket_claim(wt, n, "worker")
+    if not ok:
+        dispatch.escalate(n, "gate failed after manager FIX", logfile, code="gate_failed")
+        return
+    fresh = dispatch.gh_json(
+        ["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "baseRefName"]
+    )
+    if fresh.get("baseRefName") != cfg.main:
+        raise ValueError(f"FIX requires a PR targeting the configured target `{cfg.main}`")
+    dispatch.push_agent(wt, n, lease)
+    dispatch.record_risk(wt, n, gate_head)
+    verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
+    dispatch.pr_comment(n, findings)
+    if pr_failed:
+        dispatch.escalate(
+            n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings,
+            code="pr_checks_failed",
+        )
+    elif verdict is None:
+        dispatch.escalate(n, "reviewer unavailable after manager FIX", logfile, code="reviewer_unavailable")
+    elif verdict != "APPROVE":
+        dispatch.escalate(n, "review requested changes after manager FIX", logfile, code="review_revise")
+    elif not dispatch.approve_pr(n, gate_head):
+        dispatch.escalate(
+            n, "approval evidence, head, or human review state changed before manager FIX approval",
+            logfile, code="approval_drift",
+        )
+
+
+def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path,
+          **decided: object) -> None:
     def issue_action(action: str, *args: str) -> None:
         dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args])
 
@@ -403,108 +482,11 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         else:
             data = _split_bodies(n, issue.get("body") or "", data)
     if decision == "FIX":
-        cfg = dispatch.cfg
-        wt = cfg.factory / f"wt-{n}"
-        already_human = any(
-            label.get("name") == LABEL_HUMAN for label in issue.get("labels", [])
-        )
-        pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
-                               "--json", "state,headRefName,headRefOid,baseRefName,reviewDecision"])
-        if pr.get("baseRefName") != cfg.main:
-            raise ValueError(f"FIX requires a PR targeting the configured target `{cfg.main}`")
-        if not wt.is_dir() or pr["state"] != "OPEN" or pr["headRefName"] != f"agent/{n}" or pr["reviewDecision"] == "CHANGES_REQUESTED":
-            raise ValueError("FIX requires a kept factory worktree and an open PR without requested changes")
-        if dispatch.run(["git", "branch", "--show-current"], cwd=wt).stdout.strip() != f"agent/{n}":
-            raise ValueError("FIX worktree is not on the ticket branch")
-        lease = pr.get("headRefOid")
-        local = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-        events = lifecycle.read_events(dispatch.EVENTS)
-        if local != lease:
-            # Ahead of the PR head only with the worker's own journaled head (#264): push it on a
-            # lease against the recorded PR head and go on. Anything else is a human's call.
-            own = any(e.get("event") == "attempt" and e.get("ticket") == n and e.get("head") == local for e in events)
-            ahead = dispatch.run(["git", "merge-base", "--is-ancestor", lease or "", "HEAD"], cwd=wt, check=False).returncode == 0
-            if not (own and ahead):
-                reason = (
-                    f"FIX worktree head {local} is not the PR head {lease} plus the worker's own commits; "
-                    f"worktree kept at {wt}"
-                )
-                if already_human:
-                    dispatch.log(f"#{n}: manager FIX failed (refresh_head: {reason}); ticket is already ready-for-human")
-                else:
-                    dispatch.escalate(n, reason, None, code="refresh_head")
-                return
-            if dispatch.push_agent(wt, n, lease, check=False) is None:
-                reason = (
-                    f"FIX could not push the worker's own commits: origin/agent/{n} moved since {lease}; "
-                    f"worktree kept at {wt}"
-                )
-                if already_human:
-                    dispatch.log(f"#{n}: manager FIX failed (lease_refused: {reason}); ticket is already ready-for-human")
-                else:
-                    dispatch.escalate(n, reason, None, code="lease_refused")
-                return
-            lease = local
-        dispatch.LOGS.mkdir(parents=True, exist_ok=True)
-        attempts = [e.get("attempt", 0) for e in events
-                    if e.get("event") == "attempt" and e.get("ticket") == n]
-        extra = f"## Manager FIX guidance\n\n{data['guidance']}\n\n{packet.read_text()}"
-        comments = None
-        if any(label["name"] == "bug" for label in issue.get("labels", [])):
-            fresh = dispatch.gh_json(
-                ["issue", "view", str(n), "--repo", dispatch.REPO, "--json", "comments"]
-            )
-            comments = fresh.get("comments")
-        ok, report, logfile, gate_head = dispatch.worker_round(
-            n, wt, {data["worker"]} | {label["name"] for label in issue.get("labels", [])},
-            issue["title"], extra, max(attempts, default=0) + 1,
-            time.monotonic() + cfg.budget_min * 60, body=issue.get("body") or "",
-            selected_worker=data["worker"],
-            comments=comments,
-        )
-        if not ok:
-            reason = "gate failed after manager FIX"
-            if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (gate_failed: {reason}); ticket is already ready-for-human")
-            else:
-                dispatch.escalate(n, reason, logfile, code="gate_failed")
-            return
-        fresh = dispatch.gh_json(
-            ["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "baseRefName"]
-        )
-        if fresh.get("baseRefName") != cfg.main:
-            raise ValueError(f"FIX requires a PR targeting the configured target `{cfg.main}`")
-        dispatch.push_agent(wt, n, lease)
-        dispatch.record_risk(wt, n, gate_head)
-        verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
-        dispatch.pr_comment(n, findings)
-        if pr_failed:
-            reason = "pr checks failed"
-            if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (pr_checks_failed: {reason}); ticket is already ready-for-human")
-            else:
-                dispatch.escalate(
-                    n, reason, logfile, extra="## PR-tier gate report\n\n" + findings,
-                    code="pr_checks_failed",
-                )
-        elif verdict is None:
-            reason = "reviewer unavailable after manager FIX"
-            if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (reviewer_unavailable: {reason}); ticket is already ready-for-human")
-            else:
-                dispatch.escalate(n, reason, logfile, code="reviewer_unavailable")
-        elif verdict != "APPROVE":
-            reason = "review requested changes after manager FIX"
-            if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (review_revise: {reason}); ticket is already ready-for-human")
-            else:
-                dispatch.escalate(n, reason, logfile, code="review_revise")
-        elif not dispatch.approve_pr(n, gate_head):
-            reason = "approval evidence, head, or human review state changed before manager FIX approval"
-            if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (approval_drift: {reason}); ticket is already ready-for-human")
-            else:
-                dispatch.escalate(n, reason, logfile, code="approval_drift")
+        try:
+            _fix(n, issue, data, packet)
+        except dispatch.TicketRunStopped as exc:
+            dispatch.record("manage-terminal", ticket=n, decision="FIX", reason=exc.reason, **decided)
+            dispatch.log(str(exc))
         return
 
     if decision == "AUTHORIZE":
@@ -841,10 +823,13 @@ CI_KINDS = ("check_run", "commit_status")
 
 
 def apply_fix(n: int, issue: dict, data: dict, packet: Path, **decided: object) -> None:
-    """Execute a journaled FIX. One that finds no healthy worker is a host defect (#662): it
-    stays pending for `resume_fix`, never a spent or failed decision."""
+    """Execute a journaled FIX.
+
+    An unavailable worker stays pending for `resume_fix`; a refused ticket claim is terminal
+    for this decision and lets the human handoff pass take over.
+    """
     try:
-        apply(n, issue, "FIX", "", data, packet)
+        apply(n, issue, "FIX", "", data, packet, **decided)
     except dispatch.WorkerUnavailable as exc:
         dispatch.record("manage-pending", ticket=n, decision="FIX", worker=data["worker"],
                         guidance=data["guidance"], packet=str(packet), reason=str(exc), **decided)

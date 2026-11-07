@@ -403,6 +403,8 @@ class HostClaimRevisionTest(unittest.TestCase):
 
         with mock.patch.object(module, "run", side_effect=post_comment):
             module.escalate(7, "CI failed on PR #70", None, code="ci_failed")
+        # The escalation pass has ended; subsequent relabel/recovery runs in a new pass.
+        module.configure(module.cfg)
 
     def test_foreign_escalation_then_human_relabel_resumes_existing_pr(self):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")

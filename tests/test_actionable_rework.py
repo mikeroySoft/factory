@@ -181,6 +181,20 @@ class ActionableReworkTest(unittest.TestCase):
 
     def refreshed_review(self):
         import subprocess
+        # Each probe is a separate claimed refresh pass, not a resumed terminal run.
+        dispatch.configure(self.cfg)
+        if any(label["name"] == dispatch.LABEL_HUMAN for label in self.issue["labels"]):
+            self.issue["assignees"] = []
+            self.timeline.extend([
+                {"event": "unassigned", "assignee": {"login": "factory"},
+                 "actor": {"login": "owner", "type": "User"}},
+                {"event": "unlabeled", "label": {"name": dispatch.LABEL_HUMAN},
+                 "actor": {"login": "owner", "type": "User"}},
+                {"event": "labeled", "label": {"name": dispatch.LABEL_AGENT},
+                 "actor": {"login": "owner", "type": "User"}},
+            ])
+            self.issue["labels"] = [{"name": dispatch.LABEL_AGENT}]
+        self.issue["assignees"] = [{"login": "factory"}]
         dispatch.record("attempt", ticket=7, head=risk_tests.HEAD, worker_model="worker/model", gate="PASS")
 
         def command(args, **kwargs):

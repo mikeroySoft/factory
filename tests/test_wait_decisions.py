@@ -18,6 +18,7 @@ class WaitDecisions(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        self.enterContext(patch("factory.handoff.timeline", return_value=[]))
         self.cfg = Config(root=Path(temp.name), repo="local/waits", max_active=1)
         self.events = self.cfg.factory / "events.jsonl"
         self.enterContext(patch.multiple(

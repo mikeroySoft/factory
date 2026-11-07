@@ -32,8 +32,9 @@ def public(text: str) -> str:
     return MENTION.sub("&#64;", text)
 
 
-def timeline(n: int) -> list[dict]:
-    pages = dispatch.gh_json(["api", f"repos/{dispatch.REPO}/issues/{n}/timeline", "--paginate", "--slurp"])
+def timeline(n: int, *, repo: str | None = None, read=None) -> list[dict]:
+    pages = (read or dispatch.gh_json)(["api", f"repos/{repo or dispatch.REPO}/issues/{n}/timeline",
+                                       "--paginate", "--slurp"])
     return [item for page in pages for item in page] if pages and isinstance(pages[0], list) else pages
 
 
@@ -69,9 +70,16 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     # Once a resume took the FIX up, only the latest resume's own run decides: the deciding pass
     # and any earlier resume that re-pended are superseded, however they ended.
     judged = [resumes[-1]] if resumes else decided
+    judged_ids = {d.get("execution_id") for d in judged}
+    stopped = next((e for e in since if e.get("event") == "manage-terminal"
+                    and e.get("decision") == "FIX" and e.get("round") == r and not e.get("pr")
+                    and e.get("execution_id") in judged_ids), None)
+    if stopped:
+        return (f"the manager's FIX was refused because the ticket claim stopped being usable "
+                f"({stopped.get('reason', 'unknown')})")
     failed = next((e for e in events if e.get("event") == "lifecycle" and e.get("kind") == "exit"
                    and e.get("outcome") in ({"mechanism_failure", "interrupted", "unknown"} if resumes else {"mechanism_failure"})
-                   and e.get("execution_id") in {d.get("execution_id") for d in judged}), None)
+                   and e.get("execution_id") in judged_ids), None)
     if failed:
         return f"the manager's {decided[-1].get('decision')} decision could not be applied to GitHub and is never replayed"
     return None  # handed back to automation; a later failure is a new escalation generation

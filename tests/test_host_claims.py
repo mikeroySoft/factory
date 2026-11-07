@@ -72,6 +72,8 @@ class FakeGitHub:
                     barrier = self.fresh_barrier
             elif args[0] == "api":
                 endpoint = next(arg for arg in args if arg.startswith("repos/"))
+                if endpoint.endswith("/timeline"):
+                    return []
                 if endpoint.endswith("/comments") and "--method" not in args:
                     result = [copy.deepcopy(self.comments)] if "--slurp" in args else copy.deepcopy(self.comments)
                     if self.comments_barrier is not None and host not in self.comment_hosts:
@@ -382,6 +384,9 @@ class TriageHostTest(unittest.TestCase):
 class SingleHostTest(unittest.TestCase):
     def setUp(self):
         HostClaimRaceTest.setUp(self)
+        # This legacy single-host claim fixture starts with no prior run to revoke.
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
+        self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value="@me"))
 
     dispatcher = HostClaimRaceTest.dispatcher
     launch = HostClaimRaceTest.launch

@@ -73,6 +73,10 @@ class FakeGitHub:
                 "labels": [{"name": label} for label in sorted(self.issue_labels)]}
 
     def gh_json(self, args: list[str]) -> object:
+        if args[0] == "api" and args[1].endswith("/timeline"):
+            return []
+        if args == ["api", "user"]:
+            return {"login": "factory"}
         if args[:2] == ["pr", "list"]:
             return [] if self.merged else [self.pr()]
         if args[:2] == ["pr", "view"]:
@@ -140,6 +144,21 @@ class RefreshConflictTest(unittest.TestCase):
         self.github = FakeGitHub(self.origin, dispatch.run)
 
     def patched(self):
+        # These legacy refresh scenarios start a newly admitted, claimed pass.
+        # A previous FIX's human label must be requeued before refresh, not by it.
+        refresh = dispatch.refresh_pr_branch
+
+        def claimed_refresh(n, *args, **kwargs):
+            if config.LABEL_HUMAN in self.github.issue_labels:
+                self.github.issue_labels.discard(config.LABEL_HUMAN)
+                self.github.issue_labels.add(config.LABEL_AGENT)
+            if not self.github.assignees or n in dispatch._ESCALATED:
+                dispatch.configure(self.cfg)
+                dispatch.observe_owner_requeue(n, self.github.issue())
+                self.github.assignees = ["factory"]
+            return refresh(n, *args, **kwargs)
+
+        self.enterContext(mock.patch.object(dispatch, "refresh_pr_branch", side_effect=claimed_refresh))
         return mock.patch.multiple(dispatch, gh_json=self.github.gh_json, run=self.github.run)
 
     def events(self, name: str) -> list[dict]:
@@ -429,6 +448,7 @@ class ManagerFixAheadTest(unittest.TestCase):
     def setUp(self) -> None:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
         tmp = Path(temp.name)
         self.root, self.origin = build_fork(tmp)
         git(self.origin, "branch", "agent/7")
@@ -454,8 +474,21 @@ class ManagerFixAheadTest(unittest.TestCase):
         pr = {"state": "OPEN", "headRefName": "agent/7", "headRefOid": self.pr_head,
               "baseRefName": "main", "reviewDecision": ""}
         logfile = self.root / "attempt.log"
+        def github(args):
+            if args == ["api", "user"]:
+                return {"login": "factory"}
+            if args[:2] == ["issue", "view"]:
+                return {
+                    "state": "OPEN",
+                    "labels": [{"name": config.LABEL_AGENT}],
+                    "assignees": [{"login": "factory"}],
+                }
+            return pr
+
         with mock.patch.object(dispatch, "run", side_effect=run), \
                 mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                mock.patch.object(dispatch, "_ticket_claim_state", return_value=github(["issue", "view"])), \
+                mock.patch.object(dispatch, "host_claim_login", return_value="factory"), \
                 mock.patch.object(dispatch, "worker_round",
                                   side_effect=lambda *a, **k: (True, "ok", logfile, git(self.wt, "rev-parse", "HEAD"))) as worker, \
                 mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "fine", False)), \
@@ -524,6 +557,10 @@ class RefreshGateFailureRecoveryTest(unittest.TestCase):
         self.github = FakeGitHub(self.origin, dispatch.run)
 
     def patched(self):
+        # Recovery scenarios start a new claimed pass after human requeue/assignment.
+        self.github.issue_labels = {config.LABEL_AGENT}
+        self.github.assignees = ["factory"]
+        dispatch.configure(self.cfg)
         return mock.patch.multiple(dispatch, gh_json=self.github.gh_json, run=self.github.run)
 
     def events(self, name: str) -> list[dict]:
@@ -746,12 +783,17 @@ class TriageExemptionRegateTest(unittest.TestCase):
                 "factory-protected-override: comment is not override authority",
             }],
         }
+        self.issue.update(state="OPEN", assignees=[{"login": "factory"}])
         self.requests = []
         self.login = mock.patch.object(triage, "login", return_value="factory-bot")
         self.login.start()
         self.addCleanup(self.login.stop)
 
     def gh_json(self, args):
+        if args[0] == "api" and args[1].endswith("/timeline"):
+            return []
+        if args == ["api", "user"]:
+            return {"login": "factory"}
         fields = args[args.index("--json") + 1].split(",")
         if args[:2] == ["issue", "view"]:
             self.requests.append(fields)

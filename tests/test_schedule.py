@@ -133,6 +133,7 @@ class DispatcherPassTest(unittest.TestCase):
             UPSTREAM=None, UPSTREAM_REPO=None, FACTORY=self.cfg.factory,
             LOGS=self.cfg.factory / "logs", EVENTS=self.events, MAX_ACTIVE=3,
         ))
+        self.enterContext(patch("factory.handoff.timeline", return_value=[]))
 
     def test_ticket_pass_claims_in_policy_order_and_journals_the_explanation(self):
         # Keep the fairness/experiment scenario, but with NEXT rather than claimable NOW work.

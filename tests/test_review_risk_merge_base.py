@@ -60,6 +60,12 @@ class ReviewRiskMergeBaseTest(unittest.TestCase):
         self.enterContext(mock.patch.object(binding, "accepted", return_value={"issue": {
             "title": "Watch change", "body": "Change watch without reverting main.", "comments": [],
         }}))
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
+        self.enterContext(mock.patch.object(dispatch, "_ticket_claim_state", return_value={
+            "state": "OPEN", "labels": [{"name": config.LABEL_AGENT}],
+            "assignees": [{"login": "factory"}],
+        }))
+        self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value="factory"))
 
     def commit(self, repo: Path, files: dict[str, str]) -> str:
         for name, source in files.items():

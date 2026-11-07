@@ -134,6 +134,14 @@ class TraceEmissionTest(unittest.TestCase):
         self.events = self.cfg.factory / "events.jsonl"
         dispatch.configure(self.cfg)
         triage.configure(self.cfg)
+        self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=lambda args: (
+            {"login": "factory"} if args == ["api", "user"] else {
+                "state": "OPEN",
+                "labels": [{"name": config.LABEL_AGENT}],
+                "assignees": [{"login": "factory"}],
+            }
+        )))
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
 
     def decisions(self, stage: str) -> list[dict]:
         return [row for row in lifecycle.read_events(self.events)

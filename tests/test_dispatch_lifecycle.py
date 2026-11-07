@@ -18,6 +18,28 @@ p = Path(os.environ["SMOKE_STATE"])
 s = json.loads(p.read_text())
 a = sys.argv[1:]
 issue = {"number": 7, "title": "local change", "body": "Acceptance: make the local change", "comments": [], "labels": [{"name": "ready-for-agent"}], "assignees": [], "state": "OPEN"}
+claim_login = s.get("login", "factory-bot")
+if "labels" in s:
+    issue["labels"] = [{"name": name} for name in s["labels"]]
+if s.get("assignee"):
+    issue["assignees"] = [{"login": s["assignee"]}]
+if a[:2] == ["api", "user"]:
+    print(claim_login if "--jq" in a else json.dumps({"login": claim_login}))
+    raise SystemExit(0)
+if a[:2] == ["issue", "edit"]:
+    labels = [row["name"] for row in issue["labels"]]
+    for i, arg in enumerate(a[:-1]):
+        value = a[i + 1]
+        if arg == "--add-label" and value not in labels:
+            labels.append(value)
+        elif arg == "--remove-label" and value in labels:
+            labels.remove(value)
+        elif arg == "--add-assignee":
+            s["assignee"] = claim_login
+        elif arg == "--remove-assignee":
+            s.pop("assignee", None)
+    s["labels"] = labels
+    p.write_text(json.dumps(s))
 if s.get("sync"):  # the dispatcher filed a sync ticket; the only open issue until its PR merges
     issue = {**issue, "title": "upstream sync: 1 commit(s) at local", "body": s["sync"], "state": "CLOSED" if s.get("merged") else "OPEN"}
 if a[:2] == ["issue", "view"]:
@@ -48,9 +70,26 @@ elif a[:2] == ["pr", "merge"]:
     p.write_text(json.dumps(s))
 elif a[0] == "api" and "/compare/" in a[1]:
     print(json.dumps({"behind_by": 0}))
+elif a[0] == "api" and a[1].endswith("/issues/7/timeline"):
+    print("[]")
 elif a[:2] not in (["issue", "edit"], ["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):
     raise SystemExit("Unexpected external operation: " + repr(a))
 '''
+
+def active_github(args, issue: dict, pr: dict) -> dict | list:
+    if args == ["api", "user"]:
+        return {"login": "factory-bot"}
+    if args[0] == "api" and args[1].endswith("/issues/7/timeline"):
+        return []
+    if args[:2] == ["issue", "view"] and args[-1] == "state,labels,assignees":
+        return {
+            **issue,
+            "state": "OPEN",
+            "labels": issue.get("labels", []),
+            "assignees": [{"login": "factory-bot"}],
+        }
+    return pr if args[:2] == ["pr", "view"] else issue
+
 
 WORKER = '''from pathlib import Path
 p = Path("change.txt")
@@ -117,6 +156,31 @@ class LocalCLI(unittest.TestCase):
         self.git("remote", "add", "origin", str(origin))
         self.git("push", "-u", "origin", "main")
         self.events = self.repo / ".factory" / "events.jsonl"
+
+        # In-process manager scenarios start a separate, human-requeued claimed pass.
+        from unittest import mock
+
+        from factory import config, dispatch, manage
+
+        apply = manage.apply
+
+        def claimed_manager(n, issue, *args, **kwargs):
+            state = json.loads(self.state.read_text())
+            state.update(
+                labels=[label["name"] for label in issue.get("labels", [])] or ["ready-for-agent"],
+                assignee="factory-bot",
+            )
+            self.state.write_text(json.dumps(state))
+            dispatch.configure(config.load(self.repo))
+            with mock.patch.object(
+                dispatch, "_ticket_claim_state",
+                return_value=active_github(["issue", "view", "state,labels,assignees"], issue, {}),
+            ), mock.patch.object(
+                dispatch, "host_claim_login", return_value="factory-bot",
+            ), mock.patch("factory.handoff.timeline", return_value=[]):
+                return apply(n, issue, *args, **kwargs)
+
+        self.enterContext(mock.patch.object(manage, "apply", side_effect=claimed_manager))
 
     def git(self, *args):
         return subprocess.run(["git", *args], cwd=self.repo, env=self.env, check=True, capture_output=True, text=True)
@@ -949,6 +1013,9 @@ class LocalCLI(unittest.TestCase):
               "baseRefName": "main", "reviewDecision": ""}
         with mock.patch.dict(os.environ, self.env), \
                 mock.patch.object(dispatch, "gh_json", side_effect=lambda a: pr if a[:2] == ["pr", "view"] else issue), \
+                mock.patch.object(dispatch, "_ticket_claim_state",
+                                  return_value=active_github(["issue", "view", "state,labels,assignees"], issue, pr)), \
+                mock.patch.object(dispatch, "host_claim_login", return_value="factory-bot"), \
                 mock.patch.object(dispatch, "push_agent", return_value=head), \
                 mock.patch.object(dispatch, "pr_comment"), \
                 mock.patch.object(dispatch, "approve_pr", return_value=True) as approve, \
@@ -1905,6 +1972,12 @@ class WorkerCompletionBoundaryLifecycleTest(unittest.TestCase):
             original_gate = dispatch.run_gate
             original_round = dispatch.worker_round
 
+            def with_ticket(fake):
+                def launch(argv, wt, logfile, handoff_path, deadline, ticket, **kwargs):
+                    return fake(argv, wt, logfile, handoff_path, deadline, ticket=ticket, **kwargs)
+                return launch
+
+            @with_ticket
             def worker(_argv, wt, _logfile, handoff_path, _deadline, **_kwargs):
                 worker_calls.append(wt)
                 change = wt / f"change-{len(worker_calls)}.txt"

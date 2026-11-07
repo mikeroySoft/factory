@@ -134,6 +134,14 @@ class RiskTierTest(unittest.TestCase):
 
 
 class LowPolicyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(mock.patch.object(dispatch, "_ticket_claim_state", return_value={
+            "state": "OPEN", "labels": [{"name": config.LABEL_AGENT}],
+            "assignees": [{"login": "factory"}],
+        }))
+        self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value="factory"))
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
+
     def test_low_skips_pr_checks_and_runs_one_primary_review(self) -> None:
         cfg = config.Config(Path("."), "acme/widgets")
         cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]

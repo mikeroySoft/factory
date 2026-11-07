@@ -31,6 +31,15 @@ class ManagerFixWorkerSelectionTest(unittest.TestCase):
         self.cfg.factory.mkdir()
         dispatch.configure(self.cfg)
         dispatch.LOGS.mkdir()
+        mock.patch.object(dispatch, "gh_json", side_effect=lambda args: (
+            {"login": "factory"} if args == ["api", "user"] else {
+                "state": "OPEN",
+                "labels": [{"name": config.LABEL_AGENT}],
+                "assignees": [{"login": "factory"}],
+            }
+        )).start()
+        mock.patch("factory.handoff.timeline", return_value=[]).start()
+
 
     def fix_round(self, ticket: int, labels: set[str], selected_worker: str) -> tuple[str, dict]:
         commands = []

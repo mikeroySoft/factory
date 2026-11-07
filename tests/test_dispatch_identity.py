@@ -192,6 +192,24 @@ class AgentPushLeaseTest(unittest.TestCase):
         self.git(self.wt, "push", "-q", "origin", "agent/7")  # the dispatcher's earlier push
         self.fetched, self.main = self.remote("agent/7"), self.remote("main")
         self.git(tmp, "clone", "-q", "-b", "agent/7", str(self.origin), str(self.other))
+        self.enterContext(mock.patch.object(
+            dispatch, "_ticket_claim_state", side_effect=lambda n: self.github(["issue", "view"]),
+        ))
+        self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value="factory-bot"))
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
+
+    @staticmethod
+    def github(args):
+        if args == ["api", "user"]:
+            return {"login": "factory-bot"}
+        if args[:2] == ["issue", "view"]:
+            return {
+                "state": "OPEN",
+                "labels": [{"name": config.LABEL_AGENT}],
+                "assignees": [{"login": "factory-bot"}],
+            }
+        return []
+
 
     def git(self, cwd: Path, *args: str) -> str:
         return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
