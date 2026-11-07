@@ -124,3 +124,6 @@ raise SystemExit(not result.wasSuccessful())
         for module in ("test_review_isolation", "test_review_policy", "test_worker_modes",
                        "test_worker_plan", "test_learn_candidate_review"):
             self.assert_module_isolated(module, "review")
+
+    def test_watch_reader_fixtures_keep_lifecycle_rows_in_fixture_journals(self):
+        self.assert_module_isolated("test_watch_routing", "worker")
