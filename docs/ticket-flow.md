@@ -245,7 +245,7 @@ event. `{}` is a runtime value.
 | `dispatch.refresh_pr_branch` | ``PR #{}: could not remove stale `{}` approval`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``PR #{}: {}; `{}` label removed`` | refresh → escalate (wraps the reasons below) |
 | `dispatch.refresh_pr_branch` | ``kept worktree head {} differs from remote head {}`` | refresh → escalate |
-| `dispatch.refresh_pr_branch` | ``{} onto moved main conflicts (protected paths without `{}`); worktree {}`` | refresh → escalate immediately, conflict file list in the packet |
+| `dispatch.refresh_pr_branch` | ``{} onto moved main conflicts (protected paths outside named `{}` scope); worktree {}`` | refresh → escalate immediately, named override scope and outside-scope conflict file list in the packet |
 | `dispatch.refresh_pr_branch` | ``{} onto moved main conflicts (after {} conflict-resolution round(s)); worktree {}`` | refresh → escalate once `review_rounds` conflict requeues are used up, conflict file list in the packet |
 | `dispatch.refresh_pr_branch` | ``{} onto moved main conflicts (ticket is not open); worktree {}`` | refresh → escalate (ticket is no longer open) |
 | `dispatch.refresh_pr_branch` | ``nothing ahead of {} after {}; refusing to push`` | refresh → escalate |

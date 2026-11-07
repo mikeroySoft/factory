@@ -180,7 +180,7 @@ class ScopedProtectedOverrideTest(unittest.TestCase):
                 }
                 with mock.patch.object(dispatch, "run", side_effect=run), \
                         mock.patch.object(dispatch, "ensure_worktree", return_value=self.repo), \
-                        mock.patch.object(dispatch, "gh_json", side_effect=lambda command: (
+                        mock.patch.object(dispatch, "gh_json", side_effect=lambda command, issue=issue: (
                             {"baseRefName": "main"} if command[0] == "pr" else issue
                         )), mock.patch.object(dispatch, "escalate") as escalate:
                     self.assertFalse(dispatch.refresh_pr_branch(622, 700, False))
