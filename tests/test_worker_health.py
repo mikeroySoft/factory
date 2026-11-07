@@ -246,6 +246,21 @@ class WorkerHealthTest(unittest.TestCase):
         self.assertEqual(self.github.assignees, [])
         self.launches.assert_not_called()
 
+    def test_present_wrapper_does_not_mask_missing_worker(self) -> None:
+        missing = self.tmp / "missing-wrapped-worker" / "omp"
+        self.ticket("droid", droid=[str(missing)])
+        self.cfg.worker_wrap = ["env"]
+        self.cfg.worker_probe["droid"] = PROBE_PASSES
+        dispatch.worker_health_pass()
+        [down] = self.events("worker-health")
+        self.assertEqual((down["worker"], down["available"], down["check"]), ("droid", False, "executable"))
+        self.assertIn(str(missing), down["reason"])
+        self.process()
+        self.assertEqual(self.events("claimed"), [])
+        self.assertEqual(self.events("attempt"), [])
+        self.assertFalse(any("--add-assignee" in cmd for cmd in self.github.calls))
+        self.launches.assert_not_called()
+
     def test_a_missing_wrapper_makes_every_profile_unavailable(self) -> None:
         self.ticket()
         self.cfg.worker_wrap = ["factory-test-missing-wrapper"]

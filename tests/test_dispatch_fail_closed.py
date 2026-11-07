@@ -83,3 +83,60 @@ class DispatchFailClosedTest(unittest.TestCase):
                     dispatch.worker_round(9, wt, {"chosen"}, "ticket", "", 1, float("inf"))
                 worker.assert_not_called()
                 self.assertEqual(self.events("attempt"), [])
+
+    def test_invalid_selected_profile_never_claims_even_with_available_default(self) -> None:
+        for forced in (False, True):
+            for prepass in (False, True):
+                for problem in ("non-omp", "no-probe", "failed-probe", "missing-executable"):
+                    with self.subTest(forced=forced, prepass=prepass, problem=problem):
+                        self.ticket("chosen")
+                        command = self.cfg.workers["default"]
+                        probe = [sys.executable, "-c", "pass"]
+                        if problem == "non-omp":
+                            command = ["droid", "exec"]
+                        elif problem == "no-probe":
+                            probe = None
+                        elif problem == "failed-probe":
+                            probe = [sys.executable, "-c", "raise SystemExit(1)"]
+                        else:
+                            command = [str(self.tmp / "missing" / "omp")]
+                        self.cfg.workers["chosen"] = command
+                        if probe:
+                            self.cfg.worker_probe["chosen"] = probe
+                        dispatch.configure(self.cfg)
+                        if prepass:
+                            dispatch.worker_health_pass()
+                        with self.patched(), mock.patch.object(dispatch, "run_worker") as worker:
+                            dispatch.process_ticket(self.github.issue(), 30, False, forced=forced)
+                        self.assertEqual(self.events("claimed"), [])
+                        self.assertEqual(self.events("plan-bound"), [])
+                        self.assertFalse(any("--add-assignee" in cmd for cmd in self.github.calls))
+                        self.assertFalse((dispatch.FACTORY / "wt-9").exists())
+                        worker.assert_not_called()
+
+    def test_invalid_profile_is_refused_before_host_claim(self) -> None:
+        self.ticket()
+        self.cfg.host_name = "fixture-host"
+        self.cfg.worker_probe.clear()
+        with self.patched(), \
+                mock.patch.object(dispatch, "host_claim_state", return_value=([], "")), \
+                mock.patch.object(dispatch, "release_stale_claims", side_effect=lambda n, fresh, claims: fresh), \
+                mock.patch.object(dispatch, "acquire_host_claim", return_value=None) as claim, \
+                mock.patch.object(dispatch, "run_worker") as worker:
+            dispatch.process_ticket(self.github.issue(), 30, False, forced=True)
+        claim.assert_not_called()
+        worker.assert_not_called()
+        self.assertEqual(self.events("claimed"), [])
+
+    def test_dry_run_reports_fresh_holds_instead_of_planning_a_worker(self) -> None:
+        self.ticket()
+        stale = self.github.issue()
+        for label in (config.LABEL_HUMAN, "factory-held"):
+            with self.subTest(label=label):
+                self.github.issue_labels = {config.LABEL_AGENT, label}
+                with self.patched(), mock.patch.object(dispatch, "log") as log:
+                    dispatch.process_ticket(stale, 30, True, forced=True)
+                messages = "\n".join(call.args[0] for call in log.call_args_list)
+                self.assertIn(label, messages)
+                self.assertNotIn("would claim", messages)
+                self.assertEqual(self.events("claimed"), [])
