@@ -147,6 +147,22 @@ class DashboardBatchTest(unittest.TestCase):
             self.assertEqual(measurements[-1]["github_calls"], 13)
             self.assertLessEqual(measurements[-1]["wall_seconds"], elapsed)
 
+    def test_local_journal_read_overlaps_slow_github_snapshot(self):
+        journal_read = dashboard.bounded_journal_rows
+
+        def slow_journal():
+            time.sleep(1)
+            return journal_read()
+
+        with harness(delay=1) as (cfg, calls), \
+             patch.object(dashboard, "bounded_journal_rows", side_effect=slow_journal):
+            started = time.monotonic()
+            result = dashboard.snapshot()
+            elapsed = time.monotonic() - started
+            self.assertEqual(normalized(result, cfg.root),
+                             json.loads(FIXTURE.read_text())["snapshot"])
+            self.assert_bounds(calls, elapsed, expected=13, limit=5)
+
     def test_slow_gh_feedback_matches_legacy_fixture(self):
         with harness(delay=1) as (_, calls):
             started = time.monotonic()
