@@ -4403,7 +4403,7 @@ class DispatchTest(unittest.TestCase):
                     ),
             ), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
-                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gate, \
                     mock.patch.object(
                         dispatch, "review", return_value=("APPROVE", "fresh findings"),
                     ) as review, \
@@ -4413,6 +4413,10 @@ class DispatchTest(unittest.TestCase):
                 dispatch.refresh_pr_branch(7, 100, False)
 
             refreshed_head = git(dispatch.FACTORY / "wt-7", "rev-parse", "HEAD")
+            gate.assert_called_once_with(
+                dispatch.FACTORY / "wt-7", 7,
+                protected_override=False, protected_override_paths=["feature.txt"],
+            )
             review.assert_called_once_with(dispatch.FACTORY / "wt-7", 7, "ok", refreshed_head)
             comment.assert_called_once_with(7, "fresh findings")
             approve.assert_called_once_with(7, refreshed_head)

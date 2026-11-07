@@ -1075,9 +1075,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    JSON array of repository-relative paths/globs, for example:
    `factory-protected-override: [".factory.toml", "checks/acceptance/**"]`.
    Both the label and a nonempty, valid array are required; a bare label, a
-   comment, or manager `AUTHORIZE` cannot grant this scope. Only matching paths
-   bypass path and existing-test protection; every other protected path is
-   checked normally. Gate reports and journal evidence record the named scope
+   comment, or manager `AUTHORIZE` cannot grant this scope. Manager `REWRITE`
+   must preserve every `factory-protected-override:` line exactly from the live
+   ticket body; adding, removing, or changing a declaration is refused before
+   any GitHub mutation. Only matching paths bypass path and existing-test
+   protection; every other protected path is checked normally.
+   Gate reports and journal evidence record the named scope
    and outside-scope failures, and escalation packets include that report.
    Manual scoped gate runs use repeatable `--protected-override-path GLOB`;
    the unscoped `--protected-override` remains reserved for explicit trusted

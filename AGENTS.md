@@ -16,6 +16,7 @@ in README.md's **Review** step; the dispatcher posts it to the PR and review pac
 line, e.g. `factory-protected-override: [".factory.toml"]`; a bare label grants
 nothing. Other protected paths remain checked. See README.md's **Gate** step;
 manager `AUTHORIZE` grants add-only authority, not protected-path scope.
+Manager `REWRITE` must preserve every override declaration exactly.
 
 ## Feature map
 
@@ -37,7 +38,7 @@ map or a path in it does not exist; update the map in the same change.
 | Quality gate | `factory/gate.py` | `tests/test_factory.py`, `tests/test_gate.py`, `tests/test_bug_gate.py`, `tests/test_gate_resources.py`, `tests/test_fixture_isolation.py`, `tests/test_add_only_override.py`, `tests/test_scoped_protected_override.py`, `tests/test_mutation_deadline.py`, `tests/test_tempdir_hygiene.py` | `test`; implements `conflict-markers`, `protected-paths` (with `[gate].add_only_paths`), `protected-tests`, `bug-repro`, `leak-scan` |
 | Runner storage and temp-root ownership | `factory/runner.py`, `factory/dispatch.py`, `factory/gate.py` | `tests/test_runner_runtime.py`, `tests/test_tempdir_hygiene.py` | `test` |
 | Post-ship monitor (`watch`) | `factory/watch.py` | `tests/test_watch.py`, `tests/test_watch_lifecycle.py`, `tests/test_watch_routing.py`, `tests/test_triage_stalled.py`, `tests/test_factory.py`, `tests/test_learning_progress.py` | `test` |
-| Manager and human handoffs | `factory/manage.py`, `factory/handoff.py` | `tests/test_viability.py`, `tests/test_handoff.py`, `tests/test_manager_binding.py`, `tests/test_manager_resolve.py`, `tests/test_manager_close_journal.py`, `tests/test_frontier.py`, `tests/test_add_only_override.py`, `tests/test_refresh_conflict.py`, `tests/test_host_claim_transitions.py`, `tests/test_host_claim_boundaries.py`, `tests/test_host_claim_mutations.py` | `test` |
+| Manager and human handoffs | `factory/manage.py`, `factory/handoff.py` | `tests/test_viability.py`, `tests/test_handoff.py`, `tests/test_manager_binding.py`, `tests/test_scoped_protected_override.py`, `tests/test_manager_resolve.py`, `tests/test_manager_close_journal.py`, `tests/test_frontier.py`, `tests/test_add_only_override.py`, `tests/test_refresh_conflict.py`, `tests/test_host_claim_transitions.py`, `tests/test_host_claim_boundaries.py`, `tests/test_host_claim_mutations.py` | `test` |
 | Ticket generations (owner requeue) | `factory/generation.py`, `factory/dispatch.py`, `factory/manage.py`, `factory/handoff.py`, `factory/actions.py` | `tests/test_generation.py`, `tests/test_frontier.py`, `tests/test_refresh_conflict.py`, `tests/test_handoff.py`, `tests/test_actions.py` | `test` |
 | Worker spec, health and infra outcomes | `factory/config.py`, `factory/dispatch.py`, `factory/manage.py`, `factory/settings.py`, `factory/learn.py` | `tests/test_worker_health.py`, `tests/test_settings.py`, `tests/test_factory.py`, `tests/test_wait_decisions.py` | `test` |
 | Accepted-priority scheduling | `factory/schedule.py` | `tests/test_schedule.py`, `tests/test_schedule_fairness.py` | `test` |
