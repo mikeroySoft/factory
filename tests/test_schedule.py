@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from factory import binding, config, dispatch, lifecycle, schedule
+from tests.test_refresh_conflict import omp_command
 from tests.test_roadmap import REPO, initiative_body, issue
 
 PLAN = "NOW #3 and #5\nNEXT #2\nLATER #4\nNOW #8"
@@ -294,7 +295,11 @@ class DispatcherPassTest(unittest.TestCase):
             seen["round"] = (admitted.is_set(), claimed())
             raise Stop
 
-        workers = config.Config(root=self.cfg.root, repo=REPO, workers={"default": [sys.executable, "{prompt}"]})
+        workers = config.Config(
+            root=self.cfg.root, repo=REPO,
+            workers={"default": omp_command(self.cfg.root / "worker-bin", sys.executable, "{prompt}")},
+            worker_probe={"default": [sys.executable, "-c", "pass"]},
+        )
         done = subprocess.CompletedProcess([], 0, "abc123\n", "")
         with patch.multiple(
             dispatch, create=True, cfg=workers, MAX_ATTEMPTS=1, admit_plan=lambda n, fresh: None,

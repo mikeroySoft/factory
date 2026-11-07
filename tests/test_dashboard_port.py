@@ -27,6 +27,9 @@ class DashboardPortTest(unittest.TestCase):
         (self.root / config.CONFIG_NAME).write_text('[repo]\nslug = "acme/widgets"\n')
         self.cfg = config.Config(self.root, "acme/widgets", signoff=False)
         self.cfg.install = {"every": "10min", "dashboard": False, "host": "127.0.0.1", "env": {}}
+        self.cfg.worker_probe = {
+            label: ["omp", "token", "openai-codex"] for label in self.cfg.workers
+        }
         self.host_path = self.root / "config.toml"
 
     def listener(self, host: str = "127.0.0.1") -> socket.socket:
@@ -116,6 +119,24 @@ class DashboardPortTest(unittest.TestCase):
         code, output, _ = self.doctor(subprocess.CompletedProcess([], 0, "", ""))
         row = next(row for row in json.loads(output)["rows"] if row["label"] == f"dashboard port {self.cfg.dashboard_port}")
         self.assertEqual((code, row["status"]), (0, "PASS"))
+
+    def test_doctor_requires_a_worker_credential_probe(self) -> None:
+        listener = self.listener()
+        self.cfg.dashboard_port = listener.getsockname()[1]
+        listener.close()
+        self.cfg.worker_probe = {}
+        code, output, _ = self.doctor(subprocess.CompletedProcess([], 0, "", ""))
+        report = json.loads(output)
+        row = next(row for row in report["rows"] if row["label"] == "worker `default` login check")
+        self.assertEqual((code, report["ok"], row["status"]), (1, False, "FAIL"))
+
+        self.cfg.worker_probe = {
+            label: ["omp", "token", "openai-codex"] for label in self.cfg.workers
+        }
+        code, output, _ = self.doctor(subprocess.CompletedProcess([], 0, "", ""))
+        report = json.loads(output)
+        row = next(row for row in report["rows"] if row["label"] == "worker `default` login check")
+        self.assertEqual((code, report["ok"], row["status"]), (0, True, "PASS"))
 
     def test_doctor_text_fails_with_the_foreign_holder_name(self) -> None:
         listener = self.listener()

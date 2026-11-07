@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from factory import __version__, lifecycle
+from tests.test_refresh_conflict import omp_command
 
 GH = '''#!/usr/bin/env python3
 import json, os, subprocess, sys
@@ -123,10 +124,14 @@ class LocalCLI(unittest.TestCase):
 
     def write_config(self, check=None, worker=None, reviewer=None, extra=""):
         argv = check or [sys.executable, "-c", "raise SystemExit(0)"]
+        command = worker or [sys.executable, str(self.worker)]
+        if Path(command[0]).name != "omp":
+            command = omp_command(self.bin, *command)
         (self.repo / ".factory.toml").write_text(
             '[repo]\nslug = "local/smoke"\n'
             '[dispatch]\nmax_attempts = 2\nreview_rounds = 1\n'
-            '[workers]\ndefault = ' + json.dumps(worker or [sys.executable, str(self.worker)]) + '\n'
+            '[workers.default]\ncommand = ' + json.dumps(command) + '\n'
+            'probe = ' + json.dumps([sys.executable, "-c", "pass"]) + '\n'
             '[review]\ncommand = ' + json.dumps(reviewer or [sys.executable, str(self.reviewer)]) + '\n'
             '[leak_scan]\npattern = ""\n'
             '[gate]\nlock = ' + json.dumps(str(self.base / "host.lock")) + '\n'
@@ -226,7 +231,7 @@ class LocalCLI(unittest.TestCase):
         # Launch-contract proof only: a recording wrapper, NOT sandbox proof.
         log = self.base / "wrap.log"
         wrap = self.bin / "wrap"
-        wrap.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$WRAP_LOG"\nexec "$@"\n')
+        wrap.write_text('#!/bin/sh\nprintf "%s\\n" "$0" "$@" >> "$WRAP_LOG"\nexec "$@"\n')
         wrap.chmod(0o755)
         self.env["WRAP_LOG"] = str(log)
         seen = self.base / "prompt-seen"
@@ -243,7 +248,11 @@ class LocalCLI(unittest.TestCase):
                         '[repo."local/smoke".worker_wrap]\ncommand = ["wrap"]\n')
         self.cli("dispatch", "--ticket", "7")
         lines = log.read_text().splitlines()
-        self.assertEqual(lines[:2], [sys.executable, str(self.worker)])
+        self.assertEqual(lines[-6:], [
+            str(wrap), str(self.bin / "omp"), "--session-dir",
+            str(self.repo / ".factory" / "transcripts" / "7"),
+            sys.executable, str(self.worker),
+        ])
         self.assertIn("Issue #7", seen.read_text())
         wt = self.repo / ".factory" / "wt-7"
         subjects = subprocess.run(["git", "-C", str(wt), "log", "--format=%s"], env=self.env,
@@ -525,13 +534,12 @@ class LocalCLI(unittest.TestCase):
         self.assertIn("--merge", json.loads(self.state.read_text())["merged"])
 
     def test_worker_launch_failure_releases_ticket_lock_and_skips_downstream(self):
-        self.write_config(worker=[str(self.base / "absent-worker")])
+        self.write_config(worker=[str(self.base / "missing" / "omp")])
         self.commit_config()
         self.cli("dispatch", "--ticket", "7", expected=1)
         rows = self.rows()
         self.assertFalse(any(r["stage"] in {"gate", "review"} for r in rows))
-        worker = [r for r in rows if r["stage"] == "worker" and r["kind"] == "exit"]
-        self.assertEqual(worker[0]["outcome"], "mechanism_failure")
+        self.assertFalse((self.repo / ".factory" / "logs" / "7-attempt-1.log").exists())
         from factory.dispatch import lock_held
         self.assertFalse(lock_held(self.repo / ".factory" / "locks" / "7.lock"))
 
@@ -546,23 +554,22 @@ class LocalCLI(unittest.TestCase):
         from factory.dispatch import lock_held
         self.assertFalse(lock_held(self.repo / ".factory" / "locks" / "7.lock"))
 
-    def test_worker_launch_failure_unclaims_ticket_and_completes_the_pass(self):
-        # #260: a worker executable missing from the host PATH is a host defect, not a
-        # ticket defect. The ticket journals it and gives its claim back; the dispatcher
-        # pass itself must not die with that FileNotFoundError.
-        self.write_config(worker=[str(self.base / "absent-worker")])
+    def test_missing_worker_waits_without_claiming_and_completes_the_pass(self):
+        # A known-missing worker waits before claiming; the pass still completes.
+        self.write_config(worker=[str(self.base / "missing" / "omp")])
         self.commit_config()
         result = self.cli("dispatch", "--ticket", "7", expected=1)
-        self.assertIn("#7: worker launch failed", result.stdout + result.stderr)
         self.assertNotIn("Traceback", result.stdout + result.stderr)
         rows = self.rows()
         exits = {r["stage"]: r["outcome"] for r in rows if r["kind"] == "exit"}
-        self.assertEqual(exits["worker"], "mechanism_failure")
-        self.assertEqual(exits["ticket"], "mechanism_failure")
+        waits = [r["wait"]["reason"] for r in rows if r["kind"] == "wait"]
+        self.assertEqual(waits, ["worker_unavailable"])
+        self.assertFalse(any(e.get("event") == "claimed" for e in lifecycle.read_events(self.events)))
+        self.assertFalse((self.repo / ".factory" / "wt-7").exists())
         self.assertEqual(exits["dispatcher"], "completed")
 
-    def test_worker_launch_failure_hands_back_the_claim(self):
-        # #260: the unclaim is what lets the frontier retry once the host is fixed.
+    def test_missing_worker_never_assigns_or_unassigns_the_ticket(self):
+        # Refusal must not mutate assignment, rather than claiming and undoing it.
         calls = self.base / "gh-calls.log"
         real = self.bin / "gh-real"
         real.write_text(GH)
@@ -572,27 +579,29 @@ class LocalCLI(unittest.TestCase):
             f"open({str(calls)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
             f"os.execv({str(real)!r}, ['gh', *sys.argv[1:]])\n"
         )
-        self.write_config(worker=[str(self.base / "absent-worker")])
+        self.write_config(worker=[str(self.base / "missing" / "omp")])
         self.commit_config()
         self.cli("dispatch", "--ticket", "7", expected=1)
-        self.assertIn("issue edit 7 --repo local/smoke --remove-assignee @me", calls.read_text().splitlines())
+        commands = calls.read_text().splitlines()
+        self.assertFalse(any("issue edit" in command for command in commands), commands)
+        self.assertFalse(any(e.get("event") == "claimed" for e in lifecycle.read_events(self.events)))
 
     def test_worker_launch_failure_on_review_bounce_unclaims_and_completes_the_pass(self):
         # #260: the worker that vanishes between the first attempt and the review bounce
         # must take the same path as one missing from the start.
         vanish = self.bin / "vanish"
-        vanish.write_text('#!/bin/sh\nrm "$0"\necho change >> change.txt\n')
+        vanish.write_text(f'#!/bin/sh\nrm "{self.bin / "omp"}"\necho change >> change.txt\n')
         vanish.chmod(0o755)
         self.write_config(worker=[str(vanish)])
         self.commit_config()
         result = self.cli("dispatch", "--ticket", "7", expected=1)
-        self.assertIn("#7: worker launch failed", result.stdout + result.stderr)
         self.assertNotIn("Traceback", result.stdout + result.stderr)
         rows = self.rows()
         reviews = [r for r in rows if r["stage"] == "review" and r["kind"] == "exit"]
         self.assertEqual([r["outcome"] for r in reviews], ["product_feedback"])
-        workers = [r["outcome"] for r in rows if r["stage"] == "worker" and r["kind"] == "exit"]
-        self.assertEqual(workers, ["completed", "mechanism_failure"])
+        attempts = [r for r in lifecycle.read_events(self.events) if r.get("event") == "attempt"]
+        self.assertEqual(len(attempts), 1)
+        self.assertFalse((self.repo / ".factory" / "logs" / "7-attempt-3.log").exists())
         exits = {r["stage"]: r["outcome"] for r in rows if r["kind"] == "exit"}
         self.assertEqual(exits["ticket"], "mechanism_failure")
         self.assertEqual(exits["dispatcher"], "completed")
@@ -646,7 +655,7 @@ class LocalCLI(unittest.TestCase):
     def test_unparseable_reviewer_does_not_consume_a_review_round(self):
         self.assert_reviewer_unavailable("print('unparseable retry-after-ms=0')\n", "unparseable")
 
-    def test_manager_fix_review_failure_does_not_escalate_an_already_human_ticket(self):
+    def test_manager_fix_never_launches_for_an_already_human_ticket(self):
         from unittest import mock
 
         from factory import config, dispatch, manage
@@ -677,13 +686,16 @@ class LocalCLI(unittest.TestCase):
                 mock.patch.object(dispatch, "push_agent", return_value=head), \
                 mock.patch.object(dispatch, "pr_comment"), \
                 mock.patch.object(dispatch, "approve_pr") as approve, \
+                mock.patch.object(dispatch, "run_worker") as worker, \
                 mock.patch.object(dispatch, "escalate") as escalate:
             dispatch.configure(config.load(self.repo))
-            manage.apply(
-                7, issue, "FIX", "",
-                {"worker": "default", "guidance": "fix"}, packet,
-            )
+            with self.assertRaisesRegex(dispatch.WorkerUnavailable, "ready-for-human"):
+                manage.apply(
+                    7, issue, "FIX", "",
+                    {"worker": "default", "guidance": "fix"}, packet,
+                )
 
+        worker.assert_not_called()
         approve.assert_not_called()
         escalate.assert_not_called()
 
@@ -983,7 +995,8 @@ class LocalCLI(unittest.TestCase):
         other = self.base / "other"
         subprocess.run(["git", "clone", "-q", "-b", "main", str(self.base / "origin.git"), str(other)], env=self.env, check=True)
         toml = good.replace(
-            json.dumps([sys.executable, str(self.worker)]), json.dumps([sys.executable, str(new_worker)]))
+            json.dumps([str(self.bin / "omp"), sys.executable, str(self.worker)]),
+            json.dumps(omp_command(self.base / "new-bin", sys.executable, str(new_worker))))
         self.assertNotEqual(toml, (self.repo / ".factory.toml").read_text())
         (other / ".factory.toml").write_text(toml)
         subprocess.run(["git", "-c", "user.name=O", "-c", "user.email=o@example.invalid", "commit", "-qam", "switch worker"],

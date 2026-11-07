@@ -35,6 +35,17 @@ def build_fork(tmp: Path) -> tuple[Path, Path]:
     return root, origin
 
 
+def omp_command(directory: Path, *argv: str) -> list[str]:
+    """A disposable OMP-named process forwarding to a deterministic fixture worker."""
+    directory.mkdir(parents=True, exist_ok=True)
+    executable = directory / "omp"
+    executable.write_text(
+        '#!/bin/sh\nif [ "$1" = "--session-dir" ]; then shift 2; fi\nexec "$@"\n'
+    )
+    executable.chmod(0o755)
+    return [str(executable), *argv]
+
+
 # Rebases like a worker would, keeping both sides of the conflict; records the prompt it got.
 RESOLVER = '''import os, subprocess, sys
 from pathlib import Path
@@ -133,7 +144,8 @@ class RefreshConflictTest(unittest.TestCase):
         resolver.write_text(RESOLVER)
         self.cfg = config.Config(
             root=self.root, repo="acme/widgets", main="main", review_rounds=3, idle_timeout=0, exit_grace=0,
-            workers={"default": [sys.executable, str(resolver), str(self.prompt_seen)]},
+            workers={"default": omp_command(self.tmp / "worker-bin", sys.executable, str(resolver), str(self.prompt_seen))},
+            worker_probe={"default": [sys.executable, "-c", "pass"]},
             reviewer=[sys.executable, "-c", "print('```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE')"],
         )
         dispatch.configure(self.cfg)
@@ -305,7 +317,8 @@ class RefreshGateFailureTest(unittest.TestCase):
         self.cfg = config.Config(
             root=self.root, repo="acme/widgets", main="main", review_rounds=3,
             idle_timeout=0, exit_grace=0,
-            workers={"default": [sys.executable, str(resolver), str(self.prompt_seen)]},
+            workers={"default": omp_command(self.tmp / "worker-bin", sys.executable, str(resolver), str(self.prompt_seen))},
+            worker_probe={"default": [sys.executable, "-c", "pass"]},
             reviewer=[sys.executable, "-c", "print('```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE')"],
         )
         dispatch.configure(self.cfg)
@@ -518,7 +531,8 @@ class RefreshGateFailureRecoveryTest(unittest.TestCase):
             repo="acme/widgets",
             main="main",
             review_rounds=0,
-            workers={"default": [sys.executable, "-c", "pass"]},
+            workers={"default": omp_command(self.tmp / "worker-bin", sys.executable, "-c", "pass")},
+            worker_probe={"default": [sys.executable, "-c", "pass"]},
         )
         dispatch.configure(self.cfg)
         self.github = FakeGitHub(self.origin, dispatch.run)
@@ -733,7 +747,11 @@ class TriageExemptionRegateTest(unittest.TestCase):
         git(self.origin, "add", "fix.txt")
         git(self.origin, "commit", "-qm", "fix")
         git(self.origin, "checkout", "-q", "main")
-        self.cfg = config.Config(root=self.root, repo="acme/widgets", main="main")
+        self.cfg = config.Config(
+            root=self.root, repo="acme/widgets", main="main",
+            workers={"default": omp_command(self.tmp / "worker-bin", sys.executable, "-c", "pass")},
+            worker_probe={"default": [sys.executable, "-c", "pass"]},
+        )
         dispatch.configure(self.cfg)
         self.wt = dispatch.ensure_worktree(9)
         self.issue = {

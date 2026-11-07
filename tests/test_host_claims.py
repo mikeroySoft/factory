@@ -18,6 +18,7 @@ from unittest import mock
 
 from factory import dispatch, lifecycle, triage
 from factory.config import Config
+from tests.test_refresh_conflict import omp_command
 
 
 class FakeGitHub:
@@ -142,8 +143,16 @@ class HostClaimRaceTest(unittest.TestCase):
         spec = importlib.util.spec_from_file_location(f"factory._dispatch_{key}", dispatch.__file__)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        cfg = Config(root=self.root / key, repo="local/claims",
-                     workers={"default": [sys.executable, "{prompt}"]})
+        cfg = Config(
+            root=self.root / key,
+            repo="local/claims",
+            workers={
+                "default": omp_command(
+                    self.root / key / "worker-bin", sys.executable, "{prompt}",
+                ),
+            },
+            worker_probe={"default": [sys.executable, "-c", "pass"]},
+        )
         cfg.host_name = host
         cfg.claim_ttl = claim_ttl
         module.configure(cfg)

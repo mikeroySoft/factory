@@ -7,12 +7,14 @@ import gzip
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from factory import cli, config, dispatch, lifecycle, trace, triage
+from tests.test_refresh_conflict import omp_command
 
 ACTOR = {"kind": "deterministic", "name": "test", "model": None, "version": "1"}
 
@@ -202,6 +204,8 @@ class TraceEmissionTest(unittest.TestCase):
         self.assertEqual(claim["chosen"], "claimed")
 
     def test_worker_round_does_not_repeat_claim_time_worker_selection(self):
+        self.cfg.workers["gpu"] = omp_command(self.root / "gpu", sys.executable, "-c", "pass")
+        self.cfg.worker_probe["gpu"] = [sys.executable, "-c", "pass"]
         def run(cmd, **_kwargs):
             stdout = "head\n" if cmd[:3] == ["git", "rev-parse", "HEAD"] else ""
             return mock.Mock(stdout=stdout, returncode=0)
@@ -209,6 +213,7 @@ class TraceEmissionTest(unittest.TestCase):
         with lifecycle.scope(self.events, "ticket", ticket=7):
             dispatch.record_worker_selection(7, {"needs-gpu"})
             with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                    mock.patch.object(dispatch, "gh_json", return_value={"labels": []}), \
                     mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
                     mock.patch.object(dispatch, "worker_usage", return_value={
                         "model": None, "prompt_tokens": None, "completion_tokens": None,

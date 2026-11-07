@@ -33,30 +33,36 @@
 # yield_for_update = false
 
 [workers]
-# argv templates. {prompt} = path to the ticket prompt file, {cwd} = worktree.
+# Worker profile tables. {prompt} = ticket prompt path; {cwd} = worktree.
 # OMP file prompts require `@{prompt}`; bare `{prompt}` passes the path as text.
-# The key is a ticket label; `default` is required. First matching label wins.
-# default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
-# chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
-# Other agents work the same way, e.g.
-# default = ["claude", "-p", "--dangerously-skip-permissions", "{prompt}"]  # reads the path as text: use a wrapper
-# default = ["codex", "exec", "--full-auto", "-C", "{cwd}", "@{prompt}"]
+# The profile name is a ticket label; `default` is required. First match wins.
+# Ticket workers must use OMP and prove the selected model/profile credentials.
+# [workers.default]
+# command = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
+# probe = ["omp", "token", "openai-codex"]
 #
-# A worker may also be a table with `command` argv, an optional `when`, and
-# `transcript = "omp-session"` when its differently named binary accepts OMP's
-# `--session-dir` and writes compatible JSONL. A text `when` is manager guidance;
+# [workers.chore]
+# command = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
+# probe = ["omp", "token", "openai-codex"]
+#
+# Each worker has `command` argv, required `probe` argv, and optional `when`.
+# `transcript = "omp-session"` captures OMP-compatible JSONL for replays.
+# A text `when` is manager guidance;
 # `when = { label = "name" }` directly selects this profile for that ticket label.
 # Optional `env = { NAME = "value" }` applies only to that worker and expands
 # command placeholders; `version = "..."` records a pinned worker release in
-# claim, usage, attempt, and lifecycle evidence. Optional `probe = [...]`
-# ({root}, {repo}, {home}) is a health/auth check run before each pass; a nonzero
-# exit keeps the profile from launching and its tickets fall back to `default`.
-# Only a passing probe proves a login: without one the manager cannot choose the
-# profile, and a login failure seen at launch stands until a launch works.
+# claim, usage, attempt, and lifecycle evidence. `probe` accepts `{root}`,
+# `{repo}` and `{home}` and must check the selected model/profile credentials.
+# It runs before claim, including `dispatch --ticket`, and again before launch.
+# Missing or failed proof blocks the selected profile; an available default
+# cannot mask it, and there is no fallback to a non-OMP runner. After the
+# selected profile passes validation, a launch-time infrastructure failure may
+# use an independently validated OMP `default` unless its label selector
+# requires that profile. `factory doctor` treats a missing probe as blocking,
+# and the manager cannot choose an unverified profile.
 # Commands containing a binary named `omp` default to transcript mode.
-# Array and table forms can coexist; do
-# not define a label twice. The manager lists configured profiles and their rules;
-# ROUTE and FIX cannot invent profiles or write host config. FIX uses
+# The manager lists configured profiles and their rules; ROUTE and FIX cannot
+# invent profiles or write host config. FIX uses
 # {"worker": "ci-fix", "guidance": "..."}.
 #
 # Human-applied host profiles: copy these into the host config under
@@ -65,19 +71,19 @@
 #
 # [workers.ci-fix]
 # when = "CI is red: read the failing job log, fix the cause or declare a flake with evidence."
-# command = ["omp", "-p", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Read the failing CI job log. Fix the cause, or declare a flake in the handoff with concrete log and run evidence. Do not claim a flake without evidence."]
+# command = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Read the failing CI job log. Fix the cause, or declare a flake in the handoff with concrete log and run evidence. Do not claim a flake without evidence."]
+# probe = ["omp", "token", "openai-codex"]
 #
 # [workers.conflict]
 # when = "A rebase conflicts: resolve the rebase, keep both intents, make no semantic changes."
-# command = ["omp", "-p", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Resolve the rebase conflicts, preserving both sides' intents with no semantic changes. If the rebase was aborted, restart it against the configured main before resolving. If the intents cannot be preserved without semantic changes, stop and explain in the handoff."]
+# command = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "Read the ticket prompt at {prompt}. Resolve the rebase conflicts, preserving both sides' intents with no semantic changes. If the rebase was aborted, restart it against the configured main before resolving. If the intents cannot be preserved without semantic changes, stop and explain in the handoff."]
+# probe = ["omp", "token", "openai-codex"]
 #
 # Usage: each attempt journals one `llm-usage` event (stage "worker"); unreported
-# fields are null. A table worker may read them from structured output: dotted
-# JSON paths (or arrays of paths, added) summed over the log's JSON lines that
-# satisfy `match`; `cost` falls back to [dispatch].cost_pattern. Example for
-# Claude Code `--output-format json` (paths checked on 2.1.292; it names the
-# model only as a `modelUsage` key, so no `model` path):
-# usage = { match = { type = "result" }, cost = "total_cost_usd", completion_tokens = "usage.output_tokens", cached_tokens = "usage.cache_read_input_tokens", prompt_tokens = ["usage.input_tokens", "usage.cache_read_input_tokens", "usage.cache_creation_input_tokens"] }
+# fields are null. A structured attempt log may map dotted JSON paths, but OMP
+# workers need no mapper: Factory inserts `--session-dir
+# .factory/transcripts/<ticket>/` and reads assistant `message.model` and
+# `message.usage` (`input`, `output`, `cacheRead`, `cacheWrite`) from JSONL.
 # Host config `[defaults.prices."<model>"]` (prompt, completion, optional cached;
 # USD per million tokens) prices events that report tokens but no cost.
 

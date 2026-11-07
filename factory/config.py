@@ -64,7 +64,6 @@ DEFAULT_LEAK_PATTERN = (r"\.(?:corp|internal|intranet|lan)\b|\bconfidential\b|\b
                         r"|\bjira\b|\bconfluence\b|\.atlassian\.net\b")
 DEFAULT_WORKER = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
 DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.6-sol"
-DEFAULT_CHORE_WORKER = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 DEFAULT_REVIEWER = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 DEFAULT_SECOND_REVIEWER = ["omp", "-p", "--no-session", "--model", "openai-codex/gpt-6-astra", "{prompt}"]
 DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
@@ -194,7 +193,7 @@ class Config:
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges
     cost_pattern: str | None = None  # regex with one capture: dollars in the worker log
     workers: dict[str, list[str]] = field(
-        default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
+        default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_WORKER}
     )
     worker_when: dict[str, str] = field(default_factory=dict)
     # Per worker profile: a ticket label selected by a structured `when` rule.
