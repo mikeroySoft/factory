@@ -3,7 +3,8 @@
 Linux keeps its existing procfs readers. Probe failures are not evidence of death.
 The guarded Darwin path never spawns ps, lsof, sysctl, or ioreg. Lock-holder
 attribution has no non-spawning source here, so it is unknown unless a test
-installs a backend that supplies holders.
+installs a backend that supplies holders. A numeric ticket lock is not an
+admission count: passive capacity stays unavailable rather than zero.
 """
 from __future__ import annotations
 

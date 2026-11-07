@@ -2055,7 +2055,12 @@ only when this observer can see itself. Descendant membership is a context tag
 or a start-validated ancestor, not a uid and not a parent pid alone. The existing
 handoff safeguard still prevents interruption when a launched descendant cannot
 be ruled out. There is no non-spawning flock-owner source: attribution stays
-unavailable, the owner stays null, and an open file is not ownership.
+unavailable, the owner stays null, and an open file is not ownership. The same
+limit covers passive resource state and observed admission capacity. State stays
+`unknown`, not `free`. With any numeric ticket lock, `capacity.active` is null
+and `capacity.complete` is false, never zero. A lock directory that was listed
+and contains no numeric ticket lock is zero. A retained observation is not a
+fresh reading of the current lock.
 
 | Stage | Boundary |
 |---|---|
@@ -2501,16 +2506,21 @@ is forced to a local Unix socket, never an inherited TCP address. Missing tools,
 unavailable units, invalid output, overflow and timeouts yield partial errors.
 Only explicit `ActiveState=active` is true; transitional states remain unknown.
 `next_at` requires an active timer and an explicitly returned future timestamp.
-Admission scans at most 1024 directory entries and a 256 KiB kernel lock window;
-unreadable/incomplete evidence returns null capacity, not a false zero.
+Admission scans at most 1024 directory entries and a 256 KiB kernel lock window.
+The count is Linux `/proc/locks` only. Unreadable, incomplete, or Darwin evidence
+with a numeric ticket lock returns null capacity, not a false zero. An empty
+numeric listing stays zero because the directory itself was read.
 
 System query errors use source `systemctl`, scope `service`, `timer`, or
 `schedule`, and codes `invalid_unit`, `timeout`, `output_limit`, `command_failed`,
 `command_unavailable`, `unit_unavailable`, `transitioning`, `unit_failed`,
 `invalid_state`, or `invalid_schedule`. Admission errors use source `admission`,
 scope `repository`, with `missing`, `unreadable`, `unsupported_file`, `byte_limit`,
-`entry_limit`, `changed`, or `invalid_kernel_locks`. Errors contain fixed codes
-only; raw stderr and arbitrary stored diagnostic text are never returned.
+`entry_limit`, `changed`, `invalid_kernel_locks`, or `locks_unavailable`.
+`locks_unavailable` is the Darwin numeric-ticket-lock result: no passive flock
+table, so the count is null rather than zero or a foreign kernel table. Errors
+contain fixed codes only; raw stderr and arbitrary stored diagnostic text are
+never returned.
 
 The journal reader performs one `pread` of at most **1,048,576 bytes** at the
 end of the regular file, with no journal lock. It drops the first clipped line,
