@@ -1036,7 +1036,8 @@ def snapshot(*, measurements: dict | None = None) -> dict:
     # queued head reads. The same eight workers serve every ticket and correction.
     with ThreadPoolExecutor(max_workers=8) as transport:
         def read(**kwargs):
-            return transport.submit(fetch, time.monotonic(), kwargs).result()
+            queued = time.monotonic() if kwargs.get("timeout") is not None else None
+            return transport.submit(fetch, queued, kwargs).result()
 
         result = _snapshot(read)
     if measurements is not None:
