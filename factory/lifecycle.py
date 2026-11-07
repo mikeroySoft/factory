@@ -709,7 +709,7 @@ def _descendants(executions: list[dict], recorded: dict | None = None) -> dict[s
                             context = json.loads(item[len(prefix):])
                             if isinstance(context, dict):
                                 contexts[process["pid"]] = context
-                        except (ValueError, UnicodeError):
+                        except (ValueError, UnicodeError, RecursionError):
                             pass
                         break
             except FileNotFoundError:
@@ -718,7 +718,7 @@ def _descendants(executions: list[dict], recorded: dict | None = None) -> dict[s
                 for entry in executions:
                     found[entry["execution_id"]]["complete"] = False
     else:
-        processes, contexts, unknown_context, complete = darwin_observer.scan(CONTEXT_ENV)
+        processes, contexts, unknown_context, complete = darwin_observer.scan(CONTEXT_ENV, uids)
         if not complete:
             for evidence in found.values():
                 evidence["complete"] = False

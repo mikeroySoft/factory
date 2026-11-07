@@ -1,7 +1,9 @@
 """Darwin observer regressions. Linux bytes stay on the procfs path; this file installs the private backend."""
 from __future__ import annotations
 
+import ctypes
 import fcntl
+import json
 import os
 import struct
 import sys
@@ -24,12 +26,25 @@ def ident(pid, start=100, ppid=1, state="S"):
 
 
 def pack_args(argc, argv, env, path=b"/usr/bin/python"):
-    body = struct.pack("<i", argc) + path + b"\x00\x00"
+    """KERN_PROCARGS2 bytes: argc, path, pointer pad, argc argv strings, env."""
+    body = struct.pack("<i", argc) + path + b"\x00"
+    body += b"\x00" * darwin_observer.procargs_padding(len(path) + 1)
     for arg in argv:
         body += arg + b"\x00"
     for item in env:
         body += item + b"\x00"
     return body
+
+
+def pack_bsd(pid, ppid, uid, status, sec, usec):
+    raw = bytearray(darwin_observer.PROC_BSDINFO_SIZE)
+    struct.pack_into("<I", raw, darwin_observer.OFF_STATUS, status)
+    struct.pack_into("<i", raw, darwin_observer.OFF_PID, pid)
+    struct.pack_into("<i", raw, darwin_observer.OFF_PPID, ppid)
+    struct.pack_into("<I", raw, darwin_observer.OFF_UID, uid)
+    struct.pack_into("<Q", raw, darwin_observer.OFF_START_SEC, sec)
+    struct.pack_into("<Q", raw, darwin_observer.OFF_START_USEC, usec)
+    return bytes(raw)
 
 
 class Memory:
@@ -146,10 +161,13 @@ class DarwinObserverTest(unittest.TestCase):
         self.assertNotIn("start_usec", execution.process)
 
     def test_usec_disagrees_between_reads_and_journal_keeps_integer_seconds(self):
-        first = {"sec": 100, "usec": 10, "ppid": 1, "uid": 1, "status": 2}
-        second = {**first, "usec": 11}
-        self.assertFalse(darwin_observer._same_start(first, second))
-        self.assertTrue(darwin_observer._same_start(first, dict(first)))
+        first = {"pid": 7, "sec": 100, "usec": 10, "ppid": 1, "uid": 1, "status": darwin_observer.SRUN}
+        changed = {**first, "usec": 11}
+        self.assertFalse(darwin_observer._same_start(first, changed))
+        asleep = {**first, "status": darwin_observer.SSLEEP}
+        self.assertTrue(darwin_observer._same_start(first, asleep))
+        self.assertFalse(darwin_observer._same_start(first, {**first, "ppid": 9}))
+        self.assertFalse(darwin_observer._same_start(first, {**first, "uid": 9}))
         public = darwin_observer._public({**first, "pid": 7}, BOOT)
         self.assertEqual(public["start_ticks"], 100)
         self.assertNotIn("usec", public)
@@ -225,7 +243,6 @@ class ProcargsTest(unittest.TestCase):
         return darwin_observer.classify_procargs(data, capacity=capacity, context_env=ENV)
 
     def payload(self, execution_id="exec-1"):
-        import json
         body = json.dumps({"schema_version": 1, "execution_ids": [execution_id]}, separators=(",", ":"))
         return (ENV + "=" + body).encode()
 
@@ -247,6 +264,14 @@ class ProcargsTest(unittest.TestCase):
         absent = pack_args(1, [b"python"], [b"PATH=/bin", ENV.encode() + b"_EXTRA=1"])
         self.assertEqual(self.classify(absent)[0], "absent")
         self.assertEqual(self.classify(good, capacity=len(good))[0], "unknown")
+        empty_argv = pack_args(2, [b"", b"python"], [b"PATH=/bin", self.payload("exec-1")], path=b"/x")
+        kind, parsed = self.classify(empty_argv)
+        self.assertEqual(kind, "tagged")
+        self.assertEqual(parsed["execution_ids"], ["exec-1"])
+        nested = pack_args(1, [b"python"], [ENV.encode() + b"=" + b"[" * 10000 + b"]" * 10000])
+        self.assertEqual(self.classify(nested)[0], "unknown")
+        unterminated = pack_args(1, [b"python"], [b"PATH=/bin"])[:-1]
+        self.assertEqual(self.classify(unterminated)[0], "unknown")
 
     def test_bounds_are_the_verified_receipt(self):
         self.assertEqual(darwin_observer.PROC_BSDINFO_SIZE, 136)
@@ -255,9 +280,12 @@ class ProcargsTest(unittest.TestCase):
         self.assertEqual(darwin_observer.OFF_START_USEC, 128)
         self.assertEqual(darwin_observer.KERN_PROCARGS2, 49)
         self.assertEqual(darwin_observer.ARGMAX_CAP, 1 << 20)
-        self.assertLessEqual(darwin_observer.SCAN_PID_LIMIT, 256)
-        self.assertLessEqual(darwin_observer.SCAN_CONTEXT_LIMIT, 128)
+        self.assertGreaterEqual(darwin_observer.SCAN_IDENTITY_LIMIT, 1061)
+        self.assertEqual(darwin_observer.SCAN_CONTEXT_LIMIT, 256)
         self.assertEqual(darwin_observer.LIST_RETRIES, 4)
+        self.assertEqual(darwin_observer.SUPPORTED_MAC, (27, 2))
+        self.assertEqual(darwin_observer.SUPPORTED_MACHINE, "arm64")
+        self.assertFalse(darwin_observer.abi_supported())
         root = Path(platform_identity.__file__).resolve().parent
         for name in ("platform_identity.py", "darwin_observer.py", "lifecycle.py"):
             text = (root / name).read_text()
@@ -265,6 +293,209 @@ class ProcargsTest(unittest.TestCase):
             self.assertNotIn("/usr/sbin/ioreg", text)
             self.assertNotIn("/usr/sbin/lsof", text)
             self.assertNotIn("/bin/ps", text)
+
+
+class _ListLib:
+    def __init__(self, answer):
+        self.calls = []
+        self.answer = answer
+
+    def proc_listallpids(self, buf, nbytes):
+        self.calls.append(nbytes)
+        count, pids, errno = self.answer(nbytes)
+        if errno:
+            ctypes.set_errno(errno)
+        if pids is not None and buf is not None and nbytes:
+            cap = nbytes // ctypes.sizeof(ctypes.c_int)
+            slot = ctypes.cast(buf, ctypes.POINTER(ctypes.c_int))
+            for index, pid in enumerate(pids[:cap]):
+                slot[index] = pid
+        return count
+
+
+class _InfoLib:
+    def __init__(self, blobs):
+        self.blobs = list(blobs)
+        self.calls = []
+
+    def proc_pidinfo(self, pid, flavor, arg, buf, size):
+        self.calls.append((pid, flavor, size))
+        ctypes.memmove(buf, self.blobs.pop(0), size)
+        return size
+
+
+class NativeSeamTest(unittest.TestCase):
+    def setUp(self):
+        self._libproc = darwin_observer._libproc
+        self._libc = darwin_observer._libc
+        darwin_observer._libproc = None
+        darwin_observer._libc = None
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        darwin_observer._libproc = self._libproc
+        darwin_observer._libc = self._libc
+
+    def test_unverified_abi_does_not_read(self):
+        calls = []
+
+        def forbidden():
+            calls.append("lib")
+            raise AssertionError("native read")
+
+        x86 = ("darwin", "x86_64", 8, "little", (27, 2))
+        self.assertFalse(darwin_observer.abi_supported(x86))
+        self.assertFalse(darwin_observer.abi_supported())
+        with patch.object(darwin_observer, "_lib", side_effect=forbidden):
+            with self.assertRaises(OSError):
+                darwin_observer.native_process(1, BOOT)
+            self.assertEqual(darwin_observer._native_scan(ENV, {1}), ({}, {}, set(), False))
+            with self.assertRaises(OSError):
+                darwin_observer._list_pids(object())
+        self.assertEqual(calls, [])
+
+    def test_missing_library_and_symbol_fail_closed(self):
+        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+                patch.object(ctypes, "CDLL", side_effect=OSError("libproc missing")):
+            with self.assertRaises(OSError) as missing:
+                darwin_observer.native_process(4, BOOT)
+        self.assertNotIsInstance(missing.exception, ProcessLookupError)
+
+        class Empty:
+            pass
+
+        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+                patch.object(darwin_observer, "_lib", return_value=(Empty(), Empty())):
+            with self.assertRaises(OSError) as symbol:
+                darwin_observer.native_process(4, BOOT)
+        self.assertNotIsInstance(symbol.exception, ProcessLookupError)
+
+    def test_live_status_change_keeps_the_same_start(self):
+        common = dict(pid=42, ppid=7, uid=501, sec=100, usec=8)
+        lib = _InfoLib([
+            pack_bsd(status=darwin_observer.SRUN, **common),
+            pack_bsd(status=darwin_observer.SSLEEP, **common),
+        ])
+        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+                patch.object(darwin_observer, "_lib", return_value=(lib, None)):
+            identity = darwin_observer.native_process(42, BOOT)
+        self.assertEqual(identity["start_ticks"], 100)
+        self.assertEqual(identity["state"], "S")
+        self.assertNotIn("usec", identity)
+        self.assertEqual([call[0] for call in lib.calls], [42, 42])
+        moved = _InfoLib([
+            pack_bsd(status=darwin_observer.SRUN, **common),
+            pack_bsd(status=darwin_observer.SRUN, **{**common, "ppid": 8}),
+        ])
+        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+                patch.object(darwin_observer, "_lib", return_value=(moved, None)):
+            with self.assertRaises(OSError):
+                darwin_observer.native_process(42, BOOT)
+
+    def test_pid_list_full_buffer_grows_and_errors_stay_incomplete(self):
+        width = ctypes.sizeof(ctypes.c_int)
+
+        def grow(nbytes):
+            if nbytes == 0:
+                return 100, None, 0
+            cap = nbytes // width
+            if cap < 200:
+                return cap, list(range(1, cap + 1)), 0
+            return 30, list(range(1, 31)), 0
+
+        lib = _ListLib(grow)
+        with patch.object(darwin_observer, "abi_supported", return_value=True):
+            pids, complete = darwin_observer._list_pids(lib)
+        self.assertEqual(pids, list(range(1, 31)))
+        self.assertTrue(complete)
+        self.assertGreater(len(lib.calls), 2)
+        self.assertTrue(all(call == 0 or call % width == 0 for call in lib.calls))
+        self.assertLess(lib.calls[1] // width, lib.calls[2] // width)
+
+        def always_full(nbytes):
+            if nbytes == 0:
+                return 8, None, 0
+            cap = nbytes // width
+            return cap, list(range(1, cap + 1)), 0
+
+        full = _ListLib(always_full)
+        with patch.object(darwin_observer, "abi_supported", return_value=True):
+            _pids, complete = darwin_observer._list_pids(full)
+        self.assertFalse(complete)
+        self.assertEqual(len(full.calls), 1 + darwin_observer.LIST_RETRIES)
+
+        def broken(nbytes):
+            return -1, None, 1
+
+        with patch.object(darwin_observer, "abi_supported", return_value=True):
+            self.assertEqual(darwin_observer._list_pids(_ListLib(broken)), (None, False))
+
+        def oversized(nbytes):
+            if nbytes == 0:
+                return 10, None, 0
+            cap = nbytes // width
+            if cap < 100:
+                return cap + 50, list(range(1, cap + 1)), 0
+            return 4, [1, 0, -5, 8], 0
+
+        with patch.object(darwin_observer, "abi_supported", return_value=True):
+            pids, complete = darwin_observer._list_pids(_ListLib(oversized))
+        self.assertEqual(pids, [1, 8])
+        self.assertFalse(complete)
+
+    def test_context_reads_prefer_reparented_same_uid(self):
+        orphan = 900
+        pids = list(range(1, 401)) + [orphan]
+        tag = (ENV + "=" + json.dumps(
+            {"schema_version": 1, "execution_ids": ["exec-orphan"]}, separators=(",", ":"))).encode()
+
+        def info(pid, lib=None):
+            if pid == orphan:
+                return {"pid": pid, "ppid": 1, "uid": 501, "status": 2, "sec": 50, "usec": 8}
+            return {"pid": pid, "ppid": 2, "uid": 9, "status": 2, "sec": 1, "usec": 1}
+
+        def args(_libc, pid, _capacity):
+            if pid == orphan:
+                return pack_args(1, [b"python"], [b"PATH=/bin", tag])
+            return pack_args(1, [b"other"], [b"PATH=/bin"])
+
+        def inputs():
+            return pids, True, darwin_observer.ARGMAX_CAP, object(), object()
+
+        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+                patch.object(darwin_observer, "_native_inputs", inputs), \
+                patch.object(darwin_observer, "_bsdinfo", info), \
+                patch.object(darwin_observer, "_procargs", args), \
+                patch("factory.platform_identity.boot_id", return_value=BOOT):
+            _processes, contexts, _unknown, complete = darwin_observer._native_scan(ENV, {501})
+        self.assertTrue(complete)
+        self.assertEqual(set(contexts), {orphan})
+        self.assertEqual(contexts[orphan]["execution_ids"], ["exec-orphan"])
+
+        limit = darwin_observer.SCAN_CONTEXT_LIMIT
+        crowded = list(range(1, limit + 1)) + [10000]
+        seen = []
+
+        def crowded_info(pid, lib=None):
+            return {"pid": pid, "ppid": 1, "uid": 501, "status": 2, "sec": 5, "usec": 1}
+
+        def crowded_args(_libc, pid, _capacity):
+            seen.append(pid)
+            return pack_args(1, [b"x"], [b"PATH=/bin"])
+
+        def crowded_inputs():
+            return crowded, True, darwin_observer.ARGMAX_CAP, object(), object()
+
+        with patch.object(darwin_observer, "abi_supported", return_value=True), \
+                patch.object(darwin_observer, "_native_inputs", crowded_inputs), \
+                patch.object(darwin_observer, "_bsdinfo", crowded_info), \
+                patch.object(darwin_observer, "_procargs", crowded_args), \
+                patch("factory.platform_identity.boot_id", return_value=BOOT):
+            _processes, contexts, _unknown, complete = darwin_observer._native_scan(ENV, {501})
+        self.assertFalse(complete)
+        self.assertNotIn(10000, seen)
+        self.assertNotIn(10000, contexts)
+        self.assertEqual(len(seen), limit)
 
 
 class HostBootFailureTest(unittest.TestCase):

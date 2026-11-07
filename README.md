@@ -2027,14 +2027,22 @@ versions are not interpreted as version 1 by the existing observer.
 
 Linux identity fields retain their procfs values: boot UUID, field-22 start ticks,
 and PID namespace link. On macOS, lifecycle and passive runtime observation share
-one private backend. `kern.bootsessionuuid` identifies the boot. Process identity
+one private backend, and only the verified receipt is read: macOS 27.2, arm64,
+64-bit pointers, little-endian. Any other combination is unknown and does not
+guess offsets. `kern.bootsessionuuid` identifies the boot. Process identity
 comes from `proc_pidinfo(PROC_PIDTBSDINFO)` on the verified 136-byte layout;
 journal `start_ticks` stays that start time in integer Unix seconds, and the
-microsecond field is used only to compare two reads of the same process. Context
-tags come from `KERN_PROCARGS2` into one `KERN_ARGMAX`-sized buffer (1 MiB on the
-verified host). A full buffer is truncated and unknown. `pid_namespace` is
-`"darwin"`. Host IDs hash the IOKit `IOPlatformUUID` with the same UUIDv5 scheme
-as Linux machine-id. The guarded observer never runs `ps`, `lsof`, `sysctl`, or
+microsecond field is used only to compare two reads of the same process. A
+runnable-to-sleeping transition does not make that identity new. A changed
+parent or uid does. Context tags come from `KERN_PROCARGS2` into one
+`KERN_ARGMAX`-sized buffer (1 MiB on the verified host). A full buffer is
+truncated and unknown. `proc_listallpids` uses byte sizes and returns a pid
+count; a buffer that comes back full is retried, then incomplete. Identity
+reads follow kernel order up to 4096 pids. Context reads cover at most 256
+same-uid processes, reparented `ppid == 1` first; past either cap the scan is
+incomplete. `pid_namespace` is `"darwin"`.
+Host IDs hash the IOKit `IOPlatformUUID` with the same UUIDv5 scheme as Linux
+machine-id. The guarded observer never runs `ps`, `lsof`, `sysctl`, or
 `ioreg`. Denied, malformed, empty, or truncated reads are unknown, not absence.
 A missing recorded PID or a changed start time proves the original process dead
 only when this observer can see itself. Descendant membership is a context tag
