@@ -108,6 +108,7 @@ KNOWN_KEYS = {
     "collaboration": ("fallback", "reasons", "components"),
     "prices": None,
     "watch": ("engine_repo", "host_failure_minutes"),
+    "stats": ("cycle_target_hours",),
 }
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
@@ -266,6 +267,7 @@ class Config:
     # `[watch].engine_repo`: where `factory watch` files engine/runtime failures from every install.
     watch_engine_repo: str = ENGINE_REPO
     watch_host_failure_minutes: int = 60
+    stats_cycle_target_hours: float = 6.6
     watch_bands: list[Band] = field(default_factory=list)
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
     host_name: str | None = None
@@ -716,12 +718,15 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     release = raw.get("release", {})
     learn = raw.get("learn", {})
     evaluation = raw.get("eval", {})
+    stats = raw.get("stats", {})
     if not isinstance(learn, dict):
         raise ConfigError("[learn] must be a table")
     if not isinstance(release, dict):
         raise ConfigError("[release] must be a table")
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
+    if not isinstance(stats, dict):
+        raise ConfigError("[stats] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
     for key in ("host_name", "triage_host"):
         value = layered.get(key)
@@ -971,6 +976,15 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if isinstance(host_failure_minutes, bool) or not isinstance(host_failure_minutes, int) or host_failure_minutes < 1:
         raise ConfigError("watch.host_failure_minutes must be a positive integer")
     cfg.watch_host_failure_minutes = host_failure_minutes
+    cycle_target_hours = stats.get("cycle_target_hours", cfg.stats_cycle_target_hours)
+    if (
+        isinstance(cycle_target_hours, bool)
+        or not isinstance(cycle_target_hours, (int, float))
+        or not math.isfinite(cycle_target_hours)
+        or cycle_target_hours <= 0
+    ):
+        raise ConfigError("stats.cycle_target_hours must be a positive finite number")
+    cfg.stats_cycle_target_hours = float(cycle_target_hours)
     cfg.dashboard_port = int(dash.get("port", cfg.dashboard_port))
     cfg.dashboard_theme = root / dash["theme"] if dash.get("theme") else None
     cfg.install = merge(DEFAULT_INSTALL, raw.get("install", {}))

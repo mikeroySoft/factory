@@ -554,6 +554,74 @@ def band_signals(
     return alarms
 
 
+def _latest_complete_week(now: datetime | None = None) -> tuple[datetime, datetime]:
+    current = now or datetime.now(UTC)
+    current = (
+        current.replace(tzinfo=UTC)
+        if current.tzinfo is None
+        else current.astimezone(UTC)
+    )
+    end = datetime.combine(
+        current.date() - timedelta(days=current.weekday()), datetime.min.time(), UTC,
+    )
+    return end - timedelta(days=7), end
+
+
+
+
+def cycle_signals(
+    cfg: config.Config, events: list[dict], now: datetime | None = None,
+) -> list[dict]:
+    start, end = _latest_complete_week(now)
+    metrics = stats.weekly_cycle_metrics(
+        events, start, end, cfg.stats_cycle_target_hours,
+    )
+    median = metrics["cycle_median_hours"]
+    count = metrics["cycle_n"]
+    target = metrics["cycle_target_hours"]
+    if median is None or median <= target:
+        return []
+    ci = metrics["cycle_ci95"]
+    ci_text = f"{ci[0]:g}–{ci[1]:g}h"
+    merged_tickets = {
+        row.get("ticket")
+        for row in events
+        if row.get("event") == "merged"
+        and (at := stats._timestamp(row.get("at"))) is not None
+        and start <= at < end
+    }
+    rows = [
+        row for row in events
+        if row.get("ticket") in merged_tickets
+        and row.get("event") in {"labeled", "merged"}
+    ]
+    rule = "weekly median above target"
+    summary = f"median {median:g}h; 95% CI {ci_text}; n={count}; target {target:g}h"
+    week = f"{start.date().isoformat()} to {end.date().isoformat()} UTC"
+    fp_key = f"{cfg.repo}\n{start.isoformat()}\n{end.isoformat()}"
+    fp = f"band:{fingerprint('cycle_median_hours', fp_key)}"
+    return [{
+        "fingerprint": fp,
+        "kind": "band",
+        "stage": "control-band",
+        "key": week,
+        "metric": "cycle_median_hours",
+        "rule": rule,
+        "tier": "act",
+        "rows": rows,
+        "excerpt": (
+            f"Metric: cycle_median_hours\nWeek: {week}\n"
+            f"Median: {median:g}h\n95% CI: {ci_text}\n"
+            f"n: {count}\nTarget: {target:g}h\nRule: {rule}."
+        ),
+        "log": None,
+        "latest": end.isoformat(),
+        "command": "factory watch --dry-run",
+        "prs": [],
+        "cycle_summary": summary,
+    }]
+
+
 def _diagnose(cfg: config.Config, signal: dict) -> None:
     from factory import triage
 
@@ -648,6 +716,8 @@ def signals(
                       f"{shlex.quote(json.dumps({'code': code}, separators=(',', ':'))[1:-1])}"}
     for alarm in band_signals(cfg, events, now):
         found[alarm["fingerprint"]] = alarm
+    for alarm in cycle_signals(cfg, events, now):
+        found[alarm["fingerprint"]] = alarm
     for signal in found.values():
         signal["rows"] = signal["rows"][-MAX_ROWS:]
         if signal["kind"] in {"lifecycle", "host"}:
@@ -657,6 +727,8 @@ def signals(
 
 def title(signal: dict) -> str:
     if signal["kind"] == "band":
+        if signal.get("cycle_summary"):
+            return f"factory cycle alarm: {signal['cycle_summary']}"[:200]
         return f"factory control-band alarm: {signal['metric']} ({signal['rule']})"[:200]
     return f"factory runtime failure: {signal['kind']} {signal['stage']} {signal['key']}"[:200]
 
@@ -679,8 +751,8 @@ def body(signal: dict, install: str) -> str:
         f"Fingerprint: {signal['fingerprint']}",
         "",
         (
-            f"`factory watch` observed metric `{signal['metric']}` outside its configured control band "
-            f"under `{signal['rule']}` at tier `{signal['tier']}`. "
+            f"`factory watch` observed metric `{signal['metric']}` triggering configured rule "
+            f"`{signal['rule']}` at tier `{signal['tier']}`. "
             if signal["kind"] == "band" else
             "`factory watch` observed a persistent host condition from local evidence: "
             if signal["kind"] == "host" else
@@ -698,7 +770,7 @@ def body(signal: dict, install: str) -> str:
         "## Reproduce", f"In the `{install}` checkout:", "```", signal["command"], "factory watch --dry-run", "```",
         "## Expected behavior",
         (
-            f"Metric `{signal['metric']}` returns inside its configured control band, and "
+            f"Metric `{signal['metric']}` no longer triggers `{signal['rule']}`, and "
             f"`factory watch --dry-run` no longer reports fingerprint `{signal['fingerprint']}`."
             if signal["kind"] == "band" else
             f"The factory pass completes without `{signal['key']}` at stage `{signal['stage']}`, and "
@@ -747,6 +819,8 @@ def run_pass(
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
+    week_start, week_end = _latest_complete_week(now)
+    events = stats.cycle_events(cfg, events, week_start, week_end)
     if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
         try:
@@ -910,7 +984,7 @@ def run_pass(
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory watch", description=__doc__)
-    parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
+    parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; read-only GitHub queries, no journal row")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
     with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):

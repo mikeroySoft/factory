@@ -522,6 +522,44 @@ projection. `factory doctor` reports the timestamps (`never` until a stage has
 succeeded); an unreadable or malformed projection is a warning, not a silently
 missing metric.
 
+### Weekly outcome metrics
+
+`factory stats --week [--json]` adds these fields to its trailing seven-day report:
+
+| Field | Meaning |
+|---|---|
+| `cycle_median_hours`, `cycle_ci95`, `cycle_n` | Median ready-for-agent→PR-merge hours, percentile-bootstrap 95% interval `[lo, hi]`, and sampled tickets. Uses 2,000 resamples and seed 0 for deterministic output. |
+| `cycle_target_hours` | Target from `[stats].cycle_target_hours` (default `6.6`); must be a positive finite number. |
+| `cycle_open` | Ready tickets without a merge before the window ends, excluded from the median. |
+| `cost_per_merged_ticket`, `cost_n` | Total journaled dollars in the window divided by distinct merged tickets, and the number of cost observations. Includes spend on unmerged tickets; duplicate worker `attempt`/`llm-usage` charges count once. |
+| `pass_k`, `k`, `cases`, `pass_k_excluded` | Share of cases whose latest eval run passed every one of the suite's `MIN_REPEATS` repeats; `k` is that repeat count, `cases` the complete-case denominator, and `pass_k_excluded` the short-repeat cases. |
+
+Cycle evidence uses the latest `ready-for-agent` label event strictly before the
+merge, even when the label predates the window. Journal PR identities are enriched
+using paginated GitHub issue timelines and the PR's actual `mergedAt`; claim time
+is never substituted for label time. Missing label evidence excludes a merge.
+Unmerged journal claims/PRs and currently ready open issues supply the excluded
+ticket count; their label timelines are retained across the reporting boundary.
+Without journal PR/claim identities, only supplied journal label evidence is
+available. GitHub read failures leave unavailable cycle samples out rather than
+inventing timestamps. Watch dry runs perform these read-only queries too.
+The window is half-open `[start, end)`. Eval evidence is the latest available run
+per case as of the window end, not a mixture of repeats across runs or profiles;
+a completed repeat succeeds when `approved` is true. Missing samples/costs/eval
+cases produce `null` with `cycle_reason`, `cost_reason`, or `pass_k_reason`, not
+a fabricated zero. A reported zero-dollar cost or zero passing cases is real data.
+
+```toml
+[stats]
+cycle_target_hours = 6.6
+```
+
+`factory watch` compares the latest complete Monday-to-Monday UTC week against
+that target. A median strictly above the target files one fingerprinted alarm
+per repository/week through the existing watch filing path, naming the median,
+95% CI, sample count and target. Empty samples and values at or below target
+do not alarm. This threshold needs no control-band baseline configuration.
+
 `factory init` writes `factory-bands.toml`, the committed schema-1 control-band
 configuration used by `factory watch`. Each `[[band]]` selects one daily metric,
 its trailing `window_days`, and explicit rules. A `sigma` rule supplies
