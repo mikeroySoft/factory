@@ -89,6 +89,19 @@ class ScopedProtectedOverrideTest(unittest.TestCase):
                 self.assertIn(path, report)
                 self.assertNotIn("diff --git a/.factory.toml", report)
 
+    def test_crlf_protected_override_limits_dispatcher_gate_to_named_paths(self):
+        self.change_config()
+        body = 'Human scope\r\nfactory-protected-override: [".factory.toml"]\r\nTask\r\n'
+        passed, report = self.run_gate(body)
+        self.assertTrue(passed, report)
+        (self.repo / "checks/acceptance/oracle.txt").write_text("unauthorized\n")
+        self.commit("change another protected path")
+        passed, report = self.run_gate(body)
+        self.assertFalse(passed, report)
+        self.assertIn("- protected-paths: FAIL", report)
+        self.assertIn("checks/acceptance/oracle.txt", report)
+        self.assertNotIn("diff --git a/.factory.toml", report)
+
     def test_protected_override_requires_label_and_nonempty_scope(self):
         self.change_config()
         for body, labels in (
@@ -242,6 +255,29 @@ class ManagerProtectedOverrideTest(unittest.TestCase):
             dispatch.gate_flags(None, {config.LABEL_PROTECTED_OVERRIDE}, replacement),
             {"protected_override": False, "protected_override_paths": [".factory.toml"]},
         )
+
+    def test_rewrite_line_endings_cannot_change_effective_protected_scope(self):
+        wildcard = 'factory-protected-override: ["**"]'
+        expected = {"protected_override": False, "protected_override_paths": [".factory.toml"]}
+        for narrow_end, wildcard_end in (("\n", "\r\n"), ("\r\n", "\n")):
+            current = self.scope + narrow_end + wildcard + wildcard_end + "Task\n"
+            replacement = self.scope + wildcard_end + wildcard + narrow_end + "Refined task\n"
+            with self.subTest(narrow_end=narrow_end), \
+                    mock.patch.object(dispatch, "gh_json", return_value={"body": current}), \
+                    mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess(
+                        [], 0, "https://github.com/acme/widgets/issues/622#issuecomment-701", "",
+                    )) as run:
+                manage.apply(
+                    622, {"body": current}, "REWRITE", replacement, None,
+                    self.root / "packet.md",
+                )
+                edits = [call.args[0] for call in run.call_args_list if "--body" in call.args[0]]
+                self.assertEqual(edits[1][-2:], ["--body", replacement])
+                for body in (current, replacement):
+                    self.assertEqual(
+                        dispatch.gate_flags(None, {config.LABEL_PROTECTED_OVERRIDE}, body),
+                        expected,
+                    )
 
 
 if __name__ == "__main__":
