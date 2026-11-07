@@ -18,6 +18,14 @@ from pathlib import Path
 p = Path(os.environ["EXIT_STATE"])
 s = json.loads(p.read_text())
 a = sys.argv[1:]
+if a[:2] == ["issue", "view"]:
+    print(json.dumps({"labels": [{"name": label} for label in s["labels"]]}))
+    raise SystemExit(0)
+if "--remove-label" in a and "repository_labels" in s:
+    label = a[a.index("--remove-label") + 1]
+    if label not in s["repository_labels"]:
+        print(f"'{label}' not found", file=sys.stderr)
+        raise SystemExit(1)
 s["calls"].append(a)
 operation = "comment" if a[:2] == ["issue", "comment"] else "add" if a[:2] == ["issue", "edit"] and "--add-label" in a else "edit"
 failure = s.get("failure") == operation and s.get("remaining", 0) != 0
@@ -124,6 +132,15 @@ class EscalationWriteSafetyTest(unittest.TestCase):
         self.assertEqual(self.data()["labels"], ["ready-for-human"])
         self.assertIn("gate failed", self.data()["comments"][0])
 
+    def test_repository_without_held_label_still_escalates_to_one_queue(self):
+        state = self.data()
+        state["repository_labels"] = ["ready-for-agent", "ready-for-human"]
+        self.state.write_text(json.dumps(state))
+        self.escalate()
+        self.assertEqual(self.data()["labels"], ["ready-for-human"])
+        self.assertTrue(all(labels for labels in self.data()["history"]))
+        self.assertIn("gate failed", self.data()["comments"][-1])
+
     def test_escalation_codes_all_leave_one_queue_and_reason_comment(self):
         for code in sorted(dispatch.ESCALATION_CODES):
             with self.subTest(exit=code):
@@ -165,19 +182,31 @@ class TicketExitMatrixTest(unittest.TestCase):
             ("bounce_reviewer_unavailable", "reviewer unavailable"),
             ("bounce_risk_disagreement", "checks disagreed"),
         )
+        cases += (
+            ("worker_unavailable_comment_failure", ""),
+            ("worker_launch_failed_comment_failure", ""),
+            ("approved_comment_failure", ""),
+        )
         root = dispatch.ROOT
         real_run = dispatch.run
         head = "a" * 40
         for exit_path, reason in cases:
             with self.subTest(exit=exit_path), ExitStack() as stack:
+                comment_failure = exit_path.endswith("_comment_failure")
+                exit_path = exit_path.removesuffix("_comment_failure")
                 cfg = Config(root=root, repo="local/safety", max_attempts=1, review_rounds=1)
                 if exit_path == "manager_approval":
                     cfg.manager, cfg.manager_review = ["manager"], "all"
                 dispatch.configure(cfg)
+                event_start = len(lifecycle.read_events(dispatch.EVENTS))
                 self.state.write_text(json.dumps({
                     "labels": ["ready-for-agent"], "assigned": True,
                     "comments": [], "calls": [], "history": [],
                 }))
+                if comment_failure:
+                    state = self.data()
+                    state.update(failure="comment", remaining=-1)
+                    self.state.write_text(json.dumps(state))
                 wt = dispatch.FACTORY / "wt-7"
                 (wt / ".factory").mkdir(parents=True, exist_ok=True)
                 handoff = wt / ".factory" / "handoff-7.md"
@@ -210,6 +239,7 @@ class TicketExitMatrixTest(unittest.TestCase):
                 }
                 for name, value in patches.items():
                     stack.enter_context(mock.patch.object(dispatch, name, value))
+                retained = stack.enter_context(mock.patch.object(dispatch, "retain_handoff", return_value=True))
                 success = (True, "gate ok", None, head)
                 failure = (False, "worker stuck" if exit_path == "worker_stuck" else "gate failed", None, head)
                 protected = (False, "# Gate report\n- protected-paths: FAIL\n", None, head)
@@ -250,7 +280,10 @@ class TicketExitMatrixTest(unittest.TestCase):
                         side_effect=[(head, False), (head, True)] if exit_path.startswith("bounce_")
                         else [(head, True)],
                     ))
-                if exit_path == "dispatcher_error":
+                if comment_failure:
+                    with self.assertRaises(dispatch.GitHubWriteFailed):
+                        dispatch.process_ticket(issue, 1, False)
+                elif exit_path == "dispatcher_error":
                     with self.assertRaises(RuntimeError):
                         dispatch.process_ticket(issue, 1, False)
                 else:
@@ -259,7 +292,17 @@ class TicketExitMatrixTest(unittest.TestCase):
                     "approved", "manager_approval", "worker_unavailable", "worker_launch_failed",
                 } else "ready-for-human"
                 self.assertEqual(self.data()["labels"], [expected])
-                self.assertIn(reason, self.data()["comments"][-1])
+                if comment_failure:
+                    self.assertEqual(self.data()["comments"], [])
+                    if exit_path.startswith("worker_"):
+                        self.assertFalse(self.data()["assigned"])
+                    else:
+                        approved = [row for row in lifecycle.read_events(dispatch.EVENTS)[event_start:]
+                                    if row.get("event") == "approved" and row.get("head") == head]
+                        self.assertTrue(approved)
+                        retained.assert_called_once_with(7, head)
+                else:
+                    self.assertIn(reason, self.data()["comments"][-1])
                 self.assertTrue(all(labels for labels in self.data()["history"]))
 
     def test_deferred_review_rework_replaces_human_and_held_with_agent(self):
