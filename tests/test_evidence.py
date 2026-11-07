@@ -929,6 +929,8 @@ class EvidenceCliTest(unittest.TestCase):
                 self.assertFalse((self.root / "no-such-state-directory").exists())
                 self.assertFalse((self.root / "no-such-events-file").exists())
                 target.unlink()
+            # subTest records failures and continues; do not leak a dangling link.
+            target.unlink(missing_ok=True)
 
         # A genuinely empty trail (real .factory directory, no events yet) stays
         # "empty" -- read-only, not fabricated, and not claimed unavailable.
@@ -1007,6 +1009,36 @@ class EvidenceCliTest(unittest.TestCase):
 
 
 class EvidenceFixtureCleanupTest(unittest.TestCase):
+    def setUp(self):
+        context = patch.object(tempfile, "tempdir", os.path.realpath(tempfile.gettempdir()))
+        context.start()
+        self.addCleanup(context.stop)
+
+    def test_audit_fixture_failure_does_not_contaminate_later_cases(self):
+        case = EvidenceCliTest(
+            "test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent"
+        )
+        invoke = case.invoke
+        statuses = []
+
+        def fail_first_observation(*args, **kwargs):
+            data = invoke(*args, **kwargs)
+            if args and args[0] == "observe":
+                audit = next(row for row in case.values(data)
+                             if isinstance(row, dict) and "tickets" in row)
+                statuses.append(audit["status"])
+                if len(statuses) == 1:
+                    raise AssertionError("injected first-subtest failure")
+            return data
+
+        result = unittest.TestResult()
+        with patch.object(case, "invoke", side_effect=fail_first_observation):
+            case.run(result)
+        self.assertEqual(result.errors, [], result.errors)
+        self.assertEqual(len(result.failures), 1, result.failures)
+        self.assertIn("injected first-subtest failure", result.failures[0][1])
+        self.assertEqual(statuses, ["unavailable", "unavailable", "empty", "partial"])
+
     def test_fixture_commits_do_not_launch_detached_maintenance(self):
         # Trace the real failing test, including both of its temporary repositories.
         with tempfile.TemporaryDirectory() as directory:
