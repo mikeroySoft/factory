@@ -275,7 +275,11 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertEqual(self.events("conflict-requeue"), [])
 
         self.github.issue_labels = {config.LABEL_AGENT, config.LABEL_PROTECTED_OVERRIDE}
-        with self.patched():
+        scoped_issue = {
+            **self.github.issue(),
+            "body": 'factory-protected-override: ["shared.txt"]',
+        }
+        with self.patched(), mock.patch.object(self.github, "issue", return_value=scoped_issue):
             dispatch.refresh_pr_branch(9, 102, False)
         self.assertEqual(len(self.events("escalate")), 1)
         self.assertEqual(len(self.events("conflict-requeue")), 1)

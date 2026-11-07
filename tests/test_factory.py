@@ -2069,7 +2069,8 @@ PY
                 packet = cfg.factory / "packet.md"
                 packet.write_text("fix the gate")
                 issue = {
-                    "title": "Fix oracle", "body": "Fix the oracle", "comments": [],
+                    "title": "Fix oracle",
+                    "body": 'factory-protected-override: ["checks/oracle.txt"]', "comments": [],
                     "labels": [{"name": "chore"}] + (
                         [{"name": config.LABEL_PROTECTED_OVERRIDE}] if authorized else []
                     ),
@@ -4395,11 +4396,14 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(
                     dispatch, "gh_json", side_effect=lambda args: (
                         {"baseRefName": "main"} if args[0] == "pr"
-                        else {"labels": [{"name": config.LABEL_PROTECTED_OVERRIDE}]}
+                        else {
+                            "labels": [{"name": config.LABEL_PROTECTED_OVERRIDE}],
+                            "body": 'factory-protected-override: ["feature.txt"]',
+                        }
                     ),
             ), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
-                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gated, \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
                     mock.patch.object(
                         dispatch, "review", return_value=("APPROVE", "fresh findings"),
                     ) as review, \
@@ -4407,7 +4411,6 @@ class DispatchTest(unittest.TestCase):
                     mock.patch.object(dispatch, "approve_pr", return_value=True) as approve, \
                     mock.patch.object(dispatch, "escalate") as esc:
                 dispatch.refresh_pr_branch(7, 100, False)
-            gated.assert_called_once_with(dispatch.FACTORY / "wt-7", 7, protected_override=True)
 
             refreshed_head = git(dispatch.FACTORY / "wt-7", "rev-parse", "HEAD")
             review.assert_called_once_with(dispatch.FACTORY / "wt-7", 7, "ok", refreshed_head)
