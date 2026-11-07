@@ -21,7 +21,7 @@ class Response:
 
     def read(self):
         return json.dumps({"answers": {f"c{i}": {"noul": s} for i, s in enumerate(self.scores)},
-                           "usage": {"input_tokens": 100}}).encode()
+                           "model": "jev-1.13.0", "usage": {"input_tokens": 100}}).encode()
 
 
 class BriefTest(unittest.TestCase):
@@ -35,9 +35,13 @@ class BriefTest(unittest.TestCase):
             root = Path(directory)
             (root / "a.py").write_text("first\n")
             (root / "b.py").write_text("second\n")
-            with patch.object(brief, "git", git), patch.object(brief, "files_for", return_value=["a.py", "b.py"]), patch.object(brief.urllib.request, "urlopen", return_value=Response([0.1, 0.9])) as urlopen, redirect_stdout(io.StringIO()) as out:
+            with patch.object(brief, "git", git), patch.object(brief, "files_for", return_value=["a.py", "b.py"]), patch.object(brief.urllib.request, "urlopen", return_value=Response([0.1, 0.9])) as urlopen, redirect_stdout(io.StringIO()):
                 text = brief.compose(root, {"title": "Change `a.py`", "body": ""}, "")
-        self.assertIn("[brief] Jev rerank cost: $0.00000420", out.getvalue())
+            row, = map(json.loads, (root / ".factory/brief-rerank.jsonl").read_text().splitlines())
+            self.assertEqual(row["model_requested"], "jev-1.13.0")
+            self.assertEqual(row["model_resolved"], "jev-1.13.0")
+            self.assertEqual(row["input_tokens"], 100)
+            self.assertAlmostEqual(row["cost"], 0.0000042)
         self.assertLess(text.index("- b.py"), text.index("- a.py"))
         self.assertIn("- README.md", text)
         self.assertIn("- CHANGELOG.md", text)

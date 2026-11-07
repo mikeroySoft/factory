@@ -91,6 +91,7 @@ KNOWN_KEYS = {
     "dispatch": ("max_active", "max_attempts", "budget_min", "idle_timeout", "exit_grace",
                  "review_rounds", "cost_pattern", "signoff"),
     "engine": ("yield_for_update",),
+    "brief": ("model", "url"),
     "workers": None,
     "worker_wrap": ("command",),
     "review": ("command", "second_command", "json_mode", "policy"),
@@ -193,6 +194,8 @@ class Config:
     engine_yield_for_update: bool = False
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges
     cost_pattern: str | None = None  # regex with one capture: dollars in the worker log
+    brief_model: str = "jev-1.13.0"
+    brief_url: str = "https://api.typesafe.ai/v1/systemone"
     workers: dict[str, list[str]] = field(
         default_factory=lambda: {"default": DEFAULT_WORKER, LABEL_CHORE: DEFAULT_CHORE_WORKER}
     )
@@ -712,10 +715,13 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
                               f"[defaults] or [repo.\"<slug>\"]")
     repo_t, dispatch, workers = raw.get("repo", {}), raw.get("dispatch", {}), raw.get("workers", {})
     gate, leak, triage, dash = raw.get("gate", {}), raw.get("leak_scan", {}), raw.get("triage", {}), raw.get("dashboard", {})
+    brief = raw.get("brief", {})
     manager = raw.get("manager", {})
     release = raw.get("release", {})
     learn = raw.get("learn", {})
     evaluation = raw.get("eval", {})
+    if not isinstance(brief, dict):
+        raise ConfigError("[brief] must be a table")
     if not isinstance(learn, dict):
         raise ConfigError("[learn] must be a table")
     if not isinstance(release, dict):
@@ -747,6 +753,25 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     cfg.review_rounds = int(dispatch.get("review_rounds", cfg.review_rounds))
     cfg.cost_pattern = dispatch.get("cost_pattern") or None
     cfg.signoff = bool(dispatch.get("signoff", cfg.signoff))
+    brief_model = brief.get("model", cfg.brief_model)
+    if not isinstance(brief_model, str) or not brief_model.strip():
+        raise ConfigError("brief.model must be non-empty text")
+    brief_url = brief.get("url", cfg.brief_url)
+    if not isinstance(brief_url, str) or not brief_url.strip():
+        raise ConfigError("brief.url must be an HTTP(S) URL")
+    try:
+        parsed_brief_url = urlsplit(brief_url)
+        brief_host = parsed_brief_url.hostname
+        _ = parsed_brief_url.port
+    except (TypeError, ValueError, UnicodeError):
+        raise ConfigError("brief.url must be an HTTP(S) URL") from None
+    if (
+        parsed_brief_url.scheme not in {"http", "https"}
+        or not brief_host
+        or any(char.isspace() or ord(char) < 32 for char in brief_url)
+    ):
+        raise ConfigError("brief.url must be an HTTP(S) URL")
+    cfg.brief_model, cfg.brief_url = brief_model, brief_url
     engine = raw.get("engine", {})
     if not isinstance(engine, dict):
         raise ConfigError("[engine] must be a table")

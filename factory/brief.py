@@ -13,8 +13,13 @@ import math
 import os
 import re
 import subprocess
+import time
 import urllib.request
+import uuid
 from pathlib import Path
+
+from factory import lifecycle
+from factory.config import Config
 
 MAX_NOUNS = 12
 MAX_FILES = 15
@@ -58,12 +63,33 @@ def files_for(cwd: Path, words: list[str], limit: int = MAX_FILES) -> list[str]:
     return ranked[:limit]
 
 
-def rerank(cwd: Path, issue: dict, paths: list[str]) -> list[str]:
-    """Rank the noun pool; any provider failure preserves its deterministic order."""
+def _journal(cfg: Config, event: str, **fields) -> None:
+    row = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event, **fields}
+    execution = lifecycle.current()
+    if execution is not None:
+        row.update(execution_id=execution.execution_id, dispatcher_run_id=execution.dispatcher_run_id)
+        for key in ("ticket", "attempt"):
+            if row.get(key) is None:
+                row[key] = getattr(execution, key)
+    lifecycle.append(cfg.factory / "brief-rerank.jsonl", row)
+
+
+def rerank(cwd: Path, issue: dict, paths: list[str], *, cfg: Config | None = None,
+           evidence: dict | None = None) -> list[str]:
+    """Rank the noun pool; journal failures too, preserving deterministic order."""
+    cfg = cfg or Config(cwd, "")
+    evidence = evidence if evidence is not None else {}
+    evidence.update(
+        rerank_id=str(uuid.uuid4()), ticket=issue.get("number", evidence.get("ticket")),
+        model_requested=cfg.brief_model, model_resolved=None, input_tokens=None, cost=None,
+        candidate_pool=paths, top_k=paths[:MAX_FILES], status="skipped",
+    )
+    ranked = paths
     key = os.environ.get("TYPESAFE_API_KEY")
-    if not key or not paths:
-        return paths
     try:
+        if not key or not paths:
+            return paths
+        evidence["status"] = "failed"
         candidates = []
         for path in paths:
             try:
@@ -86,26 +112,34 @@ def rerank(cwd: Path, issue: dict, paths: list[str]) -> list[str]:
                 },
             } for i in range(len(paths))
         }
-        body = json.dumps({"model": "jev-latest", "state": {
+        body = json.dumps({"model": cfg.brief_model, "state": {
             "issue": {"title": issue.get("title", ""), "body": issue.get("body") or ""},
             "candidates": candidates}, "questions": questions}).encode()
         request = urllib.request.Request(
-            "https://api.typesafe.ai/v1/systemone", data=body,
+            cfg.brief_url, data=body,
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=15) as response:
             result = json.load(response)
+        resolved = result.get("model")
+        evidence["model_resolved"] = resolved if isinstance(resolved, str) else None
+        tokens = result.get("usage", {}).get("input_tokens")
+        if type(tokens) is int and tokens >= 0:
+            evidence.update(input_tokens=tokens, cost=tokens * 0.042 / 1_000_000)
         answers = result["answers"]
         scores = [answers[f"c{i}"]["noul"] for i in range(len(paths))]
         if set(answers) != set(questions) or any(
             type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 1 for v in scores
         ):
             raise ValueError("Invalid Jev scores")
-        cost = result["usage"]["input_tokens"] * 0.042 / 1_000_000
-        print(f"[brief] Jev rerank cost: ${cost:.8f}", flush=True)
-        return [paths[i] for i in sorted(range(len(paths)), key=lambda i: (-scores[i], i))]
+        ranked = [paths[i] for i in sorted(range(len(paths)), key=lambda i: (-scores[i], i))]
+        evidence["status"] = "ranked"
+        return ranked
     except Exception:
         logging.getLogger(__name__).warning("Brief Jev rerank failed; using noun order", exc_info=True)
         return paths
+    finally:
+        evidence["top_k"] = ranked[:MAX_FILES]
+        _journal(cfg, "brief-rerank", **evidence)
 
 
 def prs_for(cwd: Path, paths: list[str]) -> list[str]:
@@ -137,11 +171,12 @@ def matching_lessons(lessons: str, words: list[str]) -> list[str]:
             if line.startswith("- ") and any(w in line.lower() for w in lowered)]
 
 
-def compose(cwd: Path, issue: dict, lessons: str) -> str:
+def compose(cwd: Path, issue: dict, lessons: str, *, cfg: Config | None = None,
+            evidence: dict | None = None) -> str:
     """Brief markdown, or "" when nothing matched."""
     words = nouns(f"{issue.get('title', '')}\n{issue.get('body') or ''}")
     pool = files_for(cwd, words, POOL_FILES) if words else []
-    paths = rerank(cwd, issue, pool)[:MAX_FILES]
+    paths = rerank(cwd, issue, pool, cfg=cfg, evidence=evidence)[:MAX_FILES]
     if paths:
         tracked = set(git(cwd, "ls-files", "--", "README.md", "CHANGELOG.md"))
         paths.extend(path for path in ("README.md", "CHANGELOG.md") if path in tracked and path not in paths)
@@ -160,7 +195,8 @@ def compose(cwd: Path, issue: dict, lessons: str) -> str:
     return "\n\n".join(sections)[:MAX_CHARS]
 
 
-def ensure(path: Path, cwd: Path, issue: dict, lessons: str, *, plan_baseline: dict | None = None) -> str:
+def ensure(path: Path, cwd: Path, issue: dict, lessons: str, *, plan_baseline: dict | None = None,
+           cfg: Config | None = None, ticket: int | None = None, attempt: int | None = None) -> str:
     """Reuse the admitted brief; a newly accepted revision replaces an older claim's brief."""
     baseline_text = ""
     if plan_baseline is not None:
@@ -171,8 +207,41 @@ def ensure(path: Path, cwd: Path, issue: dict, lessons: str, *, plan_baseline: d
         text = path.read_text()
         if not baseline_text or text.endswith(baseline_text):
             return text
-    text = compose(cwd, issue, lessons) + baseline_text
+    evidence = {"ticket": ticket, "attempt": attempt}
+    text = compose(cwd, issue, lessons, cfg=cfg, evidence=evidence) + baseline_text
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.with_suffix(".json").write_text(json.dumps(evidence) + "\n")
     if text:
-        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
     return text
+
+
+def journal_attempt(path: Path, cwd: Path, cfg: Config, *, ticket: int, attempt: int,
+                    base: str, head: str) -> None:
+    """Compare the PR diff to the original retrieval, even when the brief was reused."""
+    try:
+        evidence = json.loads(path.with_suffix(".json").read_text())
+    except (OSError, ValueError):
+        evidence = {}
+    if not isinstance(evidence, dict):
+        evidence = {}
+    diff = subprocess.run(
+        ["git", "diff", "--no-renames", "--name-only", "-z", f"{base}...{head}", "--"],
+        cwd=cwd, capture_output=True, text=True, check=False,
+    )
+    known = (all(isinstance(evidence.get(key), list) for key in ("candidate_pool", "top_k"))
+             and diff.returncode == 0)
+    changed = {
+        name: {"in_candidate_pool": name in evidence["candidate_pool"],
+               "in_top_k": name in evidence["top_k"]}
+        for name in diff.stdout.split("\0") if name
+    } if known else None
+    _journal(
+        cfg, "brief-coverage", ticket=ticket, attempt=attempt, base=base, head=head,
+        rerank_id=evidence.get("rerank_id"), model_requested=evidence.get("model_requested"),
+        model_resolved=evidence.get("model_resolved"), k=MAX_FILES,
+        status="recorded" if known else "unavailable", changed_files=changed,
+        retrieval_misses=sum(not item["in_candidate_pool"] for item in changed.values()) if known else None,
+        ranking_misses=sum(item["in_candidate_pool"] and not item["in_top_k"]
+                          for item in changed.values()) if known else None,
+    )

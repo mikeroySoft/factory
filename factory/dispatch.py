@@ -1199,7 +1199,7 @@ def build_prompt(
         parts += ["", "## Handoff from the previous attempt", "", handoff.read_text()]
     brief_text = brief.ensure(
         brief_path(wt, n), wt, issue, lessons_text,
-        plan_baseline=baseline,
+        plan_baseline=baseline, cfg=cfg, ticket=n, attempt=attempt,
     )
     if brief_text:
         parts += ["", "## Brief", "", brief_text]
@@ -4749,6 +4749,10 @@ def worker_round(
         restore_unplanned_lockfiles(wt, n, f"origin/{cfg.main}")
     commit_leftovers(wt, n, title)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    brief.journal_attempt(
+        brief_path(wt, n), wt, cfg, ticket=n, attempt=attempt,
+        base=f"origin/{cfg.main}", head=head,
+    )
     handoff = results.source_metadata(cfg, n)
     status_cmd = [
         "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
