@@ -402,16 +402,32 @@ def main(argv: list[str] | None = None) -> int:
         else:
             try:
                 event = binding.accepted(cfg, int(argv[1]))
-                if event is None:
-                    raise binding.BindingError(f"ticket #{argv[1]} has no accepted plan binding")
-                accepted = event["baseline"]
             except binding.BindingError as exc:
                 raise _binding_failure(exc, ".factory/events.jsonl") from exc
-            result["sources"].append(source(
-                "Accepted plan binding",
-                f"Ticket #{argv[1]} retained initiative #{accepted['initiative']} at {accepted['sha256']}.",
-                path=".factory/events.jsonl",
-            ))
+            if event is None:
+                path = f"issues/{argv[1]}"
+                issue = reader.fetch("Ticket REST issue", path)
+                if (
+                    not isinstance(issue, dict)
+                    or type(issue.get("number")) is not int
+                    or issue["number"] != int(argv[1])
+                    or not isinstance(issue.get("body"), str)
+                    or "pull_request" in issue
+                ):
+                    raise EvidenceError("incomplete_source", "Complete ticket issue body is unavailable.", path, "binding")
+                try:
+                    accepted = binding.baseline(issue["body"], cfg.repo)
+                    if accepted is None:
+                        raise binding.BindingError(f"ticket #{argv[1]} has no Plan baseline")
+                except binding.BindingError as exc:
+                    raise _binding_failure(exc, f"repos/{cfg.repo}/{path}") from exc
+            else:
+                accepted = event["baseline"]
+                result["sources"].append(source(
+                    "Accepted plan binding",
+                    f"Ticket #{argv[1]} retained initiative #{accepted['initiative']} at {accepted['sha256']}.",
+                    path=".factory/events.jsonl",
+                ))
             report = result["drift"] = binding.drift(cfg, accepted)
             if report["observed"] is not None:
                 result["sources"].append(source(
