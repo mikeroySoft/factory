@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_evidence import GH, READ_GUARD, REPO
 
-from factory import binding, config, lifecycle, onboard, plan
+from factory import config, lifecycle, onboard, plan
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = f"repos/{REPO}/"
@@ -313,6 +313,8 @@ class RouteCliTest(CliCase):
 
 class DriftCliTest(CliCase):
     def bound_fixture(self, initiative, tickets):
+        from factory import binding
+
         body = BODY.replace("- #N", "\n".join(f"- #{n}" for n in tickets))
         body = body.replace("**Plan**\n", "**Plan**\n" + "\n".join(f"NOW #{n} bounded slice" for n in tickets) + "\n")
         parent = issue(initiative, body, ["initiative"])
@@ -356,6 +358,8 @@ class DriftCliTest(CliCase):
         self.assertIsNone(data["drift"]["observed"])
 
     def test_missing_or_invalid_ticket_binding_still_fails(self):
+        from factory import binding
+
         _, baseline = self.bound_fixture(177, [175, 176])
         for body in ("ordinary unbound ticket", "Initiative: #177",
                      binding.render(baseline).replace(baseline["sha256"], "0" * 64)):
@@ -366,6 +370,8 @@ class DriftCliTest(CliCase):
                 self.assertIsNone(data["drift"])
 
     def test_retained_baseline_wins_over_edited_live_ticket(self):
+        from factory import binding
+
         parent, baseline = self.bound_fixture(537, [619])
         lifecycle.append(self.root / ".factory/events.jsonl", {
             "event": "plan-bound", "schema_version": 1, "ticket": 619, "baseline": baseline,
