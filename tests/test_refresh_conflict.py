@@ -240,6 +240,34 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
         self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
 
+    def test_journaled_divergence_withdraws_approval_before_escalating(self) -> None:
+        wt = dispatch.ensure_worktree(9)
+        git(wt, "commit", "--allow-empty", "-qm", "kept local rework")
+        local = git(wt, "rev-parse", "HEAD")
+        git(self.origin, "checkout", "-q", "agent/9")
+        git(self.origin, "commit", "--allow-empty", "-qm", "dispatcher remote rework")
+        remote = self.github.head()
+        git(self.origin, "checkout", "-q", "main")
+        dispatch.record("agent-pushed", ticket=9, head=remote)
+
+        with self.patched(), mock.patch.object(dispatch, "run_gate") as gate:
+            dispatch.merge_pass_locked(False)
+            self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+            [escalation] = self.events("escalate")
+            self.assertEqual(escalation["code"], "lease_refused")
+            for evidence in (local, remote, "kept local rework"):
+                self.assertIn(evidence, escalation["reason"])
+            dispatch.merge_pass_locked(False)
+            self.assertEqual(self.events("escalate"), [escalation])
+            gate.assert_not_called()
+
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), local)
+        self.assertEqual(self.github.head(), remote)
+        self.assertFalse(self.prompt_seen.exists())
+        self.assertEqual(self.events("attempt"), [])
+        self.assertEqual(self.events("review"), [])
+        self.assertEqual([e["head"] for e in self.events("agent-pushed")], [remote])
+
     def test_closed_ticket_conflict_still_escalates_without_requeue(self) -> None:
         closed_issue = {**self.github.issue(), "state": "CLOSED"}
         with self.patched(), mock.patch.object(self.github, "issue", return_value=closed_issue):

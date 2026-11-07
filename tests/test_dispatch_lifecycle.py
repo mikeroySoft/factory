@@ -199,6 +199,26 @@ class LocalCLI(unittest.TestCase):
         self.assertTrue(any(e.get("event") == "approved" for e in events))
         self.assertFalse(any(e.get("event") == "escalate" for e in events))
 
+    def test_kept_worktree_ahead_of_dispatcher_push(self):
+        wt, _, remote, started = self.kept_remote_head()
+        self.git("-C", str(wt), "merge", "--ff-only", remote)
+        self.git("-C", str(wt), "commit", "--allow-empty", "-qm", "kept rework after push")
+        local = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertEqual(started.read_text(), local)
+        head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+        self.git("-C", str(wt), "merge-base", "--is-ancestor", local, head)
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], head)
+        events = list(lifecycle.read_events(self.events))
+        self.assertEqual(
+            [(e["head"], e["lease"]) for e in events if e.get("event") == "agent-pushed" and e["head"] != remote],
+            [(head, remote)],
+        )
+        self.assertTrue(any(e.get("event") == "approved" for e in events))
+        self.assertFalse(any(e.get("event") in {"escalate", "worktree-fast-forward"} for e in events))
+
     def test_kept_worktree_dispatcher_divergence(self):
         wt, local, remote, started = self.kept_remote_head(diverged=True)
         self.cli("dispatch", "--ticket", "7")
