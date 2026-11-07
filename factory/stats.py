@@ -1,4 +1,4 @@
-"""Print read-only factory ticket metrics from GitHub and events.jsonl."""
+"""Print factory ticket metrics; the weekly pass also reconciles externally closed PRs."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from statistics import pstdev
+from statistics import median, pstdev
 from typing import Any
 
 from factory import config, feedback, lifecycle, onboard, risk
@@ -148,6 +148,10 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _timestamp(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -277,32 +281,108 @@ def print_skills(rows: list[dict], coverage: float | None) -> None:
 
 
 
+def reconcile_closed_prs(journal: Path, rows: list[dict], start: datetime) -> None:
+    """Journal factory PRs GitHub shows as closed without merging, once per PR."""
+    opened = {
+        row["pr"]: row["ticket"] for row in rows
+        if row.get("event") == "pr-opened"
+        and _is_int(row.get("pr")) and _is_int(row.get("ticket"))
+    }
+    seen = {
+        row["pr"] for row in rows
+        if row.get("event") == "pr-closed" and _is_int(row.get("pr"))
+    }
+    try:
+        completed = subprocess.run(
+            ["gh", "pr", "list", "--repo", REPOSITORY, "--state", "closed", "--search",
+             f"closed:>={start.astimezone(UTC).isoformat(timespec='seconds')}",
+             "--limit", "1000", "--json", "number,closedAt,mergedAt"],
+            capture_output=True, check=False, timeout=10,
+        )
+        closed = json.loads(completed.stdout) if completed.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return
+    if not isinstance(closed, list):
+        return
+    for pr in closed:
+        number = pr.get("number") if isinstance(pr, dict) else None
+        closed_at = pr.get("closedAt") if isinstance(pr, dict) else None
+        if (not _is_int(number) or number not in opened or number in seen
+                or pr.get("mergedAt") is not None or _timestamp(closed_at) is None):
+            continue
+        row = {
+            "at": closed_at, "event": "pr-closed", "ticket": opened[number], "pr": number,
+            "by": "external", "reason": "closed outside factory",
+        }
+        lifecycle.append(journal, row)
+        rows.append(row)
+        seen.add(number)
+
 
 def weekly_metrics(
-    rows: list[dict], start: datetime, end: datetime, local_model: str | None,
+    rows: list[dict],
+    start: datetime,
+    end: datetime,
+    local_model: str | None,
 ) -> dict[str, Any]:
-    """Aggregate one already-windowed journal snapshot without external reads."""
+    """Aggregate windowed outcomes, joining merges to earlier PR-opened rows."""
     window = {"start": _stamp(start), "end": _stamp(end)}
-    merged = {row["ticket"] for row in rows
-              if row.get("event") == "merged" and type(row.get("ticket")) is int}
+    windowed = window_rows(rows, start, end)
+
+    def settlement_id(row: dict):
+        if not _is_int(row.get("ticket")):
+            return None
+        if _is_int(row.get("pr")):
+            return "pr", row["pr"]
+        return "ticket", row["ticket"]
+
+    merged_rows = {
+        key: row for row in windowed
+        if row.get("event") == "merged" and (key := settlement_id(row)) is not None
+    }
+    merged_tickets = {row["ticket"] for row in merged_rows.values()}
+    closed_rows = {
+        key: row for row in windowed
+        if row.get("event") == "pr-closed"
+        and (key := settlement_id(row)) is not None and key not in merged_rows
+    }
+    merge_count = len(merged_rows)
+    closed_count = len(closed_rows)
+    settled = merge_count + closed_count
+    closed_by = Counter(row.get("by") or "unknown" for row in closed_rows.values())
+
+    opened_at: dict[int, datetime] = {}
+    for row in rows:
+        opened = _timestamp(row.get("at"))
+        if row.get("event") != "pr-opened" or not _is_int(row.get("pr")) or opened is None:
+            continue
+        opened_at[row["pr"]] = min(opened_at.get(row["pr"], opened), opened)
+    durations = []
+    for row in merged_rows.values():
+        merged_at = _timestamp(row.get("at"))
+        opened = opened_at.get(row.get("pr"))
+        if merged_at is not None and opened is not None and merged_at >= opened:
+            durations.append((merged_at - opened).total_seconds() / 3600)
+    median_hours = median(durations) if durations else None
+
     human_decisions = {
         ("decision", row["decision_id"]) if row.get("decision_id") else ("row", index)
-        for index, row in enumerate(rows)
+        for index, row in enumerate(windowed)
         if row.get("event") == "human-decision"
     }
     touches = len(human_decisions) + sum(
         row.get("event") == "manage" and row.get("decision") == "HUMAN"
-        for row in rows
+        for row in windowed
     )
-    escalations = [row for row in rows if row.get("event") == "escalate"]
+    escalations = [row for row in windowed if row.get("event") == "escalate"]
     escalation_codes = Counter(row.get("code") or "unknown" for row in escalations)
     review_revises = escalation_codes["review_revise"]
-    attempts = [row for row in rows if row.get("event") == "attempt"
+    attempts = [row for row in windowed if row.get("event") == "attempt"
                 and row.get("attempt") == 1 and row.get("gate") in {"PASS", "FAIL"}]
     first_passes = sum(row["gate"] == "PASS" for row in attempts)
     tokens: dict[str, dict[str, dict[str, int | bool]]] = {}
     local_tokens = reported_tokens = usage_missing = 0
-    for row in rows:
+    for row in windowed:
         if row.get("event") != "llm-usage":
             continue
         model = row.get("model")
@@ -329,9 +409,22 @@ def weekly_metrics(
             local_tokens += prompt + completion
     result = {
         "window": window,
-        "merges": len(merged),
+        "merges": len(merged_tickets),
+        "merge_rate": merge_count / settled if merge_count else None,
+        "merge_rate_numerator": merge_count,
+        "merge_rate_denominator": settled,
+        "merge_rate_window": window,
+        "closed_unmerged": closed_count,
+        "closed_unmerged_by": dict(closed_by.most_common()),
+        "closed_unmerged_numerator": closed_count,
+        "closed_unmerged_denominator": settled,
+        "closed_unmerged_window": window,
+        "median_open_to_merge_hours": median_hours,
+        "median_open_to_merge_hours_numerator": len(durations),
+        "median_open_to_merge_hours_denominator": merge_count,
+        "median_open_to_merge_hours_window": window,
         "human_touches": touches,
-        "human_touches_per_merge": touches / len(merged) if merged else None,
+        "human_touches_per_merge": touches / len(merged_tickets) if merged_tickets else None,
         "escalations_7d": len(escalations),
         "escalations_by_code": dict(escalation_codes.most_common()),
         "review_nonconvergence_share": review_revises / len(escalations) if escalations else None,
@@ -346,8 +439,8 @@ def weekly_metrics(
         "local_token_share": round(local_tokens / reported_tokens, 6) if reported_tokens else None,
         "usage_missing": usage_missing,
     }
-    if any(row.get("event") in {"skill-load", "skill-coverage"} for row in rows):
-        result.update(skills=skill_metrics(rows), skill_coverage=skill_coverage(rows))
+    if any(row.get("event") in {"skill-load", "skill-coverage"} for row in windowed):
+        result.update(skills=skill_metrics(windowed), skill_coverage=skill_coverage(windowed))
     return result
 
 
@@ -993,9 +1086,11 @@ def main(argv: list[str]) -> int:
     if args.week:
         now = _now()
         start = now - timedelta(days=7)
-        journal_rows = window_rows(lifecycle.read_events(journal), start, now)
+        events = lifecycle.read_events(journal)
+        reconcile_closed_prs(journal, events, start)
+        journal_rows = window_rows(events, start, now)
         rows = weekly_metrics(
-            journal_rows, start, now,
+            events, start, now,
             cfg.llm_model if config.local_endpoint(cfg.llm_url) else None,
         )
         rows.setdefault("skills", skill_metrics(journal_rows))
@@ -1006,6 +1101,11 @@ def main(argv: list[str]) -> int:
         else:
             print(f"Window: {rows['window']['start']} to {rows['window']['end']}")
             print(f"Merges: {rows['merges']}")
+            print(f"Merge rate: {rows['merge_rate']} "
+                  f"({rows['merge_rate_numerator']}/{rows['merge_rate_denominator']})")
+            print(f"Closed unmerged: {rows['closed_unmerged']} ({rows['closed_unmerged_by']})")
+            median_hours = rows["median_open_to_merge_hours"]
+            print(f"Median open→merge: {f'{median_hours} hours' if median_hours is not None else 'n/a'}")
             print(f"Human touches: {rows['human_touches']} ({rows['human_touches_per_merge']} per merge)")
             print(f"Escalations: {rows['escalations_7d']} ({rows['escalations_by_code']})")
             print(f"First pass: {rows['first_pass']} "
