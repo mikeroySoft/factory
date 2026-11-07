@@ -17,7 +17,7 @@ class BudgetEscalationTest(unittest.TestCase):
     git = fixtures.LocalCLI.git
     write_config = fixtures.LocalCLI.write_config
 
-    def test_budget_killed_bounce_after_pass_names_budget_in_escalation(self):
+    def test_budget_killed_review_bounce_escalates_budget(self):
         clock = [0]
         calls = []
         original_worker = dispatch.run_worker
