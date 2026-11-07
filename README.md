@@ -785,8 +785,10 @@ pass observes eligible owner resets before entering `land_pass`: it selects tick
 unresolved escalation history, acquires each ticket lock without waiting, then directly
 refreshes state, labels and assignees. Stale issue-list snapshots cannot authorize a reset;
 closed, initiative, still-escalated, assigned or host-claim-held tickets are skipped under
-the existing claim eligibility rules. Held locks retry next pass; dry runs never open
-generations. Land, manager and ticket stages also observe releases before reading budgets.
+the existing claim eligibility rules. Failed direct refreshes are logged and skipped
+without opening a generation or blocking unrelated tickets and later stages; unresolved
+tickets are retried next pass. Held locks retry next pass; dry runs never open generations.
+Land, manager and ticket stages also observe releases before reading budgets.
 One receipt retains `event="generation"` and adds `kind="generation"`, with `generation`,
 `intent`, `source` (`label` or `requeue_agent`), `actor`, `decision` and `escalation_at`.
 Every round budget counts only the rows from that receipt onward, excluding pre-requeue

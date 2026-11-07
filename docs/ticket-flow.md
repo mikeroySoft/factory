@@ -152,6 +152,8 @@ lock without waiting, and directly refreshes issue state, labels and assignees. 
 open, non-initiative `RFA` tickets without `RFH` and eligible under the existing
 assignee/host-claim rules can open a generation. Listing snapshots and the process-local
 escalation set are not sufficient evidence. Held locks skip until the next pass.
+A failed direct refresh is logged and skipped without a generation receipt; other tickets
+and the remaining pass stages continue. Unresolved tickets are retried on later passes.
 Land, manager and ticket stages also check before reading a round budget. Dry runs
 do not open generations. Factory `RFA` edges journal their release first and never open one. See
 [Owner requeues and ticket generations](../README.md#owner-requeues-and-ticket-generations).

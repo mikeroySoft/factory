@@ -3865,7 +3865,11 @@ def _observe_owner_requeues_before_land() -> None:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 continue  # another dispatcher owns the ticket; retry next pass
-            issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels,assignees"])
+            try:
+                issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels,assignees"])
+            except subprocess.CalledProcessError as exc:
+                log(f"#{n}: owner requeue refresh failed; skipping ({exc})")
+                continue
             labels = {label["name"] for label in issue["labels"]}
             if (issue["state"].upper() != "OPEN" or LABEL_AGENT not in labels
                     or LABEL_HUMAN in labels or config.LABEL_INITIATIVE in labels):
