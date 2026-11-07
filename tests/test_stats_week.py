@@ -51,9 +51,22 @@ class WeeklyAggregationTest(unittest.TestCase):
                                       NOW - timedelta(days=7), NOW, "local-model")
 
         window = {"start": "2026-10-20T12:00:00Z", "end": "2026-10-27T12:00:00Z"}
-        self.assertEqual(result, {
+        expected = {
             "window": window,
             "merges": 2,
+            "merge_rate": 1.0,
+            "merge_rate_numerator": 2,
+            "merge_rate_denominator": 2,
+            "merge_rate_window": window,
+            "closed_unmerged": 0,
+            "closed_unmerged_by": {},
+            "closed_unmerged_numerator": 0,
+            "closed_unmerged_denominator": 2,
+            "closed_unmerged_window": window,
+            "median_open_to_merge_hours": None,
+            "median_open_to_merge_hours_numerator": 0,
+            "median_open_to_merge_hours_denominator": 2,
+            "median_open_to_merge_hours_window": window,
             "human_touches": 3,
             "human_touches_per_merge": 1.5,
             "escalations_7d": 3,
@@ -73,7 +86,52 @@ class WeeklyAggregationTest(unittest.TestCase):
             },
             "local_token_share": round(135 / 185, 6),
             "usage_missing": 1,
-        })
+        }
+        for metric, value in expected.items():
+            self.assertEqual(result[metric], value, metric)
+
+    def test_merge_rate_closed_count_and_median_open_to_merge(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-7)), "event": "worker", "pr": 12},
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-5)), "event": "pr-opened", "ticket": 2, "pr": 12},
+            {"at": at(timedelta(days=-4)), "event": "pr-opened", "ticket": 3, "pr": 13},
+            {"at": at(timedelta(days=-3)), "event": "pr-opened", "ticket": 4, "pr": 14},
+            {"at": at(timedelta(days=-4)), "event": "pr-opened", "ticket": 2, "pr": 12},
+            {"at": at(timedelta(days=-5)), "event": "merged", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-3)), "event": "merged", "ticket": 2, "pr": 12},
+            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 3, "pr": 13},
+            {"at": at(timedelta(hours=-1)), "event": "pr-closed", "ticket": 4, "pr": 14,
+             "by": "manager", "reason": "close"},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual(result["merge_rate"], 0.75)
+        self.assertEqual(result["closed_unmerged"], 1)
+        self.assertEqual(result["closed_unmerged_by"], {"manager": 1})
+        self.assertEqual(result["median_open_to_merge_hours"], 48.0)
+
+    def test_no_merges_returns_none_for_merge_rate_and_median(self) -> None:
+        rows = [{"at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": 4, "pr": 14,
+                 "by": "external", "reason": "closed outside factory"}]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertIsNone(result["merge_rate"])
+        self.assertIsNone(result["median_open_to_merge_hours"])
+
+    def test_ticketless_merges_do_not_change_pr_outcomes(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-2)), "event": "merged", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-1)), "event": "merged", "pr": 99},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual(result["merges"], 1)
+        self.assertEqual(result["merge_rate"], 1.0)
+        self.assertEqual(result["merge_rate_denominator"], 1)
 
     def test_dashboard_metrics_expose_rate_counts_and_weekly_escalations(self) -> None:
         dashboard.MAX_ATTEMPTS = 3
@@ -106,36 +164,57 @@ class WeeklyCommandTest(unittest.TestCase):
         with gzip.open(self.cfg.factory / "events.jsonl.1.gz", "wt") as stream:
             stream.write(json.dumps({"at": at(timedelta(days=-2)), "event": "merged", "ticket": 1}) + "\n")
 
-    def run_week(self, side_effect=None) -> tuple[int, dict, mock.Mock]:
-        response = subprocess.CompletedProcess([], 0, json.dumps([
+    def run_week(self, side_effect=None, argv=None) -> tuple[int, dict | str, mock.Mock]:
+        issues = [
             {"number": 7, "title": "old", "url": "https://example/7", "updatedAt": at(timedelta(days=-8))},
             {"number": 8, "title": "new", "url": "https://example/8", "updatedAt": at(timedelta(days=-1))},
-        ]), "")
-        runner = mock.Mock(side_effect=side_effect, return_value=response)
+        ]
+
+        def response(command, **_kwargs):
+            payload = [] if command[1:3] == ["pr", "list"] else issues
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+        runner = mock.Mock(side_effect=side_effect or response)
         out = io.StringIO()
+        args = argv or ["--week", "--json"]
         with mock.patch.object(stats, "resolve", return_value=self.cfg), \
              mock.patch.object(stats, "_now", return_value=NOW), \
              mock.patch.object(stats.subprocess, "run", runner), \
              contextlib.redirect_stdout(out):
-            code = stats.main(["--week", "--json"])
-        return code, json.loads(out.getvalue()), runner
+            code = stats.main(args)
+        output = out.getvalue()
+        return code, json.loads(output) if "--json" in args else output, runner
 
-    def test_reads_rotated_journal_and_calls_gh_once(self) -> None:
+    def test_reads_rotated_journal_and_reconciles_then_checks_stuck_tickets(self) -> None:
         code, result, runner = self.run_week()
         self.assertEqual(code, 0)
         self.assertEqual(result["merges"], 2)
+        self.assertTrue({
+            "cost_per_merged_pr",
+            "cost_per_merged_pr_numerator",
+            "cost_per_merged_pr_denominator",
+            "cost_per_merged_pr_window",
+            "cost_unpriced",
+            "local_cost_share",
+            "local_cost_share_numerator",
+            "local_cost_share_denominator",
+            "local_cost_share_window",
+        }.isdisjoint(result))
         self.assertEqual(result["stuck_over_days"], [
             {"number": 7, "title": "old", "url": "https://example/7", "updatedAt": at(timedelta(days=-8))},
         ])
-        runner.assert_called_once()
-        self.assertEqual(runner.call_args.kwargs["timeout"], 10)
-        self.assertEqual(runner.call_args.args[0][:3], ["gh", "issue", "list"])
+        self.assertEqual(runner.call_count, 2)
+        self.assertTrue(all(call.kwargs["timeout"] == 10 for call in runner.call_args_list))
+        self.assertTrue(all(call.kwargs["capture_output"] is True for call in runner.call_args_list))
+        self.assertEqual(runner.call_args_list[0].args[0][:3], ["gh", "pr", "list"])
+        self.assertIn("closed:>=2026-10-20T12:00:00+00:00", runner.call_args_list[0].args[0])
+        self.assertEqual(runner.call_args_list[1].args[0][:3], ["gh", "issue", "list"])
 
     def test_gh_timeout_is_unavailable_and_successful(self) -> None:
         code, result, runner = self.run_week(subprocess.TimeoutExpired(["gh"], 10))
         self.assertEqual(code, 0)
         self.assertEqual(result["stuck_over_days"], "unavailable")
-        runner.assert_called_once()
+        self.assertEqual(runner.call_count, 2)
 
     def test_hosted_triage_model_is_not_legacy_local_fallback(self) -> None:
         self.cfg.llm_url = "https://api.openai.com/v1"
@@ -152,6 +231,294 @@ class WeeklyCommandTest(unittest.TestCase):
         self.assertEqual(result["local_token_share"], 0)
         self.assertIs(result["tokens"]["worker"]["shared-model"]["local"], False)
 
+    def test_reconciliation_records_external_close_once(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17},
+            {"at": at(timedelta(days=-5)), "event": "worker", "ticket": 99, "pr": 17},
+        ]
+        response = subprocess.CompletedProcess([], 0, json.dumps([
+            {"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+        ]), "")
+        with mock.patch.object(stats.subprocess, "run", return_value=response) as runner:
+            stats.reconcile_closed_prs(self.journal, rows, NOW - timedelta(days=7))
+            stats.reconcile_closed_prs(self.journal, rows, NOW - timedelta(days=7))
+
+        closes = [row for row in rows if row.get("event") == "pr-closed"]
+        self.assertEqual(closes, [{
+            "at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": 7, "pr": 17,
+            "by": "external", "reason": "closed outside factory",
+        }])
+        self.assertEqual(runner.call_count, 2)
+
+    def test_text_output_names_new_weekly_metrics(self) -> None:
+        code, output, _ = self.run_week(argv=["--week"])
+
+        self.assertEqual(code, 0)
+        for label in ("Merge rate:", "Closed unmerged:"):
+            self.assertIn(label, output)
+        self.assertIn("Median open→merge: n/a", output)
+
+
+class WeeklyBehaviorRegressionTest(unittest.TestCase):
+    def test_reconciliation_does_not_treat_other_events_as_recorded_closes(self) -> None:
+        from factory import lifecycle
+
+        journal = Path(self.enterContext(tempfile.TemporaryDirectory())) / "events.jsonl"
+        for row in [
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17},
+            {"at": at(timedelta(days=-5)), "event": "attempt", "ticket": 7, "pr": 17},
+            {"at": at(timedelta(days=-4)), "event": "llm-usage", "ticket": 7, "pr": 17},
+        ]:
+            lifecycle.append(journal, row)
+        rows = lifecycle.read_events(journal)
+        response = subprocess.CompletedProcess([], 0, json.dumps([
+            {"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+        ]), "")
+
+        with mock.patch.object(stats.subprocess, "run", return_value=response):
+            stats.reconcile_closed_prs(journal, rows, NOW - timedelta(days=7))
+
+        expected = {
+            "at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": 7, "pr": 17,
+            "by": "external", "reason": "closed outside factory",
+        }
+        self.assertEqual(rows[-1], expected)
+        self.assertEqual(lifecycle.read_events(journal), rows)
+        self.assertEqual(len(rows), 4)
+
+    def test_reconciliation_continues_after_skipped_prs_and_deduplicates_response(self) -> None:
+        from factory import lifecycle
+
+        journal = Path(self.enterContext(tempfile.TemporaryDirectory())) / "events.jsonl"
+        rows = [
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17},
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 8, "pr": 18},
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 9, "pr": 19},
+            {"at": at(timedelta(days=-2)), "event": "pr-closed", "ticket": 9, "pr": 19,
+             "by": "manager"},
+        ]
+        valid = {"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None}
+        response = subprocess.CompletedProcess([], 0, json.dumps([
+            None,
+            {"number": 20, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+            {"number": 18, "closedAt": at(timedelta(days=-1)), "mergedAt": at()},
+            {"number": 19, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+            {"number": 17, "closedAt": "invalid", "mergedAt": None},
+            valid, valid,
+        ]), "")
+
+        with mock.patch.object(stats.subprocess, "run", return_value=response):
+            stats.reconcile_closed_prs(journal, rows, NOW - timedelta(days=7))
+
+        recorded = lifecycle.read_events(journal)
+        self.assertEqual(recorded, [{
+            "at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": 7, "pr": 17,
+            "by": "external", "reason": "closed outside factory",
+        }])
+        self.assertEqual(rows[-1:], recorded)
+        self.assertEqual(len(rows), 5)
+
+    def test_reconciliation_ignores_stdout_from_failed_or_terminated_gh(self) -> None:
+        import os
+        import sys
+
+        from factory import lifecycle
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        journal = root / "events.jsonl"
+        lifecycle.append(journal, {
+            "at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17,
+        })
+        before = journal.read_bytes()
+        closed = [{"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None}]
+        gh = root / "gh"
+        # Both normal failure and signal termination can leave valid but untrusted stdout.
+        for failure in ("sys.exit(1)", "os.kill(os.getpid(), signal.SIGTERM)"):
+            with self.subTest(failure=failure):
+                gh.write_text(
+                    f"#!{sys.executable}\n"
+                    "import os, signal, sys\n"
+                    f"print({json.dumps(closed)!r}, flush=True)\n"
+                    f"{failure}\n"
+                )
+                gh.chmod(0o755)
+                rows = lifecycle.read_events(journal)
+                with mock.patch.dict(os.environ, {"PATH": f"{root}{os.pathsep}{os.environ['PATH']}"}):
+                    stats.reconcile_closed_prs(journal, rows, NOW - timedelta(days=7))
+                self.assertEqual(journal.read_bytes(), before)
+                self.assertEqual(rows, lifecycle.read_events(journal))
+
+    def test_decoded_journal_counts_only_close_escalation_and_attempt_events(self) -> None:
+        from factory import lifecycle
+
+        journal = Path(self.enterContext(tempfile.TemporaryDirectory())) / "events.jsonl"
+        for row in [
+            {"event": "pr-opened", "ticket": 1, "pr": 11},
+            {"event": "merged", "ticket": 1, "pr": 11},
+            {"event": "pr-closed", "ticket": 2, "pr": 12, "by": "human"},
+            {"event": "review", "ticket": 3, "pr": 13},
+            {"event": "worker", "ticket": 4, "pr": 14},
+            {"event": "escalate", "ticket": 2, "code": "review_revise"},
+            {"event": "escalate", "ticket": 3, "code": "gate_failed"},
+            {"event": "attempt", "ticket": 1, "attempt": 1, "gate": "PASS"},
+            {"event": "attempt", "ticket": 2, "attempt": 1, "gate": "FAIL"},
+            {"event": "attempt", "ticket": 2, "attempt": 2, "gate": "PASS"},
+            {"event": "approved", "ticket": 1, "attempt": 1, "gate": "PASS"},
+            {"event": "gate-rerun", "ticket": 2, "attempt": 1, "gate": "FAIL"},
+        ]:
+            lifecycle.append(journal, {"at": at(timedelta(days=-1)), **row})
+
+        result = stats.weekly_metrics(
+            lifecycle.read_events(journal), NOW - timedelta(days=7), NOW, None,
+        )
+
+        self.assertEqual(result["closed_unmerged"], 1)
+        self.assertEqual(result["closed_unmerged_by"], {"human": 1})
+        self.assertEqual(result["merge_rate_numerator"], 1)
+        self.assertEqual(result["merge_rate_denominator"], 2)
+        self.assertEqual(result["merge_rate"], 0.5)
+        self.assertEqual(result["escalations_7d"], 2)
+        self.assertEqual(result["escalations_by_code"], {"review_revise": 1, "gate_failed": 1})
+        self.assertEqual(result["review_nonconvergence_share"], 0.5)
+        self.assertEqual(result["review_nonconvergence_share_numerator"], 1)
+        self.assertEqual(result["review_nonconvergence_share_denominator"], 2)
+        self.assertEqual(result["first_pass"], 0.5)
+        self.assertEqual(result["first_pass_numerator"], 1)
+        self.assertEqual(result["first_pass_denominator"], 2)
+
+    def test_non_opening_events_cannot_supply_open_timestamp(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-3)), "event": "review", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 1, "pr": 11},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertIsNone(result["median_open_to_merge_hours"])
+        self.assertEqual(result["median_open_to_merge_hours_numerator"], 0)
+        self.assertEqual(result["median_open_to_merge_hours_denominator"], 1)
+
+    def test_reconciliation_captures_real_stdout_and_survives_journal_reload(self) -> None:
+        import os
+        import sys
+
+        from factory import lifecycle
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            journal = root / "events.jsonl"
+            for row in [
+                {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17},
+                {"at": at(timedelta(days=-5)), "event": "worker", "ticket": 99, "pr": 17},
+                {"at": at(timedelta(days=-5)), "event": "worker", "ticket": 8, "pr": 18},
+                {"at": at(timedelta(days=-5)), "event": "pr-opened", "ticket": 9, "pr": 19},
+            ]:
+                lifecycle.append(journal, row)
+            closed = [
+                {"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+                {"number": 18, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+                {"number": 19, "closedAt": at(timedelta(days=-1)), "mergedAt": at()},
+                {"number": 20, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+            ]
+            gh = root / "gh"
+            gh.write_text(
+                f"#!{sys.executable}\n"
+                f"print({json.dumps(closed)!r})\n"
+            )
+            gh.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": f"{root}{os.pathsep}{os.environ['PATH']}"}):
+                stats.reconcile_closed_prs(
+                    journal, lifecycle.read_events(journal), NOW - timedelta(days=7),
+                )
+                first = lifecycle.read_events(journal)
+                stats.reconcile_closed_prs(
+                    journal, lifecycle.read_events(journal), NOW - timedelta(days=7),
+                )
+            second = lifecycle.read_events(journal)
+
+        expected = [{
+            "at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": 7, "pr": 17,
+            "by": "external", "reason": "closed outside factory",
+        }]
+        self.assertEqual([row for row in first if row.get("event") == "pr-closed"], expected)
+        self.assertEqual(second, first)
+
+    def test_reconciliation_requires_open_events_and_integer_prs(self) -> None:
+        journal = Path(self.enterContext(tempfile.TemporaryDirectory())) / "events.jsonl"
+        rows = [
+            {"at": at(timedelta(days=-6)), "event": "attempt", "ticket": 7, "pr": 17},
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 8, "pr": "18"},
+            {"at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 9, "pr": 1},
+            {"at": at(timedelta(days=-5)), "event": "pr-closed", "ticket": 9, "pr": True},
+        ]
+        response = subprocess.CompletedProcess([], 0, json.dumps([
+            {"number": 1, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+            {"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+            {"number": "18", "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+        ]), "")
+
+        with mock.patch.object(stats.subprocess, "run", return_value=response):
+            stats.reconcile_closed_prs(journal, rows, NOW - timedelta(days=7))
+
+        self.assertEqual([
+            row["pr"] for row in rows
+            if row.get("event") == "pr-closed" and row.get("by") == "external"
+        ], [1])
+
+    def test_settlements_require_integer_ticket_ids(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-2)), "event": "merged", "ticket": True, "pr": 11},
+            {"at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": "2", "pr": 12},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual(result["merges"], 0)
+        self.assertEqual(result["merge_rate_denominator"], 0)
+
+    def test_skill_metrics_are_windowed_while_merge_duration_uses_history(self) -> None:
+        rows = [
+            {"at": at(timedelta(days=-8)), "event": "skill-load", "ticket": 1,
+             "session": "old-session", "skill": "old-skill", "ok": True, "tokens": 10},
+            {"at": at(timedelta(days=-8)), "event": "pr-opened", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(days=-1)), "event": "skill-load", "ticket": 1,
+             "session": "recent-session", "skill": "recent-skill", "ok": True, "tokens": 5},
+            {"at": at(timedelta(days=-1)), "event": "merged", "ticket": 1, "pr": 11},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual([(row["skill"], row["loads"]) for row in result["skills"]],
+                         [("recent-skill", 1)])
+        self.assertEqual(result["median_open_to_merge_hours"], 168.0)
+
+    def test_open_to_merge_duration_keeps_zero_and_fractional_hours(self) -> None:
+        rows = [
+            {"at": at(timedelta(hours=-4)), "event": "pr-opened", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(hours=-2, minutes=-30)), "event": "merged", "ticket": 1, "pr": 11},
+            {"at": at(timedelta(hours=-1)), "event": "pr-opened", "ticket": 2, "pr": 12},
+            {"at": at(timedelta(hours=-2)), "event": "merged", "ticket": 2, "pr": 12},
+            {"at": at(timedelta(hours=-1)), "event": "pr-opened", "ticket": 3, "pr": 13},
+            {"at": at(timedelta(hours=-1)), "event": "merged", "ticket": 3, "pr": 13},
+            {"at": at(timedelta(hours=-3)), "event": "pr-opened", "ticket": 4, "pr": []},
+        ]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual(result["median_open_to_merge_hours"], 0.75)
+        self.assertEqual(result["median_open_to_merge_hours_numerator"], 2)
+
+    def test_dynamic_attempt_event_is_counted(self) -> None:
+        attempt = bytearray(b"attempt").decode()
+        rows = [{
+            "at": at(timedelta(days=-1)), "event": attempt,
+            "ticket": 1, "attempt": 1, "gate": "PASS",
+        }]
+
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+
+        self.assertEqual(result["first_pass"], 1.0)
+        self.assertEqual(result["first_pass_denominator"], 1)
 
 if __name__ == "__main__":
     unittest.main()
