@@ -177,6 +177,15 @@ class EvidenceTransportTest(unittest.TestCase):
     def marker_pids(self) -> list[int]:
         """Live PIDs whose cmdline carries this run's unique marker (ours only)."""
         found = []
+        if sys.platform == "darwin":
+            processes = subprocess.run(
+                ["ps", "-ww", "-axo", "pid=,stat=,command="],
+                check=True, capture_output=True, text=True, timeout=5)
+            for line in processes.stdout.splitlines():
+                pid, status, command = line.split(maxsplit=2)
+                if not status.startswith("Z") and self.marker in command:
+                    found.append(int(pid))
+            return found
         for entry in os.listdir("/proc"):
             if not entry.isdigit():
                 continue
