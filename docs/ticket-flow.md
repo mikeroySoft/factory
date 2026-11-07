@@ -146,10 +146,33 @@ flowchart TB
 ## Owner requeues
 
 The human `RFH` to `RFA` edge opens a ticket generation (`dispatch.observe_owner_requeue`,
-projected by `factory/generation.py`). The land, manager and ticket stages each check it
-at their first live read of the ticket, before they read a round budget. Factory
-`RFA` edges journal their release first and never open one. See
+projected by `factory/generation.py`). A live dispatcher pass observes owner requeues
+and journals their resets **before calling `land_pass`**. The land, manager and ticket
+stages also check at their first live ticket read, before reading a round budget.
+Dry runs do not open generations. Factory `RFA` edges journal their release first and
+never open one. See
 [Owner requeues and ticket generations](../README.md#owner-requeues-and-ticket-generations).
+
+The human-requeue receipt is one `events.jsonl` row with this shape:
+
+| Field | Value |
+|-------|-------|
+| `at` | Observation time, UTC `YYYY-MM-DDTHH:MM:SSZ` |
+| `event` | `"generation"` |
+| `kind` | `"generation"` (the sole receipt kind, for both intents and sources) |
+| `ticket` | Integer issue number |
+| `cause` | `"owner_requeue"` |
+| `generation` | Integer previous generation plus one; legacy history is generation 0 |
+| `intent` | `"resume"` (default/plain relabel) or `"fresh"` |
+| `source` | `"label"` or `"requeue_agent"` |
+| `actor` | Guarded action's actor, or null for a plain relabel |
+| `decision` | Guarded action's `proposal_id`, or null for a plain relabel |
+| `escalation_at` | Released escalation's `at`, or null if absent in legacy history |
+| `execution_id` | Observing lifecycle execution ID, when running in a lifecycle scope |
+| `dispatcher_run_id` | Containing dispatcher run ID (null for a standalone scope), when scoped |
+
+Re-observing the same release does not write a second receipt. Budget projections
+start at this row, excluding all pre-requeue rounds.
 
 ## Manager CLOSE and command failures
 

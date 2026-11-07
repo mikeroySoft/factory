@@ -1224,6 +1224,8 @@ def record(event: str, **fields: object) -> None:
     can be computed from traces rather than reconstructed.
     """
     row = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event, **fields}
+    if event == "generation":
+        row["kind"] = "generation"
     execution = lifecycle.current()
     if execution is not None:
         row.update(execution_id=execution.execution_id,
@@ -5527,6 +5529,20 @@ def main(argv: list[str]) -> int:
         # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
         # which GitHub cannot union-merge), and a new one opens only after landing.
         release_step(open_pr=False)
+        if not args.dry_run and any(
+            row.get("event") == "escalate" for row in lifecycle.read_events(EVENTS)
+        ):
+            # Persist owner resets before landing can inspect any old round counts.
+            for issue in gh_json([
+                "issue", "list", "--repo", REPO, "--state", "open", "--label", LABEL_AGENT,
+                "--limit", "1000", "--json", "number,labels,assignees",
+            ]):
+                with ticket_lock(issue["number"]).open("w") as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    observe_owner_requeue(issue["number"], issue)
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)
         if yield_for_update:
