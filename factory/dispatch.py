@@ -1999,9 +1999,40 @@ def _launch_failure(wt: Path, logfile: Path, offset: int, launch_head: str, code
     return "auth_failed", stderr_tail(line.strip())[-200:]
 
 
+class WorktreeDiverged(RuntimeError):
+    """A kept worktree has local-only commits relative to a journaled dispatcher push."""
+
+
 def ensure_worktree(n: int) -> Path:
     wt = FACTORY / f"wt-{n}"
     if wt.is_dir():
+        with _REMOTE_REFS:
+            run(["git", "fetch", "origin"], cwd=ROOT)
+            remote = run(
+                ["git", "rev-parse", "--verify", "--quiet", f"origin/agent/{n}"],
+                cwd=wt, check=False,
+            ).stdout.strip()
+        head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        if not remote or remote == head:
+            return wt
+        rows = lifecycle.read_events(EVENTS)
+        receipt = generation.current(rows, n).restart
+        # A fresh owner restart already preserved this superseded head; do not restore it.
+        if receipt and receipt["remote"] == remote:
+            return wt
+        if any(
+            row.get("event") == "agent-pushed" and row.get("ticket") == n and row.get("head") == remote
+            for row in rows
+        ):
+            if run(["git", "merge-base", "--is-ancestor", head, remote], cwd=wt, check=False).returncode:
+                local_only = run(["git", "log", "--format=%H %s", f"{remote}..HEAD"], cwd=wt).stdout.strip()
+                raise WorktreeDiverged(
+                    f"agent/{n}: kept HEAD {head} has local-only commits relative to dispatcher-pushed "
+                    f"origin/agent/{n} {remote}; worktree kept at {wt}; reconcile before a worker runs:\n"
+                    f"{local_only}"
+                )
+            run(["git", "merge", "--ff-only", remote], cwd=wt)
+            record("worktree-fast-forward", ticket=n, before=head, head=remote)
         return wt
     with _REMOTE_REFS:
         run(["git", "fetch", "origin"], cwd=ROOT)
@@ -3143,7 +3174,10 @@ def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
             f"leased {lease or '(none)'}, remote now {remote or '(none)'} "
             f"(GitHub \"Update branch\" or another push); worktree kept at {wt}",
         )
-    return None if pushed.returncode else head
+    if pushed.returncode:
+        return None
+    record("agent-pushed", ticket=n, head=head, lease=lease)
+    return head
 
 
 def push_and_pr(
@@ -3170,6 +3204,9 @@ def push_and_pr(
     if ticket is None or lease is None:
         with _REMOTE_REFS:
             run(["git", "push", "-u", "origin", branch], cwd=wt)
+        if match := re.fullmatch(r"agent/([0-9]+)", branch):
+            head = run(["git", "rev-parse", branch], cwd=wt).stdout.strip()
+            record("agent-pushed", ticket=int(match[1]), head=head)
     else:
         push_agent(wt, ticket, lease)
     if existing:
@@ -3941,7 +3978,11 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     if target.get("baseRefName") != cfg.main:
         log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
         return False
-    wt = ensure_worktree(n)
+    try:
+        wt = ensure_worktree(n)
+    except WorktreeDiverged as exc:
+        escalate(n, str(exc), None, code="lease_refused")
+        return False
 
     def restore_pr_head(refreshed_head: str) -> str:
         """Keep the unpushed candidate as evidence before restoring the live PR head."""
@@ -5278,7 +5319,7 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
-        except LeaseRefused as exc:
+        except (LeaseRefused, WorktreeDiverged) as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except WorkerUnavailable as exc:
             # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.

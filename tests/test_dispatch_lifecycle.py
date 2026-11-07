@@ -148,6 +148,16 @@ class LocalCLI(unittest.TestCase):
     def rows(self):
         return [r for r in lifecycle.read_events(self.events) if r.get("event") == "lifecycle"]
 
+    def test_dispatcher_journals_initial_and_review_bounce_pushes(self):
+        self.cli("dispatch", "--ticket", "7")
+        events = list(lifecycle.read_events(self.events))
+        attempts = [e["head"] for e in events if e.get("event") == "attempt"]
+        pushed = [e for e in events if e.get("event") == "agent-pushed"]
+        self.assertEqual([(e["ticket"], e["head"], e["lease"]) for e in pushed], [
+            (7, attempts[0], ""), (7, attempts[1], attempts[0]),
+        ])
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], attempts[1])
+
     def kept_remote_head(self, *, journaled=True, diverged=False):
         wt = self.repo / ".factory" / "wt-7"
         wt.parent.mkdir(exist_ok=True)
