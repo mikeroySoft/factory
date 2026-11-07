@@ -323,6 +323,87 @@ class DispatchRevocationTest(unittest.TestCase):
         self.assertEqual(len(self.events("attempt")), 1)
 
 
+class ClaimObservationRevocationTest(unittest.TestCase):
+    setUp = DispatchRevocationTest.setUp
+    gh_json = DispatchRevocationTest.gh_json
+    events = DispatchRevocationTest.events
+    local_commit = DispatchRevocationTest.local_commit
+    assert_child_stopped = DispatchRevocationTest.assert_child_stopped
+    assert_push_refused = DispatchRevocationTest.assert_push_refused
+    run_requeued_pass = DispatchRevocationTest.run_requeued_pass
+
+    def test_reassignment_between_observations_cannot_resume_admitted_run(self):
+        head = self.local_commit()
+        timeline = []
+        with mock.patch("factory.handoff.timeline", side_effect=lambda *a, **kw: list(timeline)):
+            dispatch.require_ticket_claim(self.wt, 9, "worker")
+            timeline.extend([
+                {"event": "unassigned", "assignee": {"login": "factory"},
+                 "actor": {"login": "owner"}},
+                {"event": "assigned", "assignee": {"login": "factory"},
+                 "actor": {"login": "owner"}},
+            ])
+            self.assert_push_refused(head, "unassigned")
+            with mock.patch.object(dispatch, "run_reviewer") as review, \
+                    self.assertRaises(dispatch.TicketRunStopped):
+                dispatch.review(self.wt, 9, "PASS", head=head)
+            review.assert_not_called()
+            with mock.patch.object(dispatch.subprocess, "Popen", wraps=dispatch.subprocess.Popen) as worker, \
+                    self.assertRaises(dispatch.TicketRunStopped):
+                dispatch.run_worker([sys.executable, "-c", "pass"], self.wt,
+                                    self.tmp / "worker.log", self.tmp / "handoff.md", ticket=9)
+            self.assertFalse(any(call.args[0][0] == sys.executable for call in worker.call_args_list))
+
+    def unreadable_worker_claim(self, failed_surface):
+        offline = self.tmp / "offline"
+        pid = self.tmp / "worker.pid"
+        script = (
+            "import os, subprocess, time\nfrom pathlib import Path\n"
+            "subprocess.run(['git', 'commit', '--allow-empty', '-qm', 'kept work'], check=True)\n"
+            f"Path({str(pid)!r}).write_text(str(os.getpid()))\n"
+            f"Path({str(offline)!r}).touch()\n"
+            "time.sleep(2)\n"
+        )
+        self.cfg.workers = {"default": [sys.executable, "-c", script]}
+        self.github.assignees = []
+
+        def read(args):
+            surface = "timeline" if args[0] == "api" and args[1].endswith("/timeline") else "issue"
+            if offline.exists() and surface == failed_surface and args != ["api", "user"]:
+                raise OSError("GitHub temporarily unavailable")
+            return self.gh_json(args)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+                mock.patch.object(dispatch, "build_prompt", return_value="work"), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")) as gate, \
+                mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "", False)) as review, \
+                mock.patch.object(dispatch, "record_risk"), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True):
+            dispatch.process_ticket(self.github.issue(), 1, False)
+        self.assertEqual(self.github.assignees, [], "unreadable ownership must not strand the claim")
+        gate.assert_not_called()
+        review.assert_not_called()
+        self.assert_child_stopped(pid.read_text())
+        self.assertEqual(self.github.issue_labels, {config.LABEL_AGENT})
+        head = fixtures.git(self.wt, "rev-parse", "HEAD")
+        self.assertNotEqual(head, self.lease)
+        self.assertEqual(self.github.head(), self.lease)
+        self.assertEqual(self.events("worker-stopped")[-1]["reason"], "claim-unavailable")
+        self.assert_push_refused(head, "claim-unavailable")
+        dispatch.configure(self.cfg)
+        self.cfg.workers = {"default": [sys.executable, "-c", "pass"]}
+        self.run_requeued_pass()
+        self.assertEqual(self.github.head(), head)
+        self.assertEqual(self.github.assignees, ["factory"])
+
+    def test_unreadable_issue_during_worker_releases_claim_for_next_pass(self):
+        self.unreadable_worker_claim("issue")
+
+    def test_unreadable_timeline_during_worker_releases_claim_for_next_pass(self):
+        self.unreadable_worker_claim("timeline")
+
+
 class CrossHostRevocationTest(unittest.TestCase):
     from tests.test_host_claims import HostClaimRaceTest as _harness
 
