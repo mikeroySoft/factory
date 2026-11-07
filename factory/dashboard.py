@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -1017,7 +1018,34 @@ def bounded_journal_rows() -> tuple[list[dict], dict]:
     }
 
 
-def snapshot() -> dict:
+def snapshot(*, measurements: dict | None = None) -> dict:
+    count_lock = threading.Lock()
+    counts = {"github_calls": 0}
+
+    def fetch(queued, kwargs):
+        if (timeout := kwargs.get("timeout")) is not None:
+            remaining = timeout - (time.monotonic() - queued)
+            if remaining <= 0:
+                raise TimeoutError
+            kwargs["timeout"] = remaining
+        with count_lock:
+            counts["github_calls"] += 1
+        return github(**kwargs)
+
+    # FIFO transport scheduling keeps newly spawned detail readers from overtaking
+    # queued head reads. The same eight workers serve every ticket and correction.
+    with ThreadPoolExecutor(max_workers=8) as transport:
+        def read(**kwargs):
+            queued = time.monotonic() if kwargs.get("timeout") is not None else None
+            return transport.submit(fetch, queued, kwargs).result()
+
+        result = _snapshot(read)
+    if measurements is not None:
+        measurements.update(counts)
+    return result
+
+
+def _snapshot(read) -> dict:
     errors = []
     issues: list[dict] = []
     prs: dict[int, dict] = {}
@@ -1026,8 +1054,16 @@ def snapshot() -> dict:
     gh_upstream = None
     review_prs: list[dict] = []
     viewer = ""
+    # These local reads do not depend on GitHub; keep journal parsing off the
+    # request chain that unlocks every feedback and correction read.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        initial = pool.submit(read)
+        on_disk = disk_ticket_numbers()
+        rows, legacy_coverage = bounded_journal_rows()
+        audit = stats.audit_by_ticket(FACTORY / "events.jsonl", rows)
+        spend = spend_by_ticket(rows)
     try:
-        data = github()
+        data = initial.result()
         repo, gh_upstream = data["repository"], data.get("upstream")
         issues = repo["issues"]["nodes"]
         review_prs = repo["pullRequests"]["nodes"]
@@ -1045,7 +1081,6 @@ def snapshot() -> dict:
     except (RuntimeError, ValueError, KeyError) as exc:
         errors.append(f"github: {exc}")
 
-    on_disk = disk_ticket_numbers()
     locks = FACTORY / "locks"
     ticket_lock_paths = {
         locks / f"{issue['number']}.lock"
@@ -1060,9 +1095,6 @@ def snapshot() -> dict:
         *((path, "repository") for path in sorted(ticket_lock_paths, key=str)),
     ]
     runtime = runtime_events.project(dispatch.EVENTS, resource_paths)
-    rows, legacy_coverage = bounded_journal_rows()
-    audit = stats.audit_by_ticket(FACTORY / "events.jsonl", rows)
-    spend = spend_by_ticket(rows)
     dispatcher_state = dispatcher(runtime)
     execution_events: dict[str, list[dict]] = {}
     for event in runtime["events"]:
@@ -1111,14 +1143,41 @@ def snapshot() -> dict:
         if (not sh(["git", "ls-files", "--error-unmatch", "--", "feedback.py"], cwd=source_root).strip()
                 or sh(["git", "status", "--porcelain", "--", "."], cwd=source_root).strip()):
             revision = None
-    # Merged PRs' corrections are read once per dashboard process, not on every refresh.
+    selected = [issue for issue in issues
+                if selected_issue(issue, prs, on_disk, by_ticket, audit)]
+
+    def collect_feedback(issue):
+        n = issue["number"]
+        raw = raw_prs[n]
+        return n, feedback.collect(
+            read, repository={"id": repo.get("id"), "slug": REPO,
+                              "host": urlparse(raw["url"]).hostname or "github.com"},
+            pr={"id": raw.get("id"), "number": raw["number"], "url": raw["url"],
+                "state": raw.get("state"), "draft": raw.get("isDraft")},
+            issue={"id": issue.get("id"), "number": n, "url": issue["url"]},
+            events=provenance, provenance_complete=provenance_complete,
+            producer_revision=revision, collect_details=raw.get("state") == "OPEN",
+        )
+
+    # Correction batches and feedback are independent. Workers own observations;
+    # only this thread updates caches and ticket records.
     global _corrections
     merged = {raw["number"] for raw in raw_prs.values() if raw.get("mergedAt")}
-    if missing := sorted(merged - _corrections.keys()):
-        try:
-            _corrections = {**_corrections, **feedback.correction_reads(github, REPO, missing)}
-        except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
-            errors.append(f"corrections: {exc}")
+    missing = sorted(merged - _corrections.keys())
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        corrections = [
+            pool.submit(feedback.correction_reads, read, REPO, missing[start:start + feedback.CORRECTION_BATCH])
+            for start in range(0, len(missing), feedback.CORRECTION_BATCH)
+        ]
+        observations = pool.map(collect_feedback, [i for i in selected if i["number"] in raw_prs])
+        for future in corrections:
+            try:
+                _corrections = {**_corrections, **future.result()}
+            except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
+                errors.append(f"corrections: {exc}")
+        for n, observation in observations:
+            prs[n]["feedback"] = observation
+
     login = stats.dispatcher_login(cfg)
     cutover = feedback.first_action(login, [
         *((item.get("actor"), item.get("createdAt")) for issue in issues
@@ -1130,23 +1189,8 @@ def snapshot() -> dict:
         if raw["number"] in merged & _corrections.keys():
             prs[n]["corrections"] = feedback.corrections(_corrections[raw["number"]], login, cutover)
     tickets = []
-    for issue in issues:
+    for issue in selected:
         n = issue["number"]
-        if not selected_issue(issue, prs, on_disk, by_ticket, audit):
-            continue
-        if n in raw_prs:
-            raw = raw_prs[n]
-            # Detail reads stay bounded to open work: the snapshot lists up to 100
-            # PRs, and closed history must not multiply provider calls per refresh.
-            prs[n]["feedback"] = feedback.collect(
-                github, repository={"id": repo.get("id"), "slug": REPO,
-                                    "host": urlparse(raw["url"]).hostname or "github.com"},
-                pr={"id": raw.get("id"), "number": raw["number"], "url": raw["url"],
-                    "state": raw.get("state"), "draft": raw.get("isDraft")},
-                issue={"id": issue.get("id"), "number": n, "url": issue["url"]},
-                events=provenance, provenance_complete=provenance_complete,
-                producer_revision=revision, collect_details=raw.get("state") == "OPEN",
-            )
         tickets.append(build_ticket(
             issue, prs.get(n),
             disk_state(n, lock_states.get(canonical_path(locks / f"{n}.lock"))),
@@ -1382,7 +1426,13 @@ def main(argv: list[str]) -> int:
     port = cfg.dashboard_port if args.port is None else args.port
 
     if args.json:
-        print(json.dumps(snapshot(), indent=2))
+        started = time.monotonic()
+        measurements = {}
+        data = snapshot(measurements=measurements)
+        measurements.update(event="dashboard-read", at=iso(time.time()),
+                            wall_seconds=round(time.monotonic() - started, 6))
+        lifecycle.append(FACTORY / "dashboard-reads.jsonl", measurements)
+        print(json.dumps(data, indent=2))
         return 0
 
     from factory.workspace import Handler, KeyStorageError, Server, Workspace
