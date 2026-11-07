@@ -79,7 +79,6 @@ flowchart TB
   RFA -->|"its PR's red CI completed before the release: no escalation, waits for a worker: manage.frontier_pass"| CLAIM
   RFA -->|"its PR's CI red after the release, or idle stale_days counted from the release: manage.frontier_pass, manage.released_at"| ESC
   CLAIM -->|"kept worktree ff-only when remote is a journaled dispatcher descendant, otherwise unchanged: dispatch.ensure_worktree, dispatch.process_ticket"| WR
-  CLAIM -->|"kept HEAD has local-only commits relative to journaled dispatcher push: preserve and escalate before worker: dispatch.ensure_worktree"| ESC
   WR -->|"gate FAIL or worker stuck, attempts left, report fed back: dispatch.process_ticket"| WR
   WR -->|"gate FAIL or stuck max_attempts, protected paths, or budget with unfinished handoff: dispatch.process_ticket"| ESC
   WR -->|"gate PASS, including expired clean finish: dispatch.worker_round"| PUSH
@@ -98,6 +97,7 @@ flowchart TB
   MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
   PUSH -->|"agent/<n> push refused, remote moved since the lease was read or leased head absent from starting and final history while starting head remains an ancestor of final: dispatch.push_agent"| ESC
   CLAIM -->|"any other dispatcher exception after the claim, then re-raised: dispatch.process_ticket"| ESC
+  CLAIM -->|"kept HEAD has local-only commits relative to journaled dispatcher push: preserve and escalate before worker: dispatch.ensure_worktree"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
   FA -->|"dispatch.pr_checks"| CI
   CI -->|"pending: dispatch.merge_pass_locked waits"| FA
