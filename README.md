@@ -2306,8 +2306,9 @@ remains unchanged.
 
 Feedback detail reads overlap independent reviews, threads, check runs and commit
 statuses; initial/final head observations still bracket the collection. Dashboard
-ticket collection uses eight workers with a shared ceiling of eight concurrent
-GitHub transport calls. Normalization stays single-writer and output is unchanged.
+ticket collection and merged-PR correction batches overlap on eight workers with
+a shared ceiling of eight concurrent GitHub transport calls. Normalization stays
+single-writer and output is unchanged.
 `factory dashboard --json` journals `github_calls` (dashboard transport attempts,
 including failures) and `wall_seconds` (snapshot collection) in
 `.factory/dashboard-reads.jsonl`. This separate performance journal never changes

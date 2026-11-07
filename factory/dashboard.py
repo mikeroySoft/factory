@@ -1131,14 +1131,41 @@ def snapshot(*, measurements: dict | None = None) -> dict:
         if (not sh(["git", "ls-files", "--error-unmatch", "--", "feedback.py"], cwd=source_root).strip()
                 or sh(["git", "status", "--porcelain", "--", "."], cwd=source_root).strip()):
             revision = None
-    # Merged PRs' corrections are read once per dashboard process, not on every refresh.
+    selected = [issue for issue in issues
+                if selected_issue(issue, prs, on_disk, by_ticket, audit)]
+
+    def collect_feedback(issue):
+        n = issue["number"]
+        raw = raw_prs[n]
+        return n, feedback.collect(
+            read, repository={"id": repo.get("id"), "slug": REPO,
+                              "host": urlparse(raw["url"]).hostname or "github.com"},
+            pr={"id": raw.get("id"), "number": raw["number"], "url": raw["url"],
+                "state": raw.get("state"), "draft": raw.get("isDraft")},
+            issue={"id": issue.get("id"), "number": n, "url": issue["url"]},
+            events=provenance, provenance_complete=provenance_complete,
+            producer_revision=revision, collect_details=raw.get("state") == "OPEN",
+        )
+
+    # Correction batches and feedback are independent. Workers own observations;
+    # only this thread updates caches and ticket records.
     global _corrections
     merged = {raw["number"] for raw in raw_prs.values() if raw.get("mergedAt")}
-    if missing := sorted(merged - _corrections.keys()):
-        try:
-            _corrections = {**_corrections, **feedback.correction_reads(read, REPO, missing)}
-        except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
-            errors.append(f"corrections: {exc}")
+    missing = sorted(merged - _corrections.keys())
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        corrections = [
+            pool.submit(feedback.correction_reads, read, REPO, missing[start:start + feedback.CORRECTION_BATCH])
+            for start in range(0, len(missing), feedback.CORRECTION_BATCH)
+        ]
+        observations = pool.map(collect_feedback, [i for i in selected if i["number"] in raw_prs])
+        for future in corrections:
+            try:
+                _corrections = {**_corrections, **future.result()}
+            except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
+                errors.append(f"corrections: {exc}")
+        for n, observation in observations:
+            prs[n]["feedback"] = observation
+
     login = stats.dispatcher_login(cfg)
     cutover = feedback.first_action(login, [
         *((item.get("actor"), item.get("createdAt")) for issue in issues
@@ -1149,26 +1176,6 @@ def snapshot(*, measurements: dict | None = None) -> dict:
     for n, raw in raw_prs.items():
         if raw["number"] in merged & _corrections.keys():
             prs[n]["corrections"] = feedback.corrections(_corrections[raw["number"]], login, cutover)
-    selected = [issue for issue in issues
-                if selected_issue(issue, prs, on_disk, by_ticket, audit)]
-
-    def collect_feedback(issue):
-        n = issue["number"]
-        raw = raw_prs[n]
-        return n, feedback.collect(
-                read, repository={"id": repo.get("id"), "slug": REPO,
-                                    "host": urlparse(raw["url"]).hostname or "github.com"},
-                pr={"id": raw.get("id"), "number": raw["number"], "url": raw["url"],
-                    "state": raw.get("state"), "draft": raw.get("isDraft")},
-                issue={"id": issue.get("id"), "number": n, "url": issue["url"]},
-                events=provenance, provenance_complete=provenance_complete,
-                producer_revision=revision, collect_details=raw.get("state") == "OPEN",
-        )
-
-    # Workers own their observations; only this thread updates the ticket records.
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        for n, observation in pool.map(collect_feedback, [i for i in selected if i["number"] in raw_prs]):
-            prs[n]["feedback"] = observation
     tickets = []
     for issue in selected:
         n = issue["number"]
