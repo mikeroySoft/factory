@@ -558,6 +558,8 @@ class ReceiptTest(unittest.TestCase):
                             subprocess.CompletedProcess([], 1, "", "boom")])
 
             def run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "issue", "view"]:
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps({"labels": [{"name": "ready-for-agent"}]}), "")
                 return next(outputs) if cmd[:3] == ["gh", "issue", "comment"] else subprocess.CompletedProcess(cmd, 0, "", "")
 
             with patch.object(dispatch, "run", side_effect=run), patch.object(dispatch.time, "sleep"):

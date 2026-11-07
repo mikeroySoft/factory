@@ -217,13 +217,14 @@ def run(
     stderr=subprocess.PIPE,
     env: dict[str, str] | None = None,
     timeout: float | None = None,
+    redact_value: str | None = None,
 ) -> subprocess.CompletedProcess:
     """`env` replaces the inherited environment (lifecycle context is still added).
 
     A failed checked command logs its redacted stderr tail, then raises as before.
     """
     try:
-        return _run(cmd, cwd, check, stdout, stderr, env, timeout)
+        return _run(cmd, cwd, check, stdout, stderr, env, timeout, redact_value)
     except subprocess.CalledProcessError as exc:
         tail = stderr_tail(exc.stderr)
         if tail:
@@ -243,7 +244,7 @@ def raise_if_interrupted() -> None:
         raise KeyboardInterrupt("dispatcher interrupted")
 
 
-def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedProcess:
+def _run(cmd, cwd, check, stdout, stderr, env, timeout, redact_value) -> subprocess.CompletedProcess:
     raise_if_interrupted()
     execution = lifecycle.current()
     if execution is None:
@@ -268,7 +269,9 @@ def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedP
             raise
         finally:
             if proc.poll() is not None:
-                execution.child_done(proc.pid, command=cmd, returncode=proc.returncode)
+                execution.child_done(
+                    proc.pid, command=cmd, returncode=proc.returncode, redact_value=redact_value,
+                )
     # The terminal's Ctrl-C also killed this child, maybe a moment before the main thread set
     # _CANCEL: the command was interrupted, not failed, so nothing may act on its result.
     if proc.returncode in (-signal.SIGINT, 128 + signal.SIGINT):
@@ -381,6 +384,7 @@ def _run_reviewer(
     rev: str = "HEAD",
     diff: str = "",
     *,
+    prompt: str | None = None,
     env_overrides: dict[str, str] | None = None,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
@@ -405,7 +409,10 @@ def _run_reviewer(
                     if not path.is_symlink():
                         path.chmod(path.stat().st_mode & ~0o222)
                 (review_dir / "review.diff").write_text(diff)
-            return run(command, cwd=review_dir, check=False, env=env, timeout=timeout)
+            return run(
+                command, cwd=review_dir, check=False, env=env, timeout=timeout,
+                redact_value=prompt,
+            )
         finally:
             _make_tree_writable(review_dir)
 
@@ -1062,7 +1069,7 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
                 log(f"PR #{n}: diff too large to review at {head}")
                 return
             command, structured = _review_command(prompt)
-            proc = _run_reviewer(command)
+            proc = _run_reviewer(command, prompt=prompt)
         except (OSError, subprocess.CalledProcessError) as exc:
             execution.outcome = "unknown"
             execution.reason = f"{type(exc).__name__}: {exc}"
@@ -2790,7 +2797,9 @@ def run_reviewer(
                     kwargs["env_overrides"] = env
                 if deadline is not None:
                     kwargs["timeout"] = max(0.001, deadline - time.monotonic())
-                proc = _run_reviewer(command, wt, expected_head, diff, **kwargs)
+                proc = _run_reviewer(
+                    command, wt, expected_head, diff, prompt=prompt, **kwargs,
+                )
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                 launch_error = f"{type(exc).__name__}: {exc}"
                 log(f"{subject}: reviewer launch failed ({exc}); fix PATH or [review] (`factory doctor`)")

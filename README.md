@@ -1360,11 +1360,15 @@ manager-approval waits, and merge. Dry runs, admission refusals and another
 owner's locked/in-flight tickets remain read-only.
 
 Queue transitions add the replacement label in a checked write before removing
-either other queue label (`ready-for-agent`, `ready-for-human`, `factory-held`).
+other queue labels present on the issue (`ready-for-agent`, `ready-for-human`,
+`factory-held`); a repository need not provision unused queue labels.
 A failed add never removes the existing queue. Escalation comments follow host
 cleanup so authenticated cleanup receipts retain their takeover-detection boundary.
 If a queue write fails, escalation still attempts to comment with the reason
 and failed-transition notice.
+Requeues release assignment before posting their reason. Approval records its
+SHA-bound evidence and retains the handoff before commenting, so a failed comment
+cannot block claim release or leave a labeled PR without merge evidence.
 
 Checked exit writes retry once: normally after one second, or at least 60 seconds
 for primary/secondary rate limits (honoring a longer `retry-after` hint).
@@ -1375,8 +1379,9 @@ A persistent outage can prevent a remote comment or leave both old and replaceme
 labels after a failed removal; it cannot silently remove the last queue label.
 
 `child_exit` rows retain the child command and actual return code, including failed
-and killed children. Credential arguments and inline comment bodies (both `--body`
-and GitHub API `body=...` fields) are redacted before journaling.
+and killed children. Credential arguments, inline reviewer prompts (including
+positional prompts), and inline comment bodies (both `--body` and GitHub API
+`body=...` fields) are redacted before journaling.
 
 ## Configuration
 

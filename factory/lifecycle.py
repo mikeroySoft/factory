@@ -41,12 +41,14 @@ def redact(text: str) -> str:
     return _TOKEN.sub("[REDACTED]", text)
 
 
-def redact_command(command: list[str]) -> list[str]:
-    """Retain argv structure, not credentials or inline prompts/comment bodies."""
+def redact_command(command: list[str], redact_value: str | None = None) -> list[str]:
+    """Retain argv structure, not credentials or a caller-identified inline payload."""
     result = []
     hide_next = False
     sensitive = re.compile(r"(?i)(?:token|password|secret|api[-_]key|authorization|credential)")
     for arg in command:
+        if redact_value:
+            arg = arg.replace(redact_value, "[REDACTED]")
         key, separator, _ = arg.partition("=")
         hide = sensitive.search(key) or key in {"-H", "--header", "--body", "--prompt", "body"}
         result.append("[REDACTED]" if hide_next else
@@ -561,13 +563,14 @@ class Execution:
         self._children[pid] = identity
         self.emit("child_start", child_process=identity, handoff_id=handoff_id)
 
-    def child_done(self, pid: int, *, command: list[str] = (), returncode: int | None = None) -> None:
+    def child_done(self, pid: int, *, command: list[str] = (), returncode: int | None = None,
+                   redact_value: str | None = None) -> None:
         identity = self._children.pop(pid, {
             "pid": pid, "boot_id": None, "start_ticks": None,
             "pid_namespace": None, "uid": None, "state": None, "ppid": None,
         })
         self.emit("child_exit", child_process=identity,
-                  command=redact_command(command), returncode=returncode)
+                  command=redact_command(command, redact_value), returncode=returncode)
 
 
 @contextmanager

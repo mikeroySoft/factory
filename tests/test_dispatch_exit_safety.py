@@ -234,7 +234,6 @@ class TicketExitMatrixTest(unittest.TestCase):
                     "sync_staged": lambda *a: None,
                     "record_risk": lambda *a: None,
                     "pr_comment": lambda *a: None,
-                    "retain_handoff": lambda *a: True,
                     "_head_evidence_matches": lambda *a, exit_path=exit_path, **kw: exit_path != "approval_drift",
                 }
                 for name, value in patches.items():

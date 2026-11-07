@@ -11,7 +11,6 @@ from unittest import mock
 from factory import dispatch, gate, lifecycle, triage
 from factory.config import Config
 
-
 FAKE_OMP = """#!{python}
 import json, os, sys
 from pathlib import Path
