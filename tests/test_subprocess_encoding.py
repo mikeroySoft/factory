@@ -9,6 +9,9 @@ from pathlib import Path
 
 from factory import dispatch, lifecycle
 
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
 INVALID_OUTPUT = [
     sys.executable,
     "-c",
