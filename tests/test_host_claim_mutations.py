@@ -62,7 +62,7 @@ class HostClaimMutationTest(unittest.TestCase):
         self.assertEqual(self.github.comments, [])
         self.assertEqual(self.github.issue["assignees"], [])
 
-    def test_single_host_refresh_gate_requeue_keeps_original_github_argv(self):
+    def test_single_host_refresh_gate_requeue_preserves_queue_and_posts_reason(self):
         single = self.dispatcher(None)
         read, run = single.gh_json, single.run
         self.github.issue["labels"] = [{"name": "ready-for-human"}]
@@ -81,7 +81,11 @@ class HostClaimMutationTest(unittest.TestCase):
                     cmd, int(cmd[1] == "merge-base"),
                     "a" * 40 if cmd[1] == "rev-parse" else "", "",
                 )
-            return run(cmd, *args, **kwargs)
+            result = run(cmd, *args, **kwargs)
+            self.assertTrue({"ready-for-agent", "ready-for-human", "factory-held"} & {
+                row["name"] for row in self.github.issue["labels"]
+            })
+            return result
 
         with mock.patch.object(single, "gh_json", side_effect=github), \
                 mock.patch.object(single, "run", side_effect=command), \
@@ -90,14 +94,14 @@ class HostClaimMutationTest(unittest.TestCase):
             self.assertFalse(single.refresh_pr_branch(7, 70, False))
 
         edits = [args for _, args in self.github.calls if args[:3] == ["gh", "issue", "edit"]]
-        self.assertEqual(edits, [[
-            "gh", "issue", "edit", "7", "--repo", "local/claims",
-            "--remove-label", "ready-for-human", "--add-label", "ready-for-agent",
-            "--remove-assignee", "@me",
-        ]])
+        added = next(i for i, cmd in enumerate(edits) if "--add-label" in cmd)
+        removed = [i for i, cmd in enumerate(edits) if "--remove-label" in cmd]
+        self.assertTrue(removed)
+        self.assertTrue(all(added < i for i in removed))
         self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
         self.assertEqual(self.github.issue["assignees"], [])
-        self.assertEqual(self.github.comments, [])
+        self.assertEqual(len(self.github.comments), 1)
+        self.assertIn("gate failed twice", self.github.comments[0]["body"])
         self.assertFalse(any("user" in args or "--slurp" in args for _, args in self.github.calls))
 
 

@@ -1029,6 +1029,14 @@ class LeaseRefusedCLI(unittest.TestCase):
             'elif a[:2] not in (["issue", "edit"]',
             'elif a[:2] in (["issue", "edit"], ["issue", "comment"]):\n'
             '    s.setdefault("gh", []).append(a)\n'
+            '    labels = set(s.get("labels", ["ready-for-agent"]))\n'
+            '    for i, value in enumerate(a[:-1]):\n'
+            '        if value == "--add-label": labels.add(a[i + 1])\n'
+            '        if value == "--remove-label": labels.discard(a[i + 1])\n'
+            '        if value == "--remove-assignee": s["assigned"] = False\n'
+            '        if value == "--add-assignee": s["assigned"] = True\n'
+            '    s["labels"] = sorted(labels)\n'
+            '    s.setdefault("queue_history", []).append(sorted(labels))\n'
             '    p.write_text(json.dumps(s))\n'
             'elif a[:2] not in (["issue", "edit"]'))
         wt = self.repo / ".factory" / "wt-7"
@@ -1049,9 +1057,13 @@ class LeaseRefusedCLI(unittest.TestCase):
 
     def assert_escalated(self, foreign):
         edits = self.gh_calls("issue", "edit")
-        self.assertEqual(edits[0][-2:], ["--add-assignee", "@me"])
-        self.assertEqual(edits[-1][5:], ["--remove-assignee", "@me", "--remove-label", "ready-for-agent",
-                                         "--add-label", "ready-for-human"])
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state["labels"], ["ready-for-human"])
+        self.assertFalse(state["assigned"])
+        self.assertTrue(all(labels for labels in state["queue_history"]))
+        added = next(i for i, cmd in enumerate(edits) if "--add-label" in cmd)
+        removed = next(i for i, cmd in enumerate(edits) if "--remove-label" in cmd)
+        self.assertLess(added, removed)
         comments = self.gh_calls("issue", "comment")
         self.assertEqual(len(comments), 1)
         self.assertIn("Factory dispatcher escalating: agent/7 push refused", comments[0][-1])

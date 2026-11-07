@@ -249,9 +249,15 @@ class FrontierTest(unittest.TestCase):
         self.cfg.manager_review = "all"
         self.quiet_provider()
         self.approved_head(H)
-        # The pipeline's own approval call does not label and is not an error.
+        # Waiting is explained without approving a head the manager has not reviewed.
         self.assertTrue(dispatch.approve_pr(79, H))
-        self.assertEqual(self.mutations, [])
+        comments = [cmd for cmd in self.mutations if cmd[:3] == ["gh", "issue", "comment"]]
+        self.assertEqual(len(comments), 1)
+        reason = comments[0][comments[0].index("--body") + 1]
+        self.assertIn("manager approval", reason)
+        self.assertIn(H, reason)
+        self.assertFalse(any("--add-label" in cmd and "factory-approved" in cmd for cmd in self.mutations))
+        self.assertFalse(any(e.get("event") == "approved" for e in self.events()))
         self.manager_output = "DECISION: APPROVE\nLooks right"
         manage.frontier_pass()
         manage_rows = [e for e in self.events() if e.get("event") == "manage"]
