@@ -1009,6 +1009,11 @@ class EvidenceCliTest(unittest.TestCase):
 
 
 class EvidenceFixtureCleanupTest(unittest.TestCase):
+    def setUp(self):
+        context = patch.object(tempfile, "tempdir", os.path.realpath(tempfile.gettempdir()))
+        context.start()
+        self.addCleanup(context.stop)
+
     def test_audit_fixture_failure_does_not_contaminate_later_cases(self):
         case = EvidenceCliTest(
             "test_audit_symlinks_and_incomplete_tail_are_unavailable_not_absent"
@@ -1027,10 +1032,7 @@ class EvidenceFixtureCleanupTest(unittest.TestCase):
             return data
 
         result = unittest.TestResult()
-        with (
-            patch.object(tempfile, "tempdir", os.path.realpath(tempfile.gettempdir())),
-            patch.object(case, "invoke", side_effect=fail_first_observation),
-        ):
+        with patch.object(case, "invoke", side_effect=fail_first_observation):
             case.run(result)
         self.assertEqual(result.errors, [], result.errors)
         self.assertEqual(len(result.failures), 1, result.failures)
