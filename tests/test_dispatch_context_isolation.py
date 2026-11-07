@@ -73,9 +73,9 @@ class DispatcherContextIsolationTest(unittest.TestCase):
                     self.assertEqual(live.read_bytes(), before, proc.stdout + proc.stderr)
                     self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
-    def assert_module_isolated(self, module, stage):
+    def assert_module_isolated(self, module, stage, test=None):
         script = """
-import json, pathlib, sys, unittest
+import json, pathlib, subprocess, sys, unittest
 from factory import lifecycle
 
 written = []
@@ -85,11 +85,25 @@ def record(handle, row):
     if row.get("event") == "lifecycle":
         written.append({"path": str(handle.name), "row": row})
 lifecycle._write = record
+read = lifecycle.read_events
+def record_read(path):
+    rows = read(path)
+    written.extend({"path": str(path), "row": row} for row in rows if row.get("event") == "lifecycle")
+    return rows
+lifecycle.read_events = record_read
+run = subprocess.run
+def record_run(*args, **kwargs):
+    result = run(*args, **kwargs)
+    record_read(pathlib.Path(kwargs.get("cwd") or ".") / ".factory" / "events.jsonl")
+    return result
+subprocess.run = record_run
 result = unittest.main(module=None, argv=["unittest", *sys.argv[2:]], exit=False).result
 pathlib.Path(sys.argv[1]).write_text(json.dumps(written))
 raise SystemExit(not result.wasSuccessful())
 """
         for args in ([module], ["discover", "-s", ".", "-p", f"{module}.py"]):
+            if test:
+                args += ["-k", test]
             with self.subTest(module=module, args=args), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 live = root / "live" / ".factory" / "events.jsonl"
@@ -115,15 +129,28 @@ raise SystemExit(not result.wasSuccessful())
                 self.assertIn(stage, {entry["row"]["stage"] for entry in rows})
                 for entry in rows:
                     self.assertTrue(Path(entry["path"]).is_relative_to(fixtures), entry)
-                    self.assertNotEqual(entry["row"]["dispatcher_run_id"], "outside-dispatcher")
+                    self.assertNotEqual(entry["row"].get("dispatcher_run_id"), "outside-dispatcher")
 
     def test_eval_standalone_and_discovery_keep_lifecycle_rows_in_fixture_journals(self):
         self.assert_module_isolated("test_eval", "merge-eligibility")
 
     def test_review_modules_keep_lifecycle_rows_in_fixture_journals(self):
         for module in ("test_review_isolation", "test_review_policy", "test_worker_modes",
-                       "test_worker_plan", "test_learn_candidate_review"):
+                       "test_worker_plan"):
             self.assert_module_isolated(module, "review")
 
     def test_watch_reader_fixtures_keep_lifecycle_rows_in_fixture_journals(self):
         self.assert_module_isolated("test_watch_routing", "worker")
+
+    def test_gate_modules_keep_lifecycle_rows_in_fixture_journals(self):
+        for module in ("test_learn_candidate_review", "test_add_only_override", "test_learn_evaluation"):
+            self.assert_module_isolated(module, "gate")
+
+    def test_learn_merge_fixtures_keep_lifecycle_rows_in_fixture_journals(self):
+        self.assert_module_isolated("test_learn", "merge")
+
+    def test_dispatch_gate_runner_keeps_lifecycle_rows_in_fixture_journals(self):
+        self.assert_module_isolated(
+            "test_dispatch_lifecycle", "gate",
+            "test_run_gate_uses_installed_runner_and_discards_stale_report",
+        )
