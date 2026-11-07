@@ -255,6 +255,102 @@ class DispatchRevocationTest(unittest.TestCase):
         self.assertEqual(self.github.head(), head)
         review.assert_called_once()
 
+    def run_requeued_pass(self):
+        if fixtures.git(self.wt, "rev-parse", "HEAD") == self.lease:
+            self.local_commit()
+        with mock.patch.object(dispatch, "build_prompt", return_value="work"), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")), \
+                mock.patch.object(dispatch, "record_risk"), \
+                mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "", False)), \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True), \
+                mock.patch.object(dispatch, "open_blockers", return_value=[]):
+            dispatch.process_ticket(self.github.issue(), 1, False)
+
+    def test_delayed_unassignment_observation_does_not_hide_human_requeue(self):
+        head = self.local_commit()
+        dispatch.record("claimed", ticket=9)
+        self.github.assignees = []
+        # GitHub's requeue precedes this host's first observation of the removed claim.
+        timeline = [
+            {"event": "unassigned", "assignee": {"login": "factory"},
+             "actor": {"login": "owner"}, "created_at": "2026-01-01T00:00:01Z"},
+            {"event": "labeled", "label": {"name": config.LABEL_AGENT},
+             "actor": {"login": "owner", "type": "User"}, "created_at": "2026-01-01T00:00:02Z"},
+        ]
+        self.assert_push_refused(head, "unassigned")
+        dispatch.configure(self.cfg)
+        with mock.patch("factory.handoff.timeline", return_value=timeline):
+            self.run_requeued_pass()
+        self.assertEqual(self.github.assignees, ["factory"])
+        self.assertEqual(self.github.head(), head)
+
+    def test_unobserved_unassignment_is_held_on_another_hosts_first_pass(self):
+        self.github.assignees = []
+        timeline = [{"event": "unassigned", "assignee": {"login": "factory"},
+                     "actor": {"login": "owner"}, "created_at": "2026-01-01T00:00:01Z"}]
+        # No local claimed/stopped rows: this dispatcher did not see the original run.
+        with mock.patch("factory.handoff.timeline", return_value=timeline), \
+                mock.patch.object(dispatch, "worker_round", side_effect=AssertionError("revoked run launched")) as worker:
+            dispatch.process_ticket(self.github.issue(), 1, False)
+        worker.assert_not_called()
+        self.assertEqual(self.github.assignees, [])
+        self.assertEqual(self.github.head(), self.lease)
+
+    def test_preclaim_manager_fix_refusal_does_not_poison_normal_admission(self):
+        self.cfg.manager_review = "all"
+        self.github.assignees = []
+        with mock.patch("factory.handoff.timeline", return_value=[]), \
+                mock.patch.object(dispatch, "worker_round") as worker:
+            manage.apply(9, self.github.issue(), "FIX", "",
+                         {"worker": "default", "guidance": "fix"}, self.packet)
+        worker.assert_not_called()
+        with mock.patch("factory.handoff.timeline", return_value=[]):
+            self.run_requeued_pass()
+        self.assertEqual(self.github.assignees, ["factory"])
+        self.assertEqual(len(self.events("claimed")), 1)
+        self.assertEqual(len(self.events("attempt")), 1)
+
+    def test_factory_release_does_not_require_a_new_human_requeue(self):
+        self.github.assignees = []
+        timeline = [{"event": "unassigned", "assignee": {"login": "factory"},
+                     "actor": {"login": "factory"}, "created_at": "2026-01-01T00:00:01Z"}]
+        with mock.patch("factory.handoff.timeline", return_value=timeline):
+            self.run_requeued_pass()
+        self.assertEqual(self.github.assignees, ["factory"])
+        self.assertEqual(len(self.events("attempt")), 1)
+
+
+class CrossHostRevocationTest(unittest.TestCase):
+    from tests.test_host_claims import HostClaimRaceTest as _harness
+
+    setUp = _harness.setUp
+    dispatcher = _harness.dispatcher
+    launch = _harness.launch
+
+    def test_stale_claim_recovery_before_pr_cannot_reclaim_human_unassignment(self):
+        from datetime import UTC, datetime, timedelta
+
+        self.github.add_claim("old-host", datetime.now(UTC) - timedelta(hours=3))
+        self.github.issue["assignees"] = []
+        replacement = self.dispatcher("new-host")
+        read = replacement.gh_json
+        removed = [{"event": "unassigned", "assignee": {"login": "@me"},
+                    "actor": {"login": "owner"}, "created_at": "2026-01-01T00:00:01Z"}]
+
+        def github(args):
+            if args[0] == "api" and "/timeline" in args[1]:
+                return [removed]
+            return read(args)
+
+        with mock.patch.object(replacement, "gh_json", side_effect=github):
+            replacement.process_ticket(self.github.issue, 1, False)
+        self.assertEqual(self.launched, [])
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.open_prs, [])
+        self.assertFalse(any(row.get("event") == "claimed"
+                             for row in lifecycle.read_events(replacement.EVENTS)))
+
 
 if __name__ == "__main__":
     unittest.main()
