@@ -189,6 +189,42 @@ class RunnerRuntimeTest(unittest.TestCase):
                 events.append(events[-1] | {"outcome": "completed", "reason": None})
                 self.assertEqual(watch.signals(cfg, events), [])
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux /proc process-name encoding")
+    def test_non_utf8_process_name_preserves_only_confirmed_live_review_users(self):
+        from factory import runner
+
+        code = (
+            "import ctypes, sys\n"
+            "assert ctypes.CDLL(None).prctl(15, b'review\\xff) (child', 0, 0, 0) == 0\n"
+            "print('ready', flush=True)\n"
+            "sys.stdin.read()\n"
+        )
+        for uses_root in (False, True):
+            with self.subTest(uses_root=uses_root):
+                child = None
+                try:
+                    with runner.temp_root("review") as name:
+                        root = Path(name)
+                        child = subprocess.Popen(
+                            [sys.executable, "-u", "-c", code],
+                            cwd=root if uses_root else ROOT,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True,
+                        )
+                        self.assertEqual(child.stdout.readline().strip(), "ready")
+                        self.assertIn(b"review\xff) (child", Path(f"/proc/{child.pid}/stat").read_bytes())
+                    self.assertEqual(root.exists(), uses_root,
+                                     "only a confirmed live scratch user may retain the review root")
+                finally:
+                    if child is not None:
+                        child.kill()
+                        child.wait(timeout=10)
+                        child.stdin.close()
+                        child.stdout.close()
+                        child.stderr.close()
+                runner.preflight(self.base)
+                self.assertFalse(root.exists(), f"preflight leaked an abandoned review root: {root}")
+
     def tearDown(self):
         # A red crash-recovery assertion must not itself leak a temp root.
         for path in self.base.glob("factory-*"):
