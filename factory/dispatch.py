@@ -3955,6 +3955,7 @@ def observe_owner_requeue(n: int, issue: dict) -> None:
 
 
 def _record_rework(n: int, head: str, findings: str, deferred: bool) -> None:
+    require_ticket_claim(FACTORY / f"wt-{n}", n, "refresh")
     record(
         "review-rework", ticket=n, head=head, round=_review_rounds_used(n) + 1,
         findings=findings, deferred=deferred,
@@ -4052,6 +4053,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
         return False
     wt = ensure_worktree(n)
+    require_ticket_claim(wt, n, "refresh")
 
     def restore_pr_head(refreshed_head: str) -> str:
         """Keep the unpushed candidate as evidence before restoring the live PR head."""
@@ -4121,10 +4123,10 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         unmerged = run(["git", "diff", "--name-only", "-z", "--diff-filter=U"], cwd=wt, check=False).stdout
         conflicts = [path for path in unmerged.split("\0") if path]
         run(["git", verb, "--abort"], cwd=wt, check=False)
+        require_ticket_claim(wt, n, "refresh")
         # Routine worker work (#295): the ticket goes back to the frontier on the same worktree and
         # branch, bounded by `review_rounds` conflict rounds. A human gets it only for a protected
         # path without authority, rounds used up, or a ticket that is no longer open.
-        # A manager-FIX-approved PR may still have a ready-for-human issue; restore agent flow.
         issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels"])
         observe_owner_requeue(n, issue)
         labels = {label["name"] for label in issue.get("labels", [])}
@@ -4151,6 +4153,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True)
         log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
+    require_ticket_claim(wt, n, "refresh")
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     empty = run(
         ["git", "merge-base", "--is-ancestor", "HEAD", f"origin/{cfg.main}"], cwd=wt, check=False
@@ -4177,6 +4180,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         comments=issue.get("comments"),
     )
     ok, report = run_gate(wt, n, **flags)
+    require_ticket_claim(wt, n, "refresh")
     reports = [report]
     gate_rerun = False
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -4204,6 +4208,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     if not ok and evidence_clean:
         first_report = report
         ok, report = run_gate(wt, n, **flags)
+        require_ticket_claim(wt, n, "refresh")
         gate_rerun = True
         actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         after_status = run(status_cmd, cwd=wt).stdout.strip()
@@ -4297,6 +4302,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     else:
         verdict, findings = review(wt, n, report, head)
         pr_failed = False
+    require_ticket_claim(wt, n, "refresh")
     pending = _PENDING_REVIEWS.get(n)
     unavailable = pending is not None and pending.get("verdict") is None
     pr_comment(n, findings)
