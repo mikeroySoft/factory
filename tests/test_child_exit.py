@@ -60,3 +60,23 @@ class ChildExitTest(unittest.TestCase):
             [exit_row] = [row for row in lifecycle.read_events(events) if row.get("kind") == "child_exit"]
             self.assertEqual(exit_row["returncode"], 17)
             self.assertEqual(exit_row["command"][:3], ["gh", "issue", "list"])
+
+    def test_api_comment_body_is_redacted_in_child_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gh = root / "gh"
+            gh.write_text("#!/bin/sh\nexit 17\n")
+            gh.chmod(0o755)
+            events = root / "events.jsonl"
+            body = "Factory requeue: nonce=private-context\nConfidential handoff details"
+            command = [str(gh), "api", "repos/local/safety/issues/7/comments",
+                       "--method", "POST", "-f", f"body={body}"]
+            with lifecycle.scope(events, "ticket", ticket=7):
+                result = dispatch.run(command, check=False)
+            self.assertEqual(result.returncode, 17)
+            [exit_row] = [row for row in lifecycle.read_events(events) if row.get("kind") == "child_exit"]
+            self.assertEqual(exit_row["returncode"], 17)
+            self.assertEqual(exit_row["command"][:-1], command[:-1])
+            self.assertEqual(exit_row["command"][-1], "body=[REDACTED]")
+            self.assertNotIn("private-context", events.read_text())
+            self.assertNotIn("Confidential handoff details", events.read_text())
