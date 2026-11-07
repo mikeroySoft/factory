@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from factory import config, dashboard, dispatch, feedback
-from tests.test_feedback import AT, H, ISSUE, PR, REPO, Provider
+from tests.test_feedback import AT, ISSUE, PR, REPO, H, Provider
 
 FIXTURE = Path(__file__).parent / "fixtures" / "dashboard-batch.json"
 FAKE_GH = '''#!/usr/bin/env python3

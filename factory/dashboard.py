@@ -1024,8 +1024,9 @@ def snapshot(*, measurements: dict | None = None) -> dict:
     counts = {"github_calls": 0}
 
     def read(**kwargs):
-        started = time.monotonic()
         timeout = kwargs.get("timeout")
+        if timeout is not None:
+            started = time.monotonic()
         acquired = slots.acquire(timeout=timeout)
         if not acquired:
             raise TimeoutError
