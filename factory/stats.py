@@ -44,6 +44,10 @@ def gh(*args: str) -> Any:
         check=False,
     )
     if completed.returncode:
+        if (args[:2] == ("issue", "view")
+                and f"Could not resolve to an issue or pull request with the number of {args[2]}." in completed.stderr):
+            print(f"factory stats: skipping unresolved ticket #{args[2]}", file=sys.stderr)
+            return None
         print(completed.stderr.strip() or "gh command failed", file=sys.stderr)
         raise SystemExit(completed.returncode)
     return json.loads(completed.stdout)
@@ -85,7 +89,7 @@ def review_findings(events: list[dict]) -> list[dict[str, int]]:
     return rounds
 
 
-def issue(number: int) -> dict[str, Any]:
+def issue(number: int) -> dict[str, Any] | None:
     return gh(
         "issue",
         "view",
@@ -646,16 +650,20 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
     for number in audit:
         listed.setdefault(number, None)
 
-    def read(number: int) -> tuple[dict, dict | None, list[dict]]:
+    def read(number: int) -> tuple[dict, dict | None, list[dict]] | None:
+        details = issue(number)
+        if details is None:
+            return None
         review = gh("pr", "view", str(pulls[number]["number"]), "--json", "comments") if number in pulls else None
-        return issue(number), review, timeline(number)
+        return details, review, timeline(number)
 
     fetched = {}
     with ThreadPoolExecutor(WORKERS) as pool:
         futures = {pool.submit(read, number): number for number in listed}
         try:
             for done, future in enumerate(as_completed(futures), 1):
-                fetched[futures[future]] = future.result()
+                if (result := future.result()) is not None:
+                    fetched[futures[future]] = result
                 if progress:
                     sys.stderr.write(f"\rstats: {done}/{len(futures)} tickets")
         except BaseException:
@@ -666,6 +674,8 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
 
     rows: dict[int, dict[str, Any]] = {}
     for number, state in listed.items():
+        if number not in fetched:
+            continue
         details, review, _ = fetched[number]
         if number in pulls:
             pull_request = pulls[number]
@@ -677,7 +687,7 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
         else:
             merged = next((e["at"] for e in reversed(audit[number]) if e.get("event") == "merged"), None)
             rows[number] = make_row(details, "merged" if merged else details["state"].lower(), merged_at=merged)
-    pr_by_ticket = {number: pull_request["number"] for number, pull_request in pulls.items()}
+    pr_by_ticket = {number: pull_request["number"] for number, pull_request in pulls.items() if number in rows}
     login = dispatcher_login(cfg)
     actions = feedback.correction_reads(graphql, REPOSITORY, pr_by_ticket.values()) if pr_by_ticket else {}
     cutover = feedback.first_action(login, [

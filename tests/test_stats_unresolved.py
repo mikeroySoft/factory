@@ -52,6 +52,20 @@ class UnresolvedTicketTest(unittest.TestCase):
         self.assertIn("Human-touched PRs:", out.getvalue())
         self.assertNotIn("Ticket 10000", out.getvalue())
 
+    def test_unresolvable_ticket_with_an_agent_pr_is_skipped(self):
+        def github(command, **kwargs):
+            if command[1:3] == ["pr", "list"]:
+                return subprocess.CompletedProcess(command, 0, json.dumps([
+                    {"number": 70, "headRefName": "agent/10000", "state": "OPEN", "mergedAt": None},
+                ]), "")
+            return self.github(command, **kwargs)
+
+        out = io.StringIO()
+        with mock.patch.object(stats.subprocess, "run", side_effect=github), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(stats.main(["--json", "--quiet"]), 0)
+        self.assertEqual([row["ticket"] for row in json.loads(out.getvalue())], [7, 8])
+
     def test_auth_network_and_other_lookup_errors_remain_fatal(self):
         for message in ("HTTP 401: Bad credentials", "dial tcp: network is unreachable",
                         "GraphQL: Resource not accessible by integration (repository.issue)"):
