@@ -729,9 +729,12 @@ ABSENCE_LABELS = ("Evidence coverage", "Snapshot collection errors", "Decision-o
 
 
 def execution_evidence(ticket: dict, executions: list[dict] | None) -> str:
-    """running: held lock or authoritative phase; uncertain: an unresolved execution; else not_running."""
+    """running: held lock or authoritative phase; uncertain: an unprovable lock or an unresolved
+    execution; else not_running. A collected-but-unknown lock (``lock_held: None``) is not free."""
     if ticket.get("lock_held") or ticket.get("phase"):
         return "running"
+    if "lock_held" in ticket and ticket["lock_held"] is None:
+        return "uncertain"
     if any(e.get("state") in ("active", "unknown", "interrupted") and e.get("ended_at") is None for e in executions or []):
         return "uncertain"
     return "not_running"
