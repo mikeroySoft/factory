@@ -750,6 +750,9 @@ in the kept `agent/<n>` worktree for its open PR, ignoring other worker labels.
 FIX requires the live dispatcher claim and a ticket not labelled `ready-for-human`;
 it cannot restart an escalated or unassigned ticket. Requeue to `ready-for-agent`
 through the existing human workflow before a subsequent pass claims it again.
+A refused manager FIX is terminal for its decision: `manage-terminal` records
+the reason and the existing routed human handoff runs instead of silently
+spending the manager round.
 A kept head ahead of the remote PR head is pushed first
 (`--force-with-lease` against the recorded PR head) when it is a head a
 journaled worker attempt of this ticket produced; any other kept head
@@ -1060,9 +1063,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    elected host claim ends the run; a running worker's whole process group is
    stopped with SIGTERM (SIGKILL after 10 s). `worker-stopped` records the ticket,
    local head and reason. A revoked run cannot start another worker in that pass,
-   including manager FIX. An unreadable claim fails closed. No gate, push or new
-   ticket review follows revocation; local work stays intact.
-   Admission reads GitHub's unassignment/requeue timeline, even on another host
+   including manager FIX. An unreadable claim fails closed; the ticket pass
+   releases its claim and records a retry-next-pass wait, keeping local work.
+   No gate, push or new ticket review follows revocation.
+   Admission and subsequent live checks read GitHub's unassignment/requeue
+   timeline, even on another host
    with no local stop row. A human unassignment holds an old `ready-for-agent`
    label until a later human requeue: remove/re-add `ready-for-agent`, or use the
    guarded `requeue_agent` action. Timeline order—not when this host noticed the

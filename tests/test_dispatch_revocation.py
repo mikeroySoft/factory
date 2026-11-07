@@ -346,7 +346,7 @@ class ClaimObservationRevocationTest(unittest.TestCase):
             self.assert_push_refused(head, "unassigned")
             with mock.patch.object(dispatch, "run_reviewer") as review, \
                     self.assertRaises(dispatch.TicketRunStopped):
-                dispatch.review(self.wt, 9, "PASS", head=head)
+                dispatch.review(self.wt, 9, "PASS", head)
             review.assert_not_called()
             with mock.patch.object(dispatch.subprocess, "Popen", wraps=dispatch.subprocess.Popen) as worker, \
                     self.assertRaises(dispatch.TicketRunStopped):

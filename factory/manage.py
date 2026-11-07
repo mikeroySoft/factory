@@ -453,7 +453,8 @@ def _fix(n: int, issue: dict, data: dict, packet: Path) -> None:
         )
 
 
-def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path) -> None:
+def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: Path,
+          **decided: object) -> None:
     def issue_action(action: str, *args: str) -> None:
         dispatch.run(["gh", "issue", action, str(n), "--repo", dispatch.REPO, *args])
 
@@ -484,6 +485,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         try:
             _fix(n, issue, data, packet)
         except dispatch.TicketRunStopped as exc:
+            dispatch.record("manage-terminal", ticket=n, decision="FIX", reason=exc.reason, **decided)
             dispatch.log(str(exc))
         return
 
@@ -821,10 +823,13 @@ CI_KINDS = ("check_run", "commit_status")
 
 
 def apply_fix(n: int, issue: dict, data: dict, packet: Path, **decided: object) -> None:
-    """Execute a journaled FIX. One that finds no healthy worker is a host defect (#662): it
-    stays pending for `resume_fix`, never a spent or failed decision."""
+    """Execute a journaled FIX.
+
+    An unavailable worker stays pending for `resume_fix`; a refused ticket claim is terminal
+    for this decision and lets the human handoff pass take over.
+    """
     try:
-        apply(n, issue, "FIX", "", data, packet)
+        apply(n, issue, "FIX", "", data, packet, **decided)
     except dispatch.WorkerUnavailable as exc:
         dispatch.record("manage-pending", ticket=n, decision="FIX", worker=data["worker"],
                         guidance=data["guidance"], packet=str(packet), reason=str(exc), **decided)

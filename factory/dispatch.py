@@ -76,7 +76,7 @@ VERIFIED_WORKERS: set[str] = set()
 # Tickets this pass escalated: no owner can have released them yet (see `observe_owner_requeue`).
 _ESCALATED: set[int] = set()
 _STOPPED_TICKETS: dict[int, str] = {}
-# Requeue history is checked once per pass; subsequent live revocation is latched above.
+# Tickets admitted or observed with a live claim; only their refusals latch this pass.
 _REQUEUE_CHECKED: set[int] = set()
 
 
@@ -1786,7 +1786,7 @@ def require_ticket_claim(wt: Path, n: int, action: str) -> None:
                 reason = "unassigned"
             elif cfg.host_name and owned_host_claim(n) is None:
                 reason = "host-claim-lost"
-            elif n not in _REQUEUE_CHECKED and _unassigned_run_held(n):
+            elif _unassigned_run_held(n):
                 reason = "unassigned"
         except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
             reason = "claim-unavailable"
@@ -3898,30 +3898,27 @@ def _unassigned_run_held(n: int) -> bool:
     """Shared unassignment history, not this host's observation time, controls admission."""
     from factory import handoff
 
-    try:
-        items = handoff.timeline(n, repo=REPO, read=gh_json)
-        if not items:
-            return False
-        login = host_claim_login()
-        removed = next((i for i in range(len(items) - 1, -1, -1)
-                        if items[i].get("event") == "unassigned"
-                        and (items[i].get("assignee") or {}).get("login", "").casefold() == login), None)
-        if removed is None:
-            return False
-        # The dispatcher also releases claims for normal retries and host failures.
-        # Those authenticated self-releases are not a human takeover.
-        if (items[removed].get("actor") or {}).get("login", "").casefold() == login:
-            return False
-        return not any(
-            item.get("event") == "labeled"
-            and (item.get("label") or {}).get("name") == LABEL_AGENT
-            and (item.get("actor") or {}).get("login")
-            and item["actor"]["login"].casefold() != login
-            and item["actor"].get("type") != "Bot"
-            for item in items[removed + 1:]
-        )
-    except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
-        return True
+    items = handoff.timeline(n, repo=REPO, read=gh_json)
+    if not items:
+        return False
+    login = host_claim_login()
+    removed = next((i for i in range(len(items) - 1, -1, -1)
+                    if items[i].get("event") == "unassigned"
+                    and (items[i].get("assignee") or {}).get("login", "").casefold() == login), None)
+    if removed is None:
+        return False
+    # The dispatcher also releases claims for normal retries and host failures.
+    # Those authenticated self-releases are not a human takeover.
+    if (items[removed].get("actor") or {}).get("login", "").casefold() == login:
+        return False
+    return not any(
+        item.get("event") == "labeled"
+        and (item.get("label") or {}).get("name") == LABEL_AGENT
+        and (item.get("actor") or {}).get("login")
+        and item["actor"]["login"].casefold() != login
+        and item["actor"].get("type") != "Bot"
+        for item in items[removed + 1:]
+    )
 
 
 def observe_owner_requeue(n: int, issue: dict) -> None:
@@ -5399,6 +5396,12 @@ def process_ticket(
         except TicketRunStopped as exc:
             execution.outcome, execution.reason = "interrupted", exc.reason
             log(str(exc))
+            if claimed and exc.reason == "claim-unavailable":
+                # Unknown ownership is a transport failure, not proof of human takeover.
+                # Keep publication stopped, but release our claim so a healthy pass can retry.
+                execution.outcome, execution.reason = "mechanism_failure", "claim_unavailable"
+                unclaim(n, check=True)
+                execution.wait("claim_unavailable", mode="retry_next_pass")
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except WorkerUnavailable as exc:

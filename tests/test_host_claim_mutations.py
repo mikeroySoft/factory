@@ -28,6 +28,7 @@ class HostClaimMutationTest(unittest.TestCase):
                 return refresh(*args, **kwargs)
 
             self.enterContext(mock.patch.object(module, "host_claim_login", return_value="@me"))
+            self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
             self.enterContext(mock.patch.object(module, "refresh_pr_branch", side_effect=claimed_refresh))
         return module
 
