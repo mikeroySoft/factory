@@ -143,7 +143,7 @@ new file mode 100644
         ), patch.object(brief.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(response).encode())):
             root = Path(directory)
             self.assertEqual(brief.rerank(root, {}, ["gone.py"]), ["gone.py"])
-            row, = lifecycle.read_events(root / ".factory/events.jsonl")
+            row, = lifecycle.read_events(root / ".factory/brief-rerank.jsonl")
             self.assertEqual(row["model_requested"], "jev-1.13.0")
             self.assertEqual(row["model_resolved"], "jev-1.13.0-build")
             self.assertEqual(row["input_tokens"], 250)

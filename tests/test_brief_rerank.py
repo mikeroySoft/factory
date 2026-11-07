@@ -38,7 +38,7 @@ class BriefRerankTest(unittest.TestCase):
             })
             self.assertEqual(set(payload), {"model", "state", "questions"})
             self.assertEqual(out.getvalue(), "")
-            row, = lifecycle.read_events(root / ".factory/events.jsonl")
+            row, = lifecycle.read_events(root / ".factory/brief-rerank.jsonl")
             self.assertEqual(row["model_requested"], "jev-1.13.0")
             self.assertEqual(row["model_resolved"], "jev-1.13.0")
             self.assertEqual(row["input_tokens"], 100)
@@ -57,7 +57,7 @@ class BriefRerankTest(unittest.TestCase):
                 brief.rerank(root, {}, ["gone.py"], cfg=cfg)
             self.assertEqual(provider.call_args.args[0].full_url, cfg.brief_url)
             self.assertEqual(json.loads(provider.call_args.args[0].data)["model"], "jev-1.14.0")
-            row, = lifecycle.read_events(root / ".factory/events.jsonl")
+            row, = lifecycle.read_events(root / ".factory/brief-rerank.jsonl")
             self.assertEqual(row["model_resolved"], "jev-1.14.0")
 
     def test_failure_journals_unknown_usage_and_preserves_order(self):
@@ -65,7 +65,7 @@ class BriefRerankTest(unittest.TestCase):
             root = Path(directory)
             with patch.object(brief.urllib.request, "urlopen", side_effect=OSError("offline")), self.assertLogs("factory.brief", "WARNING"):
                 self.assertEqual(brief.rerank(root, {}, ["a.py", "b.py"]), ["a.py", "b.py"])
-            row, = lifecycle.read_events(root / ".factory/events.jsonl")
+            row, = lifecycle.read_events(root / ".factory/brief-rerank.jsonl")
             self.assertEqual(row["status"], "failed")
             self.assertEqual(row["model_requested"], "jev-1.13.0")
             self.assertIsNone(row["model_resolved"])
@@ -77,7 +77,7 @@ class BriefRerankTest(unittest.TestCase):
             root = Path(directory)
             with patch.object(brief.urllib.request, "urlopen", return_value=self.response([2])), self.assertLogs("factory.brief", "WARNING"):
                 self.assertEqual(brief.rerank(root, {}, ["a.py"]), ["a.py"])
-            row, = lifecycle.read_events(root / ".factory/events.jsonl")
+            row, = lifecycle.read_events(root / ".factory/brief-rerank.jsonl")
             self.assertEqual(row["status"], "failed")
             self.assertEqual(row["input_tokens"], 100)
             self.assertAlmostEqual(row["cost"], 0.0000042)
@@ -110,7 +110,7 @@ class BriefRerankTest(unittest.TestCase):
                 git("add", *changed)
                 git("commit", "-qm", f"attempt {attempt}")
                 brief.journal_attempt(path, root, cfg, ticket=7, attempt=attempt, base=base, head=git("rev-parse", "HEAD"))
-            rows = lifecycle.read_events(root / ".factory/events.jsonl")
+            rows = lifecycle.read_events(root / ".factory/brief-rerank.jsonl")
             coverage = [row for row in rows if row["event"] == "brief-coverage"]
             self.assertEqual([row["attempt"] for row in coverage], [1, 2])
             self.assertEqual(coverage[0]["changed_files"], {
@@ -136,7 +136,7 @@ class BriefRerankTest(unittest.TestCase):
                     [], 0, stdout="a.py\0", stderr=""
                 )):
                     brief.journal_attempt(path, root, cfg, ticket=7, attempt=attempt, base="base", head="head")
-            for row in lifecycle.read_events(cfg.factory / "events.jsonl"):
+            for row in lifecycle.read_events(cfg.factory / "brief-rerank.jsonl"):
                 self.assertEqual(row["status"], "unavailable")
                 self.assertIsNone(row["changed_files"])
                 self.assertIsNone(row["retrieval_misses"])
@@ -152,3 +152,15 @@ class BriefRerankTest(unittest.TestCase):
                     config, "repo_root", return_value=root
                 ), patch.object(config, "host_config", return_value={}), self.assertRaises(config.ConfigError):
                     config.load(root)
+
+    def test_skipped_retrieval_preserves_lifecycle_journal(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"TYPESAFE_API_KEY": ""}):
+            root = Path(directory)
+            journal = root / ".factory/events.jsonl"
+            lifecycle.append(journal, {"event": "claimed", "ticket": 7})
+            self.assertEqual(brief.rerank(root, {"number": 7}, ["a.py"]), ["a.py"])
+            self.assertEqual(lifecycle.read_events(journal), [{"event": "claimed", "ticket": 7}])
+            row, = lifecycle.read_events(root / ".factory/brief-rerank.jsonl")
+            self.assertEqual(row["status"], "skipped")
+            self.assertEqual(row["candidate_pool"], ["a.py"])
+            self.assertIsNone(row["cost"])
