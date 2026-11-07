@@ -11,6 +11,9 @@ import unittest
 from pathlib import Path
 from urllib.parse import urlencode
 
+# The bug-repro gate loads this module directly, outside unittest discovery.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from test_evidence import GH, READ_GUARD, REPO
 
 from factory import binding
