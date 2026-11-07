@@ -10,7 +10,7 @@ import venv
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch, lifecycle
+from factory import binding, config, dispatch, lifecycle, manage
 
 
 class ScopedProtectedOverrideTest(unittest.TestCase):
@@ -194,6 +194,54 @@ class ScopedProtectedOverrideTest(unittest.TestCase):
                 else:
                     self.assertEqual(events[-1]["event"], "conflict-requeue")
 
+
+
+class ManagerProtectedOverrideTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        dispatch.configure(config.Config(self.root, "acme/widgets"))
+        self.scope = 'factory-protected-override: [".factory.toml"]'
+
+    def test_rewrite_cannot_change_human_protected_scope(self):
+        for current, replacement in (
+            (self.scope, 'factory-protected-override: ["**"]'),
+            (self.scope, self.scope[:-1] + ', "**/acceptance/**"]'),
+            (self.scope, "Scope removed"),
+            ("No scope", self.scope),
+            ("factory-protected-override:", self.scope),
+            (self.scope, 'FACTORY-PROTECTED-OVERRIDE: ["**"]\n' + self.scope),
+        ):
+            with self.subTest(current=current, replacement=replacement), \
+                    mock.patch.object(dispatch, "gh_json", return_value={"body": current}), \
+                    mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess(
+                        [], 0, "", "",
+                    )) as run:
+                with self.assertRaisesRegex(binding.BindingError, "preserve.*factory-protected-override"):
+                    manage.apply(
+                        622, {"body": replacement}, "REWRITE", replacement, None,
+                        self.root / "packet.md",
+                    )
+                run.assert_not_called()
+
+    def test_rewrite_preserves_live_scope_while_changing_prose(self):
+        current = "Human scope\n" + self.scope
+        replacement = "Refined task\n" + self.scope
+        with mock.patch.object(dispatch, "gh_json", return_value={"body": current}), \
+                mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, "https://github.com/acme/widgets/issues/622#issuecomment-701", "",
+                )) as run:
+            manage.apply(
+                622, {"body": "Stale body without scope"}, "REWRITE", replacement, None,
+                self.root / "packet.md",
+            )
+        edits = [call.args[0] for call in run.call_args_list if "--body" in call.args[0]]
+        self.assertEqual(edits[1][-2:], ["--body", replacement])
+        self.assertEqual(
+            dispatch.gate_flags(None, {config.LABEL_PROTECTED_OVERRIDE}, replacement),
+            {"protected_override": False, "protected_override_paths": [".factory.toml"]},
+        )
 
 
 if __name__ == "__main__":
