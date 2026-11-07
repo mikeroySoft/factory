@@ -86,6 +86,15 @@ class IdlePasses(unittest.TestCase):
         bin_dir.mkdir()
         (bin_dir / "gh").write_text("#!/bin/sh\necho '[]'\n")
         (bin_dir / "gh").chmod(0o755)
+        # Direct issue reads return the parked ticket; search queries still return lists.
+        (bin_dir / "gh").write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1 $2\" = 'issue view' ]; then\n"
+            f"  echo '{json.dumps({**self.issues[0], 'state': 'OPEN', 'assignees': []})}'\n"
+            "else\n"
+            "  echo '[]'\n"
+            "fi\n"
+        )
         # A healthy host: every configured worker is installed, so the health pass changes nothing (#662).
         for worker in ("omp", "droid"):
             (bin_dir / worker).write_text("#!/bin/sh\n")
