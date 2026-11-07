@@ -492,8 +492,130 @@ class RequeueReceiptContractTest(unittest.TestCase):
                 mock.patch("factory.manage.manage_pass"), \
                 mock.patch.object(dispatch, "ticket_pass"), \
                 mock.patch("factory.learn.learn_pass"):
+            dispatch.gh_json.side_effect = lambda argv: self.issue if argv[:2] == ["issue", "view"] else [self.issue]
             self.assertEqual(dispatch.main([]), 0)
         landing.assert_called_once_with(False)
+
+
+class PreLandRequeueTest(unittest.TestCase):
+    """#671: only locked, direct issue state can authorize a pre-land reset."""
+
+    setUp = RequeueReceiptContractTest.setUp
+
+    def scheduled_pass(self, fresh: dict, *, dry_run: bool = False) -> tuple[list[int], list[dict]]:
+        reads, at_land = [], []
+
+        def github(argv: list[str]) -> dict | list[dict]:
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue]  # stale search data: ready and unassigned
+            self.assertEqual(argv[:3], ["issue", "view", "7"])
+            self.assertEqual(set(argv[-1].split(",")), {"state", "labels", "assignees"})
+            self.assertTrue(dispatch.lock_held(dispatch.ticket_lock(7)), "refresh must hold the ticket lock")
+            reads.append(7)
+            return fresh
+
+        def land(_dry_run: bool) -> None:
+            at_land.extend(row for row in lifecycle.read_events(dispatch.EVENTS)
+                           if row.get("event") == "generation")
+
+        with mock.patch.object(dispatch, "pin_root", return_value=[]), \
+                mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.object(config, "engine_commit", return_value="same"), \
+                mock.patch.object(config, "engine_target", return_value="same"), \
+                mock.patch.object(dispatch, "_sweep_stale_factory_tempdirs"), \
+                mock.patch.object(dispatch, "worker_health_pass"), \
+                mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "land_pass", side_effect=land), \
+                mock.patch.object(dispatch, "review_intake_pass"), \
+                mock.patch("factory.manage.manage_pass"), \
+                mock.patch.object(dispatch, "ticket_pass"), \
+                mock.patch("factory.learn.learn_pass"):
+            self.assertEqual(dispatch.main(["--dry-run"] if dry_run else []), 0)
+        return reads, at_land
+
+    def test_locked_refresh_opens_once_before_landing_and_excludes_spent_rounds(self) -> None:
+        dispatch.record("conflict-requeue", ticket=7, round=self.cfg.review_rounds)
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "at": self.escalation_at})
+        reads, opened = self.scheduled_pass(self.issue)
+        self.assertEqual(reads, [7])
+        self.assertEqual([(row["generation"], row["intent"]) for row in opened], [(1, "resume")])
+        self.assertEqual(dispatch._generation_rows(7), opened)
+        self.assertEqual(dispatch.escalation_packet(7, "another failure", None, self.cfg.factory / "wt-7")[1], 1)
+        self.assertEqual(self.scheduled_pass(self.issue), ([], opened))
+
+    def test_stale_ready_listing_cannot_release_another_dispatchers_escalation(self) -> None:
+        fresh = {**self.issue, "labels": [{"name": config.LABEL_HUMAN}]}
+        reads, opened = self.scheduled_pass(fresh)
+        self.assertEqual(reads, [7])  # direct refresh, not the process-local escalation set
+        self.assertEqual(opened, [])
+        self.assertEqual(generation.current(lifecycle.read_events(dispatch.EVENTS), 7).number, 0)
+
+    def test_closed_assigned_and_initiative_tickets_do_not_open_generations(self) -> None:
+        for change in ({"state": "CLOSED"}, {"assignees": [{"login": "alice"}]},
+                       {"labels": [{"name": config.LABEL_AGENT}, {"name": config.LABEL_INITIATIVE}]}):
+            with self.subTest(change=change):
+                self.assertEqual(self.scheduled_pass({**self.issue, **change}), ([7], []))
+
+    def test_dry_run_and_held_lock_leave_the_journal_unchanged(self) -> None:
+        import fcntl
+
+        before = dispatch.EVENTS.read_bytes()
+        self.assertEqual(self.scheduled_pass(self.issue, dry_run=True), ([], []))
+        self.assertEqual(dispatch.EVENTS.read_bytes(), before)
+        with dispatch.ticket_lock(7).open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self.scheduled_pass(self.issue), ([], []))
+        self.assertEqual(dispatch.EVENTS.read_bytes(), before)
+        self.assertEqual(self.scheduled_pass(self.issue)[0], [7])  # next pass can retry
+
+    def test_only_unresolved_owner_escalations_are_refreshed(self) -> None:
+        dispatch.record("claimed", ticket=8)
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "ticket": 9})
+        dispatch.record("manage", ticket=9, decision="RETRY")
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "ticket": 10, "reason": "manager_failed"})
+        self.assertEqual(self.scheduled_pass(self.issue)[0], [7])
+
+    def test_host_claim_holds_and_unclaimed_assignments_cannot_open_generations(self) -> None:
+        self.cfg.host_name = "local"
+        assigned = {**self.issue, "assignees": [{"login": "alice"}]}
+        with mock.patch.object(dispatch, "host_claims", return_value=[]):
+            self.assertEqual(self.scheduled_pass(assigned), ([7], []))
+        with mock.patch.object(dispatch, "host_claims", return_value=[]), \
+                mock.patch.object(dispatch, "host_claim_hold", return_value="host label (other)"):
+            self.assertEqual(self.scheduled_pass(self.issue), ([7], []))
+
+    def test_expired_requeued_host_claim_preserves_shared_bot_assignment_eligibility(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        self.cfg.host_name = "local"
+        stale = {"host": "old", "id": 1, "created": datetime.now(UTC) - timedelta(days=1),
+                 "heartbeat": datetime.now(UTC) - timedelta(days=1), "requeue": "factory release"}
+        assigned = {**self.issue, "assignees": [{"login": "factory"}]}
+        with mock.patch.object(dispatch, "host_claims", return_value=[stale]), \
+                mock.patch.object(dispatch, "host_claim_login", return_value="factory"):
+            reads, opened = self.scheduled_pass(assigned)
+        self.assertEqual(reads, [7])
+        self.assertEqual([row["generation"] for row in opened], [1])
+
+    def test_receipt_context_presence_and_legacy_nulls(self) -> None:
+        for scoped in (False, True):
+            with self.subTest(scoped=scoped):
+                lifecycle.append(dispatch.EVENTS, ESCALATED)
+                if scoped:
+                    with lifecycle.scope(dispatch.EVENTS, "manage") as execution:
+                        dispatch.observe_owner_requeue(7, self.issue)
+                else:
+                    dispatch.observe_owner_requeue(7, self.issue)
+                receipt = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                           if row.get("event") == "generation"][-1]
+                expected = {
+                    "at": receipt["at"], "event": "generation", "kind": "generation", "ticket": 7,
+                    "cause": "owner_requeue", "generation": 2 if scoped else 1, "intent": "resume",
+                    "source": "label", "actor": None, "decision": None, "escalation_at": None,
+                }
+                if scoped:
+                    expected.update(execution_id=execution.execution_id, dispatcher_run_id=None)
+                self.assertEqual(receipt, expected)
 
 
 if __name__ == "__main__":
