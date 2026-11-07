@@ -11,6 +11,8 @@ import sys
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+import ctypes
+import ctypes.util
 
 
 def darwin() -> bool:
@@ -25,7 +27,43 @@ def _probe(*args: str) -> subprocess.CompletedProcess:
         raise OSError("identity probe unavailable") from exc
 
 
+def _sysctl_string(name: str) -> str | None:
+    """Non-spawning Darwin sysctlbyname string lookup; None on any failure."""
+    if not darwin():
+        return None
+    try:
+        libname = ctypes.util.find_library("System") or ctypes.util.find_library("c")
+        if not libname:
+            return None
+        libc = ctypes.CDLL(libname)
+        fn = getattr(libc, "sysctlbyname", None)
+        if fn is None:
+            return None
+        fn.argtypes = [ctypes.c_char_p, ctypes.c_void_p,
+                       ctypes.POINTER(ctypes.c_size_t),
+                       ctypes.c_void_p, ctypes.c_size_t]
+        fn.restype = ctypes.c_int
+        needed = ctypes.c_size_t(0)
+        if fn(name.encode("utf-8"), None, ctypes.byref(needed), None, 0) != 0:
+            return None
+        if needed.value == 0 or needed.value > 1024:
+            return None
+        buf = ctypes.create_string_buffer(needed.value)
+        if fn(name.encode("utf-8"), buf, ctypes.byref(needed), None, 0) != 0:
+            return None
+        return buf.raw[:needed.value].rstrip(b"\x00").decode("utf-8", errors="strict").strip() or None
+    except Exception:
+        return None
+
+
 def boot_id() -> str | None:
+    # Prefer non-spawning sysctl when possible (fixtures may forbid external commands).
+    value = _sysctl_string("kern.bootsessionuuid")
+    if isinstance(value, str):
+        try:
+            return str(uuid.UUID(value))
+        except ValueError:
+            return None
     try:
         result = _probe("/usr/sbin/sysctl", "-n", "kern.bootsessionuuid")
         return str(uuid.UUID(result.stdout.strip())) if result.returncode == 0 else None

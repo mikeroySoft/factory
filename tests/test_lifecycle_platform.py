@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from factory import lifecycle, runtime_events
+from factory import lifecycle, runtime_events, platform_identity
 
 BOOT = "11111111-2222-3333-4444-555555555555"
 MACHINE = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
@@ -86,6 +86,15 @@ class DarwinLifecycleTest(unittest.TestCase):
         self.assertEqual(lifecycle._process_state(identity), "dead")
         self.assertEqual(runtime_events._Observation([]).process_state(identity), "dead")
         self.assertEqual(lifecycle.observe(self.path)[0]["state"], "interrupted")
+
+class BootProbeTest(unittest.TestCase):
+    def test_boot_id_nonspawning_probe_succeeds_without_subprocess(self):
+        with (
+            patch.object(sys, "platform", "darwin"),
+            patch("subprocess.run", side_effect=AssertionError("no spawn")),
+            patch("factory.platform_identity._sysctl_string", return_value=BOOT),
+        ):
+            self.assertEqual(platform_identity.boot_id(), BOOT)
 
     def test_reboot_proves_interruption(self):
         identity = self.recorded()
