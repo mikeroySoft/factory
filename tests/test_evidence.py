@@ -1027,7 +1027,10 @@ class EvidenceFixtureCleanupTest(unittest.TestCase):
             return data
 
         result = unittest.TestResult()
-        with patch.object(case, "invoke", side_effect=fail_first_observation):
+        with (
+            patch.object(tempfile, "tempdir", os.path.realpath(tempfile.gettempdir())),
+            patch.object(case, "invoke", side_effect=fail_first_observation),
+        ):
             case.run(result)
         self.assertEqual(result.errors, [], result.errors)
         self.assertEqual(len(result.failures), 1, result.failures)
