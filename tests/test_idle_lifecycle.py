@@ -86,6 +86,10 @@ class IdlePasses(unittest.TestCase):
         bin_dir.mkdir()
         (bin_dir / "gh").write_text("#!/bin/sh\necho '[]'\n")
         (bin_dir / "gh").chmod(0o755)
+        # A healthy host: every configured worker is installed, so the health pass changes nothing (#662).
+        for worker in ("omp", "droid"):
+            (bin_dir / worker).write_text("#!/bin/sh\n")
+            (bin_dir / worker).chmod(0o755)
         with patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}"}), \
                 patch.dict(triage.__dict__), patch.object(config, "load", return_value=self.cfg), \
                 patch.object(dispatch, "pin_root", return_value=[]), \

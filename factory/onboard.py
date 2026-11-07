@@ -605,6 +605,10 @@ def doctor(argv: list[str]) -> int:
 
     for label, argv_t in cfg.workers.items():
         report(which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}", on_path)
+        probe = cfg.worker_probe.get(label)
+        report(True if probe else None, f"worker `{label}` login check", f"probe: {probe[0]}" if probe else (
+            f"no `[workers.{label}] probe`: its login is unverified until a launch fails, "
+            "and the manager cannot choose it"))
     if cfg.worker_wrap:
         report(which(cfg.worker_wrap[0]) is not None, f"worker wrap: {cfg.worker_wrap[0]}", on_path)
     report(which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}", on_path)
@@ -949,6 +953,10 @@ def install(argv: list[str]) -> int:
         help="dashboard bind address; 0.0.0.0 exposes /api/act (mutates GitHub with your gh credentials) to the LAN",
     )
     parser.add_argument("--print", action="store_true", help="print the units instead of installing them")
+    parser.add_argument(
+        "--enable", action="store_true",
+        help="enable and start installed units even if previously stopped or disabled",
+    )
     cfg = config.load()
     parser.set_defaults(**{k: cfg.install[k] for k in ("every", "dashboard", "host")})
     args = parser.parse_args(argv)
@@ -979,6 +987,20 @@ def install(argv: list[str]) -> int:
             return 1
 
     udir = unit_dir()
+    prior = {}
+    for name in wanted:
+        enabled = sh(["systemctl", "--user", "is-enabled", name])
+        enabled_state = enabled.stdout.strip()
+        if enabled.returncode != 0 and not enabled_state:
+            # Older systemd reports missing units only on stderr.
+            loaded = sh(["systemctl", "--user", "show", "--property=LoadState", "--value", name])
+            if loaded.returncode != 0 or loaded.stdout.strip() != "not-found":
+                detail = loaded.stderr.strip() or enabled.stderr.strip() or "unit not confirmed missing"
+                raise ConfigError(f"cannot determine prior state of {name}: {detail}")
+            enabled_state = "not-found"
+        active = sh(["systemctl", "--user", "is-active", name])
+        existed = (udir / name).exists() or enabled_state != "not-found"
+        prior[name] = (existed, enabled.returncode == 0, active.returncode == 0)
     udir.mkdir(parents=True, exist_ok=True)
     changed = set()  # existing units whose content differs: these get restarted
     for name, body in wanted.items():
@@ -1008,34 +1030,24 @@ def install(argv: list[str]) -> int:
                 (udir / name).unlink()
                 print(f"removed {udir / name}")
     systemctl("daemon-reload")
-    timer = f"{cfg.unit}.timer"
-    systemctl("enable", "--now", timer)
-    if timer in changed:
-        systemctl("restart", timer)
-    print(f"{'restarted' if timer in changed else 'started'} {timer}")
+    activation = [f"{cfg.unit}.timer"]
     if cfg.triage_service:
-        systemctl("enable", "--now", probe_timer)
-        if probe_timer in changed:
-            systemctl("restart", probe_timer)
-        print(f"{'restarted' if probe_timer in changed else 'started'} {probe_timer}")
+        activation.append(probe_timer)
     if cfg.eval_schedule:
-        systemctl("enable", "--now", eval_timer)
-        if eval_timer in changed:
-            systemctl("restart", eval_timer)
-        print(f"{'restarted' if eval_timer in changed else 'started'} {eval_timer}")
+        activation.append(eval_timer)
     if args.dashboard:
-        systemctl("enable", "--now", dash_unit)
-        if dash_unit in changed:
-            systemctl("restart", dash_unit)
-        print(f"{'restarted' if dash_unit in changed else 'started'} {dash_unit}")
+        activation.append(dash_unit)
+    for name in activation:
+        existed, enabled, active = prior[name]
+        if existed and not args.enable and not (enabled and active):
+            print(f"left paused {name}; resume with: systemctl --user enable --now {name} "
+                  "(or rerun factory install --enable)")
+            continue
+        systemctl("enable", "--now", name)
+        if name in changed:
+            systemctl("restart", name)
+        print(f"{'restarted' if name in changed else 'started'} {name}")
     if sh(["loginctl", "show-user", "--property=Linger", "--value", Path.home().name]).stdout.strip() != "yes":
         print("hint: `loginctl enable-linger` keeps user timers running after logout and at boot")
-    enabled = [f"{cfg.unit}.timer"]
-    if cfg.triage_service:
-        enabled.append(probe_timer)
-    if cfg.eval_schedule:
-        enabled.append(eval_timer)
-    if args.dashboard:
-        enabled.append(dash_unit)
-    print(f"stop with: systemctl --user disable --now {' '.join(enabled)}")
+    print(f"stop with: systemctl --user disable --now {' '.join(activation)}")
     return 0
