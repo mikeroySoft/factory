@@ -73,7 +73,7 @@ class DispatcherContextIsolationTest(unittest.TestCase):
                     self.assertEqual(live.read_bytes(), before, proc.stdout + proc.stderr)
                     self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
-    def test_eval_standalone_and_discovery_keep_lifecycle_rows_in_fixture_journals(self):
+    def assert_module_isolated(self, module, stage):
         script = """
 import json, pathlib, sys, unittest
 from factory import lifecycle
@@ -89,8 +89,8 @@ result = unittest.main(module=None, argv=["unittest", *sys.argv[2:]], exit=False
 pathlib.Path(sys.argv[1]).write_text(json.dumps(written))
 raise SystemExit(not result.wasSuccessful())
 """
-        for args in (["test_eval"], ["discover", "-s", ".", "-p", "test_eval.py"]):
-            with self.subTest(args=args), tempfile.TemporaryDirectory() as directory:
+        for args in ([module], ["discover", "-s", ".", "-p", f"{module}.py"]):
+            with self.subTest(module=module, args=args), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 live = root / "live" / ".factory" / "events.jsonl"
                 live.parent.mkdir(parents=True)
@@ -112,7 +112,15 @@ raise SystemExit(not result.wasSuccessful())
                 self.assertEqual(live.read_bytes(), before, proc.stdout + proc.stderr)
                 self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
                 rows = json.loads(recorded.read_text())
-                self.assertIn("merge-eligibility", {entry["row"]["stage"] for entry in rows})
+                self.assertIn(stage, {entry["row"]["stage"] for entry in rows})
                 for entry in rows:
                     self.assertTrue(Path(entry["path"]).is_relative_to(fixtures), entry)
                     self.assertNotEqual(entry["row"]["dispatcher_run_id"], "outside-dispatcher")
+
+    def test_eval_standalone_and_discovery_keep_lifecycle_rows_in_fixture_journals(self):
+        self.assert_module_isolated("test_eval", "merge-eligibility")
+
+    def test_review_modules_keep_lifecycle_rows_in_fixture_journals(self):
+        for module in ("test_review_isolation", "test_review_policy", "test_worker_modes",
+                       "test_worker_plan", "test_learn_candidate_review"):
+            self.assert_module_isolated(module, "review")
