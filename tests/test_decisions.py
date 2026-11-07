@@ -1,6 +1,7 @@
 """Deterministic contracts for restart-safe human decisions; no live mutations."""
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -286,6 +287,124 @@ class DecisionTest(unittest.TestCase):
             results = list(pool.map(lambda _: self.apply(preview), range(2)))
         self.assertEqual(results[0], results[1])
         self.assertEqual(self.mutations(), ["comment"])
+
+    def test_concurrent_first_lock_creation_preserves_exactly_once_receipt(self) -> None:
+        real_open = os.open
+        # Exercise real native collisions first, then model Darwin's losing
+        # non-exclusive create so Linux also enforces the failing-first contract.
+        for model_race in (False, True):
+            for attempt in range(16 if not model_race else 1):
+                with self.subTest(model_race=model_race, attempt=attempt):
+                    self.calls.clear()
+                    preview = self.proposal([{
+                        "op": "issue", "number": 7, "comment": "Concurrent once",
+                        "add": [config.LABEL_INFO],
+                    }])
+                    name = f"apply-{preview['proposal_id']}.lock"
+                    barrier = threading.Barrier(2, timeout=10)
+
+                    def simultaneous_open(
+                        path, flags, mode=0o777, *, dir_fd=None,
+                        name=name, barrier=barrier, model_race=model_race,
+                    ):
+                        if path == name and flags & os.O_CREAT:
+                            barrier.wait()
+                            if model_race and not flags & os.O_EXCL:
+                                try:
+                                    return real_open(path, flags | os.O_EXCL, mode, dir_fd=dir_fd)
+                                except FileExistsError as exc:
+                                    # XNU's internal create-race restart loses
+                                    # the relative lookup anchor before flock.
+                                    raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path) from exc
+                        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+                    with (
+                        mock.patch.object(decisions.os, "open", side_effect=simultaneous_open),
+                        ThreadPoolExecutor(max_workers=2) as pool,
+                    ):
+                        results = list(pool.map(lambda _, preview=preview: self.apply(preview), range(2)))
+                    self.assertEqual(results[0], results[1])
+                    self.assertEqual(results[0]["status"], "success")
+                    self.assertEqual([step["status"] for step in results[0]["steps"]], ["applied", "applied"])
+                    self.assertEqual(self.mutations(), ["comment", "edit"])
+                    receipt = self.cfg.factory / "decisions" / f"receipt-{preview['proposal_id']}.json"
+                    contents, info = receipt.read_bytes(), receipt.stat()
+                    self.assertEqual(self.apply(preview), results[0])
+                    self.assertEqual(self.mutations(), ["comment", "edit"])
+                    self.assertEqual(receipt.read_bytes(), contents)
+                    retained = receipt.stat()
+                    self.assertEqual((retained.st_ino, retained.st_mtime_ns), (info.st_ino, info.st_mtime_ns))
+                    self.assertEqual(retained.st_mode & 0o222, 0)
+
+    def test_existing_proposal_locks_reject_unsafe_storage_before_effects(self) -> None:
+        for kind in ("symlink", "hardlink", "writable"):
+            with self.subTest(kind=kind):
+                preview = self.proposal([{"op": "issue", "number": 7, "comment": "Must not run"}])
+                lock = self.cfg.factory / "decisions" / f"apply-{preview['proposal_id']}.lock"
+                target = self.root / kind
+                target.write_text("retain")
+                target.chmod(0o600)
+                if kind == "symlink":
+                    lock.symlink_to(target)
+                elif kind == "hardlink":
+                    os.link(target, lock)
+                else:
+                    lock.write_text("retain")
+                    lock.chmod(0o666)
+                with self.assertRaises(decisions.DecisionError) as caught:
+                    self.apply(preview)
+                self.assertEqual(caught.exception.code, "storage_unavailable" if kind == "symlink" else "unsafe_storage")
+                self.assertEqual(target.read_text(), "retain")
+                self.assertEqual(self.calls, [])
+                self.assertFalse((lock.parent / f"intent-{preview['proposal_id']}.json").exists())
+
+    def test_missing_lock_storage_fails_closed_without_retry(self) -> None:
+        preview = self.proposal([{"op": "issue", "number": 7, "comment": "Must not run"}])
+        name = f"apply-{preview['proposal_id']}.lock"
+        real_open = os.open
+        attempts = []
+
+        def missing_lock(path, flags, mode=0o777, *, dir_fd=None):
+            if path == name:
+                attempts.append(path)
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        with (
+            mock.patch.object(decisions.os, "open", side_effect=missing_lock),
+            self.assertRaises(decisions.DecisionError) as caught,
+        ):
+            self.apply(preview)
+        self.assertEqual(caught.exception.code, "storage_unavailable")
+        self.assertEqual(caught.exception.__cause__.errno, errno.ENOENT)
+        self.assertEqual(attempts, [name])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(decisions.receipt(self.cfg, preview["proposal_id"])["status"], "prepared")
+
+    def test_disappearing_existing_lock_fails_closed_without_recreation(self) -> None:
+        preview = self.proposal([{"op": "issue", "number": 7, "comment": "Must not run"}])
+        lock = self.cfg.factory / "decisions" / f"apply-{preview['proposal_id']}.lock"
+        lock.touch(mode=0o600)
+        real_open = os.open
+
+        def remove_after_collision(path, flags, mode=0o777, *, dir_fd=None):
+            try:
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+            except FileExistsError:
+                if path == lock.name:
+                    os.unlink(path, dir_fd=dir_fd)
+                raise
+
+        with (
+            mock.patch.object(decisions.os, "open", side_effect=remove_after_collision),
+            self.assertRaises(decisions.DecisionError) as caught,
+        ):
+            self.apply(preview)
+        self.assertEqual(caught.exception.code, "storage_unavailable")
+        self.assertEqual(caught.exception.__cause__.errno, errno.ENOENT)
+        self.assertFalse(lock.exists())
+        self.assertEqual(self.calls, [])
+        self.assertEqual(decisions.receipt(self.cfg, preview["proposal_id"])["status"], "prepared")
 
     def test_crash_or_ambiguous_transport_after_intent_is_uncertain_and_never_retried(self) -> None:
         preview = self.proposal([{"op": "issue", "number": 7, "comment": "May have arrived"}])

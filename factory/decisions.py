@@ -891,13 +891,14 @@ def _load_proposal(directory: int, proposal_id: str) -> dict:
 
 
 def _lock_file(directory: int, name: str) -> int:
+    flags = os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     try:
-        fd = os.open(
-            name,
-            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-            dir_fd=directory,
-        )
+        # Darwin can lose the dirfd lookup anchor when a non-exclusive create
+        # collides and restarts inside openat. Keep creation and opening separate.
+        try:
+            fd = os.open(name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+        except FileExistsError:
+            fd = os.open(name, flags, dir_fd=directory)
     except OSError as exc:
         raise DecisionError("decision lock is unavailable", "storage_unavailable") from exc
     info = os.fstat(fd)
