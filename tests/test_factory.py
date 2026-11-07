@@ -2058,8 +2058,9 @@ PY
 
             with mock.patch.object(
                     dispatch, "gh_json",
-                    side_effect=[pr, [], {"baseRefName": "main"}],
+                    side_effect=[pr, {"baseRefName": "main"}],
             ), mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
+                    mock.patch("factory.handoff.timeline", return_value=[]), \
                     mock.patch.object(
                         dispatch, "worker_round",
                         return_value=(True, "ok", packet, "new-head"),
@@ -2124,12 +2125,11 @@ PY
                     return original_run(cmd, *args, **kwargs)
 
                 def fake_github(args, pr=pr, issue=issue):
-                    if args[0] == "api" and args[1].endswith("/issues/7/timeline"):
-                        return []
                     return pr if args[:2] == ["pr", "view"] else issue
 
                 with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
                         mock.patch.object(dispatch, "gh_json", side_effect=fake_github), \
+                        mock.patch("factory.handoff.timeline", return_value=[]), \
                         mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
                         mock.patch.object(dispatch, "review", return_value=("APPROVE", "approved")) as review, \
                         mock.patch.object(dispatch, "pr_comment"), \
@@ -2191,13 +2191,9 @@ PY
                 return original_run(cmd, *args, **kwargs)
 
             with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
-                    mock.patch.object(
-                        dispatch, "gh_json",
-                        side_effect=lambda args: (
-                            [] if args[0] == "api" and args[1].endswith("/issues/7/timeline")
-                            else issue
-                        ),
-                    ), mock.patch.object(dispatch, "run", side_effect=fake_run), \
+                    mock.patch.object(dispatch, "gh_json", return_value=issue), \
+                    mock.patch("factory.handoff.timeline", return_value=[]), \
+                    mock.patch.object(dispatch, "run", side_effect=fake_run), \
                     mock.patch.object(dispatch, "escalate") as escalate:
                 dispatch.process_ticket(issue, 5, False)
             escalate.assert_called_once()
@@ -4386,6 +4382,9 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(
                     dispatch, "gh_json", return_value={"baseRefName": "main"},
             ), \
+                    mock.patch.object(dispatch, "_ticket_claim_state",
+                                      return_value=claimed_issue(31)), \
+                    mock.patch("factory.handoff.timeline", return_value=[]), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
                     mock.patch.object(
@@ -4451,6 +4450,9 @@ class DispatchTest(unittest.TestCase):
                         else {"labels": [{"name": config.LABEL_PROTECTED_OVERRIDE}]}
                     ),
             ), \
+                    mock.patch.object(dispatch, "_ticket_claim_state",
+                                      return_value=claimed_issue(7)), \
+                    mock.patch("factory.handoff.timeline", return_value=[]), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gated, \
                     mock.patch.object(
@@ -4499,6 +4501,9 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(
                     dispatch, "gh_json", return_value={"baseRefName": "main"},
             ), \
+                    mock.patch.object(dispatch, "_ticket_claim_state",
+                                      return_value=claimed_issue(7)), \
+                    mock.patch("factory.handoff.timeline", return_value=[]), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
                     mock.patch.object(
@@ -4552,6 +4557,9 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(
                     dispatch, "gh_json", return_value={"baseRefName": "main"},
             ), \
+                 mock.patch.object(dispatch, "_ticket_claim_state",
+                                   return_value=claimed_issue(8)), \
+                 mock.patch("factory.handoff.timeline", return_value=[]), \
                  mock.patch.object(dispatch, "run", side_effect=run_spy), \
                  mock.patch.object(dispatch, "run_gate") as gate, \
                  mock.patch.object(dispatch, "escalate") as esc:
@@ -4603,6 +4611,9 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(
                     dispatch, "gh_json", return_value={"baseRefName": "main"},
             ), \
+                 mock.patch.object(dispatch, "_ticket_claim_state",
+                                   return_value=claimed_issue(9)), \
+                 mock.patch("factory.handoff.timeline", return_value=[]), \
                  mock.patch.object(dispatch, "run", side_effect=run_spy), \
                  mock.patch.object(dispatch, "run_gate") as gate, \
                  mock.patch.object(dispatch, "escalate") as esc:
@@ -4652,6 +4663,9 @@ class DispatchTest(unittest.TestCase):
                 return real_run(cmd, *args, **kwargs)
 
             with mock.patch.object(dispatch, "gh_json", return_value={"baseRefName": "main"}), \
+                    mock.patch.object(dispatch, "_ticket_claim_state",
+                                      return_value=claimed_issue(9)), \
+                    mock.patch("factory.handoff.timeline", return_value=[]), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
                     mock.patch.object(dispatch, "review", return_value=("APPROVE", "fine")), \
