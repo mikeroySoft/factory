@@ -11,6 +11,9 @@ from unittest import mock
 
 from factory import config, dispatch, learn, lifecycle
 
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
 
 class LearnEvaluationTest(unittest.TestCase):
     def test_config_is_off_by_default_and_loads_strict_budgets(self) -> None:

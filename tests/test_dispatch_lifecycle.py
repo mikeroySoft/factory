@@ -11,6 +11,9 @@ from pathlib import Path
 
 from factory import __version__, lifecycle
 
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
 GH = '''#!/usr/bin/env python3
 import json, os, subprocess, sys
 from pathlib import Path

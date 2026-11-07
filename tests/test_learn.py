@@ -11,6 +11,9 @@ from unittest import mock
 
 from factory import config, dispatch, learn, lifecycle, onboard
 
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
 
 class PromoteRegressionTest(unittest.TestCase):
     BRANCH = "agent/lessons-2026-10-27-t10"

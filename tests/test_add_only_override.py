@@ -11,6 +11,9 @@ from unittest import mock
 
 from factory import config, dispatch, gate, manage
 
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop("FACTORY_LIFECYCLE_CONTEXT", None)
+
 ROOT = Path(__file__).resolve().parents[1]
 
 @contextmanager

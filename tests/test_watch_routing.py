@@ -17,6 +17,9 @@ from unittest import mock
 from factory import config, decisions, dispatch, lifecycle, onboard, runtime_events, triage, watch
 from factory.config import LABEL_AGENT, LABEL_TRIAGE
 
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
 ENGINE = config.ENGINE_REPO
 REAL_RUNTIME_ERRORS = watch.runtime_errors
 

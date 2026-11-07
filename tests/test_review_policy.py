@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,9 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, stats
+
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
 
 
 def git(root: Path, *args: str) -> str:
