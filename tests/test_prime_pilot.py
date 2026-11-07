@@ -90,7 +90,8 @@ class PrimePilotLifecycleTest(unittest.TestCase):
             cfg = config.Config(
                 root=root,
                 repo="mikeroySoft/rocm-cli",
-                workers={"default": ["true"], "prime": ["no-such-prime-agent-332"]},
+                workers={"default": ["omp"], "prime": [str(root / "missing-prime" / "omp")]},
+                worker_probe={"prime": [sys.executable, "-c", "pass"]},
                 worker_select_label={"prime": "harness-pilot"},
             )
             dispatch.configure(cfg)
@@ -123,7 +124,7 @@ class PrimePilotLifecycleTest(unittest.TestCase):
                     "reason": "worker_unavailable",
                     "mode": "retry_next_pass",
                     "resource": None,
-                    "details": {"executable": "no-such-prime-agent-332"},
+                    "details": {"worker": "prime"},
                 }],
             )
 

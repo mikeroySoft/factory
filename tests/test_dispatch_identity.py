@@ -142,6 +142,9 @@ class DoctorIdentityTest(unittest.TestCase):
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as d:
             cfg = make_cfg(Path(d), **install)
+            cfg.worker_probe = {
+                label: ["omp", "token", "openai-codex"] for label in cfg.workers
+            }
             with mock.patch.object(onboard.config, "load", return_value=cfg), \
                     mock.patch.object(onboard.config, "host_config", return_value={}), \
                     mock.patch.object(onboard, "sh", side_effect=command), \
