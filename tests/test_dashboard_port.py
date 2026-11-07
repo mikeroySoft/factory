@@ -121,6 +121,9 @@ class DashboardPortTest(unittest.TestCase):
         self.assertEqual((code, row["status"]), (0, "PASS"))
 
     def test_doctor_requires_a_worker_credential_probe(self) -> None:
+        listener = self.listener()
+        self.cfg.dashboard_port = listener.getsockname()[1]
+        listener.close()
         self.cfg.worker_probe = {}
         code, output, _ = self.doctor(subprocess.CompletedProcess([], 0, "", ""))
         report = json.loads(output)
@@ -134,7 +137,6 @@ class DashboardPortTest(unittest.TestCase):
         report = json.loads(output)
         row = next(row for row in report["rows"] if row["label"] == "worker `default` login check")
         self.assertEqual((code, report["ok"], row["status"]), (0, True, "PASS"))
-
 
     def test_doctor_text_fails_with_the_foreign_holder_name(self) -> None:
         listener = self.listener()
