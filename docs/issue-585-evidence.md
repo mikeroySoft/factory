@@ -36,6 +36,27 @@ it is not a recovered traceback quote. Naming the wrapper explains the fifth
 failure, but does not supply the missing verbatim historical traceback. No
 current passing run substitutes for that missing evidence.
 
+The original job completion at transcript line 74 (message `d0cc7cff`) retained
+only the report path, `gate FAIL: test`, 639.42 seconds and exit 1. Its adjacent
+session directory contains no bash log. The historical readers found no fuller
+wrapper traceback in either named investigation, referenced logs, or available
+artifact; a later incomplete suite capture is not the original run.
+
+Verbatim surviving child traceback excerpt from message `4595b04d`
+(embedded report lines 31–37):
+
+```text
+FAIL: test_timeout_skips_only_that_ticket (test_triage.TriagePass.test_timeout_skips_only_that_ticket)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/mike/.local/share/district/roots/factory/.factory/wt-585/tests/test_triage.py", line 82, in test_timeout_skips_only_that_ticket
+    self.assertEqual(self.run_pass(), 1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 1
+```
+
+This is the nested triage failure, not the missing outer wrapper traceback.
+
 ## Current verification evidence
 
 The inherited attempt gate at `ef8d25977280253571bb0d41eb74ecc27677afaa` reports
