@@ -845,7 +845,9 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
     queues = {LABEL_AGENT, LABEL_HUMAN, "factory-held"}
     target = next((label for _, label in additions if label in queues), None)
     if target:
-        removals = [("--remove-label", label) for label in sorted(queues - {target})]
+        current = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
+        present = {label["name"] for label in current["labels"]}
+        removals = [("--remove-label", label) for label in sorted((queues & present) - {target})]
     # A successful add response confirms the replacement before any old queue is removed.
     operations = [list(pair) for pair in additions + removals]
     if assignee:
@@ -3705,12 +3707,12 @@ def approve_pr(n: int, head: str) -> bool:
             actor=_decision_actor("deterministic", "dispatch.approve_pr"),
         )
         record("decision", **approval)
-    ticket_comment(n, f"Factory dispatcher approved: gate and review passed at {head}; waiting for CI and merge.")
     record(
         "approved", ticket=n, pr=pr["number"], head=head,
         gate_head=head, review_head=head,
     )
     retain_handoff(n, head)
+    ticket_comment(n, f"Factory dispatcher approved: gate and review passed at {head}; waiting for CI and merge.")
     return True
 
 
@@ -3912,9 +3914,9 @@ def _record_rework(n: int, head: str, findings: str, deferred: bool) -> None:
         findings=findings, deferred=deferred,
     )
     if deferred:
-        ticket_comment(n, f"Factory dispatcher requeued: review rework at {head}.\n\n{findings}")
         unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
                 assignee_last=True, check=True)
+        ticket_comment(n, f"Factory dispatcher requeued: review rework at {head}.\n\n{findings}")
 
 
 def _actionable_review(n: int, head: str, verdict: str | None, findings: str, pr_failed: bool) -> bool:
@@ -4093,8 +4095,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             remote_head, remote_head, [],
         )
         record("conflict-requeue", ticket=n, pr=pr, head=remote_head, verb=verb, files=conflicts, round=rounds + 1)
-        ticket_comment(n, f"Factory dispatcher requeued: PR #{pr} {verb} conflicts in {', '.join(conflicts)}.")
         unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True, check=True)
+        ticket_comment(n, f"Factory dispatcher requeued: PR #{pr} {verb} conflicts in {', '.join(conflicts)}.")
         log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -4214,8 +4216,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 reports=reports, changed_files=changed_files, unrelated=unrelated, round=rounds + 1,
                 refreshed_head=head, evidence_ref=evidence_ref,
             )
-            ticket_comment(n, f"Factory dispatcher requeued: PR #{pr} gate failed twice after {verb}.\n\n{details}")
             unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True, check=True)
+            ticket_comment(n, f"Factory dispatcher requeued: PR #{pr} gate failed twice after {verb}.\n\n{details}")
             log(f"#{n}: PR #{pr} gate failed twice after {verb} onto {cfg.main}; requeued to a worker")
             return False
     if not ok:
@@ -4274,8 +4276,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,
             )
-            ticket_comment(n, f"Factory dispatcher requeued: PR #{pr} High-risk checks disagreed.\n\n{state['packet']}")
             unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True, check=True)
+            ticket_comment(n, f"Factory dispatcher requeued: PR #{pr} High-risk checks disagreed.\n\n{state['packet']}")
             log(f"#{n}: PR #{pr} High-risk checks disagreed after refresh; requeued to a worker")
             return False
         withdraw(
@@ -5341,8 +5343,8 @@ def process_ticket(
             # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.
             execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
             log(f"#{n}: {exc}; unclaimed, retry once the worker is healthy")
-            ticket_comment(n, f"Factory dispatcher requeued: worker unavailable ({exc}); retry after host repair.")
             unclaim(n, check=True)
+            ticket_comment(n, f"Factory dispatcher requeued: worker unavailable ({exc}); retry after host repair.")
             return False
         except FileNotFoundError as exc:
             # Host defect (worker executable not on PATH, #260), not a ticket defect: give the
@@ -5350,8 +5352,8 @@ def process_ticket(
             # Covers every worker launch of this ticket, first attempt and review bounces alike.
             execution.outcome, execution.reason = "mechanism_failure", f"{type(exc).__name__}: {exc}"
             log(f"#{n}: worker launch failed ({exc}); unclaimed, fix PATH or [workers] (`factory doctor`)")
-            ticket_comment(n, f"Factory dispatcher requeued: worker launch failed ({exc}); fix PATH or [workers].")
             unclaim(n, check=True)
+            ticket_comment(n, f"Factory dispatcher requeued: worker launch failed ({exc}); fix PATH or [workers].")
             return False
         except Exception as exc:
             # A crash after the claim strands the ticket assigned + ready-for-agent, which every
