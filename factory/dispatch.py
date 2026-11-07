@@ -2295,6 +2295,26 @@ def escalate(
     assert code in ESCALATION_CODES, code
     assert (refreshed_head is None) == (evidence_ref is None)
     wt = FACTORY / f"wt-{n}"
+    if code == "gate_failed" and log_path is not None:
+        # A budget cut skips the gate; do not turn a passing ticket into a code failure.
+        rows = generation.current(lifecycle.read_events(EVENTS), n).rows
+        attempt = next((row for row in reversed(rows) if row.get("event") == "attempt"), {})
+        last_gate = next((
+            row for row in reversed(rows)
+            if row.get("gate") in {"PASS", "FAIL"}
+            or (row.get("event") == "decision" and row.get("stage") == "gate")
+        ), {})
+        if (
+            attempt.get("log") == str(log_path) and attempt.get("gate") is None
+            and (attempt.get("timeout") in {"budget_min", "budget_exceeded"}
+                 or attempt.get("reason") == "budget_exceeded")
+            and (last_gate.get("gate") == "PASS" or last_gate.get("chosen") == "pass")
+        ):
+            code = "budget"
+            reason = (
+                f"worker killed by {attempt.get('timeout') or 'budget_exceeded'} "
+                f"(budget_exceeded) before gate; last gate passed; worktree kept at {wt}"
+            )
     log(f"#{n}: escalating to human ({code}: {reason})")
     if refreshed_head is not None:
         extra = (
