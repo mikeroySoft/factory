@@ -93,6 +93,14 @@ class FakeGitHub:
         return result
 
     def run(self, host, cmd, *args, **kwargs):
+        if cmd[:3] == ["gh", "issue", "comment"]:
+            comment = self.json(host, [
+                "api", "repos/local/claims/issues/7/comments", "--method", "POST",
+                "-f", f"body={cmd[cmd.index('--body') + 1]}",
+            ])
+            return subprocess.CompletedProcess(
+                cmd, 0, f"https://github.com/local/claims/issues/7#issuecomment-{comment['id']}", "",
+            )
         with self.lock:
             self.calls.append((host, list(cmd)))
             if cmd[:3] == ["gh", "issue", "edit"]:
@@ -330,7 +338,10 @@ class HostClaimRaceTest(unittest.TestCase):
              if row["name"].startswith("host:")],
             [],
         )
-        self.assertEqual(self.github.comments, [])
+        self.assertEqual(len(self.github.comments), 1)
+        self.assertIn("worker launch failed", self.github.comments[0]["body"])
+        self.assertIn("worker disappeared", self.github.comments[0]["body"])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
 
     def test_assignee_failure_releases_host_claim_without_worker_launch(self):
         tank = self.dispatcher("tank")
