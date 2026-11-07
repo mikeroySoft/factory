@@ -144,6 +144,21 @@ class RefreshConflictTest(unittest.TestCase):
         self.github = FakeGitHub(self.origin, dispatch.run)
 
     def patched(self):
+        # These legacy refresh scenarios start a newly admitted, claimed pass.
+        # A previous FIX's human label must be requeued before refresh, not by it.
+        refresh = dispatch.refresh_pr_branch
+
+        def claimed_refresh(n, *args, **kwargs):
+            if config.LABEL_HUMAN in self.github.issue_labels:
+                self.github.issue_labels.discard(config.LABEL_HUMAN)
+                self.github.issue_labels.add(config.LABEL_AGENT)
+            if not self.github.assignees or n in dispatch._ESCALATED:
+                dispatch.configure(self.cfg)
+                dispatch.observe_owner_requeue(n, self.github.issue())
+                self.github.assignees = ["factory"]
+            return refresh(n, *args, **kwargs)
+
+        self.enterContext(mock.patch.object(dispatch, "refresh_pr_branch", side_effect=claimed_refresh))
         return mock.patch.multiple(dispatch, gh_json=self.github.gh_json, run=self.github.run)
 
     def events(self, name: str) -> list[dict]:
@@ -198,9 +213,6 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertEqual(self.github.issue()["state"], "OPEN")
         self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
         wt = dispatch.ensure_worktree(9)
-        # A human requeues before a new claimed pass may refresh this old FIX head.
-        self.github.issue_labels = {config.LABEL_AGENT}
-        dispatch.configure(self.cfg)
         with self.patched(), \
                 mock.patch.object(dispatch, "run_gate", return_value=(True, "fresh gate ok")) as gate, \
                 mock.patch.object(dispatch, "review", wraps=dispatch.review) as review:
@@ -282,9 +294,6 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertEqual(self.events("conflict-requeue"), [])
 
         self.github.issue_labels = {config.LABEL_AGENT, config.LABEL_PROTECTED_OVERRIDE}
-        # Authorization accompanies a human requeue and a new dispatcher claim.
-        dispatch.configure(self.cfg)
-        self.github.assignees = ["factory"]
         with self.patched():
             dispatch.refresh_pr_branch(9, 102, False)
         self.assertEqual(len(self.events("escalate")), 1)

@@ -18,6 +18,7 @@ class WaitDecisions(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        self.enterContext(patch("factory.handoff.timeline", return_value=[]))
         self.cfg = Config(root=Path(temp.name), repo="local/waits", max_active=1)
         self.events = self.cfg.factory / "events.jsonl"
         self.enterContext(patch.multiple(
@@ -157,7 +158,6 @@ class WaitDecisions(unittest.TestCase):
                  "title": "local ticket", "body": "", "comments": []}
         with patch.object(dispatch, "gh_json", return_value=fresh), \
                 patch.object(dispatch, "admit_plan", return_value=None), \
-                patch("factory.handoff.timeline", return_value=[]), \
                 patch.object(dispatch, "run") as run:
             dispatch.process_ticket(self.issue, 1, False)
         run.assert_not_called()  # never assigned @me: the ticket stays claimable next pass
