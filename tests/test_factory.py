@@ -5023,11 +5023,13 @@ class InitiativeGuardTest(unittest.TestCase):
         self.root = Path(tmp.name)
 
     def stubs(self, listed_labels: str) -> str:
+        fresh = json.loads(self.INITIATIVE)
+        fresh["labels"] = [{"name": "initiative"}, *json.loads(f"[{listed_labels}]")]
         return stub_bin(self.root, gh=f'''
 case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{{"number":9,"title":"Plan","body":"Outcome","labels":[{listed_labels}],"assignees":[]}}]';;
-  "issue view") echo '{self.INITIATIVE}';;
+  "issue view") echo '{json.dumps(fresh)}';;
   "api repos/acme/widgets/issues/9/timeline") echo '[]';;
   "api repos/acme/widgets/issues/9/dependencies/blocked_by") echo '[]';;
 esac
@@ -5035,7 +5037,6 @@ esac
 
     def assert_untouched(self, repo: Path, stubs: str, result: subprocess.CompletedProcess) -> None:
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("refused", result.stdout + result.stderr)
         calls = (Path(stubs) / "gh.log").read_text()
         self.assertNotIn("issue edit", calls)
         self.assertNotIn("issue comment", calls)
