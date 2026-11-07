@@ -4050,6 +4050,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
 
     def restore_pr_head(refreshed_head: str) -> str:
         """Keep the unpushed candidate as evidence before restoring the live PR head."""
+        require_ticket_claim(wt, n, "refresh")
         evidence_ref = f"refs/factory-evidence/{n}-refreshed-{refreshed_head[:12]}"
         run(["git", "update-ref", evidence_ref, refreshed_head], cwd=wt)
         run(
@@ -4061,6 +4062,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             ],
             cwd=wt,
         )
+        require_ticket_claim(wt, n, "refresh")
         run(["git", "reset", "--hard", f"origin/agent/{n}"], cwd=wt)
         run(
             [
@@ -4083,6 +4085,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         *,
         refreshed_head: str | None = None,
     ) -> None:
+        require_ticket_claim(wt, n, "refresh")
         evidence_ref = restore_pr_head(refreshed_head) if refreshed_head is not None else None
         escalate(
             n,
@@ -4137,6 +4140,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             files = "## Conflicting files\n\n" + ("\n".join(f"- `{path}`" for path in conflicts) or "(none listed)")
             withdraw(f"{verb} onto moved main conflicts ({why}); worktree {wt}", "refresh_conflict", extra=files)
             return False
+        require_ticket_claim(wt, n, "refresh")
         record_merge_decision(
             n, pr, "conflict-requeue",
             f"{verb} onto moved {cfg.main} conflicted; requeued to a worker",
@@ -4322,6 +4326,7 @@ def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         state = _PENDING_RISK.get(n) or {}
         if state.get("head") == head and state.get("disagreement"):
             rounds = sum(event.get("event") == "risk-requeue" for event in _generation_rows(n))
+            require_ticket_claim(wt, n, "refresh")
             record(
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,

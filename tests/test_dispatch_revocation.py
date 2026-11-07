@@ -53,6 +53,8 @@ class DispatchRevocationTest(unittest.TestCase):
                 state = stat.read_text().split()[2]
             except FileNotFoundError:
                 return
+            except ProcessLookupError:
+                return  # /proc can lose the process after the file has been opened.
             if state == "Z":
                 return
             if time.monotonic() >= deadline:
