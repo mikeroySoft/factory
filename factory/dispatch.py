@@ -3298,6 +3298,7 @@ def sync_event(n: int) -> dict | None:
 
 
 def _ticket_line(text: str, name: str) -> str | None:
+    text = text.replace("\r\n", "\n")
     match = re.search(rf"(?im)^{re.escape(name)}:[ \t]*(\S[^\r\n]*)$", text)
     return match.group(1).strip() if match else None
 
