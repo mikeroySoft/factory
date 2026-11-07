@@ -1045,6 +1045,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    retried). One that committed or wrote its handoff, then stayed quiet for
    `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
    The attempt journal row and escalation packet name the timeout that fired.
+   If a budget-killed worker never reaches its next gate and the ticket's last
+   gate in the current generation passed, escalation uses `budget`, not
+   `gate_failed`; the comment and packet name `budget_min` / `budget_exceeded`
+   so the budget cut is identifiable for a not-a-strike owner requeue.
+   An actual failing gate retains its existing classification.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
