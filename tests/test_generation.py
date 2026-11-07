@@ -621,6 +621,50 @@ class PreLandRequeueTest(unittest.TestCase):
                     expected.update(execution_id=execution.execution_id, dispatcher_run_id=None)
                 self.assertEqual(receipt, expected)
 
+    def test_unreadable_history_does_not_block_other_resets_or_later_stages(self) -> None:
+        import subprocess
+
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "ticket": 8})
+        reads, landed = [], []
+
+        def github(argv: list[str]) -> dict | list[dict]:
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue]  # stale listing still advertises the unreadable ticket
+            self.assertEqual(argv[:2], ["issue", "view"])
+            n = int(argv[2])
+            self.assertTrue(dispatch.lock_held(dispatch.ticket_lock(n)))
+            reads.append(n)
+            if n == 7:
+                raise subprocess.CalledProcessError(1, ["gh", *argv], stderr="Could not resolve issue #7")
+            self.assertEqual(n, 8)
+            return {**self.issue, "number": 8}
+
+        def land(_dry_run: bool) -> None:
+            events = lifecycle.read_events(dispatch.EVENTS)
+            landed.append((generation.current(events, 7).number, generation.current(events, 8).number))
+
+        with mock.patch.object(dispatch, "pin_root", return_value=[]), \
+                mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.object(config, "engine_commit", return_value="same"), \
+                mock.patch.object(config, "engine_target", return_value="same"), \
+                mock.patch.object(dispatch, "_sweep_stale_factory_tempdirs"), \
+                mock.patch.object(dispatch, "worker_health_pass"), \
+                mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "land_pass", side_effect=land), \
+                mock.patch.object(dispatch, "review_intake_pass") as intake, \
+                mock.patch("factory.manage.manage_pass") as manager, \
+                mock.patch.object(dispatch, "ticket_pass") as tickets, \
+                mock.patch("factory.learn.learn_pass"):
+            for _ in range(2):
+                self.assertEqual(dispatch.main([]), 0)
+                self.assertFalse(dispatch.lock_held(dispatch.ticket_lock(7)))
+                self.assertFalse(dispatch.lock_held(dispatch.ticket_lock(8)))
+        self.assertEqual(reads, [7, 8, 7])
+        self.assertEqual(landed, [(0, 1), (0, 1)])
+        self.assertEqual((intake.call_count, manager.call_count, tickets.call_count), (2, 2, 2))
+        receipts = [row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("event") == "generation"]
+        self.assertEqual([(row["ticket"], row["generation"]) for row in receipts], [(8, 1)])
+
 
 if __name__ == "__main__":
     unittest.main()
