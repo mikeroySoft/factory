@@ -141,6 +141,7 @@ class TraceEmissionTest(unittest.TestCase):
                 "assignees": [{"login": "factory"}],
             }
         )))
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
 
     def decisions(self, stage: str) -> list[dict]:
         return [row for row in lifecycle.read_events(self.events)
