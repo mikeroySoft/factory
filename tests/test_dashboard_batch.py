@@ -170,6 +170,38 @@ class DashboardBatchTest(unittest.TestCase):
                 if ticket["number"] in (79, 81, *range(100, 106)):
                     self.assertEqual(ticket["pr"]["feedback"]["coverage"]["checks"]["status"], "complete")
 
+    def test_slow_gh_corrections_overlap_feedback_for_55_prs(self):
+        fixture = json.loads(FIXTURE.read_text())
+        repo = fixture["responses"]["snapshot"]["repository"]
+        issue_template, pr_template = repo["issues"]["nodes"][0], repo["pullRequests"]["nodes"][0]
+        numbers = [79, 81, 83, 85, *range(100, 151)]
+        repo["issues"]["nodes"] = [
+            {**issue_template, "number": n, "id": f"I_{n}",
+             "url": f"https://github.com/example/project/issues/{n}"} for n in numbers]
+        repo["pullRequests"]["nodes"] = [
+            {**pr_template, "number": n + 1, "id": f"PR_{n + 1}", "headRefName": f"agent/{n}",
+             "url": f"https://github.com/example/project/pull/{n + 1}",
+             "state": "OPEN" if n < 100 else "MERGED", "mergedAt": None if n < 100 else AT}
+            for n in numbers]
+        fixture["responses"]["corrections"] = {"repository": {f"pr{n + 1}": {} for n in numbers}}
+        script = FAKE_GH.replace('if "closingIssuesReferences" in query:',
+                                'if "submittedAt" in query:\n    kind = "corrections"\n'
+                                'elif "closingIssuesReferences" in query:')
+        with harness(delay=1) as (cfg, calls):
+            alternate = cfg.root / "fixture.json"
+            alternate.write_text(json.dumps(fixture))
+            (cfg.root / "gh").write_text(script)
+            with patch.dict(os.environ, {"BATCH_FIXTURE": str(alternate)}):
+                started = time.monotonic()
+                result = dashboard.snapshot()
+                elapsed = time.monotonic() - started
+            self.assert_bounds(calls, elapsed, expected=28, limit=6)
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(len(result["tickets"]), 55)
+            for ticket in result["tickets"]:
+                if ticket["number"] < 100:
+                    self.assertEqual(ticket["pr"]["feedback"]["coverage"]["checks"]["status"], "complete")
+
 
 
 class FeedbackBatchDeadlineTest(unittest.TestCase):
