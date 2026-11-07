@@ -207,6 +207,10 @@ absent locally. Linear work is refused if it still omits a leased head absent
 from its starting history. Starting-history state ends at the first push or
 ticket exit, so it cannot affect later refresh or manager FIX pushes.
 No other ref is force-pushed.
+Every agent push also rechecks the live issue's dispatcher assignment and refuses
+`ready-for-human` tickets. A `push-refused` journal row records `ticket`, local
+`head` SHA and `reason`; local commits remain in the kept worktree. This ends the
+run without another escalation, including manager FIX and refresh pushes.
 Review-request opt-in accepts requests naming either the dispatcher's or the
 dashboard's login.
 
@@ -739,7 +743,10 @@ the ticket to `ready-for-agent`. It is limited to required add-only edits or
 removal of obsolete wording-only assertions, and never authorizes protected
 paths. The normal gate and independent review run again. FIX uses
 `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
-in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels.
+in the kept `agent/<n>` worktree for its open PR, ignoring other worker labels.
+FIX requires the live dispatcher claim and a ticket not labelled `ready-for-human`;
+it cannot restart an escalated or unassigned ticket. Requeue to `ready-for-agent`
+through the existing human workflow before a subsequent pass claims it again.
 A kept head ahead of the remote PR head is pushed first
 (`--force-with-lease` against the recorded PR head) when it is a head a
 journaled worker attempt of this ticket produced; any other kept head
@@ -1045,6 +1052,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    retried). One that committed or wrote its handoff, then stayed quiet for
    `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
    The attempt journal row and escalation packet name the timeout that fired.
+   Before launch, after exit and at each worker poll (5 s), the dispatcher checks
+   the live issue. `ready-for-human`, removal of its assignee, or loss of its
+   elected host claim ends the run; a running worker's whole process group is
+   stopped with SIGTERM (SIGKILL after 10 s). `worker-stopped` records the ticket,
+   local head and reason. A revoked run cannot start another worker in that pass,
+   including manager FIX. An unreadable claim fails closed. No gate, push or new
+   ticket review follows revocation; local work stays intact.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
@@ -1145,10 +1159,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    escalates persistent failure as `reviewer_unavailable` without sending work
    back to the worker. Each accepted `REVISE` sends the findings back to the
    worker, flagged so only the required fixes are binding (re-gate, push,
-   re-review), up to `review_rounds` times; then it escalates. A manager `FIX`
-   failure leaves an already-`ready-for-human` ticket on its existing escalation
-   instead of posting another escalation comment or consuming another manager
-   round.
+   re-review), up to `review_rounds` times; then it escalates. Live claim checks
+   before ticket review also cover manager FIX, refresh and both High-risk lanes.
    `APPROVE` adds the `factory-approved` label only while the remote PR still
    points to the exact commit that passed the gate and review. The successful
    label operation and gate/review commit are recorded in `.factory/events.jsonl`.
@@ -1314,8 +1326,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    label kept, so a later green rerun still merges.
    Existing behind PRs re-earn bound evidence through that automatic refresh.
    An up-to-date PR carrying a pre-upgrade unbound approval is withdrawn and
-   escalated once; use the existing manager `FIX` path to re-run its worker,
-   gate, push, and review. Do not hand-edit the journal or fabricate SHA fields.
+   escalated once; requeue through the existing human workflow so the next claim
+   re-runs its worker, gate, push and review. Do not hand-edit the journal or
+   fabricate SHA fields.
    PR creation explicitly selects `[repo].main` (default `main`), independently
    of the installed engine channel and GitHub's default branch. Approval and merge
    eligibility require that same PR target; existing wrong-target PRs are left

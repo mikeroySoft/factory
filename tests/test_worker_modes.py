@@ -33,9 +33,13 @@ class WorkerModesTest(unittest.TestCase):
         self.cfg = config.load(self.root)
         dispatch.configure(self.cfg)
         dispatch.LOGS.mkdir(parents=True)
-        self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
-            "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
-        }))
+        self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=lambda args: (
+            {"login": "factory"} if args == ["api", "user"] else {
+                "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
+                "state": "OPEN", "labels": [{"name": config.LABEL_AGENT}],
+                "assignees": [{"login": "factory"}],
+            }
+        )))
 
     def write_config(self, worker_transcript: str = 'transcript = "omp-session"\n', review_mode: str = "json_mode = true\n") -> None:
         (self.root / config.CONFIG_NAME).write_text(
@@ -64,7 +68,8 @@ class WorkerModesTest(unittest.TestCase):
     def run_worker_round(self, ticket: int, label: str) -> dict:
         dispatch.record("claimed", ticket=ticket, labels=[label])
 
-        def worker(argv: list[str], _wt: Path, logfile: Path, *_args: object) -> tuple[int, None]:
+        def worker(argv: list[str], _wt: Path, logfile: Path, *_args: object,
+                   **_kwargs: object) -> tuple[int, None]:
             logfile.write_text("worker output\n")
             if argv[0] == "renamed-worker":
                 self.assertEqual(argv[1:3], ["--session-dir", str(dispatch.FACTORY / "transcripts" / str(ticket))])

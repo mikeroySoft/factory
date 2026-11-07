@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tempfile
 import time
@@ -10,8 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests import test_refresh_conflict as fixtures
 from factory import config, dispatch, lifecycle, manage
+from tests import test_refresh_conflict as fixtures
 
 
 class DispatchRevocationTest(unittest.TestCase):
@@ -51,10 +50,8 @@ class DispatchRevocationTest(unittest.TestCase):
         return fixtures.git(self.wt, "rev-parse", "HEAD")
 
     def assert_push_refused(self, head, reason):
-        try:
+        with self.assertRaises(dispatch.TicketRunStopped):
             dispatch.push_agent(self.wt, 9, self.lease)
-        except Exception as exc:
-            self.assertIsInstance(exc, dispatch.TicketRunStopped)
         self.assertEqual(self.github.head(), self.lease)
         self.assertEqual(fixtures.git(self.wt, "rev-parse", "HEAD"), head)
         [row] = self.events("push-refused")[-1:]
@@ -86,11 +83,9 @@ class DispatchRevocationTest(unittest.TestCase):
         )
         self.cfg.workers = {"default": [sys.executable, "-c", script]}
         with mock.patch.object(dispatch, "build_prompt", return_value="work"), \
-                mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")) as gate:
-            try:
-                dispatch.worker_round(9, self.wt, {config.LABEL_AGENT}, "change", "", 1, time.monotonic() + 5)
-            except Exception as exc:
-                self.assertIsInstance(exc, dispatch.TicketRunStopped)
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")) as gate, \
+                self.assertRaises(dispatch.TicketRunStopped):
+            dispatch.worker_round(9, self.wt, {config.LABEL_AGENT}, "change", "", 1, time.monotonic() + 5)
         gate.assert_not_called()
         self.assertTrue(self.marker.exists())
         head = fixtures.git(self.wt, "rev-parse", "HEAD")
@@ -124,6 +119,93 @@ class DispatchRevocationTest(unittest.TestCase):
         self.assertEqual(self.github.assignees, ["factory"])
         review.assert_called_once()
         self.assertEqual(self.events("push-refused"), [])
+
+    def test_fresh_manager_read_blocks_human_or_unassigned_ticket(self):
+        stale = self.github.issue()
+        for reason in ("ready-for-human", "unassigned"):
+            with self.subTest(reason=reason):
+                dispatch.configure(self.cfg)
+                self.github.issue_labels = {config.LABEL_HUMAN} if reason == "ready-for-human" else {config.LABEL_AGENT}
+                self.github.assignees = ["factory"] if reason == "ready-for-human" else []
+                with mock.patch.object(dispatch, "worker_round") as worker, \
+                        mock.patch.object(dispatch, "push_agent") as push, \
+                        mock.patch.object(dispatch, "pr_gate_and_review") as review:
+                    manage.apply(9, stale, "FIX", "", {"worker": "default", "guidance": "fix"}, self.packet)
+                worker.assert_not_called()
+                push.assert_not_called()
+                review.assert_not_called()
+                self.assertEqual(self.events("worker-stopped")[-1]["reason"], reason)
+
+    def test_push_rechecks_claim_after_waiting_for_remote_lock(self):
+        head = self.local_commit()
+        original = self.gh_json
+        reads = 0
+
+        def read(args):
+            nonlocal reads
+            if args[:2] == ["issue", "view"]:
+                reads += 1
+                if reads == 2:
+                    self.github.assignees = []
+            return original(args)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+                self.assertRaises(dispatch.TicketRunStopped):
+            dispatch.push_agent(self.wt, 9, self.lease, check=False)
+        self.assertEqual(self.github.head(), self.lease)
+        self.assertEqual(fixtures.git(self.wt, "rev-parse", "HEAD"), head)
+        self.assertEqual(self.events("push-refused")[-1]["reason"], "unassigned")
+
+    def test_post_escalation_head_never_launches_ticket_review(self):
+        self.github.issue_labels = {config.LABEL_HUMAN}
+        head = self.local_commit()
+        with mock.patch.object(dispatch, "run_reviewer") as reviewer, \
+                self.assertRaises(dispatch.TicketRunStopped):
+            dispatch.review(self.wt, 9, "PASS", head)
+        reviewer.assert_not_called()
+        self.assertEqual(self.events("review"), [])
+        self.assertEqual(self.events("review-refused")[-1]["head"], head)
+
+    def test_unreadable_claim_refuses_push_without_changing_remote(self):
+        head = self.local_commit()
+        with mock.patch.object(dispatch, "gh_json", side_effect=OSError("offline")):
+            self.assert_push_refused(head, "claim-unavailable")
+
+    def test_human_label_stops_a_running_worker_even_with_assignment_retained(self):
+        def read(args):
+            if args == ["api", "user"]:
+                return {"login": "factory"}
+            if self.marker.exists():
+                self.github.issue_labels = {config.LABEL_HUMAN}
+            return self.github.gh_json(args)
+
+        script = f"from pathlib import Path; import time; Path({str(self.marker)!r}).touch(); time.sleep(5)"
+        with mock.patch.object(dispatch, "gh_json", side_effect=read), \
+                self.assertRaises(dispatch.TicketRunStopped) as stopped:
+            dispatch.run_worker(
+                [sys.executable, "-c", script], self.wt, self.tmp / "worker.log",
+                self.tmp / "handoff.md", ticket=9,
+            )
+        self.assertEqual(stopped.exception.reason, "ready-for-human")
+        self.assertEqual(self.github.assignees, ["factory"])
+        self.assertEqual(self.events("worker-stopped")[-1]["reason"], "ready-for-human")
+
+    def test_revoked_fast_exit_stops_surviving_worker_descendants(self):
+        pid = self.tmp / "child.pid"
+        script = (
+            "import subprocess, sys\nfrom pathlib import Path\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'])\n"
+            f"Path({str(pid)!r}).write_text(str(child.pid))\n"
+            f"Path({str(self.marker)!r}).touch()\n"
+        )
+        with self.assertRaises(dispatch.TicketRunStopped):
+            dispatch.run_worker(
+                [sys.executable, "-c", script], self.wt, self.tmp / "worker.log",
+                self.tmp / "handoff.md", ticket=9,
+            )
+        stat = Path(f"/proc/{pid.read_text()}/stat")
+        if stat.exists():
+            self.assertEqual(stat.read_text().split()[2], "Z")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,28 @@ p = Path(os.environ["SMOKE_STATE"])
 s = json.loads(p.read_text())
 a = sys.argv[1:]
 issue = {"number": 7, "title": "local change", "body": "Acceptance: make the local change", "comments": [], "labels": [{"name": "ready-for-agent"}], "assignees": [], "state": "OPEN"}
+claim_login = s.get("login", "factory-bot")
+if "labels" in s:
+    issue["labels"] = [{"name": name} for name in s["labels"]]
+if s.get("assignee"):
+    issue["assignees"] = [{"login": s["assignee"]}]
+if a[:2] == ["api", "user"]:
+    print(claim_login if "--jq" in a else json.dumps({"login": claim_login}))
+    raise SystemExit(0)
+if a[:2] == ["issue", "edit"]:
+    labels = [row["name"] for row in issue["labels"]]
+    for i, arg in enumerate(a[:-1]):
+        value = a[i + 1]
+        if arg == "--add-label" and value not in labels:
+            labels.append(value)
+        elif arg == "--remove-label" and value in labels:
+            labels.remove(value)
+        elif arg == "--add-assignee":
+            s["assignee"] = claim_login
+        elif arg == "--remove-assignee":
+            s.pop("assignee", None)
+    s["labels"] = labels
+    p.write_text(json.dumps(s))
 if s.get("sync"):  # the dispatcher filed a sync ticket; the only open issue until its PR merges
     issue = {**issue, "title": "upstream sync: 1 commit(s) at local", "body": s["sync"], "state": "CLOSED" if s.get("merged") else "OPEN"}
 if a[:2] == ["issue", "view"]:
@@ -51,6 +73,22 @@ elif a[0] == "api" and "/compare/" in a[1]:
 elif a[:2] not in (["issue", "edit"], ["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):
     raise SystemExit("Unexpected external operation: " + repr(a))
 '''
+
+def active_github(args, issue: dict, pr: dict) -> dict:
+    if args == ["api", "user"]:
+        return {"login": "factory-bot"}
+    if args[:2] == ["issue", "view"] and args[-1] == "state,labels,assignees":
+        return {
+            **issue,
+            "state": "OPEN",
+            "labels": [
+                label for label in issue.get("labels", [])
+                if label.get("name") != "ready-for-human"
+            ],
+            "assignees": [{"login": "factory-bot"}],
+        }
+    return pr if args[:2] == ["pr", "view"] else issue
+
 
 WORKER = '''from pathlib import Path
 p = Path("change.txt")
@@ -876,6 +914,16 @@ class LocalCLI(unittest.TestCase):
                 self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], remote,
             )
             self.git("-C", str(wt), "checkout", "-q", "agent/7")
+            # A human explicitly requeues and assigns the ticket before the next dispatcher pass.
+            github = json.loads(self.state.read_text())
+            github.update(labels=["ready-for-agent"], assignee="factory-bot")
+            self.state.write_text(json.dumps(github))
+            issue.update(
+                state="OPEN",
+                labels=[{"name": "ready-for-agent"}],
+                assignees=[{"login": "factory-bot"}],
+            )
+            dispatch.configure(config.load(self.repo))
 
             def worker(*args, **kwargs):
                 self.git("-C", str(wt), "reset", "-q", "main")
@@ -883,7 +931,10 @@ class LocalCLI(unittest.TestCase):
                 head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
                 return True, "- code: PASS", None, head
 
-            with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+            with mock.patch.object(
+                    dispatch, "gh_json",
+                    side_effect=lambda args: active_github(args, issue, pr),
+            ), \
                     mock.patch.object(dispatch, "worker_round", side_effect=worker), \
                     mock.patch.object(dispatch, "record_risk"), \
                     mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "", False)), \
@@ -948,7 +999,7 @@ class LocalCLI(unittest.TestCase):
         pr = {"state": "OPEN", "headRefName": "agent/7", "headRefOid": head,
               "baseRefName": "main", "reviewDecision": ""}
         with mock.patch.dict(os.environ, self.env), \
-                mock.patch.object(dispatch, "gh_json", side_effect=lambda a: pr if a[:2] == ["pr", "view"] else issue), \
+                mock.patch.object(dispatch, "gh_json", side_effect=lambda a: active_github(a, issue, pr)), \
                 mock.patch.object(dispatch, "push_agent", return_value=head), \
                 mock.patch.object(dispatch, "pr_comment"), \
                 mock.patch.object(dispatch, "approve_pr", return_value=True) as approve, \
@@ -1583,7 +1634,7 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         with mock.patch.dict(os.environ, self.env), \
                 mock.patch.object(
                     dispatch, "gh_json",
-                    side_effect=lambda args: pr if args[:2] == ["pr", "view"] else issue,
+                    side_effect=lambda args: active_github(args, issue, pr),
                 ), \
                 mock.patch.object(dispatch, "push_agent", return_value=head), \
                 mock.patch.object(dispatch, "pr_comment"), \

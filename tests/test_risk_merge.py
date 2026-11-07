@@ -23,6 +23,18 @@ from scripts import mutation
 HEAD = "a" * 40
 NEW_HEAD = "b" * 40
 
+def claimed_github(args):
+    if args == ["api", "user"]:
+        return {"login": "factory"}
+    if args[:2] == ["issue", "view"]:
+        return {
+            "state": "OPEN",
+            "labels": [{"name": config.LABEL_AGENT}],
+            "assignees": [{"login": "factory"}],
+        }
+    raise AssertionError(args)
+
+
 
 def high_events(*, head: str = HEAD, second: bool = True, mutation: str = "PASS", distinct: bool = True):
     rows = [
@@ -118,6 +130,9 @@ class HighEvidenceTest(unittest.TestCase):
 
 
 class ReviewPolicyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=claimed_github))
+
     def test_low_skips_pr_checks_and_runs_one_primary_review(self) -> None:
         cfg = config.Config(Path("."), "acme/widgets")
         cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
@@ -463,6 +478,7 @@ class HighPrGateTest(unittest.TestCase):
             config.Check("extra", ["extra"], when="pr"),
         ]
         dispatch.configure(cfg)
+        self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=claimed_github))
 
     def test_high_other_pr_check_failure_is_ordinary_gate_failure(self) -> None:
         with mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:risk policy"])), \
@@ -548,7 +564,8 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         self.wt.mkdir(parents=True)
         self.issue = {
             "number": 7, "title": "change dispatcher", "body": "", "comments": [],
-            "labels": [{"name": config.LABEL_AGENT}], "state": "OPEN", "assignees": [],
+            "labels": [{"name": config.LABEL_AGENT}], "state": "OPEN",
+            "assignees": [{"login": "factory"}],
         }
         self.pr = {
             "number": 70, "headRefName": "agent/7", "headRefOid": HEAD,
@@ -587,6 +604,8 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         return self.stack.enter_context(mock.patch.object(target, name, **kwargs))
 
     def github(self, args):
+        if args == ["api", "user"]:
+            return {"login": "factory"}
         if args[:2] == ["issue", "view"]:
             return self.issue
         if args[:2] == ["pr", "list"]:

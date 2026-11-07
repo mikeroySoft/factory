@@ -31,11 +31,19 @@ class ManagerFixWorkerSelectionTest(unittest.TestCase):
         self.cfg.factory.mkdir()
         dispatch.configure(self.cfg)
         dispatch.LOGS.mkdir()
+        mock.patch.object(dispatch, "gh_json", side_effect=lambda args: (
+            {"login": "factory"} if args == ["api", "user"] else {
+                "state": "OPEN",
+                "labels": [{"name": config.LABEL_AGENT}],
+                "assignees": [{"login": "factory"}],
+            }
+        )).start()
+
 
     def fix_round(self, ticket: int, labels: set[str], selected_worker: str) -> tuple[str, dict]:
         commands = []
 
-        def run_worker(argv: list[str], *_args: object) -> tuple[int, None]:
+        def run_worker(argv: list[str], *_args: object, **_kwargs: object) -> tuple[int, None]:
             commands.append(argv[0])
             return 0, None
 

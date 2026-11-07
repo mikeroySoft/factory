@@ -73,6 +73,8 @@ class FakeGitHub:
                 "labels": [{"name": label} for label in sorted(self.issue_labels)]}
 
     def gh_json(self, args: list[str]) -> object:
+        if args == ["api", "user"]:
+            return {"login": "factory"}
         if args[:2] == ["pr", "list"]:
             return [] if self.merged else [self.pr()]
         if args[:2] == ["pr", "view"]:
@@ -454,8 +456,19 @@ class ManagerFixAheadTest(unittest.TestCase):
         pr = {"state": "OPEN", "headRefName": "agent/7", "headRefOid": self.pr_head,
               "baseRefName": "main", "reviewDecision": ""}
         logfile = self.root / "attempt.log"
+        def github(args):
+            if args == ["api", "user"]:
+                return {"login": "factory"}
+            if args[:2] == ["issue", "view"]:
+                return {
+                    "state": "OPEN",
+                    "labels": [{"name": config.LABEL_AGENT}],
+                    "assignees": [{"login": "factory"}],
+                }
+            return pr
+
         with mock.patch.object(dispatch, "run", side_effect=run), \
-                mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                mock.patch.object(dispatch, "gh_json", side_effect=github), \
                 mock.patch.object(dispatch, "worker_round",
                                   side_effect=lambda *a, **k: (True, "ok", logfile, git(self.wt, "rev-parse", "HEAD"))) as worker, \
                 mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "fine", False)), \
@@ -568,6 +581,9 @@ class RefreshGateFailureRecoveryTest(unittest.TestCase):
     def test_manager_fix_after_refresh_gate_failure_runs_worker_instead_of_refresh_head(self) -> None:
         self.fail_refresh_gate()
         [escalation] = self.events("escalate")
+        self.github.issue_labels = {config.LABEL_AGENT}
+        self.github.assignees = ["factory"]
+        dispatch.configure(self.cfg)
         logfile = self.tmp / "manager.log"
         with self.patched(), mock.patch.object(
             dispatch,
@@ -737,8 +753,8 @@ class TriageExemptionRegateTest(unittest.TestCase):
         dispatch.configure(self.cfg)
         self.wt = dispatch.ensure_worktree(9)
         self.issue = {
-            "title": "bug", "body": "Fix the hardware failure.",
-            "labels": [{"name": "bug"}],
+            "title": "bug", "body": "Fix the hardware failure.", "state": "OPEN",
+            "labels": [{"name": "bug"}], "assignees": [{"login": "factory"}],
             "comments": [{
                 "author": {"login": "factory-bot"},
                 "body": "Triage: hardware issue\n\nAgent brief: investigate\n"
@@ -752,6 +768,8 @@ class TriageExemptionRegateTest(unittest.TestCase):
         self.addCleanup(self.login.stop)
 
     def gh_json(self, args):
+        if args == ["api", "user"]:
+            return {"login": "factory"}
         fields = args[args.index("--json") + 1].split(",")
         if args[:2] == ["issue", "view"]:
             self.requests.append(fields)

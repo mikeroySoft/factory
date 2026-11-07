@@ -192,6 +192,20 @@ class AgentPushLeaseTest(unittest.TestCase):
         self.git(self.wt, "push", "-q", "origin", "agent/7")  # the dispatcher's earlier push
         self.fetched, self.main = self.remote("agent/7"), self.remote("main")
         self.git(tmp, "clone", "-q", "-b", "agent/7", str(self.origin), str(self.other))
+        self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=self.github))
+
+    @staticmethod
+    def github(args):
+        if args == ["api", "user"]:
+            return {"login": "factory-bot"}
+        if args[:2] == ["issue", "view"]:
+            return {
+                "state": "OPEN",
+                "labels": [{"name": config.LABEL_AGENT}],
+                "assignees": [{"login": "factory-bot"}],
+            }
+        return []
+
 
     def git(self, cwd: Path, *args: str) -> str:
         return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
@@ -335,7 +349,7 @@ class AgentPushLeaseTest(unittest.TestCase):
             return real_run(cmd, *args, **kwargs)
 
         with mock.patch.object(dispatch, "run", side_effect=run), \
-                mock.patch.object(dispatch, "gh_json", return_value=[]):
+                mock.patch.object(dispatch, "gh_json", side_effect=self.github):
             rebased = self.commit(self.wt, "work, rebased", "--amend")
             self.assertTrue(dispatch.push_and_pr(self.wt, "agent/7", "t", "b", ticket=7, lease=self.fetched))
             self.assertEqual(self.remote("agent/7"), rebased)

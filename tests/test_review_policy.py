@@ -49,6 +49,11 @@ class ReviewPolicyTest(unittest.TestCase):
         self.enterContext(mock.patch.object(dispatch, "gh_json", return_value={
             "title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": [],
         }))
+        self.enterContext(mock.patch.object(dispatch, "_ticket_claim_state", return_value={
+            "state": "OPEN", "labels": [{"name": config.LABEL_AGENT}],
+            "assignees": [{"login": "factory"}],
+        }))
+        self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value="factory"))
 
     def configure(self, output: str) -> None:
         script = (

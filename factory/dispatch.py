@@ -75,6 +75,7 @@ UNAVAILABLE_WORKERS: dict[str, str] = {}
 VERIFIED_WORKERS: set[str] = set()
 # Tickets this pass escalated: no owner can have released them yet (see `observe_owner_requeue`).
 _ESCALATED: set[int] = set()
+_STOPPED_TICKETS: dict[int, str] = {}
 
 
 def configure(c: Config) -> None:
@@ -98,6 +99,7 @@ def configure(c: Config) -> None:
     UNAVAILABLE_WORKERS.clear()
     VERIFIED_WORKERS.clear()
     _ESCALATED.clear()
+    _STOPPED_TICKETS.clear()
     host_claim_login.cache_clear()
 
 
@@ -1753,6 +1755,45 @@ def comment_receipt(n: int, kind: str, stdout: str, **fields: object) -> bool:
     return True
 
 
+class TicketRunStopped(RuntimeError):
+    """Terminal claim revocation, not a worker failure or a new escalation."""
+
+    def __init__(self, n: int, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"#{n}: ticket run stopped ({reason}); worktree kept")
+
+
+def _ticket_claim_state(n: int) -> dict:
+    return gh_json(["issue", "view", str(n), "--repo", REPO,
+                    "--json", "state,labels,assignees"])
+
+
+def require_ticket_claim(wt: Path, n: int, action: str) -> None:
+    """Fail closed on live ownership; a revoked run cannot resume within this pass."""
+    reason = "ready-for-human" if n in _ESCALATED else _STOPPED_TICKETS.get(n)
+    if reason is None:
+        try:
+            issue = _ticket_claim_state(n)
+            labels = {label["name"] for label in issue["labels"]}
+            if LABEL_HUMAN in labels:
+                reason = "ready-for-human"
+            elif issue["state"].upper() != "OPEN":
+                reason = "closed"
+            elif not any(row["login"].casefold() == host_claim_login() for row in issue["assignees"]):
+                reason = "unassigned"
+            elif cfg.host_name and owned_host_claim(n) is None:
+                reason = "host-claim-lost"
+        except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
+            reason = "claim-unavailable"
+    if reason is None:
+        return
+    _STOPPED_TICKETS[n] = reason
+    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    event = "worker-stopped" if action == "worker" else f"{action}-refused"
+    record(event, ticket=n, head=head, reason=reason)
+    raise TicketRunStopped(n, reason)
+
+
 WATCH_POLL = 5.0  # seconds between worker activity checks
 # Which timeout stopped a worker -> the journal reason it records.
 TIMEOUT_REASONS = {"idle_timeout": "stuck", "exit_grace": "hung_after_done", "budget_min": "budget_exceeded"}
@@ -1777,7 +1818,7 @@ def _activity(wt: Path, logfile: Path, handoff: Path) -> tuple:
 
 
 def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadline: float,
-           start: tuple) -> str | None:
+           start: tuple, ticket: int | None = None) -> str | None:
     """Wait for the worker to exit; None if it did, else the timeout that fired first.
     Raises KeyboardInterrupt within WATCH_POLL of the dispatcher's interrupt; the caller
     stops the worker."""
@@ -1788,6 +1829,8 @@ def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadl
             return None
         except subprocess.TimeoutExpired:
             raise_if_interrupted()
+        if ticket is not None:
+            require_ticket_claim(wt, ticket, "worker")
         now, current = time.monotonic(), _activity(wt, logfile, handoff)
         if current != state:
             state, changed = current, now
@@ -1824,6 +1867,7 @@ def run_worker(
     worker: str | None = None,
     worker_version: str | None = None,
     journal: bool = True,
+    ticket: int | None = None,
 ) -> tuple[int, str | None]:
     """Run the worker; return its exit code and the timeout that stopped it, if any.
 
@@ -1847,12 +1891,21 @@ def run_worker(
                 launch[lifecycle.CONTEXT_ENV] = context
         with without_github(launch) as isolated:
             raise_if_interrupted()
+            if ticket is not None:
+                require_ticket_claim(wt, ticket, "worker")
             proc = subprocess.Popen(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT,
                                     env=isolated, start_new_session=True)
             try:
                 if execution is not None:
                     execution.child(proc.pid)
-                fired = _watch(proc, wt, logfile, handoff, deadline, start)
+                fired = _watch(proc, wt, logfile, handoff, deadline, start, ticket)
+                if ticket is not None:
+                    require_ticket_claim(wt, ticket, "worker")
+            except TicketRunStopped as exc:
+                _stop(proc)  # Descendants may survive even when the worker itself just exited.
+                if execution is not None:
+                    execution.outcome, execution.reason = "interrupted", exc.reason
+                raise
             finally:
                 if proc.poll() is None:
                     _stop(proc)
@@ -2856,10 +2909,12 @@ def review(
         issue = accepted["issue"] if accepted is not None else gh_json(
             ["issue", "view", str(n), "--repo", REPO, "--json", "title,body,comments"]
         )
+        require_ticket_claim(wt, n, "review")
         result = run_reviewer(
             wt, review_prompt(n, gate_report, issue=issue, context=_native_proof(wt, n, expected_head)), expected_head,
             subject=f"#{n}" if role == "primary" else f"#{n} {role}", reviewer=reviewer,
         )
+        require_ticket_claim(wt, n, "review")
         model = _reviewer_model(result["usage"], reviewer)
         if result["usage"] is not None:
             record(
@@ -2960,6 +3015,7 @@ def pr_gate_and_review(
     wt: Path, n: int, report: str, head: str, pr_runs: dict[str, tuple[bool, str]],
 ) -> tuple[str | None, str, bool]:
     """Apply the per-head Low, Medium, or High gate and review policy."""
+    require_ticket_claim(wt, n, "review")
     _PENDING_RISK.pop(n, None)
     tier, rules = risk_for_head(n, head)
     policy_tier = "Medium" if tier == "Low" and n in _LOW_FALLBACK else tier
@@ -3106,8 +3162,10 @@ def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
     worker history lands; a linear worker cannot overwrite a remote head absent from both its
     starting and final history. Returns the pushed sha (the next lease), or None when refused and
     `check` is False; with `check`, a refusal raises `LeaseRefused` and any other push failure a
-    `CalledProcessError`."""
+    `CalledProcessError`. Claim revocation always raises `TicketRunStopped`, including unchecked
+    pushes: callers must end the run, not escalate again or restore the old PR head."""
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    require_ticket_claim(wt, n, "push")
     command = [
         "git", "push", f"--force-with-lease=agent/{n}:{lease}",
         "origin", f"{head}:refs/heads/agent/{n}",
@@ -3131,6 +3189,7 @@ def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
             f"history was not rewritten; worktree kept at {wt}",
         )
     with _REMOTE_REFS:
+        require_ticket_claim(wt, n, "push")
         pushed = run(command, cwd=wt, check=False)
     if pushed.returncode and check:
         if "stale info" not in pushed.stderr:
@@ -3935,6 +3994,14 @@ def refresh_requeue_context(n: int) -> str:
 
 
 def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
+    try:
+        return _refresh_pr_branch(n, pr, carries_upstream)
+    except TicketRunStopped as exc:
+        log(str(exc))
+        return False
+
+
+def _refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     """Refresh, gate, push, and independently review the resulting immutable head."""
     target = gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "baseRefName"])
     if target.get("baseRefName") != cfg.main:
@@ -4667,6 +4734,7 @@ def worker_round(
 ) -> tuple[bool, str, Path, str]:
     """One worker + gate cycle, bound to one immutable head."""
     from factory import results
+    require_ticket_claim(wt, n, "worker")
 
     if lifecycle.current() is not None:
         lifecycle.current().attempt = attempt
@@ -4703,7 +4771,7 @@ def worker_round(
         launch_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         offset = logfile.stat().st_size if logfile.exists() else 0
         try:
-            code, fired = run_worker(argv, wt, logfile, handoff_path, deadline, **run_options)
+            code, fired = run_worker(argv, wt, logfile, handoff_path, deadline, ticket=n, **run_options)
         except FileNotFoundError as exc:
             # The executable vanished after the pre-pass check (#260): a host defect, so the same
             # attempt falls back when it can; with no fallback the claim goes back as before.
@@ -4721,6 +4789,7 @@ def worker_round(
         record("worker-infra", ticket=n, attempt=attempt, worker_exit=code, log=str(logfile),
                reason=cause, detail=detail, **identity)
         set_worker_health(worker, f"{cause}: {detail}", source="launch")
+    require_ticket_claim(wt, n, "worker")
     set_worker_health(worker, None, source="launch")
     worker_version = spec.version
     # Decide before commit_leftovers: dispatcher commits cannot turn unfinished work into done.
@@ -4992,18 +5061,20 @@ def process_ticket(
             if cfg.host_name:
                 claims, shared_context = host_claim_state(n)
                 fresh = release_stale_claims(n, fresh, claims)
-            if not forced and (
-                fresh["state"].upper() != "OPEN"
-                # Authenticated claims arbitrate a shared bot assignment below;
-                # stale recovery must not clear a replacement's assignment.
-                or (fresh["assignees"] and not (cfg.host_name and claims))
-                or LABEL_AGENT not in {label["name"] for label in fresh["labels"]}
+            labels = {label["name"] for label in fresh["labels"]}
+            if LABEL_HUMAN in labels or n in _ESCALATED or n in _STOPPED_TICKETS or (
+                not forced and (
+                    fresh["state"].upper() != "OPEN"
+                    # Authenticated claims arbitrate a shared bot assignment below;
+                    # stale recovery must not clear a replacement's assignment.
+                    or (fresh["assignees"] and not (cfg.host_name and claims))
+                    or LABEL_AGENT not in labels
+                )
             ):
                 log(f"#{n}: skipped (state changed since frontier query)")
                 execution.outcome = "not_admitted"
                 execution.reason = "state_changed"
                 return
-            labels = {label["name"] for label in fresh["labels"]}
             observe_owner_requeue(n, fresh)
             profile = cfg.worker_key(labels)
             launch = fallback_worker(profile)
@@ -5272,6 +5343,9 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except TicketRunStopped as exc:
+            execution.outcome, execution.reason = "interrupted", exc.reason
+            log(str(exc))
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except WorkerUnavailable as exc:
