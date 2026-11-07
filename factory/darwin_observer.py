@@ -17,11 +17,11 @@ Context uses one KERN_ARGMAX allocation, capped at 1 MiB. A buffer that comes
 back full is truncated and unknown, not a short read to grow.
 
 Identity reads cover the verified host's 1061-pid population, up to 4096.
-Context reads stay capped at 256. Among the same uid, a process that started
-after an owner's process-start second is read newest first. The owner's second
-is deferred, not dropped. A strictly earlier start is not a descendant. An
-in-memory hand continues through overflow and deferred candidates so the next
-observation does not repeat that prefix. Parent pid is not the order.
+Context reads stay capped at 256. A same-uid process that started after that
+uid's known process-start second is read newest first. The same second and any
+earlier start stay deferred at lower priority; they are not dropped. An
+unknown origin keeps that uid deferred, and another uid's start is not a
+cutoff. A private per-scope hand records only context reads that were started.
 """
 from __future__ import annotations
 
@@ -52,7 +52,9 @@ LIST_SLACK = 64
 LIST_CEILING = 100_000
 SCAN_IDENTITY_LIMIT = 4096
 SCAN_CONTEXT_LIMIT = 256
+SCAN_CONTINUATION_RESERVE = 64
 SCAN_DEADLINE_SECONDS = 2.0
+_RESUME_SCOPES = 8
 ESRCH = 3
 POINTER = 8
 EXEC_PREFIX = "executable_path="
@@ -65,7 +67,7 @@ SUPPORTED_MAC = (27, 2)
 _installed = None
 _libproc = None
 _libc = None
-_resume = None
+_resume = {}
 
 
 def install(backend) -> None:
@@ -76,7 +78,7 @@ def install(backend) -> None:
 def reset() -> None:
     global _installed, _resume
     _installed = None
-    _resume = None
+    _resume = {}
 
 
 def installed():
@@ -404,31 +406,35 @@ def _scope_key(origins, boot: str) -> tuple:
     return (boot, tuple(sorted(rows)))
 
 
-def _usable_starts(origins, boot: str) -> list:
-    """Integer process-start seconds for owners on this boot.
+def _uid_starts(origins, boot: str) -> dict:
+    """uid -> start seconds, or None when that uid has an unknown origin.
 
-    Journal wall time is not a cutoff. The stored second is the whole second
-    in which the owner may have started.
+    Journal wall time is not a cutoff. A missing start or a different boot is
+    unknown for that uid only. Another uid's start is not a cutoff.
     """
-    starts = []
+    known = {}
     for origin in origins if isinstance(origins, (list, tuple)) else ():
-        if not isinstance(origin, dict) or origin.get("boot_id") != boot:
+        if not isinstance(origin, dict):
+            continue
+        uid = origin.get("uid")
+        if type(uid) is not int:
             continue
         start = origin.get("start_ticks")
-        if type(start) is int:
-            starts.append(start)
-    return starts
+        usable = origin.get("boot_id") == boot and type(start) is int
+        if known.get(uid) is None and uid in known:
+            continue
+        if not usable:
+            known[uid] = None
+        else:
+            known.setdefault(uid, []).append(start)
+    return known
 
 
-def _temporal_band(info: dict, starts: list) -> str:
+def _priority(info: dict, known: dict) -> bool:
+    starts = known.get(info["uid"])
     if not starts:
-        return "deferred"
-    sec = info["sec"]
-    if any(sec > start for start in starts):
-        return "compatible"
-    if any(sec == start for start in starts):
-        return "deferred"
-    return "earlier"
+        return False
+    return any(info["sec"] > start for start in starts)
 
 
 def _hand_index(sequence: list, hand: tuple) -> int:
@@ -438,58 +444,97 @@ def _hand_index(sequence: list, hand: tuple) -> int:
     return 0
 
 
-def _take_context(compatible: list, deferred: list, scope: tuple, boot: str):
-    """Up to SCAN_CONTEXT_LIMIT rows, newest compatible first, then deferred.
+def _resume_row(scope: tuple, boot: str):
+    if not isinstance(_resume, dict):
+        return None
+    row = _resume.get(scope)
+    if not isinstance(row, dict) or row.get("boot") != boot:
+        return None
+    return row
 
-    One saved hand, keyed by boot and execution scope, resumes after the last
-    prefix. A process newer than that head is still read, so pid reuse and a
-    new child do not wait behind the old cursor. The hand is not a journal.
+
+def _plan_reads(priority: list, deferred: list, scope: tuple, boot: str) -> dict:
+    """Choose context reads. The hand moves only after an attempt starts.
+
+    Priority is newest first. Deferred follows, also newest first, and includes
+    the same second and any earlier start. When a hand exists, new arrivals
+    cannot take the whole budget: SCAN_CONTINUATION_RESERVE stays with the hand.
     """
-    global _resume
-    sequence = compatible + deferred
-    resume = _resume
-    if not (isinstance(resume, dict) and resume.get("scope") == scope
-            and resume.get("boot") == boot):
-        resume = None
-    head = resume.get("head") if resume else None
-    hand = resume.get("hand") if resume else None
-    chosen = []
-    chosen_ids = set()
-
-    def take(info):
-        if len(chosen) >= SCAN_CONTEXT_LIMIT:
-            return
-        key = _stamp(info)
-        if key in chosen_ids:
-            return
-        chosen.append(info)
-        chosen_ids.add(key)
-
-    if head is not None:
-        for info in sequence:
-            if _stamp(info) > head:
-                take(info)
-    start = 0 if hand is None else _hand_index(sequence, hand)
+    sequence = priority + deferred
+    row = _resume_row(scope, boot)
+    hand = row.get("hand") if row else None
+    newest = row.get("newest") if row else None
+    arrivals = []
+    if newest is not None:
+        arrivals = [info for info in sequence if _stamp(info) > newest]
+    if hand is None:
+        chosen = list(sequence[:SCAN_CONTEXT_LIMIT])
+        return {
+            "sequence": sequence, "chosen": chosen, "cont_start": 0,
+            "hand": None, "newest": newest, "scope": scope, "boot": boot,
+        }
+    start = _hand_index(sequence, hand)
+    continuation = []
+    arrival_ids = {_stamp(info) for info in arrivals}
     for info in sequence[start:]:
-        if len(chosen) >= SCAN_CONTEXT_LIMIT:
-            break
-        take(info)
-    overflow = any(_stamp(info) not in chosen_ids for info in sequence)
-    if not sequence or not overflow:
-        _resume = None
+        if _stamp(info) not in arrival_ids:
+            continuation.append(info)
+    if arrivals:
+        reserve = min(SCAN_CONTINUATION_RESERVE, len(continuation))
+        picked_arrivals = arrivals[:SCAN_CONTEXT_LIMIT - reserve]
     else:
-        pending = None
-        for info in sequence[start:]:
-            if _stamp(info) not in chosen_ids:
+        picked_arrivals = []
+    room = SCAN_CONTEXT_LIMIT - len(picked_arrivals)
+    chosen = continuation[:room] + picked_arrivals
+    return {
+        "sequence": sequence, "chosen": chosen, "cont_start": start,
+        "hand": hand, "newest": newest, "scope": scope, "boot": boot,
+    }
+
+
+def _commit_reads(plan: dict, attempted: list) -> bool:
+    """Remember the next unattempted candidate. Returns whether any remain."""
+    global _resume
+    sequence = plan["sequence"]
+    scope = plan["scope"]
+    if not isinstance(_resume, dict):
+        _resume = {}
+    else:
+        _resume.pop(scope, None)
+    attempted_ids = set(attempted)
+    if not sequence or all(_stamp(info) in attempted_ids for info in sequence):
+        return False
+    start = 0 if plan["hand"] is None else plan["cont_start"]
+    pending = None
+    progressed = False
+    for info in sequence[start:]:
+        if _stamp(info) in attempted_ids:
+            progressed = True
+            continue
+        pending = _stamp(info)
+        break
+    if pending is None and not progressed:
+        pending = plan["hand"]
+    elif pending is None:
+        for info in sequence:
+            if _stamp(info) not in attempted_ids:
                 pending = _stamp(info)
                 break
-        if pending is None and sequence:
-            pending = _stamp(sequence[0])
-        _resume = {
-            "boot": boot, "scope": scope,
-            "head": _stamp(sequence[0]), "hand": pending,
-        }
-    return chosen, overflow
+    newest = plan["newest"]
+    if newest is None:
+        if sequence and _stamp(sequence[0]) in attempted_ids:
+            newest = _stamp(sequence[0])
+    else:
+        arrivals = [info for info in sequence if _stamp(info) > newest]
+        attempted_arrivals = [info for info in arrivals if _stamp(info) in attempted_ids]
+        if attempted_arrivals:
+            newest = max(_stamp(info) for info in attempted_arrivals)
+    if pending is None:
+        return True
+    _resume[scope] = {"boot": plan["boot"], "hand": pending, "newest": newest}
+    while len(_resume) > _RESUME_SCOPES:
+        _resume.pop(next(iter(_resume)))
+    return True
 
 
 def _native_inputs():
@@ -534,27 +579,26 @@ def _native_scan(context_env: str, uids=(), origins=()):
         except OSError:
             complete = False
     relevant = [info for info in infos if info["uid"] in valid and info["status"] != SZOMB]
-    starts = _usable_starts(origins, boot)
-    compatible = []
+    known = _uid_starts(origins, boot)
+    priority = []
     deferred = []
     for info in relevant:
-        band = _temporal_band(info, starts)
-        if band == "compatible":
-            compatible.append(info)
-        elif band == "deferred":
+        if _priority(info, known):
+            priority.append(info)
+        else:
             deferred.append(info)
-    compatible.sort(key=_stamp, reverse=True)
+    priority.sort(key=_stamp, reverse=True)
     deferred.sort(key=_stamp, reverse=True)
-    chosen, overflow = _take_context(compatible, deferred, _scope_key(origins, boot), boot)
-    if overflow:
-        complete = False
+    plan = _plan_reads(priority, deferred, _scope_key(origins, boot), boot)
     processes = {info["pid"]: _public(info, boot) for info in relevant}
     contexts = {}
     unknown: set[int] = set()
-    for info in chosen:
+    attempted = []
+    for info in plan["chosen"]:
         if time.monotonic() > deadline:
             complete = False
             break
+        attempted.append(_stamp(info))
         pid = info["pid"]
         blob = _procargs(libc, pid, capacity)
         if blob is None:
@@ -583,4 +627,6 @@ def _native_scan(context_env: str, uids=(), origins=()):
             continue
         processes[pid] = _public(again, boot)
         contexts[pid] = parsed
+    if _commit_reads(plan, attempted):
+        complete = False
     return processes, contexts, unknown, complete

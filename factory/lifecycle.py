@@ -737,12 +737,9 @@ def _descendants(executions: list[dict], recorded: dict | None = None) -> dict[s
         execution_id = entry["execution_id"]
         owner = entry.get("process") or {}
         included = []
-        owner_start = owner.get("start_ticks")
         for pid, process in processes.items():
             if type(process.get("start_ticks")) is not int:
                 found[execution_id]["complete"] = False
-                continue
-            if type(owner_start) is int and process["start_ticks"] < owner_start:
                 continue
             context = contexts.get(pid, {})
             tagged = (context.get("schema_version") == 1
