@@ -383,7 +383,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory eval --profile NAME [--dry-run]` | Replays the checked-in 20-case Factory/rocm-cli worker suite twice per case in isolated local clones with each repository's normal gate and reviewer. `--dry-run` lists every pinned repository, ticket, base, split and the `[eval]` case/token/wall budget. Real runs append one `eval` row per case/repeat and an `eval-summary` with split means/noise; an accepted-main run establishes the baseline and later runs feed a regression claim to `promotion.decide()`. Rejected and unmerged candidate runs never replace that baseline. Budget or replay failure records `not_tested` without escalation. `--scheduled` marks the weekly drift run. |
 | `factory score` | Scores every finished ticket's worker attempts from their persisted OMP transcripts (`attempt.transcript`) and journals one `score` row per attempt: `tool_calls`, `edits` (edit/write calls), `retries` (identical consecutive calls), `gate_first_pass` (attempt 1 with gate PASS), `efficiency = 1 / (1 + retries + max(0, tool_calls - 40) / 40)`, and `compliance`, a 0–1 LLM-as-judge score from the local triage model given the ticket's Scope and Exit gate sections against the worker's final message and handoff (`null`, never a guess, when the model is unreachable or answers with anything but a number; `judge_model` names the model that answered). Already-scored attempts are skipped; a transcript missing on disk journals `{"skipped": "missing"}`. At most 50 attempts per run, 2 MB read per transcript. `--last N` limits to the newest N finished tickets; `--dry-run` prints without journaling. |
 | `factory release [--dry-run]` | Converges a patch release across up to three passes: opens a `release/vX.Y.Z` PR after the ticket, quality-bar, `main` CI, and release-tier gate checks pass; squash-merges it after its CI succeeds; then annotates the merged commit, advances `stable`, and publishes the tag's GitHub Release with its `CHANGELOG.md` section as notes. This respects the required `gate` check on protected `main`; `--dry-run` reports the current state and next action without writing. |
-| `factory dashboard` | Native outcome-control workspace: Overview, Outcomes, live Flow, ticket Decisions, Attention, Success, Codebase, Atlas, System/Ops and Settings, with a persistent contextual FM dock. Defaults to `0.0.0.0`; APIs require the workspace access key. `--json` prints a passive, bounded-window Ops snapshot without journal reconciliation writes. |
+| `factory dashboard` | Native outcome-control workspace: Overview, Outcomes, live Flow, ticket Decisions, Attention, Success, Codebase, Atlas, System/Ops and Settings, with a persistent contextual FM dock. Defaults to `0.0.0.0`; APIs require the workspace access key. `--json` prints a passive, bounded-window Ops snapshot without lifecycle-journal reconciliation writes. GitHub reads share at most eight transport slots; each `--json` run appends `github_calls` and `wall_seconds` to `.factory/dashboard-reads.jsonl`, separate from the snapshot and lifecycle journal. |
 
 | `factory dashboard --runtime-json` | One bounded schema 1 runtime observation using only local read-only evidence; no GitHub, model probe, journal append, lock acquisition, or state creation. Partial source failures remain structured JSON. See [runtime contract](#bounded-runtime-json-schema-1). |
 | `factory evidence --root /path/to/main-checkout` | One explicit-repository schema 1 JSON read: compact cases, selected evidence, workflow/file/PR/CI investigations, or capabilities. Fixed read-only GitHub requests and F03 local evidence; no model, action execution, or state writes. See [evidence contract](#bounded-project-evidence-json-schema-1). |
@@ -2303,6 +2303,18 @@ coverage/errors without discarding independently observed facts. There is no
 feedback cache, event append, model invocation, delivery, dispatch, readiness, or
 approval decision. The full dashboard's pre-existing lifecycle reconciliation
 remains unchanged.
+
+Feedback detail reads overlap independent reviews, threads, check runs and commit
+statuses; initial/final head observations still bracket the collection. Dashboard
+ticket collection and merged-PR correction batches overlap on eight workers with
+a shared FIFO executor capped at eight concurrent GitHub transport calls. Queue
+time counts against each feedback deadline; expired queued reads do not start.
+The initial GitHub read overlaps independent local disk/journal processing.
+Normalization stays single-writer and output is unchanged.
+`factory dashboard --json` journals `github_calls` (dashboard transport attempts,
+including failures) and `wall_seconds` (snapshot collection) in
+`.factory/dashboard-reads.jsonl`. This separate performance journal never changes
+`events.jsonl`; direct `snapshot()` and runtime-only reads remain passive.
 
 Detail reads are limited to open pull requests, so closed history never
 multiplies provider calls per refresh. `collect_details=False` reads nothing: the
