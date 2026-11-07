@@ -2018,6 +2018,49 @@ def ensure_worktree(n: int) -> Path:
     return wt
 
 
+class WorktreeSetupFailed(RuntimeError):
+    """An environment failure before the worker, not an attempt."""
+
+
+def setup_worktree(n: int, wt: Path, deadline: float) -> None:
+    if cfg.setup is None:
+        return
+    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    git_dir = Path(run(["git", "rev-parse", "--absolute-git-dir"], cwd=wt).stdout.strip())
+    marker = git_dir / "factory-setup" / head
+    if marker.exists():
+        return
+    LOGS.mkdir(parents=True, exist_ok=True)
+    logfile = LOGS / f"{n}-setup.log"
+    started = time.monotonic()
+    with logfile.open("a") as output:
+        try:
+            proc = subprocess.Popen(
+                cfg.setup, cwd=wt, stdout=output, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            code = proc.wait(timeout=max(0.001, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            _stop(proc)
+            code = 124
+            output.write("setup exceeded ticket wall-clock budget\n")
+        except OSError as exc:
+            code = 127
+            output.write(stderr_tail(str(exc)) + "\n")
+    evidence = {
+        "ticket": n, "head": head, "exit_status": code,
+        "seconds": time.monotonic() - started, "log": str(logfile),
+    }
+    record("setup", **evidence)
+    if code:
+        record("setup-infra", classification="env", reason="setup_failed", **evidence)
+        if execution := lifecycle.current():
+            execution.outcome, execution.reason = "mechanism_failure", "setup_failed"
+        raise WorktreeSetupFailed(f"worktree setup exited {code}; inspect {logfile}")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+
+
 def restart_worktree(n: int, number: int) -> Path:
     """A fresh generation's worktree: `agent/<n>` recut from main. The superseded local and
     remote branch heads stay reachable under create-only, sha-named `refs/factory-evidence/`
@@ -4668,6 +4711,7 @@ def worker_round(
 ) -> tuple[bool, str, Path, str]:
     """One worker + gate cycle, bound to one immutable head."""
     from factory import results
+    setup_worktree(n, wt, deadline)
 
     if lifecycle.current() is not None:
         lifecycle.current().attempt = attempt
@@ -5208,6 +5252,13 @@ def process_ticket(
                         logfile, code="budget",
                     )
                     return
+                try:
+                    # Setup must succeed before a charged rework is marked delivered.
+                    # worker_round's setup check then hits the same worktree/head marker.
+                    setup_worktree(n, wt, deadline)
+                except WorktreeSetupFailed:
+                    _record_rework(n, gate_head, findings, deferred=True)
+                    return False
                 _record_rework(n, gate_head, findings, deferred=False)
                 rounds_used += 1
                 execution.review_round = bounce + 1
@@ -5280,6 +5331,10 @@ def process_ticket(
                          code="approval_drift")
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
+        except WorktreeSetupFailed as exc:
+            log(f"#{n}: {exc}; unclaimed, retry once the environment is fixed")
+            unclaim(n)
+            return False
         except WorkerUnavailable as exc:
             # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.
             execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
