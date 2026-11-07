@@ -72,3 +72,47 @@ class DispatcherContextIsolationTest(unittest.TestCase):
                     )
                     self.assertEqual(live.read_bytes(), before, proc.stdout + proc.stderr)
                     self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_eval_standalone_and_discovery_keep_lifecycle_rows_in_fixture_journals(self):
+        script = """
+import json, pathlib, sys, unittest
+from factory import lifecycle
+
+written = []
+write = lifecycle._write
+def record(handle, row):
+    write(handle, row)
+    if row.get("event") == "lifecycle":
+        written.append({"path": str(handle.name), "row": row})
+lifecycle._write = record
+result = unittest.main(module=None, argv=["unittest", *sys.argv[2:]], exit=False).result
+pathlib.Path(sys.argv[1]).write_text(json.dumps(written))
+raise SystemExit(not result.wasSuccessful())
+"""
+        for args in (["test_eval"], ["discover", "-s", ".", "-p", "test_eval.py"]):
+            with self.subTest(args=args), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                live = root / "live" / ".factory" / "events.jsonl"
+                live.parent.mkdir(parents=True)
+                before = b'{"event":"claimed","ticket":620}\n'
+                live.write_bytes(before)
+                fixtures = root / "fixtures"
+                fixtures.mkdir()
+                recorded = root / "recorded.json"
+                context = {"schema_version": 1, "path": str(live), "ticket": 620,
+                           "dispatcher_run_id": "outside-dispatcher",
+                           "root_execution_id": "outside-root",
+                           "parent_execution_id": "outside-worker", "locks": []}
+                proc = subprocess.run(
+                    [sys.executable, "-c", script, str(recorded), *args], cwd=ROOT / "tests",
+                    env={**os.environ, "PYTHONPATH": str(ROOT), "TMPDIR": str(fixtures),
+                         lifecycle.CONTEXT_ENV: json.dumps(context)},
+                    capture_output=True, text=True, check=False, timeout=60,
+                )
+                self.assertEqual(live.read_bytes(), before, proc.stdout + proc.stderr)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                rows = json.loads(recorded.read_text())
+                self.assertIn("merge-eligibility", {entry["row"]["stage"] for entry in rows})
+                for entry in rows:
+                    self.assertTrue(Path(entry["path"]).is_relative_to(fixtures), entry)
+                    self.assertNotEqual(entry["row"]["dispatcher_run_id"], "outside-dispatcher")
