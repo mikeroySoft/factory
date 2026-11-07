@@ -1929,8 +1929,10 @@ branches, or merge state.
 - **Logs**: `.factory/logs/<n>-attempt-<k>.log` per worker round;
   `.factory/wt-<n>/.factory/gate-report-<n>.md` per gate;
   `journalctl --user -u factory-<repo>.service` for dispatcher passes.
-- **Re-run one ticket by hand**: `factory dispatch --ticket N` (bypasses the
-  frontier and its label checks; respects the in-flight lock).
+- **Re-run one ticket by hand**: `factory dispatch --ticket N` bypasses frontier
+  selection, assignment and intake-label checks, but respects the in-flight lock,
+  `ready-for-human` and run-revocation guards. Human requeue is still required
+  after escalation or removal of the dispatcher's claim.
 - **Stop everything**: `systemctl --user disable --now factory-<repo>.timer`.
   In-flight tickets finish their current pass; nothing new is claimed.
 - **Tear down a ticket**: verify any accepted handoff is retained before manually

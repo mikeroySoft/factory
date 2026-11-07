@@ -15,7 +15,7 @@ When `factory dispatch` is invoked without `--ticket` (`factory/dispatch.py` `ma
 3. **Manager.** `manage_pass` from `factory/manage.py`. Viability, pull-request frontier, and escalation recovery run only when `manager.command` is set. Terminal human handoffs run either way.
 4. **Claim.** Count held ticket locks. Capacity is `dispatch.max_active` minus that count (default `max_active` is 2). Claim that many open, unassigned, unblocked `ready-for-agent` issues that are not initiatives.
 
-`--ticket N` skips landing, review intake, and manage. It processes that open issue even if it is assigned or missing `ready-for-agent`. It still refuses an initiative and a bad plan binding.
+`--ticket N` skips landing, review intake, and manage. It processes that open issue even if it is assigned or missing `ready-for-agent`, but never bypasses `ready-for-human` or run-revocation guards: escalation or removal of the dispatcher's claim requires human requeue. It still refuses an initiative and a bad plan binding.
 
 `--dry-run` prints planned actions and does not take the merge lock or claim.
 
