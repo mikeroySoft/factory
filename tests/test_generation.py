@@ -303,6 +303,10 @@ class RefreshGenerationTest(unittest.TestCase):
             return record(kind, **fields)
 
         with mock.patch.object(dispatch, "record", side_effect=push_once_claimed):
+            # Keep the claim hook; other receipts can now carry their own `kind` field.
+            dispatch.record.side_effect = lambda event, **fields: (
+                push_once_claimed(event, **fields) if event == "claimed" else record(event, **fields)
+            )
             self.process()
         self.assertEqual(self.github.head(), pushed[0])
         self.assertEqual([e["code"] for e in self.events("escalate")][1:], ["lease_refused"])

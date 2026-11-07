@@ -780,11 +780,17 @@ because a partial rewrite or split may already have changed GitHub.
 ### Owner requeues and ticket generations
 
 A human who moves an escalated ticket back to `ready-for-agent` (by relabeling or with
-the guarded `requeue_agent` action) opens a new **generation** for it. Whichever stage
-first reads the live ticket in that state (land, manager or ticket) in a pass after the
-escalation's own journals one `generation` row with `generation`, `intent`, `source` (`label` or `requeue_agent`),
-`actor`, `decision` and `escalation_at`. Every round budget counts only the rows after
-it. The current receipt shape and the unresolved #671 contracts are documented in
+the guarded `requeue_agent` action) opens a new **generation** for it. A live scheduled
+pass observes eligible owner resets before entering `land_pass`: it selects tickets with
+unresolved escalation history, acquires each ticket lock without waiting, then directly
+refreshes state, labels and assignees. Stale issue-list snapshots cannot authorize a reset;
+closed, initiative, still-escalated, assigned or host-claim-held tickets are skipped under
+the existing claim eligibility rules. Held locks retry next pass; dry runs never open
+generations. Land, manager and ticket stages also observe releases before reading budgets.
+One receipt retains `event="generation"` and adds `kind="generation"`, with `generation`,
+`intent`, `source` (`label` or `requeue_agent`), `actor`, `decision` and `escalation_at`.
+Every round budget counts only the rows from that receipt onward, excluding pre-requeue
+rounds. The complete shape and context/nullability rules are documented in
 [Ticket flow: Owner requeues](docs/ticket-flow.md#owner-requeues).
 That covers the escalation and manager rounds, frontier manager rounds,
 review-bounce rounds and conflict, gate and risk requeue rounds, so the ticket gets its

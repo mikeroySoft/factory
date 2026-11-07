@@ -146,46 +146,38 @@ flowchart TB
 ## Owner requeues
 
 The human `RFH` to `RFA` edge opens a ticket generation (`dispatch.observe_owner_requeue`,
-projected by `factory/generation.py`). The land, manager and ticket stages check at
-their first live ticket read, before reading a round budget. This does not guarantee
-that a reset is journaled before entering `land_pass`. Dry runs do not open
-generations. Factory `RFA` edges journal their release first and never open one. See
+projected by `factory/generation.py`). Before a live scheduled pass enters `land_pass`,
+it selects only tickets with relevant unresolved escalation history, takes each ticket
+lock without waiting, and directly refreshes issue state, labels and assignees. Only
+open, non-initiative `RFA` tickets without `RFH` and eligible under the existing
+assignee/host-claim rules can open a generation. Listing snapshots and the process-local
+escalation set are not sufficient evidence. Held locks skip until the next pass.
+Land, manager and ticket stages also check before reading a round budget. Dry runs
+do not open generations. Factory `RFA` edges journal their release first and never open one. See
 [Owner requeues and ticket generations](../README.md#owner-requeues-and-ticket-generations).
 
-The current human-requeue receipt is one `events.jsonl` row with this shape:
+The human-requeue receipt is one `events.jsonl` row with this shape. All fields are
+always present except the two lifecycle-context fields, which are omitted outside a scope:
 
 | Field | Value |
 |-------|-------|
 | `at` | Observation time, UTC `YYYY-MM-DDTHH:MM:SSZ` |
 | `event` | `"generation"` |
+| `kind` | `"generation"` for both intents and sources |
 | `ticket` | Integer issue number |
 | `cause` | `"owner_requeue"` |
 | `generation` | Integer previous generation plus one; legacy history is generation 0 |
 | `intent` | `"resume"` (default/plain relabel) or `"fresh"` |
 | `source` | `"label"` or `"requeue_agent"` |
-| `actor` | Guarded action's actor, or null for a plain relabel |
-| `decision` | Guarded action's `proposal_id`, or null for a plain relabel |
+| `actor` | Guarded action's actor, or null for a plain relabel or missing legacy metadata |
+| `decision` | Guarded action's `proposal_id`, or null for a plain relabel or missing legacy metadata |
 | `escalation_at` | Released escalation's `at`, or null if absent in legacy history |
-| `execution_id` | Observing lifecycle execution ID, when running in a lifecycle scope |
-| `dispatcher_run_id` | Containing dispatcher run ID (null for a standalone scope), when scoped |
+| `execution_id` | Present and non-null in a lifecycle scope: observing execution's ID; omitted otherwise |
+| `dispatcher_run_id` | Present in a lifecycle scope: containing dispatcher run ID, or null in a standalone scope; omitted otherwise |
 
 Re-observing the same release does not write a second receipt. Budget projections
 start at this row, excluding all pre-requeue rounds.
 
-### Unresolved #671 contracts
-
-The requested receipt adds one `kind` field, always `"generation"` for both intents
-and sources; all fields above remain unchanged. The requested ordering journals the
-owner reset before `land_pass` is called, not merely before a stage reads a budget.
-Neither is implemented by the current runtime. The add-only regressions
-`RequeueReceiptContractTest.test_generation_receipt_has_one_kind_and_complete_shape`
-and `RequeueReceiptContractTest.test_owner_reset_is_persisted_before_land_pass_entry`
-pin those requirements and currently fail.
-
-The ticket limits this work to tests/documentation; implementing these contracts
-requires a scope amendment. Any authorized pre-land observation must refresh issue
-state, labels and assignees inside the ticket lock, rather than trusting a potentially
-stale issue-list snapshot that could mistake a factory escalation for an owner reset.
 
 ## Manager CLOSE and command failures
 
