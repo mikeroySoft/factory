@@ -1613,11 +1613,30 @@ class ManageTest(unittest.TestCase):
 
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
         host_file("")
-        from factory import dispatch
+        from factory import dispatch, manage
 
         # These manager/gate scenarios assume a live claim; revocation has its own fixture.
-        self.enterContext(patch.object(dispatch, "_ticket_claim_state", return_value=claimed_issue()))
-        self.enterContext(patch.object(dispatch, "host_claim_login", return_value=CLAIM_LOGIN))
+        apply = manage.apply
+        process_ticket = dispatch.process_ticket
+
+        def claimed_manager(n, *args, **kwargs):
+            with patch.object(
+                dispatch, "_ticket_claim_state", return_value=claimed_issue(n),
+            ), patch.object(
+                dispatch, "host_claim_login", return_value=CLAIM_LOGIN,
+            ), patch("factory.handoff.timeline", return_value=[]):
+                return apply(n, *args, **kwargs)
+
+        def claimed_process(issue, *args, **kwargs):
+            with patch.object(
+                dispatch, "_ticket_claim_state", return_value=claimed_issue(issue["number"]),
+            ), patch.object(
+                dispatch, "host_claim_login", return_value=CLAIM_LOGIN,
+            ), patch("factory.handoff.timeline", return_value=[]):
+                return process_ticket(issue, *args, **kwargs)
+
+        self.enterContext(patch.object(manage, "apply", side_effect=claimed_manager))
+        self.enterContext(patch.object(dispatch, "process_ticket", side_effect=claimed_process))
         install = stub_bin
 
         def claimed_stubs(tmp, **scripts):
@@ -2060,7 +2079,6 @@ PY
                     dispatch, "gh_json",
                     side_effect=[pr, {"baseRefName": "main"}],
             ), mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
-                    mock.patch("factory.handoff.timeline", return_value=[]), \
                     mock.patch.object(
                         dispatch, "worker_round",
                         return_value=(True, "ok", packet, "new-head"),
@@ -2129,7 +2147,6 @@ PY
 
                 with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
                         mock.patch.object(dispatch, "gh_json", side_effect=fake_github), \
-                        mock.patch("factory.handoff.timeline", return_value=[]), \
                         mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
                         mock.patch.object(dispatch, "review", return_value=("APPROVE", "approved")) as review, \
                         mock.patch.object(dispatch, "pr_comment"), \
@@ -2192,7 +2209,6 @@ PY
 
             with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
                     mock.patch.object(dispatch, "gh_json", return_value=issue), \
-                    mock.patch("factory.handoff.timeline", return_value=[]), \
                     mock.patch.object(dispatch, "run", side_effect=fake_run), \
                     mock.patch.object(dispatch, "escalate") as escalate:
                 dispatch.process_ticket(issue, 5, False)
@@ -2494,8 +2510,19 @@ class DispatchTest(unittest.TestCase):
             return real_gh_json(args, *positional, **kwargs)
 
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=github))
-        self.enterContext(mock.patch.object(dispatch, "_ticket_claim_state", return_value=claimed_issue()))
-        self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value=CLAIM_LOGIN))
+        refresh_pr_branch = dispatch.refresh_pr_branch
+
+        def claimed_refresh(n, *args, **kwargs):
+            with mock.patch.object(
+                dispatch, "_ticket_claim_state", return_value=claimed_issue(n),
+            ), mock.patch.object(
+                dispatch, "host_claim_login", return_value=CLAIM_LOGIN,
+            ), mock.patch("factory.handoff.timeline", return_value=[]):
+                return refresh_pr_branch(n, *args, **kwargs)
+
+        self.enterContext(mock.patch.object(
+            dispatch, "refresh_pr_branch", side_effect=claimed_refresh,
+        ))
 
     def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
         from unittest import mock
@@ -4382,9 +4409,6 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(
                     dispatch, "gh_json", return_value={"baseRefName": "main"},
             ), \
-                    mock.patch.object(dispatch, "_ticket_claim_state",
-                                      return_value=claimed_issue(31)), \
-                    mock.patch("factory.handoff.timeline", return_value=[]), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
                     mock.patch.object(
@@ -4450,9 +4474,6 @@ class DispatchTest(unittest.TestCase):
                         else {"labels": [{"name": config.LABEL_PROTECTED_OVERRIDE}]}
                     ),
             ), \
-                    mock.patch.object(dispatch, "_ticket_claim_state",
-                                      return_value=claimed_issue(7)), \
-                    mock.patch("factory.handoff.timeline", return_value=[]), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")) as gated, \
                     mock.patch.object(
@@ -4501,9 +4522,6 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(
                     dispatch, "gh_json", return_value={"baseRefName": "main"},
             ), \
-                    mock.patch.object(dispatch, "_ticket_claim_state",
-                                      return_value=claimed_issue(7)), \
-                    mock.patch("factory.handoff.timeline", return_value=[]), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
                     mock.patch.object(
@@ -4557,9 +4575,6 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(
                     dispatch, "gh_json", return_value={"baseRefName": "main"},
             ), \
-                 mock.patch.object(dispatch, "_ticket_claim_state",
-                                   return_value=claimed_issue(8)), \
-                 mock.patch("factory.handoff.timeline", return_value=[]), \
                  mock.patch.object(dispatch, "run", side_effect=run_spy), \
                  mock.patch.object(dispatch, "run_gate") as gate, \
                  mock.patch.object(dispatch, "escalate") as esc:
@@ -4611,9 +4626,6 @@ class DispatchTest(unittest.TestCase):
             with mock.patch.object(
                     dispatch, "gh_json", return_value={"baseRefName": "main"},
             ), \
-                 mock.patch.object(dispatch, "_ticket_claim_state",
-                                   return_value=claimed_issue(9)), \
-                 mock.patch("factory.handoff.timeline", return_value=[]), \
                  mock.patch.object(dispatch, "run", side_effect=run_spy), \
                  mock.patch.object(dispatch, "run_gate") as gate, \
                  mock.patch.object(dispatch, "escalate") as esc:
@@ -4663,9 +4675,6 @@ class DispatchTest(unittest.TestCase):
                 return real_run(cmd, *args, **kwargs)
 
             with mock.patch.object(dispatch, "gh_json", return_value={"baseRefName": "main"}), \
-                    mock.patch.object(dispatch, "_ticket_claim_state",
-                                      return_value=claimed_issue(9)), \
-                    mock.patch("factory.handoff.timeline", return_value=[]), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
                     mock.patch.object(dispatch, "review", return_value=("APPROVE", "fine")), \
