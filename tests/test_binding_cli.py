@@ -34,6 +34,8 @@ elif a[:2] == ['pr', 'list']:
     print('[]')
 elif a[:2] == ['pr', 'view']:
     sys.exit(1)
+elif a == ['api', 'user']:
+    print(json.dumps({'login': 'runner'}))
 elif a[0] == 'api' and '--method' in a and flag('--method') == 'GET':
     if a[-1] != 'repos/acme/widgets/issues/50':
         sys.exit('unexpected GET: ' + repr(a))

@@ -181,6 +181,9 @@ class ActionableReworkTest(unittest.TestCase):
 
     def refreshed_review(self):
         import subprocess
+        # Each probe is a separate claimed refresh pass, not a resumed terminal run.
+        dispatch.configure(self.cfg)
+        self.issue["assignees"] = [{"login": "factory"}]
         dispatch.record("attempt", ticket=7, head=risk_tests.HEAD, worker_model="worker/model", gate="PASS")
 
         def command(args, **kwargs):
