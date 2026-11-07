@@ -77,4 +77,3 @@ These are current refusal rules, not a wishlist.
 - A linked ticket whose body no longer matches its accepted plan baseline is refused.
 - Exclusive gate checks time out instead of holding the host lock forever.
 - The merge stage uses `gh pr merge --match-head-commit`. That guards the head SHA. It does not by itself stop a retarget after the last read. Protect the release branch on GitHub (`README.md`).
-
