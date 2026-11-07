@@ -13,6 +13,9 @@ from unittest import mock
 
 from factory import config, dispatch, learn, lifecycle
 
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
 APPROVE = '```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE'
 REVISE = (
     '```json\n{"verdict":"REVISE","findings":[{"severity":"important","pass":"bug",'

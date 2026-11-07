@@ -15,6 +15,9 @@ sys.path.insert(0, str(ROOT))
 
 from factory import config, dispatch, lifecycle
 
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
 # Like agent CLIs: run .omp/startup.py found in cwd or an ancestor, then report the environment.
 PROBE = """
 import json, os, sys

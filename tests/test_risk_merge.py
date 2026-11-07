@@ -536,6 +536,8 @@ class HighPrGateTest(unittest.TestCase):
 
 class HighPipelineBoundaryTest(unittest.TestCase):
     def setUp(self) -> None:
+        # Standalone fixture runs bypass tests/__init__.py and test_factory's scrub.
+        self.enterContext(mock.patch.dict("os.environ", {"FACTORY_LIFECYCLE_CONTEXT": ""}))
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

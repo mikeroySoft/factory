@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +12,9 @@ from unittest import mock
 
 from factory import config, learn, lifecycle, onboard, promotion
 from factory import eval as eval_suite
+
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
 
 
 class EvalSuiteTest(unittest.TestCase):

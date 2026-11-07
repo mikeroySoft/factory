@@ -12,6 +12,9 @@ from unittest import mock
 
 from factory import config, dispatch, lifecycle
 
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
+
 
 class PrimePilotConfigTest(unittest.TestCase):
     def test_label_rule_selects_versioned_worker_and_expands_contained_environment(self) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +12,9 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, trace
+
+# Standalone discovery skips tests/__init__.py; never inherit the worker's live journal.
+os.environ.pop(lifecycle.CONTEXT_ENV, None)
 
 ACTOR = {"kind": "deterministic", "name": "test", "model": None, "version": "1"}
 
