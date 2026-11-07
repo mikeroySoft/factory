@@ -107,6 +107,357 @@ class BugReproductionGateTest(unittest.TestCase):
             self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
             self.assertIn("- bug-repro-head: PASS", report)
 
+    def test_repro_test_importing_sibling_test_module_passes_at_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repository(Path(directory))
+            (repo / "tests" / "test_a.py").write_text(
+                "def helper():\n    return 'sibling imported'\n"
+            )
+            (repo / "tests" / "test_b.py").write_text(
+                "import unittest\n"
+                "import value\n"
+                "from test_a import helper\n\n"
+                "class BTest(unittest.TestCase):\n"
+                "    def test_value(self):\n"
+                "        self.assertEqual(helper(), 'sibling imported')\n"
+                "        self.assertTrue(value.value())\n"
+            )
+            commit(repo, "reproduce bug with sibling import")
+            (repo / "value.py").write_text("def value():\n    return True\n")
+            commit(repo, "fix bug")
+            previous = Path.cwd()
+            os.chdir(repo)
+            try:
+                gate_module.configure(config.load(repo))
+                results = gate_module.check_bug_reproduction(
+                    "origin/main", "tests/test_b.py::BTest::test_value", None
+                )
+            finally:
+                os.chdir(previous)
+            self.assertEqual(results[0][:2], ("bug-repro-before", "EXPECTED FAIL"))
+            self.assertIn("AssertionError: False is not true", results[0][2])
+            self.assertNotIn("ModuleNotFoundError", results[0][2])
+
+
+            code, report = run_gate(
+                repo, "--bug", "--repro-test", "tests/test_b.py::BTest::test_value"
+            )
+
+            self.assertEqual(code, 0, report)
+            self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+            self.assertNotIn("ModuleNotFoundError", report)
+            self.assertIn("- bug-repro-head: PASS", report)
+
+    def test_repro_uses_unittest_discovery_top_level_for_package_imports(self) -> None:
+        commands = [
+            ["discover", "-s", "suite/cases", "-t", "suite"],
+            ["discover", "--start-directory=suite/cases", "--top-level-directory=suite"],
+            ["discover", "suite/cases", "test*.py", "suite"],
+        ]
+        for args in commands:
+            with self.subTest(args=args), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                (repo / ".factory.toml").write_text(
+                    '[leak_scan]\npattern = ""\n'
+                    "[[gate.check]]\n"
+                    'name = "test"\n'
+                    f"run = {[sys.executable, '-m', 'unittest', *args]!r}\n"
+                )
+                cases = repo / "suite" / "cases"
+                cases.mkdir(parents=True)
+                (cases / "__init__.py").touch()
+                (repo / "suite" / "support.py").write_text(
+                    "def helper():\n    return 'top-level imported'\n"
+                )
+                (cases / "test_a.py").write_text("from support import helper\n")
+                commit(repo, "configure package discovery")
+                git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+                (cases / "test_b.py").write_text(
+                    "import unittest\n"
+                    "import value\n"
+                    "from .test_a import helper\n\n"
+                    "class BTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertEqual(helper(), 'top-level imported')\n"
+                    "        self.assertTrue(value.value())\n"
+                )
+                commit(repo, "reproduce bug with package imports")
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+
+                code, report = run_gate(
+                    repo, "--bug", "--repro-test", "suite/cases/test_b.py::BTest::test_value"
+                )
+
+                self.assertEqual(code, 0, report)
+                self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+                self.assertIn("- bug-repro-head: PASS", report)
+
+
+    def test_repro_discovery_consumes_value_options_and_keeps_command_prefix(self) -> None:
+        commands = [
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests",
+             "-k", "test_value", "-k", "test_other"],
+            ["env", "FACTORY_REPRO_WRAPPED=1", sys.executable, "-B", "-m",
+             "unittest", "discover", "-s", "tests", "-k", "test_value"],
+        ]
+        if sys.version_info >= (3, 12):
+            commands.append([
+                sys.executable, "-m", "unittest", "discover", "-s", "tests",
+                "--durations", "5",
+            ])
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                (repo / ".factory.toml").write_text(
+                    '[leak_scan]\npattern = ""\n'
+                    "[[gate.check]]\n"
+                    'name = "test"\n'
+                    f"run = {command!r}\n"
+                )
+                (repo / "tests" / "test_a.py").write_text(
+                    "def helper():\n    return True\n"
+                )
+                (repo / "tests" / "test_b.py").write_text(
+                    "import os, unittest, value\n"
+                    "from test_a import helper\n"
+                    "class BTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertTrue(helper())\n"
+                    + (
+                        "        self.assertEqual(os.environ.get('FACTORY_REPRO_WRAPPED'), '1')\n"
+                        if command[0] == "env" else ""
+                    )
+                    + "        self.assertTrue(value.value())\n"
+                )
+                commit(repo, "reproduce with discovery value options")
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+
+                code, report = run_gate(
+                    repo, "--bug", "--repro-test", "tests/test_b.py::BTest::test_value"
+                )
+
+                self.assertEqual(code, 0, report)
+                self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+                self.assertIn("- bug-repro-head: PASS", report)
+
+    def test_repro_discovery_resolves_dotted_package_start(self) -> None:
+        for top in ([], ["-t", "suite"]):
+            with self.subTest(top=top), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                command = [
+                    "env", "PYTHONPATH=suite", sys.executable, "-B", "-m", "unittest",
+                    "discover", "-s", "pkg.tests", *top,
+                ]
+                (repo / ".factory.toml").write_text(
+                    '[leak_scan]\npattern = ""\n'
+                    "[[gate.check]]\n"
+                    'name = "test"\n'
+                    f"run = {command!r}\n"
+                )
+                cases = repo / "suite" / "pkg" / "tests"
+                cases.mkdir(parents=True)
+                (cases.parent / "__init__.py").touch()
+                (cases / "__init__.py").touch()
+                (cases / "test_a.py").write_text("def helper():\n    return True\n")
+                (cases / "test_b.py").write_text(
+                    "import unittest, value\n"
+                    "from .test_a import helper\n"
+                    "class BTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertTrue(helper())\n"
+                    "        self.assertTrue(value.value())\n"
+                )
+                commit(repo, "reproduce with dotted package discovery")
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+
+                code, report = run_gate(
+                    repo, "--bug", "--repro-test",
+                    "suite/pkg/tests/test_b.py::BTest::test_value",
+                )
+
+                self.assertEqual(code, 0, report)
+                self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+                self.assertIn("- bug-repro-head: PASS", report)
+
+    def _assert_discovery_repro(
+        self, repo: Path, command: list[str], test_id: str
+    ) -> None:
+        suite = subprocess.run(command, cwd=repo, capture_output=True, text=True, check=False)
+        self.assertEqual(suite.returncode, 0, suite.stdout + suite.stderr)
+        self.assertIn("Ran 1 test", suite.stderr)
+
+        previous = Path.cwd()
+        os.chdir(repo)
+        try:
+            gate_module.configure(config.load(repo))
+            results = gate_module.check_bug_reproduction("origin/main", test_id, None)
+        finally:
+            os.chdir(previous)
+        self.assertEqual(results[0][:2], ("bug-repro-before", "EXPECTED FAIL"))
+        self.assertIn("AssertionError: False is not true", results[0][2])
+        self.assertNotIn("ModuleNotFoundError", results[0][2])
+        self.assertNotIn("TypeError", results[0][2])
+        self.assertEqual(results[1][:2], ("bug-repro-head", "PASS"), results[1][2])
+
+        code, report = run_gate(repo, "--bug", "--repro-test", test_id)
+        self.assertEqual(code, 0, report)
+        self.assertIn("- test: PASS", report)
+        self.assertIn("- bug-repro-before: EXPECTED FAIL", report)
+        self.assertIn("- bug-repro-head: PASS", report)
+
+    def test_repro_discovery_preserves_start_with_clustered_flags(self) -> None:
+        for flags in ("-vk", "-qk", "-fk", "-ck", "-bk", "-vfbck"):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                command = [
+                    sys.executable, "-m", "unittest", "discover", "-s", "tests",
+                    flags, "test_value", "--locals",
+                ]
+                (repo / ".factory.toml").write_text(
+                    '[leak_scan]\npattern = ""\n'
+                    "[[gate.check]]\n"
+                    'name = "test"\n'
+                    f"run = {command!r}\n"
+                )
+                (repo / "tests" / "test_a.py").write_text("def helper():\n    return True\n")
+                (repo / "tests" / "test_b.py").write_text(
+                    "import unittest, value\n"
+                    "from test_a import helper\n"
+                    "class BTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertTrue(helper())\n"
+                    "        self.assertTrue(value.value())\n"
+                )
+                commit(repo, "reproduce with clustered discovery options")
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+
+                self._assert_discovery_repro(
+                    repo, command, "tests/test_b.py::BTest::test_value"
+                )
+
+    @unittest.skipUnless(sys.version_info >= (3, 14), "namespace discovery needs Python 3.14+")
+    def test_repro_discovery_resolves_namespace_parent_start(self) -> None:
+        layouts = [(True, "suite"), (True, "other:suite"), (False, "other:suite")]
+        for regular_start, pythonpath in layouts:
+            with (
+                self.subTest(regular_start=regular_start, pythonpath=pythonpath),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                repo = repository(Path(directory))
+                command = [
+                    "env", f"PYTHONPATH={pythonpath}", sys.executable, "-m", "unittest",
+                    "discover", "-s", "ns.tests",
+                ]
+                (repo / ".factory.toml").write_text(
+                    '[leak_scan]\npattern = ""\n'
+                    "[[gate.check]]\n"
+                    'name = "test"\n'
+                    f"run = {command!r}\n"
+                )
+                (repo / "other" / "ns").mkdir(parents=True)
+                cases = repo / "suite" / "ns" / "tests"
+                cases.mkdir(parents=True)
+                if regular_start:
+                    (cases / "__init__.py").touch()
+                module = "test_b" if regular_start else "ns.tests.test_b"
+                helper = "test_a" if regular_start else "ns.tests.test_a"
+                (cases / "test_a.py").write_text("def helper():\n    return True\n")
+                (cases / "test_b.py").write_text(
+                    "import unittest, value\n"
+                    f"from {helper} import helper\n"
+                    "class BTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    f"        self.assertEqual(__name__, {module!r})\n"
+                    "        self.assertTrue(helper())\n"
+                    "        self.assertTrue(value.value())\n"
+                )
+                commit(repo, "reproduce with namespace-parent discovery")
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+
+                self._assert_discovery_repro(
+                    repo, command, "suite/ns/tests/test_b.py::BTest::test_value"
+                )
+
+    @unittest.skipUnless(sys.version_info >= (3, 14), "namespace discovery needs Python 3.14+")
+    def test_repro_namespace_start_with_explicit_top_uses_namespace_root(self) -> None:
+        for top in ("suite", "suite/ns"):
+            with self.subTest(top=top), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                command = [
+                    "env", "PYTHONPATH=suite", sys.executable, "-m", "unittest",
+                    "discover", "-s", "ns.tests", "-t", top,
+                ]
+                (repo / ".factory.toml").write_text(
+                    '[leak_scan]\npattern = ""\n'
+                    '[[gate.check]]\nname = "test"\n'
+                    f"run = {command!r}\n"
+                )
+                cases = repo / "suite" / "ns" / "tests"
+                cases.mkdir(parents=True)
+                (cases.parent / "support.py").write_text("def helper():\n    return True\n")
+                (cases / "test_b.py").write_text(
+                    "import unittest, value\n"
+                    "from ..support import helper\n"
+                    "class BTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertEqual(__name__, 'ns.tests.test_b')\n"
+                    "        self.assertTrue(helper())\n"
+                    "        self.assertTrue(value.value())\n"
+                )
+                commit(repo, "reproduce namespace discovery with explicit top")
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+
+                self._assert_discovery_repro(
+                    repo, command, "suite/ns/tests/test_b.py::BTest::test_value"
+                )
+
+    def test_repro_outside_first_discovery_root_uses_its_own_directory(self) -> None:
+        starts = ("tests", "ns.tests") if sys.version_info >= (3, 14) else ("tests",)
+        for start in starts:
+            with self.subTest(start=start), tempfile.TemporaryDirectory() as directory:
+                repo = repository(Path(directory))
+                command = [
+                    "env", "PYTHONPATH=suite", sys.executable, "-m", "unittest",
+                    "discover", "-s", start,
+                ]
+                second = [sys.executable, "-m", "unittest", "discover", "-s", "integration"]
+                (repo / ".factory.toml").write_text(
+                    '[leak_scan]\npattern = ""\n'
+                    '[[gate.check]]\nname = "test"\n'
+                    f"run = {command!r}\n"
+                    '[[gate.check]]\nname = "integration"\n'
+                    f"run = {second!r}\n"
+                )
+                (repo / "suite" / "ns" / "tests").mkdir(parents=True)
+                (repo / "suite" / "ns" / "tests" / "test_existing.py").write_text(
+                    (repo / "tests" / "test_existing.py").read_text()
+                )
+                cases = repo / "integration"
+                cases.mkdir()
+                (cases / "test_a.py").write_text("def helper():\n    return True\n")
+                commit(repo, "configure separate discovery roots")
+                git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+                (cases / "test_b.py").write_text(
+                    "import unittest, value\n"
+                    "from test_a import helper\n"
+                    "class BTest(unittest.TestCase):\n"
+                    "    def test_value(self):\n"
+                    "        self.assertTrue(helper())\n"
+                    "        self.assertTrue(value.value())\n"
+                )
+                commit(repo, "reproduce outside first discovery root")
+                (repo / "value.py").write_text("def value():\n    return True\n")
+                commit(repo, "fix bug")
+
+                self._assert_discovery_repro(
+                    repo, second, "integration/test_b.py::BTest::test_value"
+                )
 
     def test_backticked_handoff_id_reaches_reproduction_gate_bare(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
