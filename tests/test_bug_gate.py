@@ -732,10 +732,13 @@ class RustLifetimeGateTest(unittest.TestCase):
                 self.assertIn("- protected-tests: FAIL", report)
                 self.assertIn(f"src/lib.rs:counts: {'modified' if change == 'ignore' else 'deleted'}", report)
 
-                flags = dispatch.gate_flags(None, {"bug", config.LABEL_PROTECTED_OVERRIDE})
-                self.assertTrue(flags["protected_override"])
+                flags = dispatch.gate_flags(
+                    None, {"bug", config.LABEL_PROTECTED_OVERRIDE},
+                    'factory-protected-override: ["src/lib.rs"]',
+                )
                 code, report = run_gate(
-                    repo, "--bug", "--no-repro-test", "protection fixture", "--protected-override"
+                    repo, "--bug", "--no-repro-test", "protection fixture",
+                    "--protected-override-path", *flags["protected_override_paths"],
                 )
                 self.assertEqual(code, 0, report)
 

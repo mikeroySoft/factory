@@ -328,6 +328,13 @@ def _linked_baseline(n: int, body: str) -> dict | None:
 
 
 def _validate_rewrite(n: int, current: str, replacement: str) -> None:
+    current = current.replace("\r\n", "\n")
+    replacement = replacement.replace("\r\n", "\n")
+    scope_line = rf"(?im)^{re.escape(config.LABEL_PROTECTED_OVERRIDE)}:[^\r\n]*"
+    if re.findall(scope_line, current) != re.findall(scope_line, replacement):
+        raise binding.BindingError(
+            "REWRITE must preserve every factory-protected-override line exactly"
+        )
     accepted = _linked_baseline(n, current)
     proposed = binding.linked(replacement)
     if accepted is None:

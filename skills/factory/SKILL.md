@@ -102,8 +102,10 @@ line (the dispatcher skips blocked tickets until the blocker closes). Add the `c
 label for mechanical work (renames, doc sync, bumps) to route it to the chore worker.
 Before filing, compare **Touches** against `[gate].protected_paths` and
 `[gate].add_only_paths` in `.factory.toml`: a ticket that adds or edits a protected
-file must carry `factory-protected-override` at filing, or the first attempt escalates
-at the gate before any check runs. This repository keeps `tests/**` add-only: new test
+file needs a human-granted `factory-protected-override` label plus a ticket-body
+JSON-array line, e.g. `factory-protected-override: [".factory.toml"]`; a bare label
+grants nothing, and every other protected path remains checked. Otherwise the
+first attempt escalates before any check runs. This repository keeps `tests/**` add-only: new test
 files and appended lines need no label; changing existing test lines needs
 `factory-add-only-override` at filing (or a manager may grant it via `AUTHORIZE`).
 Label bug fixes `bug`; the worker must commit the reproducing test first and name it as

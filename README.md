@@ -354,7 +354,7 @@ ignores only protected-path hits whose content equals the dispatcher's staged
 candidate's, or the upstream tip's for a path upstream itself changed; a
 fork-only protected file the worker deletes, resets to upstream's version, or
 edits still fails `protected-paths` unless a human applies
-`factory-protected-override`. Add-only edits require
+`factory-protected-override` with a named path scope (see **Gate**, below). Add-only edits require
 `factory-add-only-override`, which the manager or a human may grant.
 It leak-scans the diff from the tip, so
 anything the worker writes is scanned while upstream's already-public content
@@ -1070,11 +1070,25 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Rust `#[ignore]`, fails as `protected-tests`; other languages retain the
    configured path-based add-only policy. `factory-add-only-override` bypasses
    that function check as well, so manager authorization also works on bug
-   tickets. The `factory-protected-override` label bypasses both path and
-   function protection; a ticket line `factory-protected-override: <reason>`
-   bypasses only function protection on bug tickets. An `upstream sync:`
-   ticket's worker otherwise gets no override; only upstream-authored content
-   is exempt (`--upstream`, above).
+   tickets. To grant a protected-path override, a human applies the
+   `factory-protected-override` label and adds a ticket-body line containing a
+   JSON array of repository-relative paths/globs, for example:
+   `factory-protected-override: [".factory.toml", "checks/acceptance/**"]`.
+   Both the label and a nonempty, valid array are required; a bare label, a
+   comment, or manager `AUTHORIZE` cannot grant this scope. Manager `REWRITE`
+   must preserve every `factory-protected-override:` line exactly from the live
+   ticket body; adding, removing, or changing a declaration is refused before
+   any GitHub mutation. Only matching paths bypass path and existing-test
+   protection; every other protected path is checked normally.
+   Gate reports and journal evidence record the named scope
+   and outside-scope failures, and escalation packets include that report.
+   Manual scoped gate runs use repeatable `--protected-override-path GLOB`;
+   the unscoped `--protected-override` remains reserved for explicit trusted
+   operations, never inferred from a ticket label.
+   A reason-only ticket line `factory-protected-override: <reason>` without the
+   label retains its existing function-only exemption on bug tickets; it grants
+   no path override. An `upstream sync:` ticket's worker otherwise gets no
+   override; only upstream-authored content is exempt (`--upstream`, above).
    A bug worker must add the reproducing test in its own commit before the fix
    and put `Repro test: <test ID>` in its handoff. The test may be added during
    a later retry, review bounce, or manager FIX, not just the first branch commit.
@@ -1286,8 +1300,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    on the recorded PR head), independent review, `review_rounds` and
    `manager.rounds` follow, and only a fresh approval restores the label. The
    conflict escalates as `refresh_conflict`, with the conflicting files in the
-   packet, when it touches `gate.protected_paths` without
-   `factory-protected-override`, when `review_rounds` conflict requeues are
+   packet, when it touches `gate.protected_paths` outside the human's named
+   `factory-protected-override` scope, when `review_rounds` conflict requeues are
    already used up, or when the ticket is not open.
    Conflicts in `add_only_paths` go to the worker; the gate's add-only check
    judges the resolution (`factory-add-only-override` or manager `AUTHORIZE`
