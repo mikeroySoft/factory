@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from factory import lifecycle, runtime_events, platform_identity
+from factory import darwin_observer, lifecycle, runtime_events, platform_identity
 
 BOOT = "11111111-2222-3333-4444-555555555555"
 MACHINE = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
@@ -43,6 +44,10 @@ class DarwinLifecycleTest(unittest.TestCase):
         ):
             context.start()
             self.addCleanup(context.stop)
+        # The installed backend is the private seam. It replays the same BOOT,
+        # MACHINE, and process table the command probe used to return.
+        darwin_observer.install(_Scripted())
+        self.addCleanup(darwin_observer.reset)
 
     def probe(self, args, **kwargs):
         if args[0].endswith("ioreg"):
@@ -187,18 +192,29 @@ class DarwinLifecycleTest(unittest.TestCase):
 class HostIdentityTest(unittest.TestCase):
     def test_darwin_host_id_stable_across_processes(self):
         code = '''
-import subprocess, sys
+import sys, uuid
 from pathlib import Path
 from unittest.mock import patch
-from factory import lifecycle
+from factory import darwin_observer, lifecycle
 original = Path.read_text
 def read(path, *args, **kwargs):
     if str(path).startswith('/proc/') or str(path) == '/etc/machine-id':
         raise FileNotFoundError(str(path))
     return original(path, *args, **kwargs)
-def probe(args, **kwargs):
-    return subprocess.CompletedProcess(args, 0, '"IOPlatformUUID" = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"\\n', '')
-with patch.object(sys, 'platform', 'darwin'), patch.object(Path, 'read_text', read), patch('subprocess.run', side_effect=probe):
+class _Host:
+    def host_id(self):
+        machine = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, "factory:host:" + machine))
+    def boot_id(self):
+        return None
+    def process(self, pid):
+        raise OSError(pid)
+    def lock_holders(self, lock):
+        return None
+    def scan(self):
+        return {}, {}, set(), True
+darwin_observer.install(_Host())
+with patch.object(sys, 'platform', 'darwin'), patch.object(Path, 'read_text', read):
     print(lifecycle._host_id())
 '''
         hosts = [subprocess.check_output([sys.executable, "-c", code], text=True).strip() for _ in range(2)]
@@ -264,3 +280,85 @@ class BootProbeTest(unittest.TestCase):
             patch("factory.platform_identity._sysctl_string", return_value=BOOT),
         ):
             self.assertEqual(platform_identity.boot_id(), BOOT)
+
+
+class _Scripted:
+    """Test double for the private backend. Command replies still come from DarwinLifecycleTest.probe."""
+
+    def boot_id(self):
+        try:
+            result = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+                                    capture_output=True, text=True, timeout=2, check=False)
+        except (OSError, UnicodeError, subprocess.TimeoutExpired):
+            return None
+        if getattr(result, "returncode", 1) != 0:
+            return None
+        try:
+            return str(uuid.UUID(result.stdout.strip()))
+        except (ValueError, AttributeError):
+            return None
+
+    def host_id(self):
+        try:
+            result = subprocess.run(["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                                    capture_output=True, text=True, timeout=2, check=False)
+        except (OSError, UnicodeError, subprocess.TimeoutExpired):
+            return None
+        match = re.search(r'"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]+)"', getattr(result, "stdout", "") or "")
+        if getattr(result, "returncode", 1) != 0 or match is None:
+            return None
+        try:
+            machine = str(uuid.UUID(match[1])).upper()
+        except ValueError:
+            return None
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, "factory:host:" + machine))
+
+    def process(self, pid: int) -> dict:
+        try:
+            result = subprocess.run(
+                ["/bin/ps", "-o", "lstart=,ppid=,uid=,stat=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=2, check=False,
+                env={**os.environ, "LC_ALL": "C", "TZ": "UTC"})
+        except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
+            raise OSError("process probe failed") from exc
+        if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():
+            raise ProcessLookupError(pid)
+        if result.returncode != 0:
+            raise OSError("process probe failed")
+        fields = result.stdout.split()
+        if len(fields) != 8:
+            raise ValueError("invalid process identity")
+        start = datetime.strptime(" ".join(fields[:5]), "%a %b %d %H:%M:%S %Y").replace(tzinfo=UTC)
+        return {"pid": pid, "boot_id": self.boot_id(), "start_ticks": int(start.timestamp()),
+                "pid_namespace": "darwin", "ppid": int(fields[5]), "uid": int(fields[6]),
+                "state": fields[7][0]}
+
+    def lock_holders(self, lock: dict):
+        try:
+            path = Path(lock["path"])
+            expected = (lock["device"], lock["inode"])
+            before = path.stat()
+            if (before.st_dev, before.st_ino) != expected:
+                return None
+            result = subprocess.run(["/usr/sbin/lsof", "-nP", "-Fpfl", "--", str(path)],
+                                    capture_output=True, text=True, timeout=2, check=False)
+            after = path.stat()
+            if result.returncode != 0 or result.stderr.strip() or (after.st_dev, after.st_ino) != expected:
+                return None
+            holders = set()
+            pid = None
+            for field in result.stdout.splitlines():
+                if field.startswith("p"):
+                    pid = int(field[1:])
+                    if pid <= 0:
+                        return None
+                elif field in {"lR", "lW"}:
+                    if pid is None:
+                        return None
+                    holders.add(pid)
+            return sorted(holders) if holders else None
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def scan(self):
+        return {}, {}, set(), True

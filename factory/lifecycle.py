@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from factory import platform_identity
+from factory import darwin_observer, platform_identity
 
 CONTEXT_ENV = "FACTORY_LIFECYCLE_CONTEXT"
 _CURRENT = contextvars.ContextVar("factory_execution", default=None)
@@ -654,17 +654,35 @@ def _lifecycle(row: dict) -> bool:
                        or row["kind"] == "lock_released" and row.get("acquisition_id") is None))))
 
 
-def _descendants(executions: list[dict]) -> dict[str, dict]:
-    """Find tagged/reparented children and ordinary live ancestry in one proc scan."""
+def _open_children(events: list[dict]) -> list[dict]:
+    children = {}
+    for event in events:
+        child = event.get("child_process")
+        if event["kind"] == "child_start" and isinstance(child, dict):
+            children[child.get("pid")] = child
+        elif event["kind"] == "child_exit":
+            children.pop((child or {}).get("pid"), None)
+    return [child for child in children.values() if isinstance(child, dict)]
+
+
+def _descendants(executions: list[dict], recorded: dict | None = None) -> dict[str, dict]:
+    """Find tagged/reparented children and ordinary live ancestry in one proc scan.
+
+    Darwin membership is a context tag or a start-validated ancestor chain.
+    Recorded children supplement that only when their context read is unknown.
+    Same-uid processes that are neither tagged nor on that chain are ignored.
+    """
     found = {entry["execution_id"]: {"processes": [], "complete": True} for entry in executions}
     if not executions:
         return found
+    recorded = recorded or {}
     uids = {(entry.get("process") or {}).get("uid") for entry in executions}
     for entry in executions:
         if type((entry.get("process") or {}).get("uid")) is not int:
             found[entry["execution_id"]]["complete"] = False
     processes = {}
     contexts = {}
+    unknown_context: set[int] = set()
     # Linux: enumerate /proc and extract CONTEXT_ENV from environ for tagged causality.
     if not platform_identity.darwin():
         try:
@@ -700,49 +718,18 @@ def _descendants(executions: list[dict]) -> dict[str, dict]:
                 for entry in executions:
                     found[entry["execution_id"]]["complete"] = False
     else:
-        # Darwin: /proc is unavailable. Use ps to enumerate (pid, ppid, uid, state) and
-        # infer ancestry without mutating observers. Tagged causality via environment
-        # is not available; we preserve ancestry-based association and fail closed.
-        try:
-            proc = subprocess.run(
-                ["/bin/ps", "-Ao", "pid=,ppid=,uid=,stat="],
-                capture_output=True, text=True, check=False,
-                env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
-                timeout=2,
-            )
-            if proc.returncode != 0:
-                for evidence in found.values():
-                    evidence["complete"] = False
-                return found
-            table = []
-            for line in proc.stdout.splitlines():
-                parts = line.split()
-                if len(parts) < 4:
-                    continue
-                try:
-                    pid, ppid, uid = int(parts[0]), int(parts[1]), int(parts[2])
-                    state = parts[3][0] if parts[3] else "?"
-                except (ValueError, IndexError):
-                    continue
-                if uid in uids and state not in {"Z", "X"} and pid > 0:
-                    table.append((pid, ppid, uid, state))
-            # Build a quick index and include only processes under our uids.
-            index = {pid: {"pid": pid, "ppid": ppid, "uid": uid, "state": state,
-                           "boot_id": boot_id(), "start_ticks": None, "pid_namespace": "darwin"}
-                     for pid, ppid, uid, state in table}
-            processes = {pid: {"pid": v["pid"], "ppid": v["ppid"], "uid": v["uid"], "state": v["state"],
-                               "boot_id": v["boot_id"], "start_ticks": v["start_ticks"], "pid_namespace": "darwin"}
-                         for pid, v in index.items()}
-            # No contexts on Darwin (cannot read other processes' env safely without privileges).
-            contexts = {}
-        except (OSError, subprocess.TimeoutExpired):
+        processes, contexts, unknown_context, complete = darwin_observer.scan(CONTEXT_ENV)
+        if not complete:
             for evidence in found.values():
                 evidence["complete"] = False
-            return found
     for entry in executions:
         execution_id = entry["execution_id"]
         owner = entry.get("process") or {}
+        included = []
         for pid, process in processes.items():
+            if type(process.get("start_ticks")) is not int:
+                found[execution_id]["complete"] = False
+                continue
             context = contexts.get(pid, {})
             tagged = (context.get("schema_version") == 1
                       and isinstance(context.get("execution_ids"), list)
@@ -750,7 +737,7 @@ def _descendants(executions: list[dict]) -> dict[str, dict]:
             cursor = process
             seen = set()
             descendant = False
-            while cursor["pid"] not in seen:
+            while cursor is not None and cursor["pid"] not in seen and type(cursor.get("start_ticks")) is int:
                 seen.add(cursor["pid"])
                 if (cursor["pid"] == owner.get("pid")
                         and cursor["start_ticks"] == owner.get("start_ticks")
@@ -758,10 +745,19 @@ def _descendants(executions: list[dict]) -> dict[str, dict]:
                     descendant = pid != owner["pid"]
                     break
                 cursor = processes.get(cursor["ppid"])
-                if cursor is None:
-                    break
             if tagged or descendant:
-                found[execution_id]["processes"].append(process)
+                included.append(process)
+        for child in recorded.get(execution_id, []):
+            pid = child.get("pid")
+            process = processes.get(pid)
+            if (process is None or pid not in unknown_context or process in included
+                    or process.get("start_ticks") != child.get("start_ticks")
+                    or process.get("boot_id") != child.get("boot_id")
+                    or type(process.get("start_ticks")) is not int
+                    or process.get("state") in {"Z", "X"}):
+                continue
+            included.append(process)
+        found[execution_id]["processes"].extend(included)
     return found
 
 
@@ -826,7 +822,8 @@ def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[
         launched = [events[0] for events in open_groups if events[0]["execution_id"] in launched_ids]
         descendants = {events[0]["execution_id"]: {"processes": [], "complete": True}
                        for events in open_groups}
-        descendants.update(_descendants(launched))
+        recorded = {events[0]["execution_id"]: _open_children(events) for events in open_groups}
+        descendants.update(_descendants(launched, recorded))
         for execution_id in launched_ids:
             if execution_id in descendants:
                 # Reparented children may exec with a scrubbed environment; a proc scan

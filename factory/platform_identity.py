@@ -1,41 +1,34 @@
 """Native macOS identity probes shared by lifecycle and passive runtime readers.
 
 Linux keeps its existing procfs readers. Probe failures are not evidence of death.
+The guarded Darwin path never spawns ps, lsof, sysctl, or ioreg. Lock-holder
+attribution has no non-spawning source here, so it is unknown unless a test
+installs a backend that supplies holders.
 """
 from __future__ import annotations
 
-import os
-import re
-import subprocess
-import sys
-import uuid
-from datetime import UTC, datetime
-from pathlib import Path
 import ctypes
 import ctypes.util
+import os
+import sys
+import uuid
+
+from factory import darwin_observer
 
 
 def darwin() -> bool:
     return sys.platform == "darwin"
 
 
-def _probe(*args: str) -> subprocess.CompletedProcess:
-    try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=2, check=False,
-                              env={**os.environ, "LC_ALL": "C", "TZ": "UTC"})
-    except (OSError, UnicodeError, subprocess.TimeoutExpired) as exc:
-        raise OSError("identity probe unavailable") from exc
-
-
 def _sysctl_string(name: str) -> str | None:
-    """Non-spawning Darwin sysctlbyname string lookup; None on any failure."""
+    """Non-spawning sysctlbyname string. None on any failure, including a missing libc."""
     if not darwin():
         return None
     try:
         libname = ctypes.util.find_library("System") or ctypes.util.find_library("c")
         if not libname:
             return None
-        libc = ctypes.CDLL(libname)
+        libc = ctypes.CDLL(libname, use_errno=True)
         fn = getattr(libc, "sysctlbyname", None)
         if fn is None:
             return None
@@ -57,115 +50,110 @@ def _sysctl_string(name: str) -> str | None:
 
 
 def boot_id() -> str | None:
-    # Prefer non-spawning sysctl when possible (fixtures may forbid external commands).
+    backend = darwin_observer.installed()
+    if backend is not None:
+        return backend.boot_id()
     value = _sysctl_string("kern.bootsessionuuid")
-    if isinstance(value, str):
-        try:
-            return str(uuid.UUID(value))
-        except ValueError:
-            return None
+    if not isinstance(value, str):
+        return None
     try:
-        result = _probe("/usr/sbin/sysctl", "-n", "kern.bootsessionuuid")
-        return str(uuid.UUID(result.stdout.strip())) if result.returncode == 0 else None
-    except (OSError, ValueError):
+        return str(uuid.UUID(value))
+    except ValueError:
         return None
 
 
-def host_id() -> str | None:
-    # Prefer non-spawning IOKit/CoreFoundation lookup; fall back to ioreg only when needed.
-    if darwin():
-        try:
-            cf_name = ctypes.util.find_library("CoreFoundation")
-            io_name = ctypes.util.find_library("IOKit")
-            if cf_name and io_name:
-                CF = ctypes.CDLL(cf_name)
-                IO = ctypes.CDLL(io_name)
-                CFStringRef = ctypes.c_void_p
-                CFMutableDictionaryRef = ctypes.c_void_p
-                io_service_t = ctypes.c_uint
-                IOServiceMatching = IO.IOServiceMatching
-                IOServiceMatching.argtypes = [ctypes.c_char_p]
-                IOServiceMatching.restype = CFMutableDictionaryRef
-                IOServiceGetMatchingService = IO.IOServiceGetMatchingService
-                IOServiceGetMatchingService.argtypes = [ctypes.c_uint, CFMutableDictionaryRef]
-                IOServiceGetMatchingService.restype = io_service_t
-                IOObjectRelease = IO.IOObjectRelease
-                IOObjectRelease.argtypes = [io_service_t]
-                IOObjectRelease.restype = ctypes.c_int
-                CFStringCreateWithCString = CF.CFStringCreateWithCString
-                CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
-                CFStringCreateWithCString.restype = CFStringRef
-                IORegistryEntryCreateCFProperty = IO.IORegistryEntryCreateCFProperty
-                IORegistryEntryCreateCFProperty.argtypes = [io_service_t, CFStringRef, ctypes.c_void_p, ctypes.c_uint32]
-                IORegistryEntryCreateCFProperty.restype = ctypes.c_void_p
-                CFGetTypeID = CF.CFGetTypeID
-                CFGetTypeID.argtypes = [ctypes.c_void_p]
-                CFGetTypeID.restype = ctypes.c_ulong
-                CFStringGetTypeID = CF.CFStringGetTypeID
-                CFStringGetTypeID.argtypes = []
-                CFStringGetTypeID.restype = ctypes.c_ulong
-                CFStringGetCStringPtr = CF.CFStringGetCStringPtr
-                CFStringGetCStringPtr.argtypes = [CFStringRef, ctypes.c_uint32]
-                CFStringGetCStringPtr.restype = ctypes.c_char_p
-                CFStringGetCString = CF.CFStringGetCString
-                CFStringGetCString.argtypes = [CFStringRef, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
-                CFStringGetCString.restype = ctypes.c_bool
-                CFRelease = CF.CFRelease
-                CFRelease.argtypes = [ctypes.c_void_p]
-                kUTF8 = 0x08000100  # kCFStringEncodingUTF8
-                matching = IOServiceMatching(b"IOPlatformExpertDevice")
-                service = IOServiceGetMatchingService(0, matching)
-                try:
-                    if service:
-                        key = CFStringCreateWithCString(ctypes.c_void_p(0), b"IOPlatformUUID", kUTF8)
-                        try:
-                            cf = IORegistryEntryCreateCFProperty(service, key, ctypes.c_void_p(0), 0)
-                        finally:
-                            CFRelease(key)
-                        if cf:
-                            try:
-                                if CFGetTypeID(cf) == CFStringGetTypeID():
-                                    s = CFStringGetCStringPtr(cf, kUTF8)
-                                    if not s:
-                                        buf = ctypes.create_string_buffer(128)
-                                        if CFStringGetCString(cf, buf, 128, kUTF8):
-                                            s = buf.value
-                                    if s:
-                                        machine = str(uuid.UUID(s.decode("utf-8").strip())).upper()
-                                        return str(uuid.uuid5(uuid.NAMESPACE_URL, "factory:host:" + machine))
-                            finally:
-                                CFRelease(cf)
-                finally:
-                    if service:
-                        IOObjectRelease(service)
-        except Exception:
-            pass
-    # Fallback: spawn ioreg (kept for compatibility and tests)
+def _cf_string(cf, text: bytes):
+    """Owned CFString, or None. Caller releases only a non-NULL result."""
+    k_utf8 = 0x08000100  # kCFStringEncodingUTF8
+    created = cf.CFStringCreateWithCString(None, text, k_utf8)
+    return created or None
+
+
+def _cf_utf8(cf, value) -> str | None:
+    k_utf8 = 0x08000100
+    if not value:
+        return None
+    if cf.CFGetTypeID(value) != cf.CFStringGetTypeID():
+        return None
+    pointer = cf.CFStringGetCStringPtr(value, k_utf8)
+    if pointer:
+        return pointer.decode("utf-8", errors="strict").strip() or None
+    buf = ctypes.create_string_buffer(128)
+    if not cf.CFStringGetCString(value, buf, 128, k_utf8):
+        return None
+    return buf.value.decode("utf-8", errors="strict").strip() or None
+
+
+def _iokit_host_id() -> str | None:
+    """IOPlatformUUID via IOKit. NULL CoreFoundation objects are never released or queried."""
+    cf_name = ctypes.util.find_library("CoreFoundation")
+    io_name = ctypes.util.find_library("IOKit")
+    if not cf_name or not io_name:
+        return None
+    cf = ctypes.CDLL(cf_name)
+    io = ctypes.CDLL(io_name)
+    cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+    cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+    cf.CFRelease.argtypes = [ctypes.c_void_p]
+    cf.CFGetTypeID.argtypes = [ctypes.c_void_p]
+    cf.CFGetTypeID.restype = ctypes.c_ulong
+    cf.CFStringGetTypeID.restype = ctypes.c_ulong
+    cf.CFStringGetCStringPtr.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    cf.CFStringGetCStringPtr.restype = ctypes.c_char_p
+    cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+    cf.CFStringGetCString.restype = ctypes.c_bool
+    io.IOServiceMatching.argtypes = [ctypes.c_char_p]
+    io.IOServiceMatching.restype = ctypes.c_void_p
+    io.IOServiceGetMatchingService.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+    io.IOServiceGetMatchingService.restype = ctypes.c_uint
+    io.IOObjectRelease.argtypes = [ctypes.c_uint]
+    io.IORegistryEntryCreateCFProperty.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32]
+    io.IORegistryEntryCreateCFProperty.restype = ctypes.c_void_p
+    matching = io.IOServiceMatching(b"IOPlatformExpertDevice")
+    if not matching:
+        return None
+    service = io.IOServiceGetMatchingService(0, matching)
+    if not service:
+        return None
+    key = None
+    prop = None
     try:
-        result = _probe("/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice")
-        match = re.search(r'"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]+)"', result.stdout)
-        if result.returncode != 0 or match is None:
+        key = _cf_string(cf, b"IOPlatformUUID")
+        if not key:
             return None
-        machine = str(uuid.UUID(match[1])).upper()
+        prop = io.IORegistryEntryCreateCFProperty(service, key, None, 0)
+        if not prop:
+            return None
+        text = _cf_utf8(cf, prop)
+        if not text:
+            return None
+        machine = str(uuid.UUID(text)).upper()
         return str(uuid.uuid5(uuid.NAMESPACE_URL, "factory:host:" + machine))
-    except (OSError, ValueError):
+    finally:
+        if prop:
+            cf.CFRelease(prop)
+        if key:
+            cf.CFRelease(key)
+        io.IOObjectRelease(service)
+
+
+def host_id() -> str | None:
+    backend = darwin_observer.installed()
+    if backend is not None:
+        return backend.host_id()
+    if not darwin():
+        return None
+    try:
+        return _iokit_host_id()
+    except Exception:
         return None
 
 
 def process(pid: int) -> dict:
-    result = _probe("/bin/ps", "-o", "lstart=,ppid=,uid=,stat=", "-p", str(pid))
-    if result.returncode == 1 and not result.stdout.strip() and not result.stderr.strip():
-        raise ProcessLookupError(pid)
-    if result.returncode != 0:
-        raise OSError("process probe failed")
-    fields = result.stdout.split()
-    if len(fields) != 8:
-        raise ValueError("invalid process identity")
-    # lstart is an absolute start time, not elapsed process age; ps reports seconds.
-    start = datetime.strptime(" ".join(fields[:5]), "%a %b %d %H:%M:%S %Y").replace(tzinfo=UTC)
-    return {"pid": pid, "boot_id": boot_id(), "start_ticks": int(start.timestamp()),
-            "pid_namespace": "darwin", "ppid": int(fields[5]), "uid": int(fields[6]),
-            "state": fields[7][0]}
+    backend = darwin_observer.installed()
+    if backend is not None:
+        return backend.process(pid)
+    return darwin_observer.native_process(pid, boot_id())
 
 
 def process_state(identity: dict | None) -> str:
@@ -182,7 +170,7 @@ def process_state(identity: dict | None) -> str:
     try:
         current = process(identity["pid"])
     except ProcessLookupError:
-        # Absence is meaningful only when ps can see this observer.
+        # Absence is meaningful only when this observer itself is visible.
         try:
             observer = process(os.getpid())
         except (OSError, ValueError, IndexError):
@@ -202,29 +190,11 @@ def process_state(identity: dict | None) -> str:
 
 
 def lock_holders(lock: dict) -> list[int] | None:
-    """lsof's lock field identifies owners; merely opening the file is not ownership."""
+    """Holders only when an installed backend supplies them. Native attribution is unavailable."""
+    backend = darwin_observer.installed()
+    if backend is None:
+        return None
     try:
-        path = Path(lock["path"])
-        expected = (lock["device"], lock["inode"])
-        before = path.stat()
-        if (before.st_dev, before.st_ino) != expected:
-            return None
-        result = _probe("/usr/sbin/lsof", "-nP", "-Fpfl", "--", str(path))
-        after = path.stat()
-        if result.returncode != 0 or result.stderr.strip() or (after.st_dev, after.st_ino) != expected:
-            return None
-        holders = set()
-        pid = None
-        for field in result.stdout.splitlines():
-            if field.startswith("p"):
-                pid = int(field[1:])
-                if pid <= 0:
-                    return None
-            elif field in {"lR", "lW"}:
-                if pid is None:
-                    return None
-                holders.add(pid)
-        # Some Darwin lsof versions emit blank lock fields even for held flocks.
-        return sorted(holders) if holders else None
+        return backend.lock_holders(lock)
     except (OSError, ValueError, KeyError, TypeError):
         return None

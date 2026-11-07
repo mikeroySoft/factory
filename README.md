@@ -2027,18 +2027,21 @@ versions are not interpreted as version 1 by the existing observer.
 
 Linux identity fields retain their procfs values: boot UUID, field-22 start ticks,
 and PID namespace link. On macOS, lifecycle and passive runtime observation share
-`platform_identity`: `kern.bootsessionuuid` identifies the boot, `ps` supplies
-`start_ticks` as UTC Unix start seconds (`lstart`, with one-second resolution),
-and `pid_namespace` is `"darwin"` (no Linux PID namespaces). Host/resource IDs
-hash `ioreg`'s IOPlatformUUID using the same UUIDv5 scheme as Linux machine-id;
-they remain stable across processes and reboots. Probe commands have two-second
-timeouts; unavailable, malformed, or permission-denied evidence remains unknown.
-A missing recorded PID or a changed start time proves the original process dead.
-The existing handoff/descendant safeguards still prevent interruption when child
-absence cannot be established; macOS does not claim a complete procfs scan.
-Darwin lsof versions that omit flock lock fields leave holder attribution
-unavailable even when try-lock proves the file held; open-file PIDs never suffice
-to confirm an owner.
+one private backend. `kern.bootsessionuuid` identifies the boot. Process identity
+comes from `proc_pidinfo(PROC_PIDTBSDINFO)` on the verified 136-byte layout;
+journal `start_ticks` stays that start time in integer Unix seconds, and the
+microsecond field is used only to compare two reads of the same process. Context
+tags come from `KERN_PROCARGS2` into one `KERN_ARGMAX`-sized buffer (1 MiB on the
+verified host). A full buffer is truncated and unknown. `pid_namespace` is
+`"darwin"`. Host IDs hash the IOKit `IOPlatformUUID` with the same UUIDv5 scheme
+as Linux machine-id. The guarded observer never runs `ps`, `lsof`, `sysctl`, or
+`ioreg`. Denied, malformed, empty, or truncated reads are unknown, not absence.
+A missing recorded PID or a changed start time proves the original process dead
+only when this observer can see itself. Descendant membership is a context tag
+or a start-validated ancestor, not a uid and not a parent pid alone. The existing
+handoff safeguard still prevents interruption when a launched descendant cannot
+be ruled out. There is no non-spawning flock-owner source: attribution stays
+unavailable, the owner stays null, and an open file is not ownership.
 
 | Stage | Boundary |
 |---|---|
