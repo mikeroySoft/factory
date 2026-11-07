@@ -68,7 +68,7 @@ class ChildExitTest(unittest.TestCase):
             gh.write_text("#!/bin/sh\nexit 17\n")
             gh.chmod(0o755)
             events = root / "events.jsonl"
-            body = "Factory requeue: nonce=private-context\nConfidential handoff details"
+            body = "Factory requeue: nonce=private-context\nWorker handoff details"
             command = [str(gh), "api", "repos/local/safety/issues/7/comments",
                        "--method", "POST", "-f", f"body={body}"]
             with lifecycle.scope(events, "ticket", ticket=7):
@@ -79,4 +79,4 @@ class ChildExitTest(unittest.TestCase):
             self.assertEqual(exit_row["command"][:-1], command[:-1])
             self.assertEqual(exit_row["command"][-1], "body=[REDACTED]")
             self.assertNotIn("private-context", events.read_text())
-            self.assertNotIn("Confidential handoff details", events.read_text())
+            self.assertNotIn("Worker handoff details", events.read_text())

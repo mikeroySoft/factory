@@ -98,7 +98,7 @@ class FakeGitHub:
                 self.assignees = []
             if "--add-assignee" in cmd:
                 self.assignees = ["factory"]
-            self.issue_labels -= {flags["--remove-label"]} if "--remove-label" in cmd else set()
+            self.issue_labels -= {cmd[i + 1] for i, value in enumerate(cmd[:-1]) if value == "--remove-label"}
             self.issue_labels |= {flags["--add-label"]} if "--add-label" in cmd else set()
         elif cmd[1:3] == ["pr", "edit"]:
             self.pr_labels -= {flags["--remove-label"]} if "--remove-label" in cmd else set()
@@ -155,7 +155,8 @@ class RefreshConflictTest(unittest.TestCase):
             self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
             self.assertEqual(self.github.assignees, [])
             self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
-            self.assertFalse(any(cmd[1:3] == ["issue", "comment"] for cmd in self.github.calls))
+            [comment] = [cmd for cmd in self.github.calls if cmd[1:3] == ["issue", "comment"]]
+            self.assertIn("conflicts in shared.txt", comment[comment.index("--body") + 1])
             [requeue] = self.events("conflict-requeue")
             self.assertEqual((requeue["pr"], requeue["files"], requeue["round"]), (102, ["shared.txt"], 1))
             [decision] = [
@@ -204,7 +205,8 @@ class RefreshConflictTest(unittest.TestCase):
             self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
             self.assertEqual(self.github.assignees, [])
             self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
-            self.assertFalse(any(cmd[1:3] == ["issue", "comment"] for cmd in self.github.calls))
+            [comment] = [cmd for cmd in self.github.calls if cmd[1:3] == ["issue", "comment"]]
+            self.assertIn("conflicts in shared.txt", comment[comment.index("--body") + 1])
             [requeue] = self.events("conflict-requeue")
             self.assertEqual((requeue["head"], requeue["files"], requeue["round"]),
                              (self.approved_head, ["shared.txt"], 1))
