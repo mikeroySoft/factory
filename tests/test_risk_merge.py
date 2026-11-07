@@ -26,6 +26,8 @@ NEW_HEAD = "b" * 40
 def claimed_github(args):
     if args == ["api", "user"]:
         return {"login": "factory"}
+    if len(args) > 1 and args[0] == "api" and args[1].endswith("/timeline"):
+        return []
     if args[:2] == ["issue", "view"]:
         return {
             "state": "OPEN",
@@ -566,6 +568,8 @@ class HighPipelineBoundaryTest(unittest.TestCase):
             "number": 7, "title": "change dispatcher", "body": "", "comments": [],
             "labels": [{"name": config.LABEL_AGENT}], "state": "OPEN", "assignees": [],
         }
+        self.issue["assignees"] = [{"login": "factory"}]
+        self.timeline = []
         self.pr = {
             "number": 70, "headRefName": "agent/7", "headRefOid": HEAD,
             "baseRefName": "main", "isDraft": False, "state": "OPEN",
@@ -577,7 +581,7 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.command = self.patch(dispatch, "run", side_effect=self.command_result)
         self.patch(dispatch, "gh_json", side_effect=self.github)
-        self.patch(dispatch, "_ticket_claim_state", return_value=claimed_github(["issue", "view"]))
+        self.patch(dispatch, "_ticket_claim_state", side_effect=lambda _n: self.issue)
         self.patch(dispatch, "host_claim_login", return_value="factory")
         self.patch(dispatch, "initiative_kind", return_value=None)
         self.patch(dispatch, "admit_plan", return_value=None)
@@ -607,6 +611,8 @@ class HighPipelineBoundaryTest(unittest.TestCase):
     def github(self, args):
         if args == ["api", "user"]:
             return {"login": "factory"}
+        if len(args) > 1 and args[0] == "api" and args[1].endswith("/timeline"):
+            return self.timeline
         if args[:2] == ["issue", "view"]:
             return self.issue
         if args[:2] == ["pr", "list"]:
