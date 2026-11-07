@@ -196,6 +196,22 @@ class FeedbackBatchDeadlineTest(unittest.TestCase):
         self.assertTrue(all(c["status"] == "unavailable" for c in result["coverage"].values()))
         self.assertEqual(result["items"], [])
 
+    def test_slow_source_does_not_erase_completed_independent_evidence(self):
+        provider = Provider()
+
+        def slow_threads(**kwargs):
+            if kwargs.get("query") == feedback.THREAD_QUERY:
+                time.sleep(0.2)
+                raise TimeoutError
+            return provider(**kwargs)
+
+        with patch.object(feedback, "DETAIL_TIMEOUT", 0.1):
+            result = feedback.collect(slow_threads, repository=REPO, pr=PR, issue=ISSUE,
+                                      events=[{"event": "claimed", "ticket": 79}], observed_at=AT)
+        self.assertEqual({i["kind"] for i in result["items"]}, {"review", "check_run"})
+        self.assertEqual(result["coverage"]["threads"]["status"], "unavailable")
+        self.assertTrue(all(i["relevance"] == "unknown" for i in result["items"]))
+
 
 if __name__ == "__main__":
     unittest.main()

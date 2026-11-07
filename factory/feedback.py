@@ -132,12 +132,16 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
             gap(source, NOT_COLLECTED, NOT_COLLECTED_MESSAGE)
             return None
         try:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError
             future = pending.pop(canonical(kwargs), None)
-            value = future.result() if future is not None else read(**kwargs, timeout=remaining)
-            if time.monotonic() > deadline:
+            if future is not None:
+                value, finished = future.result()
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                value = read(**kwargs, timeout=remaining)
+                finished = time.monotonic()
+            if finished > deadline:
                 raise TimeoutError
             if not isinstance(value, (dict, list)):
                 raise ValueError  # noqa: TRY004 — malformed provider response
@@ -265,6 +269,10 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
     initial_sha = sha((initial or {}).get('headRefOid'))
     # Fetch independent sources together, but normalize on this thread so coverage,
     # identity conflict handling, and source order remain deterministic.
+    def prefetch(**kwargs):
+        value = read(**kwargs)
+        return value, time.monotonic()
+
     if collect_details and (remaining := deadline - time.monotonic()) > 0:
         requests = [
             {'query': REVIEW_QUERY, 'variables': {**variables, 'cursor': None}},
@@ -276,7 +284,7 @@ def collect(read, *, repository: dict, pr: dict, issue: dict | None = None,
                 {'endpoint': f'{prefix}/commits/{initial_sha}/statuses?per_page=100'},
             ]
         with ThreadPoolExecutor(max_workers=4) as pool:
-            pending = {canonical(kwargs): pool.submit(read, **kwargs, timeout=remaining)
+            pending = {canonical(kwargs): pool.submit(prefetch, **kwargs, timeout=remaining)
                        for kwargs in requests}
     cursor = None
     for page in range(PAGE_LIMIT):
