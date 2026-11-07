@@ -383,6 +383,8 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
         try:
             listeners = sh(["ss", "-ltnp", f"sport = :{port}"])
         except OSError as exc:
+            if sys.platform != "linux" and not collision:
+                return True, f"available on {host} (bind checked; listener inspection unavailable: ss: {exc})"
             return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {exc})")
         if listeners.returncode != 0:
             detail = listeners.stderr.strip() or str(listeners.returncode)
@@ -458,6 +460,15 @@ def second_reviewer_problem(cfg: config.Config, which) -> str | None:
         if model == second:
             return f"worker `{worker}` uses the same model as second reviewer ({model})"
     return None
+
+
+def _systemd_timer_status(unit: str) -> str:
+    if sys.platform != "linux":
+        return f"not applicable (systemd unavailable on {sys.platform})"
+    try:
+        return sh(["systemctl", "--user", "is-active", unit]).stdout.strip()
+    except OSError as exc:
+        return f"unavailable: {exc}"
 
 
 def doctor(argv: list[str]) -> int:
@@ -653,11 +664,11 @@ def doctor(argv: list[str]) -> int:
         f"{cfg.llm_url} ({detail})" if alive else f"{cfg.llm_url} ({detail}); `factory triage` will not run",
     )
 
-    timer = sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).stdout.strip()
+    timer = _systemd_timer_status(f"{cfg.unit}.timer")
     report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
     if cfg.triage_service:
         probe_timer = f"{cfg.unit}-triage-probe.timer"
-        active = sh(["systemctl", "--user", "is-active", probe_timer]).stdout.strip()
+        active = _systemd_timer_status(probe_timer)
         report(
             True if active == "active" else None,
             "triage liveness probe",
