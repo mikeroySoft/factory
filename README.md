@@ -2304,6 +2304,15 @@ feedback cache, event append, model invocation, delivery, dispatch, readiness, o
 approval decision. The full dashboard's pre-existing lifecycle reconciliation
 remains unchanged.
 
+Feedback detail reads overlap independent reviews, threads, check runs and commit
+statuses; initial/final head observations still bracket the collection. Dashboard
+ticket collection uses eight workers with a shared ceiling of eight concurrent
+GitHub transport calls. Normalization stays single-writer and output is unchanged.
+`factory dashboard --json` journals `github_calls` (dashboard transport attempts,
+including failures) and `wall_seconds` (snapshot collection) in
+`.factory/dashboard-reads.jsonl`. This separate performance journal never changes
+`events.jsonl`; direct `snapshot()` and runtime-only reads remain passive.
+
 Detail reads are limited to open pull requests, so closed history never
 multiplies provider calls per refresh. `collect_details=False` reads nothing: the
 schema-1 envelope still carries the caller's independently known repository/PR

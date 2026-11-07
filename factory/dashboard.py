@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -1017,7 +1018,26 @@ def bounded_journal_rows() -> tuple[list[dict], dict]:
     }
 
 
-def snapshot() -> dict:
+def snapshot(*, measurements: dict | None = None) -> dict:
+    slots = threading.BoundedSemaphore(8)
+    count_lock = threading.Lock()
+    counts = {"github_calls": 0}
+
+    def read(**kwargs):
+        started = time.monotonic()
+        timeout = kwargs.get("timeout")
+        acquired = slots.acquire(timeout=timeout)
+        if not acquired:
+            raise TimeoutError
+        try:
+            if timeout is not None:
+                kwargs["timeout"] = max(0, timeout - (time.monotonic() - started))
+            with count_lock:
+                counts["github_calls"] += 1
+            return github(**kwargs)
+        finally:
+            slots.release()
+
     errors = []
     issues: list[dict] = []
     prs: dict[int, dict] = {}
@@ -1027,7 +1047,7 @@ def snapshot() -> dict:
     review_prs: list[dict] = []
     viewer = ""
     try:
-        data = github()
+        data = read()
         repo, gh_upstream = data["repository"], data.get("upstream")
         issues = repo["issues"]["nodes"]
         review_prs = repo["pullRequests"]["nodes"]
@@ -1116,7 +1136,7 @@ def snapshot() -> dict:
     merged = {raw["number"] for raw in raw_prs.values() if raw.get("mergedAt")}
     if missing := sorted(merged - _corrections.keys()):
         try:
-            _corrections = {**_corrections, **feedback.correction_reads(github, REPO, missing)}
+            _corrections = {**_corrections, **feedback.correction_reads(read, REPO, missing)}
         except (RuntimeError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
             errors.append(f"corrections: {exc}")
     login = stats.dispatcher_login(cfg)
@@ -1129,24 +1149,29 @@ def snapshot() -> dict:
     for n, raw in raw_prs.items():
         if raw["number"] in merged & _corrections.keys():
             prs[n]["corrections"] = feedback.corrections(_corrections[raw["number"]], login, cutover)
-    tickets = []
-    for issue in issues:
+    selected = [issue for issue in issues
+                if selected_issue(issue, prs, on_disk, by_ticket, audit)]
+
+    def collect_feedback(issue):
         n = issue["number"]
-        if not selected_issue(issue, prs, on_disk, by_ticket, audit):
-            continue
-        if n in raw_prs:
-            raw = raw_prs[n]
-            # Detail reads stay bounded to open work: the snapshot lists up to 100
-            # PRs, and closed history must not multiply provider calls per refresh.
-            prs[n]["feedback"] = feedback.collect(
-                github, repository={"id": repo.get("id"), "slug": REPO,
+        raw = raw_prs[n]
+        return n, feedback.collect(
+                read, repository={"id": repo.get("id"), "slug": REPO,
                                     "host": urlparse(raw["url"]).hostname or "github.com"},
                 pr={"id": raw.get("id"), "number": raw["number"], "url": raw["url"],
                     "state": raw.get("state"), "draft": raw.get("isDraft")},
                 issue={"id": issue.get("id"), "number": n, "url": issue["url"]},
                 events=provenance, provenance_complete=provenance_complete,
                 producer_revision=revision, collect_details=raw.get("state") == "OPEN",
-            )
+        )
+
+    # Workers own their observations; only this thread updates the ticket records.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for n, observation in pool.map(collect_feedback, [i for i in selected if i["number"] in raw_prs]):
+            prs[n]["feedback"] = observation
+    tickets = []
+    for issue in selected:
+        n = issue["number"]
         tickets.append(build_ticket(
             issue, prs.get(n),
             disk_state(n, lock_states.get(canonical_path(locks / f"{n}.lock"))),
@@ -1193,6 +1218,9 @@ def snapshot() -> dict:
         if not runtime_history["window_complete"] or len(bounded_executions) < len(executions)
         else "bounded"
     )
+
+    if measurements is not None:
+        measurements.update(counts)
 
     return {
         "generated_at": iso(time.time()),
@@ -1382,7 +1410,13 @@ def main(argv: list[str]) -> int:
     port = cfg.dashboard_port if args.port is None else args.port
 
     if args.json:
-        print(json.dumps(snapshot(), indent=2))
+        started = time.monotonic()
+        measurements = {}
+        data = snapshot(measurements=measurements)
+        measurements.update(event="dashboard-read", at=iso(time.time()),
+                            wall_seconds=round(time.monotonic() - started, 6))
+        lifecycle.append(FACTORY / "dashboard-reads.jsonl", measurements)
+        print(json.dumps(data, indent=2))
         return 0
 
     from factory.workspace import Handler, KeyStorageError, Server, Workspace
