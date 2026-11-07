@@ -171,5 +171,32 @@ class DashboardBatchTest(unittest.TestCase):
                     self.assertEqual(ticket["pr"]["feedback"]["coverage"]["checks"]["status"], "complete")
 
 
+
+class FeedbackBatchDeadlineTest(unittest.TestCase):
+    def test_independent_sources_fit_short_shared_deadline(self):
+        provider = Provider()
+
+        def slow_read(**kwargs):
+            time.sleep(0.1)
+            return provider(**kwargs)
+
+        with patch.object(feedback, "DETAIL_TIMEOUT", 0.5):
+            result = feedback.collect(slow_read, repository=REPO, pr=PR, issue=ISSUE,
+                                      events=[{"event": "claimed", "ticket": 79}], observed_at=AT)
+        self.assertTrue(all(c["status"] == "complete" for c in result["coverage"].values()))
+        self.assertEqual({i["kind"] for i in result["items"]}, {"review", "review_comment", "check_run"})
+        self.assertTrue(all(i["relevance"] == "current_head" for i in result["items"]))
+
+    def test_expired_deadline_never_starts_provider_reads(self):
+        provider = Provider()
+        with patch.object(feedback, "DETAIL_TIMEOUT", 0), \
+             patch.object(feedback.time, "monotonic", return_value=1):
+            result = feedback.collect(provider, repository=REPO, pr=PR, issue=ISSUE, observed_at=AT)
+        self.assertEqual(provider.calls, [])
+        self.assertTrue(all(c["status"] == "unavailable" for c in result["coverage"].values()))
+        self.assertEqual(result["items"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
+
