@@ -187,11 +187,10 @@ def _reset_legacy_bar(
 ) -> tuple[dict[str, float | int] | None, bool]:
     if bar is None or "pending_tickets" in bar:
         return bar, False
-    return {
-        **bar,
-        "human_rate": max(float(bar["human_rate"]), cfg.release_bar_floor_human_rate),
-        "first_pass": min(float(bar["first_pass"]), cfg.release_bar_floor_first_pass),
-    }, True
+    # Preserve measured prior-release baseline without resetting to goal floors.
+    # Ratcheting policy compares against the actual prior bar; floors apply only
+    # when tightening the next bar once goals are achieved.
+    return bar, False
 
 
 def _gh(cfg: config.Config, endpoint: str, *args: str) -> Any:

@@ -116,15 +116,15 @@ class ReleaseBarSampleTest(unittest.TestCase):
                     (30, 0.2, 0.8),
                 )
 
-    def test_legacy_bar_is_reset_to_floors_before_comparison(self) -> None:
+    def test_legacy_bar_preserves_measured_values_before_comparison(self) -> None:
         cfg = config.Config(root=Path("."), repo="acme/widgets")
         message = json.dumps({"human_rate": 0.037829, "first_pass": 0.961979, "tickets": 5})
         bar, reset = release._reset_legacy_bar(
             release._bar(f"Release\n\n```json\n{message}\n```"), cfg
         )
-        self.assertTrue(reset)
-        self.assertEqual(bar["human_rate"], 0.1)
-        self.assertEqual(bar["first_pass"], 0.9)
+        self.assertFalse(reset)
+        self.assertAlmostEqual(bar["human_rate"], 0.037829)
+        self.assertAlmostEqual(bar["first_pass"], 0.961979)
 
 
 if __name__ == "__main__":
