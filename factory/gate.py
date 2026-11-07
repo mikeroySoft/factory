@@ -83,7 +83,7 @@ def timed(
         )
     finally:
         if execution and proc.poll() is not None:
-            execution.child_done(proc.pid)
+            execution.child_done(proc.pid, command=cmd, returncode=proc.returncode)
 
 
 def run(cmd: list[str]) -> tuple[bool, str]:

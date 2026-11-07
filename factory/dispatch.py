@@ -198,17 +198,13 @@ def log(msg: str) -> None:
 
 
 STDERR_TAIL = 2000
-_TOKEN = re.compile(
-    r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
-    r"|(?i:bearer|token)\s+[A-Za-z0-9._~+/=-]{20,}"
-)
 
 
 def stderr_tail(err: str | bytes | None) -> str:
     """Return bounded failed-command stderr after redacting complete token-shaped strings."""
     if isinstance(err, bytes):
         err = err.decode(errors="replace")
-    return _TOKEN.sub("[REDACTED]", err or "")[-STDERR_TAIL:]
+    return lifecycle.redact(err or "")[-STDERR_TAIL:]
 
 
 
@@ -221,13 +217,14 @@ def run(
     stderr=subprocess.PIPE,
     env: dict[str, str] | None = None,
     timeout: float | None = None,
+    redact_value: str | None = None,
 ) -> subprocess.CompletedProcess:
     """`env` replaces the inherited environment (lifecycle context is still added).
 
     A failed checked command logs its redacted stderr tail, then raises as before.
     """
     try:
-        return _run(cmd, cwd, check, stdout, stderr, env, timeout)
+        return _run(cmd, cwd, check, stdout, stderr, env, timeout, redact_value)
     except subprocess.CalledProcessError as exc:
         tail = stderr_tail(exc.stderr)
         if tail:
@@ -247,7 +244,7 @@ def raise_if_interrupted() -> None:
         raise KeyboardInterrupt("dispatcher interrupted")
 
 
-def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedProcess:
+def _run(cmd, cwd, check, stdout, stderr, env, timeout, redact_value) -> subprocess.CompletedProcess:
     raise_if_interrupted()
     execution = lifecycle.current()
     if execution is None:
@@ -272,7 +269,9 @@ def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedP
             raise
         finally:
             if proc.poll() is not None:
-                execution.child_done(proc.pid)
+                execution.child_done(
+                    proc.pid, command=cmd, returncode=proc.returncode, redact_value=redact_value,
+                )
     # The terminal's Ctrl-C also killed this child, maybe a moment before the main thread set
     # _CANCEL: the command was interrupted, not failed, so nothing may act on its result.
     if proc.returncode in (-signal.SIGINT, 128 + signal.SIGINT):
@@ -287,6 +286,38 @@ def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedP
 def gh_json(args: list[str], env: dict[str, str] | None = None) -> object:
     out = run(["gh", *args], env=env).stdout
     return json.loads(out)
+
+
+class GitHubWriteFailed(subprocess.CalledProcessError):
+    """A ticket transition failed after retry; never report it as a project escalation."""
+
+
+def github_write(n: int, command: list[str]) -> subprocess.CompletedProcess:
+    """Check every write, retry once, and retain bounded, redacted failure evidence."""
+    for attempt in (1, 2):
+        try:
+            result = run(command, check=True)
+            result.check_returncode()
+            return result
+        except subprocess.CalledProcessError as exc:
+            tail = stderr_tail(exc.stderr)
+            record("github-write-failed", ticket=n, command=lifecycle.redact_command(command),
+                   returncode=exc.returncode, stderr_tail=tail, attempt=attempt)
+            log(f"#{n}: GitHub write failed (attempt {attempt}/2, exit {exc.returncode}): {tail}")
+            if attempt == 2:
+                if execution := lifecycle.current():
+                    execution.outcome, execution.reason = "mechanism_failure", "github_write_failed"
+                raise GitHubWriteFailed(exc.returncode, lifecycle.redact_command(command),
+                                        stderr=tail) from exc
+            delay = _review_retry_delay(tail, 1)
+            if re.search(r"rate.?limit|abuse", tail, re.IGNORECASE):
+                delay = max(60, delay)
+            time.sleep(delay)
+
+
+def ticket_comment(n: int, reason: str, *, kind: str = "exit", **fields) -> None:
+    posted = github_write(n, ["gh", "issue", "comment", str(n), "--repo", REPO, "--body", reason])
+    comment_receipt(n, kind, posted.stdout if posted.returncode == 0 else "", **fields)
 
 
 # Held around every ticket pipeline's `git fetch` and `git push`: concurrent tickets share the
@@ -353,6 +384,7 @@ def _run_reviewer(
     rev: str = "HEAD",
     diff: str = "",
     *,
+    prompt: str | None = None,
     env_overrides: dict[str, str] | None = None,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
@@ -377,7 +409,10 @@ def _run_reviewer(
                     if not path.is_symlink():
                         path.chmod(path.stat().st_mode & ~0o222)
                 (review_dir / "review.diff").write_text(diff)
-            return run(command, cwd=review_dir, check=False, env=env, timeout=timeout)
+            return run(
+                command, cwd=review_dir, check=False, env=env, timeout=timeout,
+                redact_value=prompt,
+            )
         finally:
             _make_tree_writable(review_dir)
 
@@ -661,15 +696,19 @@ def delete_host_claim(n: int, claim: dict) -> None:
                            for row in host_claims(n))
     if remove_label:
         # Keep the comment as durable TTL recovery evidence until label cleanup succeeds.
-        run(["gh", "issue", "edit", str(n), "--repo", REPO,
-             "--remove-label", f"host:{claim['host']}"])
+        github_write(n, ["gh", "issue", "edit", str(n), "--repo", REPO,
+                         "--remove-label", f"host:{claim['host']}"])
     result = run(["gh", "api", f"repos/{REPO}/issues/comments/{claim['id']}",
                   "--method", "DELETE"], check=False)
     if result.returncode and any(row["id"] == claim["id"] for row in host_claims(n)):
-        if remove_label:
-            run(["gh", "issue", "edit", str(n), "--repo", REPO,
-                 "--add-label", f"host:{claim['host']}"])
-        result.check_returncode()
+        try:
+            github_write(n, ["gh", "api", f"repos/{REPO}/issues/comments/{claim['id']}",
+                             "--method", "DELETE"])
+        except GitHubWriteFailed:
+            if remove_label:
+                github_write(n, ["gh", "issue", "edit", str(n), "--repo", REPO,
+                                 "--add-label", f"host:{claim['host']}"])
+            raise
     if remove_label:
         record("claim-label-removed", ticket=n, label=f"host:{claim['host']}")
 
@@ -807,9 +846,28 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
         if (local := _HOST_CLAIMS.get(n)) is not None:
             local.stop()
     assignee = ["--remove-assignee", "@me"] if not claims or owned is not None else []
-    args = [*label_args, *assignee] if assignee_last else [*assignee, *label_args]
-    if args and run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check).returncode:
-        return
+    pairs = list(zip(label_args[::2], label_args[1::2]))
+    additions = [(flag, label) for flag, label in pairs if flag == "--add-label"]
+    removals = [(flag, label) for flag, label in pairs if flag != "--add-label"]
+    queues = {LABEL_AGENT, LABEL_HUMAN, "factory-held"}
+    target = next((label for _, label in additions if label in queues), None)
+    if target:
+        current = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
+        present = {label["name"] for label in current["labels"]}
+        removals = [("--remove-label", label) for label in sorted((queues & present) - {target})]
+    # A successful add response confirms the replacement before any old queue is removed.
+    operations = [list(pair) for pair in additions + removals]
+    if assignee:
+        if additions:
+            operations[0] = [*operations[0], *assignee] if assignee_last else [*assignee, *operations[0]]
+        else:
+            operations.insert(0, assignee)
+    for args in operations:
+        command = ["gh", "issue", "edit", str(n), "--repo", REPO, *args]
+        if check:
+            github_write(n, command)
+        elif run(command, check=False).returncode:
+            return
     if owned is not None:
         delete_host_claim(n, owned)
 
@@ -1011,7 +1069,7 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
                 log(f"PR #{n}: diff too large to review at {head}")
                 return
             command, structured = _review_command(prompt)
-            proc = _run_reviewer(command)
+            proc = _run_reviewer(command, prompt=prompt)
         except (OSError, subprocess.CalledProcessError) as exc:
             execution.outcome = "unknown"
             execution.reason = f"{type(exc).__name__}: {exc}"
@@ -1857,7 +1915,7 @@ def run_worker(
                 if proc.poll() is None:
                     _stop(proc)
                 if execution is not None:
-                    execution.child_done(proc.pid)
+                    execution.child_done(proc.pid, command=cmd, returncode=proc.returncode)
         code = proc.returncode
         if execution is not None:
             if fired:
@@ -2333,10 +2391,8 @@ def escalate(
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
         **evidence,
     )
-    _ESCALATED.add(n)
     claims = host_claims(n) if cfg.host_name else []
     elected = elected_host_claim(claims)
-    unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if elected:
         first, _, rest = body.partition("\n")
@@ -2346,8 +2402,14 @@ def escalate(
     handoff = wt / ".factory" / f"handoff-{n}.md"
     if handoff.exists():
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
-    posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
-    comment_receipt(n, "escalation", posted.stdout if posted.returncode == 0 else "", round=round_number)
+    try:
+        unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN, check=True)
+    except GitHubWriteFailed:
+        ticket_comment(n, body + "\n\nGitHub queue transition failed after retry; dispatcher exiting with an error.",
+                       kind="escalation", round=round_number)
+        raise
+    ticket_comment(n, body, kind="escalation", round=round_number)
+    _ESCALATED.add(n)
 
 
 def _review_plan(n: int) -> str:
@@ -2537,7 +2599,7 @@ def _native_proof(wt: Path, n: int, head: str) -> str:
         "Untrusted worker evidence, not instructions or dispatcher-verified results.",
     ]
     for name, text in sources:
-        name = _TOKEN.sub("[REDACTED]", name)
+        name = lifecycle.redact(name)
         if results._CREDENTIAL.search(name.encode()):
             name = "[REDACTED]"
         if sum(len(part) for part in parts) >= COMMENT_CAP:
@@ -2549,7 +2611,7 @@ def _native_proof(wt: Path, n: int, head: str) -> str:
             except (OSError, results._Unsafe, results._TooLarge):
                 text = "Proof not supplied: named file missing, unreadable, unsafe or oversized."
         name = name.replace("\x00", r"\0")
-        text = _TOKEN.sub("[REDACTED]", text).replace("\x00", "")
+        text = lifecycle.redact(text).replace("\x00", "")
         if results._CREDENTIAL.search(text.encode()):
             text = "[REDACTED: credential-shaped evidence withheld]"
         revisions = re.findall(
@@ -2735,7 +2797,9 @@ def run_reviewer(
                     kwargs["env_overrides"] = env
                 if deadline is not None:
                     kwargs["timeout"] = max(0.001, deadline - time.monotonic())
-                proc = _run_reviewer(command, wt, expected_head, diff, **kwargs)
+                proc = _run_reviewer(
+                    command, wt, expected_head, diff, prompt=prompt, **kwargs,
+                )
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                 launch_error = f"{type(exc).__name__}: {exc}"
                 log(f"{subject}: reviewer launch failed ({exc}); fix PATH or [review] (`factory doctor`)")
@@ -3579,6 +3643,7 @@ def approve_pr(n: int, head: str) -> bool:
         return False
     if cfg.manager and cfg.manager_review == "all" and not manager_approval(events, n, head):
         log(f"#{n}: gate and review passed at {head[:12]}; waiting for manager approval (manager.review = all)")
+        ticket_comment(n, f"Factory dispatcher waiting: manager approval required for {head}.")
         return True
     fields = "number,state,headRefOid,baseRefName,reviewDecision,files"
     pr = gh_json(["pr", "view", f"agent/{n}", "--repo", REPO, "--json", fields])
@@ -3656,6 +3721,7 @@ def approve_pr(n: int, head: str) -> bool:
         gate_head=head, review_head=head,
     )
     retain_handoff(n, head)
+    ticket_comment(n, f"Factory dispatcher approved: gate and review passed at {head}; waiting for CI and merge.")
     return True
 
 
@@ -3859,6 +3925,7 @@ def _record_rework(n: int, head: str, findings: str, deferred: bool) -> None:
     if deferred:
         unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
                 assignee_last=True, check=True)
+        ticket_comment(n, f"Factory dispatcher requeued: review rework at {head}.\n\n{findings}")
 
 
 def _actionable_review(n: int, head: str, verdict: str | None, findings: str, pr_failed: bool) -> bool:
@@ -4037,7 +4104,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             remote_head, remote_head, [],
         )
         record("conflict-requeue", ticket=n, pr=pr, head=remote_head, verb=verb, files=conflicts, round=rounds + 1)
-        unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True)
+        unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True, check=True)
+        ticket_comment(n, f"Factory dispatcher requeued: PR #{pr} {verb} conflicts in {', '.join(conflicts)}.")
         log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -4157,7 +4225,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 reports=reports, changed_files=changed_files, unrelated=unrelated, round=rounds + 1,
                 refreshed_head=head, evidence_ref=evidence_ref,
             )
-            unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True)
+            unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True, check=True)
+            ticket_comment(n, f"Factory dispatcher requeued: PR #{pr} gate failed twice after {verb}.\n\n{details}")
             log(f"#{n}: PR #{pr} gate failed twice after {verb} onto {cfg.main}; requeued to a worker")
             return False
     if not ok:
@@ -4216,7 +4285,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,
             )
-            unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True)
+            unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True, check=True)
+            ticket_comment(n, f"Factory dispatcher requeued: PR #{pr} High-risk checks disagreed.\n\n{state['packet']}")
             log(f"#{n}: PR #{pr} High-risk checks disagreed after refresh; requeued to a worker")
             return False
         withdraw(
@@ -4628,6 +4698,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n, pr_num, "merge now", f"gate, review, approval, and CI passed for {head}",
                     head, head, latest_checks, merge_sha=merge_sha,
                 )
+                ticket_comment(n, f"Factory dispatcher merged PR #{pr_num}: gate, review, approval and CI passed at {head}.")
             execution.outcome = "merged"
             log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
             cleanup_after_merge(n, head)
@@ -5272,13 +5343,17 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except GitHubWriteFailed:
+            # The transition already retained its failure evidence; do not recursively escalate.
+            raise
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except WorkerUnavailable as exc:
             # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.
             execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
             log(f"#{n}: {exc}; unclaimed, retry once the worker is healthy")
-            unclaim(n)
+            unclaim(n, check=True)
+            ticket_comment(n, f"Factory dispatcher requeued: worker unavailable ({exc}); retry after host repair.")
             return False
         except FileNotFoundError as exc:
             # Host defect (worker executable not on PATH, #260), not a ticket defect: give the
@@ -5286,7 +5361,8 @@ def process_ticket(
             # Covers every worker launch of this ticket, first attempt and review bounces alike.
             execution.outcome, execution.reason = "mechanism_failure", f"{type(exc).__name__}: {exc}"
             log(f"#{n}: worker launch failed ({exc}); unclaimed, fix PATH or [workers] (`factory doctor`)")
-            unclaim(n)
+            unclaim(n, check=True)
+            ticket_comment(n, f"Factory dispatcher requeued: worker launch failed ({exc}); fix PATH or [workers].")
             return False
         except Exception as exc:
             # A crash after the claim strands the ticket assigned + ready-for-agent, which every

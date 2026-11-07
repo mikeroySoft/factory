@@ -31,6 +31,31 @@ RETENTION = 8
 PASS_STAGES = ("triage", "dispatch", "watch")
 STAGE_SUCCESS_NAME = "stage-success.json"
 
+_TOKEN = re.compile(
+    r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+    r"|(?i:bearer|token)\s+[A-Za-z0-9._~+/=-]{20,}"
+)
+
+
+def redact(text: str) -> str:
+    return _TOKEN.sub("[REDACTED]", text)
+
+
+def redact_command(command: list[str], redact_value: str | None = None) -> list[str]:
+    """Retain argv structure, not credentials or a caller-identified inline payload."""
+    result = []
+    hide_next = False
+    sensitive = re.compile(r"(?i)(?:token|password|secret|api[-_]key|authorization|credential)")
+    for arg in command:
+        if redact_value:
+            arg = arg.replace(redact_value, "[REDACTED]")
+        key, separator, _ = arg.partition("=")
+        hide = sensitive.search(key) or key in {"-H", "--header", "--body", "--prompt", "body"}
+        result.append("[REDACTED]" if hide_next else
+                      f"{key}=[REDACTED]" if hide and separator else redact(arg))
+        hide_next = bool(hide and not separator)
+    return result
+
 
 def _empty_stage_success() -> dict[str, str | None]:
     return dict.fromkeys(PASS_STAGES)
@@ -538,12 +563,14 @@ class Execution:
         self._children[pid] = identity
         self.emit("child_start", child_process=identity, handoff_id=handoff_id)
 
-    def child_done(self, pid: int) -> None:
+    def child_done(self, pid: int, *, command: list[str] = (), returncode: int | None = None,
+                   redact_value: str | None = None) -> None:
         identity = self._children.pop(pid, {
             "pid": pid, "boot_id": None, "start_ticks": None,
             "pid_namespace": None, "uid": None, "state": None, "ppid": None,
         })
-        self.emit("child_exit", child_process=identity)
+        self.emit("child_exit", child_process=identity,
+                  command=redact_command(command, redact_value), returncode=returncode)
 
 
 @contextmanager

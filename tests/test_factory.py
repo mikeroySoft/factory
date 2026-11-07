@@ -154,6 +154,9 @@ def merge_stage_mocks(origin: Path, pr_number: int, branch: str, title: str, ori
                 git(origin, "merge", "-q", "--squash", branch)
                 git(origin, "commit", "-q", "-m", "Squash PR")
             return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd[:3] == ["gh", "issue", "comment"]:
+            assert cmd[3] == str(ticket)
+            return subprocess.CompletedProcess(cmd, 0, f"https://example.invalid/issues/{ticket}#issuecomment-1", "")
         return original_run(cmd, *a, **kw)
 
     return fake_gh_json, fake_run
