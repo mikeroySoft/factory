@@ -677,6 +677,16 @@ def _descendants(executions: list[dict], recorded: dict | None = None) -> dict[s
         return found
     recorded = recorded or {}
     uids = {(entry.get("process") or {}).get("uid") for entry in executions}
+    origins = []
+    for entry in executions:
+        process = entry.get("process") or {}
+        origins.append({
+            "execution_id": entry.get("execution_id"),
+            "boot_id": process.get("boot_id"),
+            "pid": process.get("pid"),
+            "start_ticks": process.get("start_ticks"),
+            "uid": process.get("uid"),
+        })
     for entry in executions:
         if type((entry.get("process") or {}).get("uid")) is not int:
             found[entry["execution_id"]]["complete"] = False
@@ -718,7 +728,8 @@ def _descendants(executions: list[dict], recorded: dict | None = None) -> dict[s
                 for entry in executions:
                     found[entry["execution_id"]]["complete"] = False
     else:
-        processes, contexts, unknown_context, complete = darwin_observer.scan(CONTEXT_ENV, uids)
+        processes, contexts, unknown_context, complete = darwin_observer.scan(
+            CONTEXT_ENV, uids, origins)
         if not complete:
             for evidence in found.values():
                 evidence["complete"] = False
@@ -726,9 +737,12 @@ def _descendants(executions: list[dict], recorded: dict | None = None) -> dict[s
         execution_id = entry["execution_id"]
         owner = entry.get("process") or {}
         included = []
+        owner_start = owner.get("start_ticks")
         for pid, process in processes.items():
             if type(process.get("start_ticks")) is not int:
                 found[execution_id]["complete"] = False
+                continue
+            if type(owner_start) is int and process["start_ticks"] < owner_start:
                 continue
             context = contexts.get(pid, {})
             tagged = (context.get("schema_version") == 1

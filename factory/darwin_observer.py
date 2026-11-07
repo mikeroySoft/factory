@@ -17,10 +17,11 @@ Context uses one KERN_ARGMAX allocation, capped at 1 MiB. A buffer that comes
 back full is truncated and unknown, not a short read to grow.
 
 Identity reads cover the verified host's 1061-pid population, up to 4096.
-Context reads then prefer processes whose uid is one of the executions', with
-reparented ppid 1 first, and stop at 256. That cap is still incomplete when a
-user has more than 256 such processes. It is not a claim that 256 identities
-are the relevant set by themselves.
+Context reads stay capped at 256. Among the same uid, a process that started
+after an owner's process-start second is read newest first. The owner's second
+is deferred, not dropped. A strictly earlier start is not a descendant. An
+in-memory hand continues through overflow and deferred candidates so the next
+observation does not repeat that prefix. Parent pid is not the order.
 """
 from __future__ import annotations
 
@@ -64,6 +65,7 @@ SUPPORTED_MAC = (27, 2)
 _installed = None
 _libproc = None
 _libc = None
+_resume = None
 
 
 def install(backend) -> None:
@@ -72,8 +74,9 @@ def install(backend) -> None:
 
 
 def reset() -> None:
-    global _installed
+    global _installed, _resume
     _installed = None
+    _resume = None
 
 
 def installed():
@@ -94,14 +97,14 @@ def abi_supported(facts: tuple | None = None) -> bool:
         SUPPORTED_BYTEORDER, SUPPORTED_MAC)
 
 
-def scan(context_env: str, uids=()):
+def scan(context_env: str, uids=(), origins=()):
     """(processes, contexts, unknown_context_pids, complete)."""
     backend = _installed
     if backend is not None:
         return backend.scan()
     if not abi_supported():
         return {}, {}, set(), False
-    return _native_scan(context_env, uids)
+    return _native_scan(context_env, uids, origins)
 
 
 def native_process(pid: int, boot_id: str | None) -> dict:
@@ -379,6 +382,116 @@ def _procargs(libc, pid: int, capacity: int) -> bytes | None:
     return buf.raw[:got]
 
 
+def _stamp(info: dict) -> tuple:
+    return (info["sec"], info["usec"], info["pid"])
+
+
+def _scope_key(origins, boot: str) -> tuple:
+    rows = []
+    for origin in origins if isinstance(origins, (list, tuple)) else ():
+        if not isinstance(origin, dict):
+            continue
+        execution = origin.get("execution_id")
+        origin_boot = origin.get("boot_id")
+        pid = origin.get("pid")
+        start = origin.get("start_ticks")
+        rows.append((
+            execution if isinstance(execution, str) else "",
+            origin_boot if isinstance(origin_boot, str) else "",
+            pid if type(pid) is int else -1,
+            start if type(start) is int else -1,
+        ))
+    return (boot, tuple(sorted(rows)))
+
+
+def _usable_starts(origins, boot: str) -> list:
+    """Integer process-start seconds for owners on this boot.
+
+    Journal wall time is not a cutoff. The stored second is the whole second
+    in which the owner may have started.
+    """
+    starts = []
+    for origin in origins if isinstance(origins, (list, tuple)) else ():
+        if not isinstance(origin, dict) or origin.get("boot_id") != boot:
+            continue
+        start = origin.get("start_ticks")
+        if type(start) is int:
+            starts.append(start)
+    return starts
+
+
+def _temporal_band(info: dict, starts: list) -> str:
+    if not starts:
+        return "deferred"
+    sec = info["sec"]
+    if any(sec > start for start in starts):
+        return "compatible"
+    if any(sec == start for start in starts):
+        return "deferred"
+    return "earlier"
+
+
+def _hand_index(sequence: list, hand: tuple) -> int:
+    for index, info in enumerate(sequence):
+        if _stamp(info) <= hand:
+            return index
+    return 0
+
+
+def _take_context(compatible: list, deferred: list, scope: tuple, boot: str):
+    """Up to SCAN_CONTEXT_LIMIT rows, newest compatible first, then deferred.
+
+    One saved hand, keyed by boot and execution scope, resumes after the last
+    prefix. A process newer than that head is still read, so pid reuse and a
+    new child do not wait behind the old cursor. The hand is not a journal.
+    """
+    global _resume
+    sequence = compatible + deferred
+    resume = _resume
+    if not (isinstance(resume, dict) and resume.get("scope") == scope
+            and resume.get("boot") == boot):
+        resume = None
+    head = resume.get("head") if resume else None
+    hand = resume.get("hand") if resume else None
+    chosen = []
+    chosen_ids = set()
+
+    def take(info):
+        if len(chosen) >= SCAN_CONTEXT_LIMIT:
+            return
+        key = _stamp(info)
+        if key in chosen_ids:
+            return
+        chosen.append(info)
+        chosen_ids.add(key)
+
+    if head is not None:
+        for info in sequence:
+            if _stamp(info) > head:
+                take(info)
+    start = 0 if hand is None else _hand_index(sequence, hand)
+    for info in sequence[start:]:
+        if len(chosen) >= SCAN_CONTEXT_LIMIT:
+            break
+        take(info)
+    overflow = any(_stamp(info) not in chosen_ids for info in sequence)
+    if not sequence or not overflow:
+        _resume = None
+    else:
+        pending = None
+        for info in sequence[start:]:
+            if _stamp(info) not in chosen_ids:
+                pending = _stamp(info)
+                break
+        if pending is None and sequence:
+            pending = _stamp(sequence[0])
+        _resume = {
+            "boot": boot, "scope": scope,
+            "head": _stamp(sequence[0]), "hand": pending,
+        }
+    return chosen, overflow
+
+
 def _native_inputs():
     lib, libc = _lib()
     capacity = _argmax(libc)
@@ -390,7 +503,7 @@ def _native_inputs():
     return listed, list_complete, capacity, lib, libc
 
 
-def _native_scan(context_env: str, uids=()):
+def _native_scan(context_env: str, uids=(), origins=()):
     if not abi_supported():
         return {}, {}, set(), False
     valid = {uid for uid in uids if type(uid) is int}
@@ -421,13 +534,24 @@ def _native_scan(context_env: str, uids=()):
         except OSError:
             complete = False
     relevant = [info for info in infos if info["uid"] in valid and info["status"] != SZOMB]
-    relevant.sort(key=lambda info: (0 if info["ppid"] == 1 else 1, info["pid"]))
-    if len(relevant) > SCAN_CONTEXT_LIMIT:
+    starts = _usable_starts(origins, boot)
+    compatible = []
+    deferred = []
+    for info in relevant:
+        band = _temporal_band(info, starts)
+        if band == "compatible":
+            compatible.append(info)
+        elif band == "deferred":
+            deferred.append(info)
+    compatible.sort(key=_stamp, reverse=True)
+    deferred.sort(key=_stamp, reverse=True)
+    chosen, overflow = _take_context(compatible, deferred, _scope_key(origins, boot), boot)
+    if overflow:
         complete = False
     processes = {info["pid"]: _public(info, boot) for info in relevant}
     contexts = {}
     unknown: set[int] = set()
-    for info in relevant[:SCAN_CONTEXT_LIMIT]:
+    for info in chosen:
         if time.monotonic() > deadline:
             complete = False
             break

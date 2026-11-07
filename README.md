@@ -2038,9 +2038,12 @@ parent or uid does. Context tags come from `KERN_PROCARGS2` into one
 `KERN_ARGMAX`-sized buffer (1 MiB on the verified host). A full buffer is
 truncated and unknown. `proc_listallpids` uses byte sizes and returns a pid
 count; a buffer that comes back full is retried, then incomplete. Identity
-reads follow kernel order up to 4096 pids. Context reads cover at most 256
-same-uid processes, reparented `ppid == 1` first; past either cap the scan is
-incomplete. `pid_namespace` is `"darwin"`.
+reads follow kernel order up to 4096 pids. Context reads stay capped at 256
+same-uid processes, newest start first among processes that began after an
+owner's process-start second. That same second stays deferred, and a strictly
+earlier start is not a descendant. A private in-memory hand continues through
+what did not fit, so the next observation does not repeat the same prefix.
+Past either cap the scan is incomplete. `pid_namespace` is `"darwin"`.
 Host IDs hash the IOKit `IOPlatformUUID` with the same UUIDv5 scheme as Linux
 machine-id. The guarded observer never runs `ps`, `lsof`, `sysctl`, or
 `ioreg`. Denied, malformed, empty, or truncated reads are unknown, not absence.

@@ -142,6 +142,16 @@ class DarwinObserverTest(unittest.TestCase):
             self.assertEqual(pids, {424244})
         self.assertIn(dispatcher.execution_id, worker.execution_ids)
 
+    def test_process_started_before_owner_is_not_a_descendant(self):
+        _dispatcher, worker = self.pair()
+        self.memory.procs[worker.process["pid"]] = ident(
+            worker.process["pid"], start=worker.process["start_ticks"], ppid=1)
+        self.memory.procs[80] = ident(80, start=5, ppid=worker.process["pid"])
+        self.memory.procs[81] = ident(81, start=20, ppid=worker.process["pid"])
+        observed = self.states()
+        pids = {item["pid"] for item in observed["worker"]["evidence"]["descendants"]}
+        self.assertEqual(pids, {81})
+
     def test_unrelated_same_uid_process_does_not_prove_activity(self):
         self.pair()
         self.memory.procs[424245] = ident(424245, start=60, ppid=1)
@@ -335,13 +345,16 @@ class NativeSeamTest(unittest.TestCase):
     def setUp(self):
         self._libproc = darwin_observer._libproc
         self._libc = darwin_observer._libc
+        self._resume = darwin_observer._resume
         darwin_observer._libproc = None
         darwin_observer._libc = None
+        darwin_observer._resume = None
         self.addCleanup(self._restore)
 
     def _restore(self):
         darwin_observer._libproc = self._libproc
         darwin_observer._libc = self._libc
+        darwin_observer._resume = self._resume
 
     def test_unverified_abi_does_not_read(self):
         calls = []
@@ -481,40 +494,247 @@ class NativeSeamTest(unittest.TestCase):
         def inputs():
             return pids, True, darwin_observer.ARGMAX_CAP, object(), object()
 
+        origins = [{"execution_id": "exec-w", "boot_id": BOOT, "pid": 11, "start_ticks": 10, "uid": 501}]
         with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
                 patch.object(darwin_observer, "_native_inputs", inputs), \
                 patch.object(darwin_observer, "_bsdinfo", info), \
                 patch.object(darwin_observer, "_procargs", args), \
                 patch("factory.platform_identity.boot_id", return_value=BOOT):
-            _processes, contexts, _unknown, complete = darwin_observer._native_scan(ENV, {501})
+            _processes, contexts, _unknown, complete = darwin_observer._native_scan(ENV, {501}, origins)
         self.assertTrue(complete)
         self.assertEqual(set(contexts), {orphan})
         self.assertEqual(contexts[orphan]["execution_ids"], ["exec-orphan"])
 
-        limit = darwin_observer.SCAN_CONTEXT_LIMIT
-        crowded = list(range(1, limit + 1)) + [10000]
+    def test_newborn_orphan_is_read_ahead_of_old_launchd_agents(self):
+        owner_start = 1_000
+        orphan = 9000
+        old = list(range(1, 301))
+        spawned = []
+
+        def boom(*args, **kwargs):
+            spawned.append(args)
+            raise AssertionError("observer spawned")
+
+        def info(pid, lib=None):
+            if pid == orphan:
+                return {"pid": pid, "ppid": 1, "uid": 501, "status": 2, "sec": owner_start + 2, "usec": 8}
+            return {"pid": pid, "ppid": 1, "uid": 501, "status": 2, "sec": 10, "usec": 1}
+
+        def tag(execution_id):
+            body = json.dumps(
+                {"schema_version": 1, "execution_ids": ["exec-d", "exec-w"]}, separators=(",", ":"))
+            return (ENV + "=" + body).encode()
+
         seen = []
 
+        def args(_libc, pid, _capacity):
+            seen.append(pid)
+            if pid == orphan:
+                return pack_args(1, [b"python"], [b"PATH=/bin", tag(pid)])
+            return pack_args(1, [b"old"], [b"PATH=/bin"])
+
+        def inputs():
+            return old + [orphan], True, darwin_observer.ARGMAX_CAP, object(), object()
+
+        dispatcher = {
+            "execution_id": "exec-d",
+            "process": {"pid": 10, "boot_id": BOOT, "start_ticks": owner_start, "uid": 501},
+        }
+        worker = {
+            "execution_id": "exec-w",
+            "process": {"pid": 11, "boot_id": BOOT, "start_ticks": owner_start + 1, "uid": 501},
+        }
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
+                patch.object(darwin_observer, "_native_inputs", inputs), \
+                patch.object(darwin_observer, "_bsdinfo", info), \
+                patch.object(darwin_observer, "_procargs", args), \
+                patch("factory.platform_identity.boot_id", return_value=BOOT), \
+                patch("factory.platform_identity.darwin", return_value=True), \
+                patch("subprocess.run", side_effect=boom):
+            found = lifecycle._descendants([dispatcher, worker], {})
+        self.assertEqual(seen, [orphan])
+        self.assertEqual(spawned, [])
+        for execution_id in ("exec-d", "exec-w"):
+            self.assertEqual({item["pid"] for item in found[execution_id]["processes"]}, {orphan})
+            state, evidence = lifecycle._evidence(
+                [{"kind": "enter", "process": {"boot_id": BOOT, "pid": 11}, "locks": []}],
+                {**found[execution_id], "launched": True},
+            )
+            self.assertEqual(state, "active")
+            self.assertTrue(evidence["descendants"])
+            self.assertFalse(evidence["descendant_absence_proven"])
+
+    def test_overflow_continues_and_scope_boot_and_pid_reuse_do_not_stick(self):
+        owner_start = 1_000
+        limit = darwin_observer.SCAN_CONTEXT_LIMIT
+        oldest = 1
+        newest = limit + 1
+        pids = list(range(oldest, newest + 1))
+        births = {}
+
+        def info(pid, lib=None):
+            sec, usec = births.get(pid, (owner_start + pid, 1))
+            return {"pid": pid, "ppid": 1, "uid": 501, "status": 2, "sec": sec, "usec": usec}
+
+        def args(_libc, pid, _capacity):
+            seen.append(pid)
+            if pid in tagged:
+                body = json.dumps(
+                    {"schema_version": 1, "execution_ids": ["exec-old"]}, separators=(",", ":"))
+                return pack_args(1, [b"python"], [b"PATH=/bin", (ENV + "=" + body).encode()])
+            return pack_args(1, [b"x"], [b"PATH=/bin"])
+
+        def inputs():
+            return list(pids), True, darwin_observer.ARGMAX_CAP, object(), object()
+
+        def origins(execution_id="exec-a"):
+            return [{
+                "execution_id": execution_id, "boot_id": BOOT, "pid": 11,
+                "start_ticks": owner_start, "uid": 501,
+            }]
+
+        def run(execution_id="exec-a", boot=BOOT):
+            with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
+                    patch.object(darwin_observer, "_native_inputs", inputs), \
+                    patch.object(darwin_observer, "_bsdinfo", info), \
+                    patch.object(darwin_observer, "_procargs", args), \
+                    patch("factory.platform_identity.boot_id", return_value=boot), \
+                    patch("subprocess.run", side_effect=AssertionError("observer spawned")):
+                return darwin_observer._native_scan(ENV, {501}, origins(execution_id))
+
+        seen = []
+        tagged = {oldest}
+        _processes, contexts, _unknown, complete = run()
+        first = list(seen)
+        self.assertFalse(complete)
+        self.assertNotIn(oldest, first)
+        self.assertIn(newest, first)
+        self.assertEqual(len(first), limit)
+        self.assertNotIn(oldest, contexts)
+        seen = []
+        _processes, contexts, _unknown, complete = run()
+        self.assertEqual(seen, [oldest])
+        self.assertFalse(complete)
+        self.assertIn(oldest, contexts)
+        self.assertEqual(set(first).intersection(seen), set())
+
+        seen = []
+        tagged = {newest, 50}
+        births[50] = (owner_start + newest + 5, 9)
+        pids.append(50)
+        _processes, contexts, _unknown, complete = run()
+        self.assertIn(50, seen)
+        self.assertIn(50, contexts)
+        self.assertEqual(contexts[50]["execution_ids"], ["exec-old"])
+
+        seen = []
+        tagged = {newest}
+        births.pop(50, None)
+        _processes, contexts, _unknown, _complete = run("exec-b")
+        self.assertIn(newest, seen)
+        self.assertEqual(seen[0], newest)
+
+        seen = []
+        other = "99999999-9999-9999-9999-999999999999"
+        _processes, contexts, _unknown, _complete = run("exec-a", other)
+        self.assertEqual(seen[0], newest)
+        self.assertIn(newest, contexts)
+        same_boot = [{
+            "execution_id": "exec-a", "boot_id": other, "pid": 11,
+            "start_ticks": owner_start, "uid": 501,
+        }]
+        seen = []
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
+                patch.object(darwin_observer, "_native_inputs", inputs), \
+                patch.object(darwin_observer, "_bsdinfo", info), \
+                patch.object(darwin_observer, "_procargs", args), \
+                patch("factory.platform_identity.boot_id", return_value=other):
+            _processes, contexts, _unknown, _complete = darwin_observer._native_scan(ENV, {501}, same_boot)
+        self.assertIn(newest, contexts)
+
+    def test_same_second_stays_deferred_and_is_not_absence(self):
+        owner_start = 1_000
+        newer = 70
+        same = 71
+        earlier = 72
+        pids = [newer, same, earlier]
+
+        def info(pid, lib=None):
+            sec = {newer: owner_start + 5, same: owner_start, earlier: owner_start - 5}[pid]
+            return {"pid": pid, "ppid": 1, "uid": 501, "status": 2, "sec": sec, "usec": 4}
+
+        def args(_libc, pid, _capacity):
+            seen.append(pid)
+            if pid == earlier:
+                return pack_args(1, [b"old"], [b"PATH=/bin"])
+            body = json.dumps(
+                {"schema_version": 1, "execution_ids": [f"exec-{pid}"]}, separators=(",", ":"))
+            return pack_args(1, [b"python"], [b"PATH=/bin", (ENV + "=" + body).encode()])
+
+        def inputs():
+            return pids, True, darwin_observer.ARGMAX_CAP, object(), object()
+
+        origins = [{
+            "execution_id": "exec-w", "boot_id": BOOT, "pid": 11,
+            "start_ticks": owner_start, "uid": 501,
+        }]
+        seen = []
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
+                patch.object(darwin_observer, "_native_inputs", inputs), \
+                patch.object(darwin_observer, "_bsdinfo", info), \
+                patch.object(darwin_observer, "_procargs", args), \
+                patch("factory.platform_identity.boot_id", return_value=BOOT), \
+                patch("subprocess.run", side_effect=AssertionError("observer spawned")):
+            _processes, contexts, unknown, complete = darwin_observer._native_scan(ENV, {501}, origins)
+        self.assertEqual(seen, [newer, same])
+        self.assertNotIn(earlier, seen)
+        self.assertIn(newer, contexts)
+        self.assertIn(same, contexts)
+        self.assertNotIn(earlier, contexts)
+        self.assertNotIn(same, unknown)
+        self.assertTrue(complete)
+        limit = darwin_observer.SCAN_CONTEXT_LIMIT
+        crowded = [pid for pid in range(1, limit + 2) if pid != same]
+        self.assertEqual(len(crowded), limit)
+        pids[:] = crowded + [same]
+
         def crowded_info(pid, lib=None):
-            return {"pid": pid, "ppid": 1, "uid": 501, "status": 2, "sec": 5, "usec": 1}
+            if pid == same:
+                return {"pid": pid, "ppid": 1, "uid": 501, "status": 2, "sec": owner_start, "usec": 1}
+            return {"pid": pid, "ppid": 1, "uid": 501, "status": 2, "sec": owner_start + 10 + pid, "usec": 1}
 
         def crowded_args(_libc, pid, _capacity):
             seen.append(pid)
-            return pack_args(1, [b"x"], [b"PATH=/bin"])
+            if pid != same:
+                return pack_args(1, [b"x"], [b"PATH=/bin"])
+            body = json.dumps(
+                {"schema_version": 1, "execution_ids": ["exec-same"]}, separators=(",", ":"))
+            return pack_args(1, [b"python"], [b"PATH=/bin", (ENV + "=" + body).encode()])
 
         def crowded_inputs():
-            return crowded, True, darwin_observer.ARGMAX_CAP, object(), object()
+            return list(pids), True, darwin_observer.ARGMAX_CAP, object(), object()
 
+        seen = []
         with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
                 patch.object(darwin_observer, "_native_inputs", crowded_inputs), \
                 patch.object(darwin_observer, "_bsdinfo", crowded_info), \
                 patch.object(darwin_observer, "_procargs", crowded_args), \
                 patch("factory.platform_identity.boot_id", return_value=BOOT):
-            _processes, contexts, _unknown, complete = darwin_observer._native_scan(ENV, {501})
+            _processes, contexts, unknown, complete = darwin_observer._native_scan(ENV, {501}, origins)
+        self.assertNotIn(same, seen)
+        self.assertNotIn(same, contexts)
+        self.assertNotIn(same, unknown)
         self.assertFalse(complete)
-        self.assertNotIn(10000, seen)
-        self.assertNotIn(10000, contexts)
-        self.assertEqual(len(seen), limit)
+        seen = []
+        with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
+                patch.object(darwin_observer, "_native_inputs", crowded_inputs), \
+                patch.object(darwin_observer, "_bsdinfo", crowded_info), \
+                patch.object(darwin_observer, "_procargs", crowded_args), \
+                patch("factory.platform_identity.boot_id", return_value=BOOT):
+            _processes, contexts, unknown, complete = darwin_observer._native_scan(ENV, {501}, origins)
+        self.assertIn(same, seen)
+        self.assertIn(same, contexts)
+        self.assertFalse(complete)
 
 
 class HostBootFailureTest(unittest.TestCase):
