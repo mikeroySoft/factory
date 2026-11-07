@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, generation, lifecycle
-import test_dispatch_lifecycle as fixtures
+from tests import test_dispatch_lifecycle as fixtures
 
 
 class BudgetEscalationTest(unittest.TestCase):
