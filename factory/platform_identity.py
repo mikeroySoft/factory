@@ -72,6 +72,75 @@ def boot_id() -> str | None:
 
 
 def host_id() -> str | None:
+    # Prefer non-spawning IOKit/CoreFoundation lookup; fall back to ioreg only when needed.
+    if darwin():
+        try:
+            cf_name = ctypes.util.find_library("CoreFoundation")
+            io_name = ctypes.util.find_library("IOKit")
+            if cf_name and io_name:
+                CF = ctypes.CDLL(cf_name)
+                IO = ctypes.CDLL(io_name)
+                CFStringRef = ctypes.c_void_p
+                CFMutableDictionaryRef = ctypes.c_void_p
+                io_service_t = ctypes.c_uint
+                IOServiceMatching = IO.IOServiceMatching
+                IOServiceMatching.argtypes = [ctypes.c_char_p]
+                IOServiceMatching.restype = CFMutableDictionaryRef
+                IOServiceGetMatchingService = IO.IOServiceGetMatchingService
+                IOServiceGetMatchingService.argtypes = [ctypes.c_uint, CFMutableDictionaryRef]
+                IOServiceGetMatchingService.restype = io_service_t
+                IOObjectRelease = IO.IOObjectRelease
+                IOObjectRelease.argtypes = [io_service_t]
+                IOObjectRelease.restype = ctypes.c_int
+                CFStringCreateWithCString = CF.CFStringCreateWithCString
+                CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+                CFStringCreateWithCString.restype = CFStringRef
+                IORegistryEntryCreateCFProperty = IO.IORegistryEntryCreateCFProperty
+                IORegistryEntryCreateCFProperty.argtypes = [io_service_t, CFStringRef, ctypes.c_void_p, ctypes.c_uint32]
+                IORegistryEntryCreateCFProperty.restype = ctypes.c_void_p
+                CFGetTypeID = CF.CFGetTypeID
+                CFGetTypeID.argtypes = [ctypes.c_void_p]
+                CFGetTypeID.restype = ctypes.c_ulong
+                CFStringGetTypeID = CF.CFStringGetTypeID
+                CFStringGetTypeID.argtypes = []
+                CFStringGetTypeID.restype = ctypes.c_ulong
+                CFStringGetCStringPtr = CF.CFStringGetCStringPtr
+                CFStringGetCStringPtr.argtypes = [CFStringRef, ctypes.c_uint32]
+                CFStringGetCStringPtr.restype = ctypes.c_char_p
+                CFStringGetCString = CF.CFStringGetCString
+                CFStringGetCString.argtypes = [CFStringRef, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+                CFStringGetCString.restype = ctypes.c_bool
+                CFRelease = CF.CFRelease
+                CFRelease.argtypes = [ctypes.c_void_p]
+                kUTF8 = 0x08000100  # kCFStringEncodingUTF8
+                matching = IOServiceMatching(b"IOPlatformExpertDevice")
+                service = IOServiceGetMatchingService(0, matching)
+                try:
+                    if service:
+                        key = CFStringCreateWithCString(ctypes.c_void_p(0), b"IOPlatformUUID", kUTF8)
+                        try:
+                            cf = IORegistryEntryCreateCFProperty(service, key, ctypes.c_void_p(0), 0)
+                        finally:
+                            CFRelease(key)
+                        if cf:
+                            try:
+                                if CFGetTypeID(cf) == CFStringGetTypeID():
+                                    s = CFStringGetCStringPtr(cf, kUTF8)
+                                    if not s:
+                                        buf = ctypes.create_string_buffer(128)
+                                        if CFStringGetCString(cf, buf, 128, kUTF8):
+                                            s = buf.value
+                                    if s:
+                                        machine = str(uuid.UUID(s.decode("utf-8").strip())).upper()
+                                        return str(uuid.uuid5(uuid.NAMESPACE_URL, "factory:host:" + machine))
+                            finally:
+                                CFRelease(cf)
+                finally:
+                    if service:
+                        IOObjectRelease(service)
+        except Exception:
+            pass
+    # Fallback: spawn ioreg (kept for compatibility and tests)
     try:
         result = _probe("/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice")
         match = re.search(r'"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]+)"', result.stdout)

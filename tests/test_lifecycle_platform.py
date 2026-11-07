@@ -86,15 +86,7 @@ class DarwinLifecycleTest(unittest.TestCase):
         self.assertEqual(lifecycle._process_state(identity), "dead")
         self.assertEqual(runtime_events._Observation([]).process_state(identity), "dead")
         self.assertEqual(lifecycle.observe(self.path)[0]["state"], "interrupted")
-
-class BootProbeTest(unittest.TestCase):
-    def test_boot_id_nonspawning_probe_succeeds_without_subprocess(self):
-        with (
-            patch.object(sys, "platform", "darwin"),
-            patch("subprocess.run", side_effect=AssertionError("no spawn")),
-            patch("factory.platform_identity._sysctl_string", return_value=BOOT),
-        ):
-            self.assertEqual(platform_identity.boot_id(), BOOT)
+ 
 
     def test_reboot_proves_interruption(self):
         identity = self.recorded()
@@ -263,3 +255,12 @@ sys.stdin.readline()
             self.assertEqual(identity["pid_namespace"], "darwin")
         else:
             self.fail(f"unsupported identity platform: {sys.platform}")
+
+class BootProbeTest(unittest.TestCase):
+    def test_boot_id_nonspawning_probe_succeeds_without_subprocess(self):
+        with (
+            patch.object(sys, "platform", "darwin"),
+            patch("subprocess.run", side_effect=AssertionError("no spawn")),
+            patch("factory.platform_identity._sysctl_string", return_value=BOOT),
+        ):
+            self.assertEqual(platform_identity.boot_id(), BOOT)
