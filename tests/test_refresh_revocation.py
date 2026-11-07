@@ -137,6 +137,26 @@ class RefreshRevocationTest(unittest.TestCase):
         self.assertEqual(fixtures.git(self.wt, "rev-parse", "HEAD"), head)
         self.assert_refresh_refused(head)
 
+    def test_revocation_during_failure_diagnosis_cannot_discard_candidate(self) -> None:
+        heads = []
+
+        def diagnose(*_args):
+            heads.append(fixtures.git(self.wt, "rev-parse", "HEAD"))
+            self.revoke()
+            return ["feature.txt"], True
+
+        with self.patched(), \
+                mock.patch.object(dispatch, "run_gate", return_value=(False, "gate failed")), \
+                mock.patch.object(dispatch, "_refresh_failure_scope", side_effect=diagnose):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+        self.assertEqual(fixtures.git(self.wt, "rev-parse", "HEAD"), heads[-1])
+        self.assertNotEqual(heads[-1], self.pr_head)
+        self.assertEqual(self.github.head(), self.pr_head)
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+        self.assertEqual(self.events("gate-requeue"), [])
+        self.assertEqual(self.events("escalate"), [])
+        self.assert_refresh_refused(heads[-1])
+
 
 class RefreshConflictRevocationTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -169,6 +189,22 @@ class RefreshConflictRevocationTest(unittest.TestCase):
         review.assert_not_called()
         [row] = self.events("refresh-refused")
         self.assertEqual((row["head"], row["reason"]), (self.approved_head, "ready-for-human"))
+
+    def test_revocation_during_conflict_issue_read_cannot_requeue(self) -> None:
+        def read(args):
+            if args[:2] == ["issue", "view"] and args[-1] == "state,labels":
+                self.github.issue_labels = {config.LABEL_HUMAN}
+                self.github.assignees = []
+            return self.github.gh_json(args)
+
+        with mock.patch.multiple(dispatch, gh_json=read, run=self.github.run):
+            self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+        self.assertEqual(self.github.issue_labels, {config.LABEL_HUMAN})
+        self.assertEqual(self.github.assignees, [])
+        self.assertEqual(self.events("conflict-requeue"), [])
+        [refused] = self.events("refresh-refused")
+        self.assertEqual(refused["reason"], "ready-for-human")
+
 
 
 if __name__ == "__main__":
