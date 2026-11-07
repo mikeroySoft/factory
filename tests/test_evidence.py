@@ -714,6 +714,78 @@ class EvidenceCliTest(unittest.TestCase):
         self.assertEqual(inspected["case"], observed["cases"][0])
         self.assertIn(self.issue["body"], [row["text"] for row in inspected["sources"]])
 
+    def without_proc_identity(self, platform):
+        with (self.guard / "sitecustomize.py").open("a") as stream:
+            stream.write(f'''
+from types import SimpleNamespace
+from factory import runtime_events
+runtime_events.sys = SimpleNamespace(platform={platform!r})
+original_small = runtime_events._small
+original_readlink = os.readlink
+def no_proc_small(path, limit):
+    if str(path).startswith("/proc/") or str(path) == "/etc/machine-id":
+        raise FileNotFoundError(str(path))
+    return original_small(path, limit)
+def no_proc_readlink(path, *args, **kwargs):
+    if str(path).startswith("/proc/"):
+        raise FileNotFoundError(str(path))
+    return original_readlink(path, *args, **kwargs)
+runtime_events._small = no_proc_small
+os.readlink = no_proc_readlink
+''')
+        (self.journal.parent / "locks").mkdir(parents=True)
+        self.journal.touch()
+        (self.journal.parent / "locks/merge.lock").touch()
+        (self.root / "gpu.lock").touch()
+
+    def test_linux_missing_proc_identity_still_makes_observe_partial(self):
+        self.without_proc_identity("linux")
+        observed = self.invoke("observe", code=1)
+        self.assertEqual(observed["coverage"]["status"], "partial")
+        self.assertEqual(
+            {(error["scope"], error["code"]) for error in observed["errors"]
+             if error["source"] == "proc"},
+            {("identity", "boot_unavailable"), ("identity", "namespace_unavailable")},
+        )
+        self.assertIn("host_identity_unavailable", self.error_codes(observed))
+
+    def test_non_linux_missing_proc_identity_supports_successful_observe(self):
+        self.without_proc_identity("darwin")
+        observed = self.invoke("observe")
+        self.assertNotEqual(observed["coverage"]["status"], "partial")
+        self.assertFalse(any(error["source"] in {"proc", "proc/locks"}
+                             for error in observed["errors"]))
+        self.assertNotIn("host_identity_unavailable", self.error_codes(observed))
+        runtime = next(json.loads(row["text"]) for row in observed["sources"]
+                       if row["label"] == "Local runtime observation")
+        self.assertEqual(runtime["liveness"], "not_applicable")
+        self.assertEqual(runtime["resources"], [])
+
+    def test_non_linux_running_lock_has_no_proc_collection_error(self):
+        import fcntl
+
+        self.without_proc_identity("darwin")
+        lock = self.journal.parent / "locks/merge.lock"
+        with lock.open("r") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            execution = lifecycle.Execution(self.journal, "dispatch", ticket=7, lock=lock)
+            execution.emit("enter")
+            observed = self.invoke("observe", code=1)
+        self.assertIsNone(observed["attention_count"])
+        self.count_diagnostic(observed, "runtime_unknown")
+        self.assertEqual({error["code"] for error in observed["errors"]}, {"runtime_unknown"})
+        self.assertFalse(any(error["source"] in {"proc", "proc/locks"}
+                             for error in observed["errors"]))
+        runtime = next(json.loads(row["text"]) for row in observed["sources"]
+                       if row["label"] == "Local runtime observation")
+        self.assertEqual(runtime["liveness"], "not_applicable")
+        running = next(row for row in runtime["executions"]
+                       if row["execution_id"] == execution.execution_id)
+        self.assertEqual(running["state"], "unknown")
+        self.assertIsNone(running["ended_at"])
+        self.assertEqual(running["evidence"]["locks"],
+                         [{**lifecycle._lock(lock), "state": "unknown"}])
+
     def test_unavailable_github_is_unknown_attention_not_empty_success(self):
         self.responses[PREFIX + "issues"] = {"exit": 1, "stderr": "PRIVATE_TOKEN denied"}
         data = self.invoke("observe", code=1)

@@ -6,6 +6,7 @@ import math
 import os
 import re
 import stat
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -417,6 +418,11 @@ class _Observation:
         self.lock_files = {}
         self.kernel = None
         self.kernel_read = False
+        self.proc = sys.platform.startswith("linux")
+        self.absence = None
+        if not self.proc:
+            self.boot = self.namespace = self.host = None
+            return
         try:
             self.boot = _small(Path("/proc/sys/kernel/random/boot_id"), 128).decode().strip() or None
         except (OSError, UnicodeError):
@@ -433,7 +439,6 @@ class _Observation:
             machine = ""
         value = machine or self.boot
         self.host = str(uuid.uuid5(uuid.NAMESPACE_URL, "factory:host:" + value)) if value else None
-        self.absence = None
 
     def process_state(self, identity) -> str:
         if (not isinstance(identity, dict) or identity.get("start_ticks") is None
@@ -505,7 +510,7 @@ class _Observation:
         return self.lock_files[path]
 
     def holders(self, lock: dict):
-        if lock["device"] is None or lock["inode"] is None:
+        if not self.proc or lock["device"] is None or lock["inode"] is None:
             return None
         if not self.kernel_read:
             self.kernel_read = True
@@ -683,7 +688,8 @@ def _resources(path: Path, paths, retained: list, executions: list, groups: dict
             _error(observation.errors, "configuration", "resources", "invalid_scope")
             continue
         if observation.host is None:
-            _error(observation.errors, "configuration", "resources", "host_identity_unavailable")
+            if observation.proc:
+                _error(observation.errors, "configuration", "resources", "host_identity_unavailable")
             continue
         try:
             canonical = str(Path(lock_path).resolve())
@@ -747,6 +753,7 @@ def project(path: Path, paths=()) -> dict:
     executions, groups = _executions(retained, history, gaps, observation)
     resources = _resources(path, paths, retained, executions, groups, observation)
     return {"executions": executions, "resources": resources,
+            "liveness": "linux_proc" if observation.proc else "not_applicable",
             "events": [event for _, event in retained], "history": history,
             "errors": [{k: e[k] for k in ("source", "scope", "code")} for e in errors][:ERROR_LIMIT],
             "failures": [e for e in errors if failure(e)]}
