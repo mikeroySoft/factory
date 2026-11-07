@@ -70,13 +70,17 @@ elif a[:2] == ["pr", "merge"]:
     p.write_text(json.dumps(s))
 elif a[0] == "api" and "/compare/" in a[1]:
     print(json.dumps({"behind_by": 0}))
+elif a[0] == "api" and a[1].endswith("/issues/7/timeline"):
+    print("[]")
 elif a[:2] not in (["issue", "edit"], ["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):
     raise SystemExit("Unexpected external operation: " + repr(a))
 '''
 
-def active_github(args, issue: dict, pr: dict) -> dict:
+def active_github(args, issue: dict, pr: dict) -> dict | list:
     if args == ["api", "user"]:
         return {"login": "factory-bot"}
+    if args[0] == "api" and args[1].endswith("/issues/7/timeline"):
+        return []
     if args[:2] == ["issue", "view"] and args[-1] == "state,labels,assignees":
         return {
             **issue,
@@ -730,7 +734,7 @@ class LocalCLI(unittest.TestCase):
         with mock.patch.dict(os.environ, self.env), \
                 mock.patch.object(
                     dispatch, "gh_json",
-                    side_effect=lambda a: pr if a[:2] == ["pr", "view"] else issue,
+                    side_effect=lambda a: active_github(a, issue, pr),
                 ), \
                 mock.patch.object(dispatch, "push_agent", return_value=head), \
                 mock.patch.object(dispatch, "pr_comment"), \
@@ -941,7 +945,10 @@ class LocalCLI(unittest.TestCase):
                 head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
                 return True, "- code: PASS", None, head
 
-            with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+            with mock.patch.object(
+                    dispatch, "gh_json",
+                    side_effect=lambda a: active_github(a, issue, pr),
+            ), \
                     mock.patch.object(dispatch, "worker_round", side_effect=worker), \
                     mock.patch.object(dispatch, "record_risk"), \
                     mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "", False)), \
@@ -1006,7 +1013,8 @@ class LocalCLI(unittest.TestCase):
         pr = {"state": "OPEN", "headRefName": "agent/7", "headRefOid": head,
               "baseRefName": "main", "reviewDecision": ""}
         with mock.patch.dict(os.environ, self.env), \
-                mock.patch.object(dispatch, "gh_json", side_effect=lambda a: pr if a[:2] == ["pr", "view"] else issue), \
+                mock.patch.object(dispatch, "gh_json",
+                                  side_effect=lambda a: active_github(a, issue, pr)), \
                 mock.patch.object(dispatch, "_ticket_claim_state",
                                   return_value=active_github(["issue", "view", "state,labels,assignees"], issue, pr)), \
                 mock.patch.object(dispatch, "host_claim_login", return_value="factory-bot"), \
@@ -1644,7 +1652,7 @@ class LockfileDriftLifecycleTest(unittest.TestCase):
         with mock.patch.dict(os.environ, self.env), \
                 mock.patch.object(
                     dispatch, "gh_json",
-                    side_effect=lambda args: pr if args[:2] == ["pr", "view"] else issue,
+                    side_effect=lambda args: active_github(args, issue, pr),
                 ), \
                 mock.patch.object(dispatch, "push_agent", return_value=head), \
                 mock.patch.object(dispatch, "pr_comment"), \

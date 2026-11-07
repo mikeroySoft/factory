@@ -1622,12 +1622,17 @@ class ManageTest(unittest.TestCase):
 
         def claimed_stubs(tmp, **scripts):
             if "gh" in scripts:
+                timeline = "" if "timeline" in scripts["gh"] else '''
+if [ "$1" = api ]; then
+  case "$2" in */issues/*/timeline) echo '[]'; exit;; esac
+fi
+'''
                 scripts["gh"] = '''
 if [ "$1 $2" = "api user" ]; then echo '{"login":"factory-bot"}'; exit; fi
 case "$1 $2 $*" in
   "issue view "*state,labels,assignees*) echo '{"number":7,"state":"OPEN","labels":[],"assignees":[{"login":"factory-bot"}]}'; exit;;
 esac
-''' + scripts["gh"]
+''' + timeline + scripts["gh"]
             return install(tmp, **scripts)
 
         self.enterContext(patch(__name__ + ".stub_bin", side_effect=claimed_stubs))
@@ -2053,7 +2058,7 @@ PY
 
             with mock.patch.object(
                     dispatch, "gh_json",
-                    side_effect=[pr, {"baseRefName": "main"}],
+                    side_effect=[pr, [], {"baseRefName": "main"}],
             ), mock.patch.object(dispatch, "run", side_effect=fake_run) as run, \
                     mock.patch.object(
                         dispatch, "worker_round",
@@ -2119,6 +2124,8 @@ PY
                     return original_run(cmd, *args, **kwargs)
 
                 def fake_github(args, pr=pr, issue=issue):
+                    if args[0] == "api" and args[1].endswith("/issues/7/timeline"):
+                        return []
                     return pr if args[:2] == ["pr", "view"] else issue
 
                 with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
@@ -2184,8 +2191,13 @@ PY
                 return original_run(cmd, *args, **kwargs)
 
             with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
-                    mock.patch.object(dispatch, "gh_json", return_value=issue), \
-                    mock.patch.object(dispatch, "run", side_effect=fake_run), \
+                    mock.patch.object(
+                        dispatch, "gh_json",
+                        side_effect=lambda args: (
+                            [] if args[0] == "api" and args[1].endswith("/issues/7/timeline")
+                            else issue
+                        ),
+                    ), mock.patch.object(dispatch, "run", side_effect=fake_run), \
                     mock.patch.object(dispatch, "escalate") as escalate:
                 dispatch.process_ticket(issue, 5, False)
             escalate.assert_called_once()
@@ -2481,6 +2493,8 @@ class DispatchTest(unittest.TestCase):
                 return claimed_issue()
             if args[:2] == ["issue", "view"] and args[-2:] == ["--json", "title,body,comments"]:
                 return {"title": "Fixture issue", "body": "Fixture acceptance criteria", "comments": []}
+            if args[0] == "api" and args[1].endswith("/issues/7/timeline"):
+                return []
             return real_gh_json(args, *positional, **kwargs)
 
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=github))
