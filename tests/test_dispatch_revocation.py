@@ -45,6 +45,20 @@ class DispatchRevocationTest(unittest.TestCase):
     def events(self, kind):
         return [row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("event") == kind]
 
+    def assert_child_stopped(self, pid):
+        stat = Path(f"/proc/{pid}/stat")
+        deadline = time.monotonic() + 2
+        while stat.exists():
+            try:
+                state = stat.read_text().split()[2]
+            except FileNotFoundError:
+                return
+            if state == "Z":
+                return
+            if time.monotonic() >= deadline:
+                self.fail(f"worker descendant {pid} still running ({state})")
+            time.sleep(0.01)
+
     def local_commit(self):
         fixtures.git(self.wt, "commit", "--allow-empty", "-qm", "unpublished worker work")
         return fixtures.git(self.wt, "rev-parse", "HEAD")
@@ -94,9 +108,7 @@ class DispatchRevocationTest(unittest.TestCase):
         [stopped] = self.events("worker-stopped")
         self.assertEqual((stopped["ticket"], stopped["reason"], stopped["head"]), (9, "unassigned", head))
         # A killed descendant may briefly remain as a zombie until its parent is reaped.
-        stat = Path(f"/proc/{child_pid.read_text()}/stat")
-        if stat.exists():
-            self.assertEqual(stat.read_text().split()[2], "Z")
+        self.assert_child_stopped(child_pid.read_text())
 
     def test_human_requeue_next_pass_claims_works_and_pushes(self):
         dispatch.escalate(9, "gate failed", None, code="gate_failed")
@@ -203,9 +215,39 @@ class DispatchRevocationTest(unittest.TestCase):
                 [sys.executable, "-c", script], self.wt, self.tmp / "worker.log",
                 self.tmp / "handoff.md", ticket=9,
             )
-        stat = Path(f"/proc/{pid.read_text()}/stat")
-        if stat.exists():
-            self.assertEqual(stat.read_text().split()[2], "Z")
+        self.assert_child_stopped(pid.read_text())
+
+    def test_unassignment_cannot_be_reclaimed_next_pass_without_human_requeue(self):
+        from datetime import UTC, datetime
+
+        head = self.local_commit()
+        self.github.assignees = []
+        self.assert_push_refused(head, "unassigned")
+        dispatch.configure(self.cfg)
+        timeline = [{"event": "unassigned", "assignee": {"login": "factory"},
+                     "created_at": datetime.now(UTC).isoformat()}]
+        with mock.patch("factory.handoff.timeline", return_value=timeline), \
+                mock.patch.object(dispatch, "worker_round", side_effect=AssertionError("revoked ticket launched a worker")) as worker:
+            dispatch.process_ticket(self.github.issue(), 1, False)
+        worker.assert_not_called()
+        self.assertEqual(self.github.assignees, [])
+        self.assertEqual(self.github.head(), self.lease)
+
+        timeline.append({"event": "labeled", "label": {"name": config.LABEL_AGENT},
+                         "actor": {"login": "owner", "type": "User"},
+                         "created_at": datetime.now(UTC).isoformat()})
+        dispatch.configure(self.cfg)
+        with mock.patch("factory.handoff.timeline", return_value=timeline), \
+                mock.patch.object(dispatch, "build_prompt", return_value="work"), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")), \
+                mock.patch.object(dispatch, "record_risk"), \
+                mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "", False)) as review, \
+                mock.patch.object(dispatch, "pr_comment"), \
+                mock.patch.object(dispatch, "approve_pr", return_value=True):
+            dispatch.process_ticket(self.github.issue(), 1, False)
+        self.assertEqual(self.github.assignees, ["factory"])
+        self.assertEqual(self.github.head(), head)
+        review.assert_called_once()
 
 
 if __name__ == "__main__":
