@@ -316,10 +316,12 @@ class LocalCLI(unittest.TestCase):
 
     def test_retained_handoff_survives_cleanup(self):
         text = "Accepted handoff\n" + "λ" * 16_000 + "\nComplete final paragraph.\n"
-        self.worker.write_text(WORKER + "\nPath('.factory/handoff-7.md').write_text(" + repr(text) + ", encoding='utf-8')\n")
+        # Distinct revision handoffs keep first-observed provenance bound to the accepted head.
+        self.worker.write_text(WORKER + "\nPath('.factory/handoff-7.md').write_text(" + repr(text) + " + p.read_text(), encoding='utf-8')\n")
         self.cli("dispatch", "--ticket", "7")
         approval = next(row for row in lifecycle.read_events(self.events) if row.get("event") == "approved")
         head = approval["head"]
+        text += "change\nchange\n"
         self.merge_accepted()
         parts, offset = [], 0
         while offset is not None:
