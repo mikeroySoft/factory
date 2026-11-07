@@ -81,10 +81,7 @@ def active_github(args, issue: dict, pr: dict) -> dict:
         return {
             **issue,
             "state": "OPEN",
-            "labels": [
-                label for label in issue.get("labels", [])
-                if label.get("name") != "ready-for-human"
-            ],
+            "labels": issue.get("labels", []),
             "assignees": [{"login": "factory-bot"}],
         }
     return pr if args[:2] == ["pr", "view"] else issue
@@ -165,7 +162,10 @@ class LocalCLI(unittest.TestCase):
 
         def claimed_manager(n, issue, *args, **kwargs):
             state = json.loads(self.state.read_text())
-            state.update(labels=["ready-for-agent"], assignee="factory-bot")
+            state.update(
+                labels=[label["name"] for label in issue.get("labels", [])] or ["ready-for-agent"],
+                assignee="factory-bot",
+            )
             self.state.write_text(json.dumps(state))
             dispatch.configure(config.load(self.repo))
             with mock.patch.object(
