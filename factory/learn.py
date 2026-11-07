@@ -30,6 +30,7 @@ from tempfile import NamedTemporaryFile
 
 from factory import config, dispatch, lifecycle, manage, promotion, score, stats, triage
 from factory.config import LABEL_CHORE, LESSONS_NAME
+from factory.gate import RunnerStorageLow
 
 MAX_LESSONS = 10
 LOG_TAIL = 40  # lines of a failing attempt log shown to the model when the ticket has no score row
@@ -440,6 +441,23 @@ def _context_base(wt: Path, source: Path, pinned: tuple[str, ...] = ()) -> str:
     ], cwd=wt)
     return dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
 
+def _run_gate(
+    wt: Path,
+    name: int | str,
+    *,
+    tier: str = "attempt",
+    base: str | None = None,
+    protected_override: bool = False,
+) -> tuple[bool, str]:
+    try:
+        return dispatch.run_gate(
+            wt, name, tier=tier, base=base, protected_override=protected_override,
+        )
+    except RunnerStorageLow:
+        with lifecycle.scope(dispatch.EVENTS, "gate", lazy=True) as execution:
+            execution.outcome, execution.reason = "unknown", "runner_storage_low"
+        raise
+
 
 def replay_ticket(
     cfg: config.Config,
@@ -504,7 +522,7 @@ def replay_ticket(
                 report = f"worker replay stopped by {fired or 'budget_min'}"
                 ok = False
             else:
-                ok, report = dispatch.run_gate(
+                ok, report = _run_gate(
                     wt, f"learn-{case.ticket}-{attempt}", base=base,
                 )
             if attempt == 1:
@@ -520,7 +538,7 @@ def replay_ticket(
                 break
             review_report = report
             if _pr_checks(wt):
-                pr_ok, pr_report = dispatch.run_gate(
+                pr_ok, pr_report = _run_gate(
                     wt, f"learn-{case.ticket}-pr-{bounce + 1}", tier="pr", base=base,
                 )
                 review_report = f"{report}\n{pr_report}"
@@ -585,7 +603,7 @@ def replay_ticket(
             gate_head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             ok, report = (False, f"worker replay stopped by {fired or 'budget_min'}") if (
                 fired or time.monotonic() >= deadline
-            ) else dispatch.run_gate(
+            ) else _run_gate(
                 wt, f"learn-{case.ticket}-review-{bounce + 1}", base=base,
             )
 
@@ -678,6 +696,9 @@ def evaluate_candidates(
         for case in cases:
             try:
                 row = replay_ticket(cfg, case, None, deadline)
+            except RunnerStorageLow:
+                baseline_error = "runner_storage_low"
+                break
             except Exception as exc:  # noqa: BLE001 - an unavailable replay is evidence, not escalation
                 baseline_error = f"baseline replay failed for #{case.ticket}: {type(exc).__name__}: {exc}"
                 break
@@ -706,6 +727,9 @@ def evaluate_candidates(
                     break
                 try:
                     row = replay_ticket(cfg, case, candidate, deadline)
+                except RunnerStorageLow:
+                    reason = "runner_storage_low"
+                    break
                 except Exception as exc:  # noqa: BLE001 - report and skip the proposal
                     reason = f"variant replay failed for #{case.ticket}: {type(exc).__name__}: {exc}"
                     break
@@ -975,12 +999,12 @@ def chore_pr(
         else:
             head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             name = branch.removeprefix("agent/")
-            ok, report = dispatch.run_gate(
+            ok, report = _run_gate(
                 wt, name, base=base, protected_override=protected_override,
             )
             dispatch.record("gate", branch=branch, head=head, gate="PASS" if ok else "FAIL")
             if ok and _pr_checks(wt):
-                ok, pr_report = dispatch.run_gate(wt, f"{name}-pr", tier="pr", base=base)
+                ok, pr_report = _run_gate(wt, f"{name}-pr", tier="pr", base=base)
                 report = f"{report}\n{pr_report}"
             result = dispatch.run_reviewer(
                 wt,
@@ -1063,7 +1087,7 @@ def apply_curate_change(wt: Path, patch: Path) -> list[str]:
 def gate_head(wt: Path, branch: str, protected_override: bool) -> str:
     """Run the attempt gate on `wt`'s HEAD and journal it as `gate` bound to that head; a FAIL raises ValueError."""
     head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-    ok, report = dispatch.run_gate(wt, branch.removeprefix("agent/"), protected_override=protected_override)
+    ok, report = _run_gate(wt, branch.removeprefix("agent/"), protected_override=protected_override)
     dispatch.record("gate", branch=branch, head=head, gate="PASS" if ok else "FAIL")
     if not ok:
         raise ValueError(f"gate FAIL on {branch}:\n{report.strip()[-2000:]}")
@@ -1284,6 +1308,14 @@ def run(
         for kind, result in evaluations.items():
             print(f"{kind} evaluation: {result['status']}"
                   + (f" ({result['reason']})" if result["reason"] else ""))
+        if any(result.get("reason") == "runner_storage_low" for result in evaluations.values()):
+            event = {
+                "tickets": tickets, "lessons": len(lessons), **fields,
+                "status": "deferred", "reason": "runner_storage_low",
+                "evaluation": {kind: result["status"] for kind, result in evaluations.items()},
+            }
+            dispatch.record("learn", **event)
+            return event
 
     keep_lessons = not enabled or evaluations.get("lessons", {}).get("status") == "kept"
     keep_curate = bool(diff) and (
@@ -1304,6 +1336,7 @@ def run(
 
     branch = None
     lessons_review_branch = None
+    deferred = False
     if keep_lessons:
         branch = branch_name("lessons", tickets)
         lessons_review_branch = branch
@@ -1323,6 +1356,9 @@ def run(
                 cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body,
                 review_candidate=enabled,
             )
+        except RunnerStorageLow:
+            branch = None
+            deferred = True
         except ValueError as exc:
             if not enabled:
                 raise
@@ -1330,12 +1366,16 @@ def run(
             branch = None
         else:
             print(f"opened a {LABEL_CHORE} PR from {branch}")
-    if keep_curate:
-        curated = curate(
-            cfg, diff, tickets, notes_md,
-            evaluations.get("curate") if enabled else None,
-        )
-    elif diff and enabled:
+    if keep_curate and not deferred:
+        try:
+            curated = curate(
+                cfg, diff, tickets, notes_md,
+                evaluations.get("curate") if enabled else None,
+            )
+        except RunnerStorageLow:
+            curated = None
+            deferred = True
+    elif diff and enabled and not deferred:
         reason = evaluations["curate"]["reason"]
         curated = f"rejected: {reason}"
         _record_curate_decision(
@@ -1344,6 +1384,22 @@ def run(
         )
     else:
         curated = None
+    if deferred:
+        event = {
+            "tickets": tickets,
+            "lessons": len(lessons),
+            "branch": None,
+            "curate": None,
+            **fields,
+            "status": "deferred",
+            "reason": "runner_storage_low",
+        }
+        if enabled:
+            event["evaluation"] = {
+                kind: result["status"] for kind, result in evaluations.items()
+            }
+        dispatch.record("learn", **event)
+        return event
     if curated:
         print(f"CURATE {curated}" if curated.startswith("rejected") else f"opened a {LABEL_CHORE} PR from {curated}")
     event = {
@@ -1366,10 +1422,15 @@ def run(
 
 
 def finished_since_learn() -> int:
-    """Tickets whose latest `merged`/`escalate` row is newer than the newest non-failed `learn` row
-    (any, if none): failed runs keep the count, so the next pass retries."""
+    """Count finished tickets since the latest completed learning batch.
+
+    Failed or storage-deferred runs keep the count so the next pass retries.
+    """
     rows = [r for r in lifecycle.read_events(dispatch.EVENTS) if isinstance(r.get("at"), str)]
-    since = max((r["at"] for r in rows if r.get("event") == "learn" and r.get("status") != "failed"), default="")
+    since = max((
+        r["at"] for r in rows if r.get("event") == "learn"
+        and r.get("status") not in ("failed", "deferred")
+    ), default="")
     return len({r["ticket"] for r in rows
                 if r.get("event") in ("merged", "escalate") and type(r.get("ticket")) is int and r["at"] > since})
 
@@ -1429,16 +1490,24 @@ def learn_pass(dry_run: bool = False) -> None:
     Learn needs a manager (without one, learn only writes an uncommitted file) and no open lessons,
     curate or revert PR (lessons rewrite the whole file). A failure is journaled, never raised."""
     cfg = dispatch.cfg
+    storage_deferred = False
     try:
         if not dry_run:
             score.run(cfg)
         auto_learn(cfg, dry_run)
+    except RunnerStorageLow:
+        storage_deferred = True
+        dispatch.log("learn: deferred (runner_storage_low)")
     except Exception as exc:  # noqa: BLE001 - isolates learn failures from the dispatcher pass
         reason = f"{type(exc).__name__}: {exc}"
         dispatch.log(f"learn: failed ({reason})")
         if not dry_run:
             dispatch.record("learn", trigger="auto", status="failed", reason=reason)
-    decide_promotions(cfg, dry_run)  # attempts scored by hand since the last pass
+    if not storage_deferred:
+        try:
+            decide_promotions(cfg, dry_run)  # attempts scored by hand since the last pass
+        except RunnerStorageLow:
+            dispatch.log("learn promotion: deferred (runner_storage_low)")
 
 
 def _promotion_blocked(
@@ -1602,6 +1671,8 @@ def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
             continue
         try:
             promote(cfg, pr, events, dry_run)
+        except RunnerStorageLow:
+            dispatch.log(f"PR #{n}: {branch} promotion deferred (runner_storage_low)")
         except Exception as exc:  # noqa: BLE001 - one stuck chore PR never blocks the others
             dispatch.log(f"PR #{n}: {branch} promotion failed ({type(exc).__name__}: {exc})")
 
@@ -1671,6 +1742,8 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
             return
         try:
             _gate_pr_head(cfg, branch, head)
+        except RunnerStorageLow:
+            raise
         except Exception:
             _promotion_blocked(events, n, branch, head, "gate failed", False)
             raise
@@ -1709,6 +1782,8 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         if not dry_run:
             try:
                 refresh(cfg, n, branch, head)
+            except RunnerStorageLow:
+                raise
             except Exception:
                 _promotion_blocked(events, n, branch, head, "refresh failed", False)
                 raise
@@ -1775,6 +1850,12 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
                 dispatch.log(f"PR #{n}: refreshing {branch} after strict-base merge refusal")
                 try:
                     refresh(cfg, n, branch, head)
+                except RunnerStorageLow:
+                    execution = lifecycle.current()
+                    if execution is not None:
+                        execution.outcome, execution.reason = "unknown", "runner_storage_low"
+                    dispatch.log(f"PR #{n}: {branch} promotion deferred (runner_storage_low)")
+                    return
                 except Exception:
                     _promotion_blocked(events, n, branch, head, reason, False)
                     raise
@@ -1885,6 +1966,9 @@ def main(argv: list[str]) -> int:
         return 0
     try:
         run(cfg, args.last, args.dry_run, True if args.evaluate else None)
+    except RunnerStorageLow:
+        print("factory learn: deferred (runner_storage_low)", file=sys.stderr)
+        return 0
     except ValueError as exc:
         raise SystemExit(f"factory learn: {exc}")
     return 0

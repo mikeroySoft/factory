@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, learn, lifecycle, onboard
+from factory.gate import RunnerStorageLow
 
 
 class PromoteRegressionTest(unittest.TestCase):
@@ -350,6 +351,48 @@ class PromoteRegressionTest(unittest.TestCase):
         self.assertEqual(merged["by"], "human")
         self.assertEqual(opened["head"], self.HEAD)
 
+    def test_promote_defers_runner_storage_low_without_a_gate_failure(self) -> None:
+        self.journal(self.review())
+
+        with mock.patch.object(
+            dispatch, "run_gate", side_effect=RunnerStorageLow("No space left on device"),
+        ), mock.patch.object(dispatch, "log") as log:
+            learn.promote_pass([self.pr])
+
+        self.assertEqual(self.rows("gate"), [])
+        self.assertEqual(self.rows("promotion-blocked"), [])
+        self.assertEqual(self.rows("approved"), [])
+        self.assertEqual(self.rows("merged"), [])
+        self.assertIn("deferred (runner_storage_low)", str(log.call_args_list))
+        [storage] = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("kind") == "exit" and row.get("reason") == "runner_storage_low"
+        ]
+        self.assertEqual((storage["stage"], storage["outcome"]), ("gate", "unknown"))
+
+    def test_refresh_defers_runner_storage_low_before_push_or_review(self) -> None:
+        self.journal(self.gate(), self.review())
+        self.compare = {"behind_by": 3, "files": [{"filename": "AGENTS.md"}]}
+
+        with mock.patch.object(
+            dispatch, "run_gate", side_effect=RunnerStorageLow("No space left on device"),
+        ), mock.patch.object(dispatch, "review_external_pr") as reviewer, \
+                mock.patch.object(dispatch, "log") as log:
+            learn.promote_pass([self.pr])
+
+        reviewer.assert_not_called()
+        self.assertFalse(any(
+            call.args[0][:2] == ["git", "push"] for call in self.run.call_args_list
+        ))
+        self.assertEqual(self.rows("promotion-blocked"), [])
+        self.assertEqual(self.rows("approved"), [])
+        self.assertEqual(self.rows("merged"), [])
+        self.assertIn("deferred (runner_storage_low)", str(log.call_args_list))
+        [storage] = [
+            row for row in lifecycle.read_events(self.events)
+            if row.get("kind") == "exit" and row.get("reason") == "runner_storage_low"
+        ]
+        self.assertEqual((storage["stage"], storage["outcome"]), ("gate", "unknown"))
     def test_lessons_pr_head_gets_required_gate_check(self) -> None:
         self.journal(self.gate(), self.review())
         self.compare = {"behind_by": 4, "files": [{"filename": config.LESSONS_NAME}]}

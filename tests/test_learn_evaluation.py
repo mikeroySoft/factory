@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, learn, lifecycle
+from factory.gate import RunnerStorageLow
 
 
 class LearnEvaluationTest(unittest.TestCase):
@@ -620,6 +621,65 @@ VERDICT: REVISE
                     },
                 ])
                 self.assertEqual(decision["rationale"], "evidence produced no lesson")
+
+    def test_runner_storage_low_does_not_bias_candidate_evaluation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / "repo"
+            repo.mkdir()
+
+            def git(*args: str) -> str:
+                return subprocess.run(
+                    ["git", *args], cwd=repo, text=True, capture_output=True, check=True,
+                ).stdout.strip()
+
+            git("init", "-q", "-b", "main")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.com")
+            (repo / "tracked.txt").write_text("base\n")
+            git("add", "tracked.txt")
+            git("commit", "-q", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            cfg = config.Config(
+                root=repo,
+                repo="acme/widgets",
+                workers={"default": ["/usr/bin/true"]},
+                max_attempts=1,
+                review_rounds=0,
+                learn_max_tokens=1000,
+                learn_budget_min=1,
+            )
+            cfg.factory.mkdir()
+            dispatch.configure(cfg)
+            case = learn.ReplayCase(
+                7, base, "storage pressure", (),
+                {"title": "storage pressure", "body": "exercise the gate"},
+            )
+            candidates = [
+                learn.Candidate("lessons", "candidate"),
+                learn.Candidate("curate", "candidate"),
+            ]
+
+            with mock.patch.object(
+                dispatch, "run_gate", side_effect=RunnerStorageLow("No space left on device"),
+            ), mock.patch.object(dispatch, "run_reviewer") as reviewer:
+                results = learn.evaluate_candidates(cfg, [case], candidates)
+
+            self.assertEqual(
+                [(result["status"], result["reason"]) for result in results.values()],
+                [("not_tested", "runner_storage_low")] * 2,
+            )
+            reviewer.assert_not_called()
+            rows = lifecycle.read_events(cfg.factory / "events.jsonl")
+            self.assertFalse(any(
+                row.get("event") == "learn-evaluation" and row.get("status") == "rejected"
+                for row in rows
+            ))
+            [storage] = [
+                row for row in rows
+                if row.get("kind") == "exit" and row.get("reason") == "runner_storage_low"
+            ]
+            self.assertEqual((storage["stage"], storage["outcome"]), ("gate", "unknown"))
 
 
 if __name__ == "__main__":

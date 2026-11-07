@@ -2013,3 +2013,51 @@ class WorkerCompletionBoundaryLifecycleTest(unittest.TestCase):
             "```text\n- protected-paths: FAIL (add-only existing file modified)\n```"
         )
         self.assertIsNone(dispatch._protected_gate_guidance(report, set()))
+
+
+class StorageDispatchCLI(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+
+    def test_runner_storage_low_requeues_without_gate_failure_or_review(self):
+        self.write_config(check=[
+            sys.executable, "-c", "raise OSError(28, 'No space left on device')",
+        ])
+        self.commit_config()
+        self.cli("dispatch", "--ticket", "7", "--budget-min", "1", expected=1)
+        rows = lifecycle.read_events(self.events)
+        self.assertFalse(any(row.get("event") == "escalate" for row in rows))
+        self.assertFalse(any(row.get("event") == "attempt" and row.get("gate") == "FAIL" for row in rows))
+        self.assertFalse(any(row.get("event") == "review" for row in rows))
+        self.assertTrue(any(
+            row.get("reason") == "runner_storage_low" and row.get("outcome") == "unknown"
+            for row in rows
+        ))
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+
+class StorageSyncCLI(unittest.TestCase):
+    setUp = LocalCLI.setUp
+    git = LocalCLI.git
+    write_config = LocalCLI.write_config
+    commit_config = LocalCLI.commit_config
+    cli = LocalCLI.cli
+    upstream_fixture = LocalCLI.upstream_fixture
+
+    def test_runner_storage_low_defers_upstream_without_staging_failed_candidate(self):
+        self.upstream_fixture(check=[
+            sys.executable, "-c", "raise OSError(28, 'No space left on device')",
+        ])
+        self.cli("dispatch")
+        rows = lifecycle.read_events(self.events)
+        self.assertTrue(any(
+            row.get("stage") == "upstream-sync" and row.get("kind") == "exit"
+            and row.get("outcome") == "unknown" and row.get("reason") == "runner_storage_low"
+            for row in rows
+        ))
+        self.assertFalse(any(row.get("event") in {"attempt", "escalate"} for row in rows))
+        self.assertNotIn("sync", json.loads(self.state.read_text()))
+        self.assertFalse((self.repo / ".factory" / "wt-upstream").exists())

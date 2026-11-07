@@ -154,6 +154,193 @@ class MutationDeadlineTest(unittest.TestCase):
         baseline.assert_not_called()
         mutate.assert_not_called()
 
+    def run_storage_mutation(
+        self,
+        result: SimpleNamespace,
+        *,
+        baseline: list[object] | None = None,
+        sample_error: BaseException | None = None,
+        mutation_timeout: subprocess.TimeoutExpired | None = None,
+    ) -> tuple[int, str, mock.Mock, mock.Mock]:
+        attrs = types.ModuleType("attrs")
+        attrs.evolve = lambda value, **changes: SimpleNamespace(**{**vars(value), **changes})
+        cosmic_ray = types.ModuleType("cosmic_ray")
+        cosmic_ray.__path__ = []
+        mutating = types.ModuleType("cosmic_ray.mutating")
+        testing = types.ModuleType("cosmic_ray.testing")
+        testing._kill_process_group = mock.Mock()
+        work_item = types.ModuleType("cosmic_ray.work_item")
+        work_item.TestOutcome = TestOutcome
+
+        def cosmic_run_tests(command: str, timeout: float):
+            if mutation_timeout is None:
+                return result.test_outcome, result.output
+            process = mutation.subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            try:
+                process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                testing._kill_process_group(process)
+                process.communicate()
+                return TestOutcome.KILLED, "timeout"
+            raise AssertionError("fixture must time out")
+
+        mutating.run_tests = cosmic_run_tests
+
+        def mutate_and_test(_mutations, command, timeout):
+            if result.test_outcome == TestOutcome.INCOMPETENT and mutation_timeout is None:
+                return result
+            outcome, output = mutating.run_tests(command, timeout)
+            return SimpleNamespace(
+                worker_outcome=WorkerOutcome.NORMAL,
+                test_outcome=outcome,
+                diff=result.diff,
+                output=output,
+            )
+
+        mutating.mutate_and_test = mock.Mock(side_effect=mutate_and_test)
+        modules = {
+            "attrs": attrs,
+            "cosmic_ray": cosmic_ray,
+            "cosmic_ray.mutating": mutating,
+            "cosmic_ray.testing": testing,
+            "cosmic_ray.work_item": work_item,
+        }
+        clone = subprocess.CompletedProcess([], 0, "", "")
+        baseline_run = mock.Mock(side_effect=baseline or [
+            clone, subprocess.CompletedProcess([], 0, "baseline output\n", ""),
+        ])
+        process = mock.Mock()
+        if mutation_timeout is not None:
+            process.communicate.side_effect = [mutation_timeout, (b"", b"")]
+        else:
+            process.communicate.return_value = (result.output.encode(), b"")
+            process.returncode = 0 if result.test_outcome == TestOutcome.SURVIVED else 1
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "factory").mkdir()
+            (root / "factory/example.py").write_text("value = 1\n")
+            output = io.StringIO()
+            with contextlib.chdir(root), mock.patch.dict(sys.modules, modules), \
+                    mock.patch.object(mutation.time, "monotonic", return_value=0), \
+                    mock.patch.object(mutation, "WORKERS", 1), \
+                    mock.patch.object(mutation, "gate_timeout", return_value=61), \
+                    mock.patch.object(
+                        mutation, "changed_lines", return_value={"factory/example.py": {1}},
+                    ), \
+                    mock.patch.object(
+                        mutation, "sample", return_value=([self.spec], 1),
+                        side_effect=sample_error,
+                    ), \
+                    mock.patch.object(mutation.subprocess, "run", baseline_run), \
+                    mock.patch.object(mutation.subprocess, "Popen", return_value=process), \
+                    contextlib.redirect_stdout(output):
+                status = mutation.main(["--blocking"])
+        return status, output.getvalue(), mutating.mutate_and_test, baseline_run
+
+    def test_mutation_exhaustion_is_not_a_killed_mutant_or_check_failure(self) -> None:
+        diagnostic = b"OSError: [Errno 28] No space left on device\n"
+        storage_result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL,
+            test_outcome=TestOutcome.INCOMPETENT,
+            diff="",
+            output=diagnostic.decode(),
+        )
+
+        with self.subTest("baseline timeout retains storage output"):
+            clone = subprocess.CompletedProcess([], 0, "", "")
+            status, output, mutate, _ = self.run_storage_mutation(
+                storage_result,
+                baseline=[clone, subprocess.TimeoutExpired("baseline", 1, output=diagnostic)],
+            )
+            self.assertEqual(status, 75)
+            self.assertNotIn("baseline suite did not finish", output)
+            mutate.assert_not_called()
+
+        with self.subTest("mutation timeout retains storage output"):
+            timed_out = SimpleNamespace(
+                worker_outcome=WorkerOutcome.NORMAL,
+                test_outcome=TestOutcome.KILLED,
+                diff="-value = 1\n+value = 2\n",
+                output="timeout",
+            )
+            status, output, _, _ = self.run_storage_mutation(
+                timed_out,
+                mutation_timeout=subprocess.TimeoutExpired("tests", 1, output=diagnostic),
+            )
+            self.assertEqual(status, 75)
+            self.assertNotIn("killed", output)
+            self.assertNotIn("mutation check broke", output)
+
+        with self.subTest("mutation tool storage failure"):
+            status, output, _, _ = self.run_storage_mutation(storage_result)
+            self.assertEqual(status, 75)
+            self.assertNotIn("mutation check broke", output)
+
+        product_failure = (
+            "FAIL: test_disk_error (tests.test_example.ExampleTest.test_disk_error)\n"
+            "Traceback (most recent call last):\n"
+            "  File \"tests/test_example.py\", line 10, in test_disk_error\n"
+            "    raise OSError(28, 'No space left on device')\n"
+            "OSError: [Errno 28] No space left on device\n"
+            "\nFAILED (failures=1)\n"
+        )
+        completed_kill = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL,
+            test_outcome=TestOutcome.KILLED,
+            diff="-value = 1\n+value = 2\n",
+            output=product_failure,
+        )
+        with self.subTest("completed mutant product failure"):
+            status, output, _, _ = self.run_storage_mutation(completed_kill)
+            self.assertEqual(status, 0)
+            self.assertIn("1 killed", output)
+
+        with self.subTest("completed baseline product failure"):
+            clone = subprocess.CompletedProcess([], 0, "", "")
+            failed = subprocess.CompletedProcess([], 1, product_failure, "")
+            status, output, _, _ = self.run_storage_mutation(
+                completed_kill, baseline=[clone, failed],
+            )
+            self.assertEqual(status, 1)
+            self.assertIn("baseline suite failed", output)
+
+        with self.subTest("preparation storage failure"):
+            status, _, mutate, baseline = self.run_storage_mutation(
+                storage_result, sample_error=OSError(28, "No space left on device"),
+            )
+            self.assertEqual(status, 75)
+            baseline.assert_not_called()
+            mutate.assert_not_called()
+
+    def test_completed_storage_traceback_is_not_a_killed_mutant(self) -> None:
+        source = (
+            "import unittest\n"
+            "class DiskTest(unittest.TestCase):\n"
+            "    def test_disk(self):\n"
+            "        raise OSError(28, 'No space left on device')\n"
+            "unittest.main()\n"
+        )
+        report = subprocess.run([sys.executable, "-c", source], capture_output=True, text=True, check=False)
+        result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.KILLED,
+            diff="-value = 1\n+value = 2\n", output=report.stderr,
+        )
+        with self.subTest("baseline"):
+            clone = subprocess.CompletedProcess([], 0, "", "")
+            status, output, mutate, _ = self.run_storage_mutation(
+                result, baseline=[clone, subprocess.CompletedProcess([], 1, report.stderr, "")],
+            )
+            self.assertEqual(status, 75, output)
+            self.assertNotIn("baseline suite failed", output)
+            mutate.assert_not_called()
+        with self.subTest("mutant"):
+            status, output, _, _ = self.run_storage_mutation(result)
+            self.assertEqual(status, 75, output)
+            self.assertNotIn("killed", output)
+            self.assertNotIn("mutation check broke", output)
+
 
 if __name__ == "__main__":
     unittest.main()

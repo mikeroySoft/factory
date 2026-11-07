@@ -168,6 +168,7 @@ class MutationEquivalentsTest(unittest.TestCase):
                 (root / name).mkdir()
                 (root / name / "__init__.py").touch()
             shutil.copyfile(repository / "scripts/mutation.py", root / "scripts/mutation.py")
+            shutil.copytree(repository / "factory", root / "factory", dirs_exist_ok=True)
             (root / "factory/example.py").touch()
             (root / "AGENTS.md").write_text("`factory/example.py` `tests/test_example.py`\n")
             (root / ".factory.toml").write_text("[gate]\ntimeout = 120\n")
@@ -299,6 +300,7 @@ class MutationEquivalentsTest(unittest.TestCase):
                 (root / name).mkdir()
                 (root / name / "__init__.py").touch()
             shutil.copyfile(repository / "scripts/mutation.py", root / "scripts/mutation.py")
+            shutil.copytree(repository / "factory", root / "factory", dirs_exist_ok=True)
             (root / "AGENTS.md").write_text("")
             source = root / "factory/example.py"
             source.write_text("value = 1\n")

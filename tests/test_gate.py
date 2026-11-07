@@ -349,3 +349,121 @@ class GateTempdirTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StorageDiagnosticsTest(unittest.TestCase):
+    def test_gate_distinguishes_storage_diagnostics_from_expected_warning_output(self) -> None:
+        import json
+
+        cases = [
+            ("OSError: [Errno 28] No space left on device", 1, 75),
+            ("E       OSError: [Errno 28] No space left on device", 1, 75),
+            ("error: cannot write cache: No space left on device (os error 28)", 1, 75),
+            ("warning: expected ENOSPC while testing the full-disk handler", 0, 0),
+            ("OSError: [Errno 28] No space left on device", 0, 0),
+            (("AssertionError: expected OSError: [Errno 28] No space left on device\n"
+              "FAILED (failures=1)"), 1, 1),
+            (("E       OSError: [Errno 28] No space left on device\n"
+              "FAILED tests/test_product.py::test_failure - AssertionError\n"
+              "1 failed in 0.01s"), 1, 1),
+        ]
+        for output, status, expected in cases:
+            with self.subTest(output=output, status=status), tempfile.TemporaryDirectory() as d:
+                command = [sys.executable, "-c", f"print({output!r}); raise SystemExit({status})"]
+                toml = TOML + (
+                    '\n[[gate.check]]\nname = "test"\nrun = ' + json.dumps(command) + "\n"
+                )
+                repo = repo_with_test(Path(d), toml)
+                code, out, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+                self.assertEqual(code, expected, report + out)
+                if expected == 75:
+                    self.assertIn("- test: INFRA (runner_storage_low)", report)
+                    self.assertNotIn("- test: FAIL", report)
+                else:
+                    self.assertNotIn("INFRA", report)
+
+
+class CompletedStorageErrorTest(unittest.TestCase):
+    def test_completed_storage_error_is_infrastructure_not_product_failure(self) -> None:
+        import json
+
+        for assertion in (False, True):
+            with self.subTest(assertion=assertion), tempfile.TemporaryDirectory() as directory:
+                source = (
+                    "import unittest\n"
+                    "class DiskTest(unittest.TestCase):\n"
+                    "    def test_disk(self):\n"
+                    "        raise OSError(28, 'No space left on device')\n"
+                    "    def test_assertion(self):\n"
+                    "        self.fail('expected OSError: [Errno 28] No space left on device')\n"
+                    "unittest.main()\n"
+                )
+                if assertion:
+                    source = source.replace("raise OSError(28, 'No space left on device')", "pass")
+                command = [sys.executable, "-c", source]
+                repo = repo_with_test(Path(directory), TOML + (
+                    '\n[[gate.check]]\nname = "test"\nrun = ' + json.dumps(command) + "\n"
+                ))
+                code, out, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+                self.assertEqual(code, 1 if assertion else 75, report + out)
+                self.assertIn("- test: FAIL" if assertion else "- test: INFRA (runner_storage_low)", report)
+
+    def test_pytest_storage_error_is_not_hidden_by_an_assertion_in_another_test(self) -> None:
+        from factory.gate import storage_diagnostic
+
+        output = (
+            "________________ test_assertion ________________\n"
+            "E       OSError: [Errno 28] No space left on device\n"
+            "E       AssertionError: wrong product output\n"
+            "tests/test_product.py:10: AssertionError\n"
+            "________________ test_disk ________________\n"
+            "E       OSError: [Errno 28] No space left on device\n"
+            "tests/test_product.py:20: OSError\n"
+            "================ short test summary info ================\n"
+            "FAILED tests/test_product.py::test_assertion - AssertionError: wrong product output\n"
+            "FAILED tests/test_product.py::test_disk - OSError: [Errno 28] No space left on device\n"
+            "2 failed in 0.01s\n"
+        )
+        self.assertTrue(storage_diagnostic(output))
+
+
+class QuotedStorageDiagnosticTest(unittest.TestCase):
+    def test_lint_source_quotes_remain_product_failures(self) -> None:
+        import json
+
+        for diagnostic in (
+            "366 |     (\"OSError: [Errno 28] No space left on device\", 1, 75),",
+            " 42 |     raise RuntimeError('No space left on device')",
+            " 43 |     message = 'fatal: cannot write: No space left on device'",
+            '    ("OSError: [Errno 28] No space left on device", 1, 75),',
+        ):
+            with self.subTest(diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
+                output = f"ISC004 Unparenthesized implicit string concatenation\n{diagnostic}\nFound 1 error."
+                command = [sys.executable, "-c", f"print({output!r}); raise SystemExit(1)"]
+                repo = repo_with_test(Path(directory), TOML + (
+                    '\n[[gate.check]]\nname = "ruff"\nrun = ' + json.dumps(command) + "\n"
+                ))
+                code, out, report = gate(repo, "--skip", "conflict-markers,leak-scan")
+                self.assertEqual(code, 1, report + out)
+                self.assertIn("- ruff: FAIL", report)
+                self.assertNotIn("INFRA", report)
+
+    def test_expected_repro_still_detects_exhausted_bytes_or_inodes(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from factory import gate as gate_module
+
+        available = SimpleNamespace(f_bavail=100, f_files=100, f_favail=100)
+        for disk in (
+            SimpleNamespace(f_bavail=0, f_files=100, f_favail=100),
+            SimpleNamespace(f_bavail=100, f_files=100, f_favail=0),
+        ):
+            for filesystems in ((disk, available), (available, disk)):
+                with self.subTest(filesystems=filesystems), \
+                        mock.patch.object(gate_module.os, "statvfs", side_effect=filesystems), \
+                        self.assertRaises(gate_module.RunnerStorageLow):
+                    gate_module.timed(
+                        [sys.executable, "-c", "raise OSError(28, 'No space left on device')"],
+                        expected_failure=True,
+                    )
