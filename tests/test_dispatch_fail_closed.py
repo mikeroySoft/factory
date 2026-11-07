@@ -58,9 +58,9 @@ class DispatchFailClosedTest(unittest.TestCase):
                 self.github.issue_labels = {config.LABEL_AGENT, label}
                 with self.patched(), mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
                         mock.patch.object(dispatch.shutil, "which", return_value="/bin/omp"), \
-                        mock.patch.object(dispatch, "run_worker", side_effect=AssertionError("ticket worker spawned")) as worker:
-                    with self.assertRaisesRegex(dispatch.WorkerUnavailable, label):
-                        dispatch.worker_round(9, wt, {config.LABEL_AGENT}, "ticket", "", 2, float("inf"))
+                        mock.patch.object(dispatch, "run_worker", side_effect=AssertionError("ticket worker spawned")) as worker, \
+                        self.assertRaisesRegex(dispatch.WorkerUnavailable, label):
+                    dispatch.worker_round(9, wt, {config.LABEL_AGENT}, "ticket", "", 2, float("inf"))
                 worker.assert_not_called()
 
     def test_runner_rejects_non_omp_or_missing_credentials_without_fallback(self) -> None:
@@ -78,8 +78,8 @@ class DispatchFailClosedTest(unittest.TestCase):
                 self.cfg.worker_probe = {"chosen": probe} if probe else {}
                 with self.patched(), mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
                         mock.patch.object(dispatch.shutil, "which", return_value="/bin/omp"), \
-                        mock.patch.object(dispatch, "run_worker", side_effect=AssertionError("ticket worker spawned")) as worker:
-                    with self.assertRaises(dispatch.WorkerUnavailable):
-                        dispatch.worker_round(9, wt, {"chosen"}, "ticket", "", 1, float("inf"))
+                        mock.patch.object(dispatch, "run_worker", side_effect=AssertionError("ticket worker spawned")) as worker, \
+                        self.assertRaises(dispatch.WorkerUnavailable):
+                    dispatch.worker_round(9, wt, {"chosen"}, "ticket", "", 1, float("inf"))
                 worker.assert_not_called()
                 self.assertEqual(self.events("attempt"), [])
