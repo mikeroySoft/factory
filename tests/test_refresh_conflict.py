@@ -468,7 +468,9 @@ class ManagerFixAheadTest(unittest.TestCase):
             return pr
 
         with mock.patch.object(dispatch, "run", side_effect=run), \
-                mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                mock.patch.object(dispatch, "_ticket_claim_state", return_value=github(["issue", "view"])), \
+                mock.patch.object(dispatch, "host_claim_login", return_value="factory"), \
                 mock.patch.object(dispatch, "worker_round",
                                   side_effect=lambda *a, **k: (True, "ok", logfile, git(self.wt, "rev-parse", "HEAD"))) as worker, \
                 mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "fine", False)), \
@@ -753,8 +755,8 @@ class TriageExemptionRegateTest(unittest.TestCase):
         dispatch.configure(self.cfg)
         self.wt = dispatch.ensure_worktree(9)
         self.issue = {
-            "title": "bug", "body": "Fix the hardware failure.", "state": "OPEN",
-            "labels": [{"name": "bug"}], "assignees": [{"login": "factory"}],
+            "title": "bug", "body": "Fix the hardware failure.",
+            "labels": [{"name": "bug"}],
             "comments": [{
                 "author": {"login": "factory-bot"},
                 "body": "Triage: hardware issue\n\nAgent brief: investigate\n"
@@ -762,6 +764,7 @@ class TriageExemptionRegateTest(unittest.TestCase):
                 "factory-protected-override: comment is not override authority",
             }],
         }
+        self.issue.update(state="OPEN", assignees=[{"login": "factory"}])
         self.requests = []
         self.login = mock.patch.object(triage, "login", return_value="factory-bot")
         self.login.start()

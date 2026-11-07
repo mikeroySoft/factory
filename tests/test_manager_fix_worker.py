@@ -43,7 +43,7 @@ class ManagerFixWorkerSelectionTest(unittest.TestCase):
     def fix_round(self, ticket: int, labels: set[str], selected_worker: str) -> tuple[str, dict]:
         commands = []
 
-        def run_worker(argv: list[str], *_args: object, **_kwargs: object) -> tuple[int, None]:
+        def run_worker(argv: list[str], *_args: object) -> tuple[int, None]:
             commands.append(argv[0])
             return 0, None
 

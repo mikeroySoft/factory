@@ -564,8 +564,7 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         self.wt.mkdir(parents=True)
         self.issue = {
             "number": 7, "title": "change dispatcher", "body": "", "comments": [],
-            "labels": [{"name": config.LABEL_AGENT}], "state": "OPEN",
-            "assignees": [{"login": "factory"}],
+            "labels": [{"name": config.LABEL_AGENT}], "state": "OPEN", "assignees": [],
         }
         self.pr = {
             "number": 70, "headRefName": "agent/7", "headRefOid": HEAD,
@@ -578,6 +577,8 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.command = self.patch(dispatch, "run", side_effect=self.command_result)
         self.patch(dispatch, "gh_json", side_effect=self.github)
+        self.patch(dispatch, "_ticket_claim_state", return_value=claimed_github(["issue", "view"]))
+        self.patch(dispatch, "host_claim_login", return_value="factory")
         self.patch(dispatch, "initiative_kind", return_value=None)
         self.patch(dispatch, "admit_plan", return_value=None)
         self.patch(dispatch, "ensure_worktree", return_value=self.wt)

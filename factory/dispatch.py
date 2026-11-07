@@ -76,6 +76,8 @@ VERIFIED_WORKERS: set[str] = set()
 # Tickets this pass escalated: no owner can have released them yet (see `observe_owner_requeue`).
 _ESCALATED: set[int] = set()
 _STOPPED_TICKETS: dict[int, str] = {}
+# Requeue history is checked once per pass; subsequent live revocation is latched above.
+_REQUEUE_CHECKED: set[int] = set()
 
 
 def configure(c: Config) -> None:
@@ -100,6 +102,7 @@ def configure(c: Config) -> None:
     VERIFIED_WORKERS.clear()
     _ESCALATED.clear()
     _STOPPED_TICKETS.clear()
+    _REQUEUE_CHECKED.clear()
     host_claim_login.cache_clear()
 
 
@@ -1783,9 +1786,12 @@ def require_ticket_claim(wt: Path, n: int, action: str) -> None:
                 reason = "unassigned"
             elif cfg.host_name and owned_host_claim(n) is None:
                 reason = "host-claim-lost"
+            elif n not in _REQUEUE_CHECKED and _unassigned_run_held(n):
+                reason = "unassigned"
         except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
             reason = "claim-unavailable"
     if reason is None:
+        _REQUEUE_CHECKED.add(n)
         return
     _STOPPED_TICKETS[n] = reason
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -1862,12 +1868,12 @@ def run_worker(
     logfile: Path,
     handoff: Path,
     deadline: float = float("inf"),
+    ticket: int | None = None,
     *,
     env_overrides: dict[str, str] | None = None,
     worker: str | None = None,
     worker_version: str | None = None,
     journal: bool = True,
-    ticket: int | None = None,
 ) -> tuple[int, str | None]:
     """Run the worker; return its exit code and the timeout that stopped it, if any.
 
@@ -3887,6 +3893,44 @@ def _review_rounds_used(n: int) -> int:
     return sum(row.get("event") in {"review-rework", "risk-requeue"} for row in _generation_rows(n))
 
 
+def _unassigned_run_held(n: int) -> bool:
+    """A cancelled claim is not fresh queue work; only an existing human requeue releases it."""
+    rows = _generation_rows(n)
+    claimed = next((i for i in range(len(rows) - 1, -1, -1)
+                    if rows[i].get("event") == "claimed"), -1)
+    stopped = next((row for row in rows[claimed + 1:] if (
+        row.get("event") in {"worker-stopped", "push-refused", "review-refused"}
+        and row.get("reason") == "unassigned"
+    )), None)
+    if stopped is None:
+        return False
+    if any(row.get("event") == "human-decision"
+           and (row.get("action") or {}).get("name") == "requeue_agent"
+           and row.get("status") in {"success", "partial", "uncertain"}
+           for row in rows[rows.index(stopped) + 1:]):
+        return False
+    from factory import handoff
+
+    try:
+        items = handoff.timeline(n)
+        login = host_claim_login()
+        removed = next((i for i in range(len(items) - 1, -1, -1)
+                        if items[i].get("event") == "unassigned"
+                        and (items[i].get("assignee") or {}).get("login", "").casefold() == login), None)
+        since = datetime.fromisoformat(stopped["at"]).replace(microsecond=0)
+        return removed is None or not any(
+            item.get("event") == "labeled"
+            and (item.get("label") or {}).get("name") == LABEL_AGENT
+            and (item.get("actor") or {}).get("login")
+            and item["actor"]["login"].casefold() != login
+            and item["actor"].get("type") != "Bot"
+            and datetime.fromisoformat(item["created_at"]) >= since
+            for item in items[removed + 1:]
+        )
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError):
+        return True
+
+
 def observe_owner_requeue(n: int, issue: dict) -> None:
     """Open a generation when a human released `n`'s latest escalation.
 
@@ -4771,7 +4815,7 @@ def worker_round(
         launch_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         offset = logfile.stat().st_size if logfile.exists() else 0
         try:
-            code, fired = run_worker(argv, wt, logfile, handoff_path, deadline, ticket=n, **run_options)
+            code, fired = run_worker(argv, wt, logfile, handoff_path, deadline, n, **run_options)
         except FileNotFoundError as exc:
             # The executable vanished after the pre-pass check (#260): a host defect, so the same
             # attempt falls back when it can; with no fallback the claim goes back as before.
@@ -5074,6 +5118,10 @@ def process_ticket(
                 log(f"#{n}: skipped (state changed since frontier query)")
                 execution.outcome = "not_admitted"
                 execution.reason = "state_changed"
+                return
+            if _unassigned_run_held(n):
+                log(f"#{n}: skipped (claim revoked; waiting for human requeue to {LABEL_AGENT})")
+                execution.outcome, execution.reason = "not_admitted", "claim_revoked"
                 return
             observe_owner_requeue(n, fresh)
             profile = cfg.worker_key(labels)

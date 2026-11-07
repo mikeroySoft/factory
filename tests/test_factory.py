@@ -83,14 +83,6 @@ def claimed_issue(number: int = 7, **fields) -> dict:
         **fields,
     }
 
-def claim_github(args, fallback, number: int = 7, labels: list[dict] | None = None):
-    if args == ["api", "user"]:
-        return {"login": CLAIM_LOGIN}
-    if args[:2] == ["issue", "view"] and args[-1] == "state,labels,assignees":
-        return claimed_issue(number, labels=labels or [])
-    return fallback(args) if callable(fallback) else fallback
-
-
 
 def curate_diff(*paths: str) -> str:
     """A unified diff creating each path with one line, as a manager's CURATE body."""
@@ -2183,15 +2175,10 @@ PY
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 return original_run(cmd, *args, **kwargs)
 
-            def fake_github(args):
-                if args == ["api", "user"]:
-                    return {"login": CLAIM_LOGIN}
-                if args[:2] == ["issue", "view"] and args[-1] == "state,labels,assignees":
-                    return claimed_issue(**{**issue, "assignees": [{"login": CLAIM_LOGIN}]})
-                return issue
-
             with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
-                    mock.patch.object(dispatch, "gh_json", side_effect=fake_github), \
+                    mock.patch.object(dispatch, "gh_json", return_value=issue), \
+                    mock.patch.object(dispatch, "_ticket_claim_state", return_value=claimed_issue()), \
+                    mock.patch.object(dispatch, "host_claim_login", return_value=CLAIM_LOGIN), \
                     mock.patch.object(dispatch, "run", side_effect=fake_run), \
                     mock.patch.object(dispatch, "escalate") as escalate:
                 dispatch.process_ticket(issue, 5, False)
@@ -2499,6 +2486,8 @@ class DispatchTest(unittest.TestCase):
             return real_gh_json(args, *positional, **kwargs)
 
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=github))
+        self.enterContext(mock.patch.object(dispatch, "_ticket_claim_state", return_value=claimed_issue()))
+        self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value=CLAIM_LOGIN))
 
     def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
         from unittest import mock
@@ -3567,7 +3556,7 @@ class DispatchTest(unittest.TestCase):
                 ))
                 dispatch.LOGS.mkdir(parents=True)
 
-                def worker(_cmd, _wt, logfile, *_args, text=text, **_kwargs):
+                def worker(_cmd, _wt, logfile, *_args, text=text):
                     logfile.write_text(text)
                     return 0, None
 
@@ -3600,7 +3589,7 @@ class DispatchTest(unittest.TestCase):
                 dispatch.configure(config.Config(root=repo, repo="acme/widgets", workers={"default": argv}))
                 dispatch.LOGS.mkdir(parents=True)
 
-                def worker(cmd, _wt, logfile, *_args, **_kwargs):
+                def worker(cmd, _wt, logfile, *_args):
                     logfile.write_text("Working...\n")
                     if "--session-dir" in cmd:
                         where = Path(cmd[cmd.index("--session-dir") + 1])
@@ -4383,8 +4372,7 @@ class DispatchTest(unittest.TestCase):
                 return real_run(cmd, *args, **kwargs)
 
             with mock.patch.object(
-                    dispatch, "gh_json",
-                    side_effect=lambda args: claim_github(args, {"baseRefName": "main"}, 31),
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
             ), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
@@ -4446,13 +4434,9 @@ class DispatchTest(unittest.TestCase):
                 return real_run(cmd, *args, **kwargs)
 
             with mock.patch.object(
-                    dispatch, "gh_json", side_effect=lambda args: claim_github(
-                        args,
-                        lambda query: (
-                            {"baseRefName": "main"} if query[0] == "pr"
-                            else {"labels": [{"name": config.LABEL_PROTECTED_OVERRIDE}]}
-                        ),
-                        labels=[{"name": config.LABEL_PROTECTED_OVERRIDE}],
+                    dispatch, "gh_json", side_effect=lambda args: (
+                        {"baseRefName": "main"} if args[0] == "pr"
+                        else {"labels": [{"name": config.LABEL_PROTECTED_OVERRIDE}]}
                     ),
             ), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
@@ -4501,8 +4485,7 @@ class DispatchTest(unittest.TestCase):
                 return real_run(cmd, *args, **kwargs)
 
             with mock.patch.object(
-                    dispatch, "gh_json",
-                    side_effect=lambda args: claim_github(args, {"baseRefName": "main"}),
+                    dispatch, "gh_json", return_value={"baseRefName": "main"},
             ), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
@@ -4656,10 +4639,7 @@ class DispatchTest(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 return real_run(cmd, *args, **kwargs)
 
-            with mock.patch.object(
-                    dispatch, "gh_json",
-                    side_effect=lambda args: claim_github(args, {"baseRefName": "main"}, 9),
-            ), \
+            with mock.patch.object(dispatch, "gh_json", return_value={"baseRefName": "main"}), \
                     mock.patch.object(dispatch, "run", side_effect=run_spy), \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "ok")), \
                     mock.patch.object(dispatch, "review", return_value=("APPROVE", "fine")), \

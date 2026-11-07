@@ -192,7 +192,10 @@ class AgentPushLeaseTest(unittest.TestCase):
         self.git(self.wt, "push", "-q", "origin", "agent/7")  # the dispatcher's earlier push
         self.fetched, self.main = self.remote("agent/7"), self.remote("main")
         self.git(tmp, "clone", "-q", "-b", "agent/7", str(self.origin), str(self.other))
-        self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=self.github))
+        self.enterContext(mock.patch.object(
+            dispatch, "_ticket_claim_state", side_effect=lambda n: self.github(["issue", "view"]),
+        ))
+        self.enterContext(mock.patch.object(dispatch, "host_claim_login", return_value="factory-bot"))
 
     @staticmethod
     def github(args):
@@ -349,7 +352,7 @@ class AgentPushLeaseTest(unittest.TestCase):
             return real_run(cmd, *args, **kwargs)
 
         with mock.patch.object(dispatch, "run", side_effect=run), \
-                mock.patch.object(dispatch, "gh_json", side_effect=self.github):
+                mock.patch.object(dispatch, "gh_json", return_value=[]):
             rebased = self.commit(self.wt, "work, rebased", "--amend")
             self.assertTrue(dispatch.push_and_pr(self.wt, "agent/7", "t", "b", ticket=7, lease=self.fetched))
             self.assertEqual(self.remote("agent/7"), rebased)

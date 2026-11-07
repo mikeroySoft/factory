@@ -232,6 +232,12 @@ class DispatchRevocationTest(unittest.TestCase):
         worker.assert_not_called()
         self.assertEqual(self.github.assignees, [])
         self.assertEqual(self.github.head(), self.lease)
+        self.github.assignees = ["factory"]  # Reassignment alone is not a human requeue.
+        with mock.patch("factory.handoff.timeline", return_value=timeline), \
+                mock.patch.object(dispatch, "worker_round") as worker:
+            manage.apply(9, self.github.issue(), "FIX", "", {"worker": "default", "guidance": "fix"}, self.packet)
+        worker.assert_not_called()
+        self.github.assignees = []
 
         timeline.append({"event": "labeled", "label": {"name": config.LABEL_AGENT},
                          "actor": {"login": "owner", "type": "User"},
