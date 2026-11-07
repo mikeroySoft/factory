@@ -28,6 +28,7 @@ class ClaimFailure(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
+        self.enterContext(mock.patch("factory.handoff.timeline", return_value=[]))
         self.root = Path(temp.name)
         self.calls = self.root / "gh-call.json"
         bin_dir = self.root / "bin"

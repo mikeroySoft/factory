@@ -14,6 +14,23 @@ class HostClaimMutationTest(unittest.TestCase):
     dispatcher = test_host_claims.HostClaimRaceTest.dispatcher
     launch = test_host_claims.HostClaimRaceTest.launch
 
+    claimed_dispatcher = dispatcher
+
+    def dispatcher(self, host, *args, **kwargs):
+        module = self.claimed_dispatcher(host, *args, **kwargs)
+        if host is None:
+            refresh = module.refresh_pr_branch
+
+            def claimed_refresh(*args, **kwargs):
+                # The legacy argv fixture starts after explicit requeue/admission.
+                self.github.issue["labels"] = [{"name": "ready-for-agent"}]
+                module._REQUEUE_CHECKED.add(7)
+                return refresh(*args, **kwargs)
+
+            self.enterContext(mock.patch.object(module, "host_claim_login", return_value="@me"))
+            self.enterContext(mock.patch.object(module, "refresh_pr_branch", side_effect=claimed_refresh))
+        return module
+
     def test_already_deleted_comment_does_not_confuse_later_foreign_claim(self):
         tank = self.dispatcher("tank")
         self.github.add_claim("tank", datetime.now(UTC))

@@ -14,6 +14,9 @@ class HostClaimReworkTest(unittest.TestCase):
 
     def configure(self, host):
         dispatch.configure(config.Config(self.root / host, "local/claims", host_name=host))
+        # This fixture isolates claim-safe transport/cleanup below run admission.
+        # Revoked rework authorization is exercised in test_refresh_revocation.
+        self.enterContext(mock.patch.object(dispatch, "require_ticket_claim"))
         self.enterContext(mock.patch.object(dispatch, "_HOST_CLAIMS", {}))
         self.enterContext(mock.patch.object(dispatch, "gh_json",
                                            side_effect=lambda args: self.github.json(host, args)))
