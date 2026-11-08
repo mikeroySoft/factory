@@ -126,3 +126,87 @@ Prepared for the unblock (verified, not applied):
   `test_mcp` import). I renamed it to `SUPERSEDED-…` and re-ran with the configured invocation.
   This failure had a different premise from the override blocker, so it does not trigger the
   two-failure pivot rule.
+## Run 4 (PM rulings, Nov 7 2026 5:39 PM PST): logs in `../factory-pr694-native-20261107-logs/run4/`
+
+All test/lint commands ran through `run4/stamp.sh` (rev, tree, `git status --short`, command, exit
+before and after).
+
+### A) P3: kept as a patch only
+`run4/P3-replacement.diff` is a byte copy of `run3/P3-replacement.diff`. Not applied; waits for B review
+and PM blob approval.
+
+### B) Done: commit `19457e8` "gate: content-pinned --add-only-allow PATH=BLOB (local only)"
+- `factory/gate.py`: repeatable `--add-only-allow PATH=BLOB` and required `--add-only-allow-base COMMIT`.
+  - Parse at entry (`parse_add_only_allow`): path must be canonical (no `..`, `.`, empty segment,
+    leading `/`, backslash), BLOB must be a full 40/64-hex id; a duplicate path or missing base is
+    an argparse error.
+  - `_verify_allows`, called from `check_protected_paths`, refuses unless:
+    - COMMIT equals `merge-base(base, HEAD)`;
+    - path matches `add_only_paths` and not `protected_paths` (case-sensitive);
+    - the raw diff entry is `M` with an unchanged 100644/100755 mode (so delete, rename via
+      `--no-renames`, type change, symlink and mode change are refused);
+    - numstat is not binary;
+    - the working tree path is a regular file (not a symlink);
+    - both `HEAD:path` and the working-tree bytes (`git hash-object --no-filters`) equal BLOB.
+  - Any refusal fails `protected-paths` (`add_only_paths` reason) for the whole run.
+  - Unlisted add-only files keep full protection.
+  - `check_existing_tests(base, exempt)` exempts only test functions whose path is in the allow map,
+    and only after protected-paths verified it. Other files' functions still fail `protected-tests`.
+- Not wired to the dispatcher, manager or labels, and not invoked on the current edits.
+- Tests: `tests/test_add_only_allow.py`, 13 tests. Red first (`B-tdd-red.log`: unrecognized
+  arguments), then green (`B-tdd-green.log`, `B-verify.log`: 23 OK together with
+  `test_add_only_override`).
+  - The exact change passes; without the allow it fails.
+  - These fail: an unrelated edit, an unrelated additive function change (`protected-tests`), a
+    one-byte drift, a stale blob, a base mismatch, a dirty-worktree substitution, an approved
+    worktree over an unapproved commit, a symlinked worktree file, malformed or out-of-scope entries,
+    and an out-of-scope test file.
+  - These fail even when the blob matches: delete, rename, mode change, binary change, and a symlink
+    in the commit.
+- Mutation check in a scratch worktree, since removed. Disabling each guard (worktree hash, committed
+  hash, base, symlink, structural, binary, exempt) made a named test fail. The scope guard survived
+  the first round, so `test_allow_cannot_exempt_a_test_outside_add_only_scope` was added.
+- Gate suites (`B-verify.log`): the only failures are the 3 known CAP ids from the run3 contract:
+  the non-UTF-8 filename test and `gate_resources` ×2. ruff is clean. The `agents_map` test passes.
+### C) Patches only (not applied): `run4/approved-patches/` 01–05, manifest `run4/blob-hashes.txt`
+- Patches, in apply order:
+  - 01 fake-gh shebang `'#!' + sys.executable`. At HEAD the shebang was `#!/usr/bin/python`.
+  - 02 P0.
+  - 03a–f temp-root fix: evidence_transport, factory (ConfigTest ×3 and doctor_json only), dispatch_lifecycle,
+    mcp, prime_pilot, workspace.
+  - 04 P1, which applies on top of 02.
+  - 05 P2.
+- Each file in the manifest has a HEAD blob and a cumulative post-edit blob. `git hash-object` and `--no-filters` agree.
+- Patched module runs (`C-patched-modules.log`):
+  - Pass: binding_cli, runtime, dispatch_lifecycle, mcp, prime_pilot, workspace, dashboard_passive.
+  - The remaining failures are known or newly unmasked:
+    - factory `selected_interpreter…` is a DEF (D item 3).
+    - evidence_transport has 6 errors from the `/proc` helper (CAP).
+    - NEW: evidence `complete_local_state…` and evidence_transport `complete_page…` fail with `ok:false`
+      because of `lsof` `locks_unavailable`. This is the same passive-lock CAP premise as P1/P2, and the
+      run3 temp-root guess was wrong. These two failures share one premise, so this item STOPPED under
+      the two-failure rule.
+  - Needed: a PM ruling like P1/P2 for these two tests.
+
+### D) Drafts only (not applied)
+- `run4/capability-diffs/`:
+  - D1 native_capability: Darwin branch with a real flock child. It checks unavailable≠0, contention,
+    `MAX_ACTIVE=1` admission and reopen.
+  - D2a/D2b non-UTF-8: a portable git-index test, plus a Darwin native assertion of EILSEQ.
+  - D3 dashboard_port 127.0.0.2: a portable fake-socket test, plus a Darwin native assertion of
+    EADDRNOTAVAIL.
+  - The Linux bodies are kept; the Linux branches were not run here [INFERENCE].
+  - There is no skip or xfail (`skip-grep.txt`). Post-edit blobs are in NOTES.md.
+- `run4/UND-findings.md` reclassifies:
+  - dual-stack: DEF. With `SO_REUSEADDR`, binding 127.0.0.1 beside a `[::]`/`0.0.0.0` holder succeeds on
+    macOS. Production fails safe because `ss` is missing. PM must decide whether the macOS port check is
+    in scope.
+  - decisions concurrent apply: Darwin `openat(O_CREAT)` race returns ENOENT. Factory does not tolerate
+    it, so it is a DEF. A retry on ENOENT took failures from 81/200 to 0/200.
+  - HostConfig interpreter: path-spelling DEF that is not macOS-specific. A canonical TMPDIR would hide it.
+  - tempdir_hygiene: failures are propagated child failures only, with no leak.
+- The brief's `-k` before `discover` form exits 2. The agents used `discover … -k`.
+
+### E) Open
+- The journal-lock cause stays OPEN (unproven).
+- Historical commit provenance stays INFERRED.
