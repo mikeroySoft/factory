@@ -389,22 +389,22 @@ class NativeSeamTest(unittest.TestCase):
 
     def test_missing_library_and_symbol_fail_closed(self):
         with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
-                patch.object(ctypes, "CDLL", side_effect=OSError("libproc missing")):
-            with self.assertRaises(OSError) as missing:
-                darwin_observer.native_process(4, BOOT)
+                patch.object(ctypes, "CDLL", side_effect=OSError("libproc missing")), \
+                self.assertRaises(OSError) as missing:
+            darwin_observer.native_process(4, BOOT)
         self.assertNotIsInstance(missing.exception, ProcessLookupError)
 
         class Empty:
             pass
 
         with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
-                patch.object(darwin_observer, "_lib", return_value=(Empty(), Empty())):
-            with self.assertRaises(OSError) as symbol:
-                darwin_observer.native_process(4, BOOT)
+                patch.object(darwin_observer, "_lib", return_value=(Empty(), Empty())), \
+                self.assertRaises(OSError) as symbol:
+            darwin_observer.native_process(4, BOOT)
         self.assertNotIsInstance(symbol.exception, ProcessLookupError)
 
     def test_live_status_change_keeps_the_same_start(self):
-        common = dict(pid=42, ppid=7, uid=501, sec=100, usec=8)
+        common = {"pid": 42, "ppid": 7, "uid": 501, "sec": 100, "usec": 8}
         lib = _InfoLib([
             pack_bsd(status=darwin_observer.SRUN, **common),
             pack_bsd(status=darwin_observer.SSLEEP, **common),
@@ -421,9 +421,9 @@ class NativeSeamTest(unittest.TestCase):
             pack_bsd(status=darwin_observer.SRUN, **{**common, "ppid": 8}),
         ])
         with patch.object(darwin_observer, "abi_facts", return_value=SUPPORTED_FACTS), \
-                patch.object(darwin_observer, "_lib", return_value=(moved, None)):
-            with self.assertRaises(OSError):
-                darwin_observer.native_process(42, BOOT)
+                patch.object(darwin_observer, "_lib", return_value=(moved, None)), \
+                self.assertRaises(OSError):
+            darwin_observer.native_process(42, BOOT)
 
     def test_pid_list_full_buffer_grows_and_errors_stay_incomplete(self):
         width = ctypes.sizeof(ctypes.c_int)

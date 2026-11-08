@@ -1,6 +1,7 @@
 """Public doctor/install checks for dashboard port ownership."""
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -11,12 +12,14 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Self
 from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from factory import config, onboard
+from factory import config, onboard, platform_identity
 
 
 class DashboardPortTest(unittest.TestCase):
@@ -35,6 +38,44 @@ class DashboardPortTest(unittest.TestCase):
         listener.listen()
         self.addCleanup(listener.close)
         return listener
+
+    def loopback_kernel(self, held: set[tuple[str, int]]) -> list[tuple[str, int]]:
+        """Inject onboard's socket boundary; only exact ``held`` (address, port) pairs collide.
+
+        This models Linux 127/8 specific-address binds and, for the Darwin wildcard probes, BSD
+        SO_REUSEADDR (a wildcard bind succeeds beside a specific listener on another address).
+        """
+        bound: list[tuple[str, int]] = []
+
+        class Probe:
+            def __enter__(self) -> Self:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+            def setsockopt(self, *args: object) -> None:
+                return None
+
+            def bind(self, target: tuple[str, int]) -> None:
+                bound.append(target)
+                if target in held:
+                    raise OSError(errno.EADDRINUSE, os.strerror(errno.EADDRINUSE))
+
+        module = SimpleNamespace(
+            AF_INET=socket.AF_INET, AF_INET6=socket.AF_INET6, SOCK_STREAM=socket.SOCK_STREAM,
+            SOL_SOCKET=socket.SOL_SOCKET, SO_REUSEADDR=socket.SO_REUSEADDR,
+            IPPROTO_IPV6=socket.IPPROTO_IPV6, IPV6_V6ONLY=socket.IPV6_V6ONLY,
+            getaddrinfo=socket.getaddrinfo, socket=lambda family, kind: Probe(),
+        )
+        self.enterContext(patch.object(onboard, "socket", module))
+        return bound
+
+    def assert_foreign_loopback_unavailable(self) -> None:
+        """Darwin configures only 127.0.0.1 on lo0, so no listener can exist on 127.0.0.2."""
+        with socket.socket() as foreign, self.assertRaises(OSError) as refused:
+            foreign.bind(("127.0.0.2", 0))
+        self.assertEqual(refused.exception.errno, errno.EADDRNOTAVAIL)
 
     @staticmethod
     def ss_line(host: str, port: int, name: str | None = None, pid: int | None = None) -> str:
@@ -172,12 +213,32 @@ class DashboardPortTest(unittest.TestCase):
         self.assertIn("ss", row["detail"])
 
     def test_doctor_ignores_a_listener_on_an_unrelated_address(self) -> None:
-        listener = self.listener("127.0.0.2")
-        self.cfg.dashboard_port = listener.getsockname()[1]
+        if platform_identity.darwin():
+            self.assert_foreign_loopback_unavailable()
+            probe = self.listener()
+            self.cfg.dashboard_port = probe.getsockname()[1]
+            probe.close()
+        else:
+            listener = self.listener("127.0.0.2")
+            self.cfg.dashboard_port = listener.getsockname()[1]
         ss = subprocess.CompletedProcess([], 0, self.ss_line("127.0.0.2", self.cfg.dashboard_port, "foreign", 4321), "")
         code, output, _ = self.doctor(ss)
         row = next(row for row in json.loads(output)["rows"] if row["label"] == f"dashboard port {self.cfg.dashboard_port}")
         self.assertEqual((code, row["status"]), (0, "PASS"))
+
+    def test_doctor_ignores_an_unrelated_address_at_the_socket_boundary(self) -> None:
+        """Portable: a foreign holder on 127.0.0.2 does not collide with the 127.0.0.1 probe."""
+        self.cfg.dashboard_port = 48123
+        bound = self.loopback_kernel({("127.0.0.2", self.cfg.dashboard_port)})
+        ss = subprocess.CompletedProcess([], 0, self.ss_line("127.0.0.2", self.cfg.dashboard_port, "foreign", 4321), "")
+        code, output, _ = self.doctor(ss)
+        row = next(row for row in json.loads(output)["rows"] if row["label"] == f"dashboard port {self.cfg.dashboard_port}")
+        self.assertEqual((code, row["status"]), (0, "PASS"))
+        self.assertEqual(row["detail"], "available on 127.0.0.1")
+        probes = [("127.0.0.1", self.cfg.dashboard_port)]
+        if platform_identity.darwin():
+            probes += [("0.0.0.0", self.cfg.dashboard_port), ("::", self.cfg.dashboard_port)]
+        self.assertEqual(bound, probes)
 
     def test_doctor_ignores_other_address_when_own_service_holds_target(self) -> None:
         listener = self.listener()
@@ -205,8 +266,37 @@ class DashboardPortTest(unittest.TestCase):
         self.assertIn("foreign", row["detail"])
 
     def test_install_refuses_foreign_holder_before_writing_or_mutating_systemd(self) -> None:
-        listener = self.listener("127.0.0.2")
-        self.cfg.dashboard_port = listener.getsockname()[1]
+        if platform_identity.darwin():
+            self.assert_foreign_loopback_unavailable()
+            probe = self.listener()
+            self.cfg.dashboard_port = probe.getsockname()[1]
+            probe.close()
+            reason = f"cannot be bound: {os.strerror(errno.EADDRNOTAVAIL)}"
+        else:
+            listener = self.listener("127.0.0.2")
+            self.cfg.dashboard_port = listener.getsockname()[1]
+            reason = "is in use by foreign-server"
+        units = self.root / "units"
+        units.mkdir()
+        sentinel = units / "factory-widgets.service"
+        sentinel.write_text("unchanged\n")
+        before = {path.name: path.read_text() for path in units.iterdir()}
+        ss = subprocess.CompletedProcess([], 0, self.ss_line("127.0.0.2", self.cfg.dashboard_port, "foreign-server", 4321), "")
+        code, _, stderr, calls, _ = self.install(["--dashboard", "--host", "127.0.0.2"], ss)
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            stderr,
+            f"factory dashboard: port {self.cfg.dashboard_port} on 127.0.0.2 {reason}; "
+            f'set [repo."acme/widgets".dashboard] port in {self.host_path} '
+            "(each factory needs its own port)\n",
+        )
+        self.assertEqual({path.name: path.read_text() for path in units.iterdir()}, before)
+        self.assertFalse(any(cmd[0] == "systemctl" and "show" not in cmd for cmd in calls))
+
+    def test_install_refuses_foreign_holder_at_the_socket_boundary(self) -> None:
+        """Portable: a held 127.0.0.2 port is attributed through ss and refused before any write."""
+        self.cfg.dashboard_port = 48123
+        bound = self.loopback_kernel({("127.0.0.2", self.cfg.dashboard_port)})
         units = self.root / "units"
         units.mkdir()
         sentinel = units / "factory-widgets.service"
@@ -221,6 +311,7 @@ class DashboardPortTest(unittest.TestCase):
             f'set [repo."acme/widgets".dashboard] port in {self.host_path} '
             "(each factory needs its own port)\n",
         )
+        self.assertEqual(bound, [("127.0.0.2", self.cfg.dashboard_port)])
         self.assertEqual({path.name: path.read_text() for path in units.iterdir()}, before)
         self.assertFalse(any(cmd[0] == "systemctl" and "show" not in cmd for cmd in calls))
 

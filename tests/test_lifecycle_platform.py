@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from factory import darwin_observer, lifecycle, runtime_events, platform_identity
+from factory import darwin_observer, lifecycle, platform_identity, runtime_events
 
 BOOT = "11111111-2222-3333-4444-555555555555"
 MACHINE = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"

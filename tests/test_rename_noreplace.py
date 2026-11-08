@@ -41,8 +41,12 @@ class RenameNoReplaceTest(unittest.TestCase):
                 import tempfile
                 from pathlib import Path
 
-                ctypes.CDLL = lambda *args, **kwargs: object()
+                real_cdll = ctypes.CDLL
+                # Only decisions' dlopen(NULL) libc lacks renameat2/renameatx_np; Darwin's
+                # ctypes.util (via lifecycle) loads libc by path at import and stays real.
+                ctypes.CDLL = lambda name, *a, **k: object() if name is None else real_cdll(name, *a, **k)
                 from factory import decisions
+                assert decisions._RENAME_NOREPLACE is None, "portable fallback was not selected"
 
                 with tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)

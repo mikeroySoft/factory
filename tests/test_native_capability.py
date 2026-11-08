@@ -137,15 +137,50 @@ class NativeCapabilityTest(unittest.TestCase):
         return row, errors, opened
 
     def test_linux_kernel_table_counts_only_live_ticket_flocks(self):
-        self.assertFalse(platform_identity.darwin())
         (self.cfg.factory / "locks").mkdir(parents=True)
         self.assertEqual(runtime_local._capacity(self.cfg), 0)
         proc = self.hold(dispatch.ticket_lock(7))
-        self.assertEqual(runtime_local._capacity(self.cfg), 1)
-        self.assertTrue(dispatch.lock_held(dispatch.ticket_lock(7)))
-        self.release(proc)
-        self.assertEqual(runtime_local._capacity(self.cfg), 0)
-        self.assertFalse(dispatch.lock_held(dispatch.ticket_lock(7)))
+        if platform_identity.darwin():
+            # Darwin has no passive kernel lock table: a live ticket FLOCK is unavailable, never a count.
+            with self.assertRaises(runtime_local._Unavailable) as unavailable:
+                runtime_local._capacity(self.cfg)
+            self.assertEqual(str(unavailable.exception), "locks_unavailable")
+            row, errors, opened = self.passive(self.cfg)
+            self.assertEqual(row["capacity"], {"configured": 1, "active": None, "complete": False})
+            self.assertEqual(row["observation"], "partial")
+            self.assertIn(
+                {"source": "admission", "scope": "repository", "code": "locks_unavailable"}, errors)
+            self.assertNotIn("/proc/locks", opened)
+            # The kernel still enforces the claim: a second acquirer is refused and admission waits.
+            self.assertTrue(dispatch.lock_held(dispatch.ticket_lock(7)))
+            with dispatch.ticket_lock(7).open("a") as second, self.assertRaises(BlockingIOError):
+                fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(dispatch, "frontier") as frontier, \
+                    patch.object(dispatch, "process_ticket") as process:
+                dispatch.ticket_pass(1, False)
+            frontier.assert_not_called()
+            process.assert_not_called()
+            waits = [event["wait"] for event in lifecycle.read_events(self.events)
+                     if event.get("event") == "lifecycle" and event["kind"] == "wait"]
+            self.assertEqual([(wait["reason"], wait["mode"], wait["details"]) for wait in waits],
+                             [("capacity_reached", "admission", {"active": 1, "max_active": 1})])
+            self.release(proc)
+            self.assertFalse(dispatch.lock_held(dispatch.ticket_lock(7)))
+            # Released is still not a passive zero: the numeric lock file remains uncounted.
+            with self.assertRaises(runtime_local._Unavailable) as unavailable:
+                runtime_local._capacity(self.cfg)
+            self.assertEqual(str(unavailable.exception), "locks_unavailable")
+            with patch.object(dispatch, "frontier", return_value=[]) as frontier, \
+                    patch.object(dispatch, "process_ticket") as process:
+                dispatch.ticket_pass(1, False)
+            frontier.assert_called_once_with()
+            process.assert_not_called()
+        else:
+            self.assertEqual(runtime_local._capacity(self.cfg), 1)
+            self.assertTrue(dispatch.lock_held(dispatch.ticket_lock(7)))
+            self.release(proc)
+            self.assertEqual(runtime_local._capacity(self.cfg), 0)
+            self.assertFalse(dispatch.lock_held(dispatch.ticket_lock(7)))
 
     def test_empty_lock_directory_stays_zero_without_a_kernel_table(self):
         (self.cfg.factory / "locks").mkdir(parents=True)

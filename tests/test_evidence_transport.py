@@ -47,7 +47,7 @@ PREFIX = f"repos/{REPO}/"
 # (evidence.py RESPONSE_CAP) plus one trailing newline on stdout.
 RESPONSE_TOTAL = 500001
 
-from factory import lifecycle
+from factory import lifecycle, platform_identity
 
 try:
     import test_evidence as _base
@@ -92,6 +92,17 @@ if "raw" in response:
 else:
     json.dump(response.get("json"), sys.stdout)
 raise SystemExit(response.get("exit", 0))
+'''
+
+# A marked process and its exec'd marked descendant: proves the portable
+# marker enumeration sees real descendants and that the kill reaches them.
+FORK = '''
+import os, sys, time
+child = os.fork()
+if child == 0:
+    os.execv(sys.executable, [sys.executable, "-c", "import time; time.sleep(120)", sys.argv[1]])
+print(child, flush=True)
+time.sleep(120)
 '''
 
 
@@ -146,7 +157,7 @@ class EvidenceTransportTest(unittest.TestCase):
             "nodes": [], "pageInfo": {"hasNextPage": False},
         }}}}}}
         # Narrow bindings of reusable fixture helpers from the shared suite.
-        for name in ("executable", "state", "error_codes"):
+        for name in ("executable", "state", "error_codes", "assert_darwin_lock_gap_only"):
             setattr(self, name, getattr(_base.EvidenceCliTest, name).__get__(self, type(self)))
         self.executable("gh", GH)
         self.executable("systemctl", 'print("ActiveState=inactive\\nNextElapseUSecRealtime=0")\n')
@@ -175,18 +186,21 @@ class EvidenceTransportTest(unittest.TestCase):
         return data
 
     def marker_pids(self) -> list[int]:
-        """Live PIDs whose cmdline carries this run's unique marker (ours only)."""
-        found = []
-        for entry in os.listdir("/proc"):
-            if not entry.isdigit():
-                continue
-            try:
-                with open(f"/proc/{entry}/cmdline", "rb") as stream:
-                    command = stream.read(8192)
-            except OSError:
-                continue
-            if self.marker.encode() in command:
-                found.append(int(entry))
+        """Live PIDs whose argv carries this run's unique marker (ours only).
+
+        POSIX `ps -A`, not Linux-only /proc. The listing must include this test
+        process, so a failed or empty enumeration never reads as "none left"."""
+        ps = shutil.which("ps")
+        self.assertIsNotNone(ps, "process enumeration (ps) is unavailable")
+        listing = subprocess.run([ps, "-A", "-ww", "-o", "pid=", "-o", "args="],
+                                 capture_output=True, check=True, timeout=10)
+        listed, found = set(), []
+        for line in listing.stdout.decode(errors="replace").splitlines():
+            pid, _, command = line.strip().partition(" ")
+            listed.add(int(pid))
+            if self.marker in command:
+                found.append(int(pid))
+        self.assertIn(os.getpid(), listed, "process enumeration did not list this test process")
         return found
 
     def kill_marker_pids(self) -> None:
@@ -211,8 +225,10 @@ class EvidenceTransportTest(unittest.TestCase):
         (self.root / ".factory" / "locks").mkdir()
         (self.root / ".factory" / "locks" / "merge.lock").touch()
         (self.root / "gpu.lock").touch()
-        data = self.invoke("observe")
-        self.assertEqual(data["coverage"]["status"], "bounded")
+        # Linux reads /proc/locks passively; on Darwin lock attribution is the only gap.
+        code = 1 if platform_identity.darwin() else 0
+        data = self.invoke("observe", code=code)
+        self.assertEqual(data["coverage"]["status"], "partial" if code else "bounded")
         self.assertEqual(len(data["cases"]), 8)
         self.assertEqual(data["attention_count"], 8, "complete page must keep the grounded count")
         self.assertTrue(any(row["label"].startswith("Local runtime") for row in data["sources"]))
@@ -223,6 +239,33 @@ class EvidenceTransportTest(unittest.TestCase):
         self.assertIn(expected_labels(8)[8], first["labels"])
         self.assertEqual(first["labels"], sorted(expected_labels(8)),
                          "labels must round-trip the full Unicode text unchanged")
+        if code:
+            self.assert_darwin_lock_gap_only(data)
+
+    def test_marker_enumeration_sees_and_kills_a_real_process_and_descendant(self):
+        proc = subprocess.Popen([sys.executable, "-c", FORK, self.marker], stdout=subprocess.PIPE,
+                                text=True, start_new_session=True)
+        self.addCleanup(self.reap_process, proc)
+        self.addCleanup(proc.stdout.close)
+        child = int(proc.stdout.readline())
+        expected = sorted((proc.pid, child))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and sorted(self.marker_pids()) != expected:
+            time.sleep(0.05)
+        self.assertEqual(sorted(self.marker_pids()), expected, "process and descendant must both be visible")
+        self.kill_marker_pids()
+        self.assertEqual(proc.wait(timeout=10), -signal.SIGKILL)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and self.marker_pids():
+            time.sleep(0.05)
+        self.assertEqual(self.marker_pids(), [], "the killed descendant is still live")
+
+    def test_marker_enumeration_fails_instead_of_reporting_no_processes(self):
+        empty = subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
+        with patch.object(subprocess, "run", return_value=empty), self.assertRaises(AssertionError):
+            self.marker_pids()
+        with patch.object(shutil, "which", return_value=None), self.assertRaises(AssertionError):
+            self.marker_pids()
 
     def test_hung_read_kills_every_descendant_without_false_success(self):
         self.responses[PREFIX + "issues"] = {"json": [], "sleep": 60, "fork": True}
