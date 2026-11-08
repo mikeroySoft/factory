@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, config, lifecycle
+from factory import __version__, config, lifecycle, platform_identity
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -360,6 +360,22 @@ def _listener_conflicts(local: str, target: str) -> bool:
     return listener.is_unspecified or requested.is_unspecified or listener == requested
 
 
+def _wildcard_held(port: int) -> bool:
+    """Whether a wildcard listener covers `port`; raises OSError when it cannot tell."""
+    for family, address in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6:
+                probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            try:
+                probe.bind((address, port))
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE:
+                    raise
+                return True
+    return False
+
+
 def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[bool, str]:
     unit = f"{cfg.unit}-dashboard.service"
     try:
@@ -372,7 +388,9 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
         try:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(target)
-            collision = False
+            # BSD SO_REUSEADDR lets this specific bind succeed beside a listening
+            # wildcard (`0.0.0.0`, dual-stack `::`) that still serves the address.
+            collision = platform_identity.darwin() and _wildcard_held(port)
         except OSError as exc:
             if exc.errno != errno.EADDRINUSE:
                 return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
