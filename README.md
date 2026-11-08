@@ -308,8 +308,12 @@ context budget. The complete accepted evidence remains in the journal.
 
 `factory plan baseline N` is read-only and returns a proposed object under the
 schema-1 response's top-level `baseline` key. `factory plan drift TICKET` is
-also read-only: it loads the latest accepted `plan-bound` evidence before
-querying the live initiative and writes `status`, `baseline`, `observed`,
+also read-only: it loads the latest accepted `plan-bound` evidence, or validates
+the complete live ticket's fenced Plan baseline when no retained event exists,
+before querying the live initiative. Retained evidence always takes precedence;
+an invalid retained event never falls back to the live ticket. Missing or invalid
+ticket baselines still report `invalid_binding`. This fallback neither journals
+admission nor grants execution authority. The command writes `status`, `baseline`, `observed`,
 `changed_sections`, `proposed_question`, and `attribution` under the top-level
 `drift` key. Status is `unchanged`, `changed`, or `unavailable`; changed results
 name only the relevant sections, while unavailable results retain the accepted

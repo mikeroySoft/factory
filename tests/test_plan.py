@@ -11,6 +11,9 @@ import unittest
 from pathlib import Path
 from urllib.parse import urlencode
 
+# The bug-repro gate loads this module directly, outside unittest discovery.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from test_evidence import GH, READ_GUARD, REPO
 
 from factory import config, lifecycle, onboard, plan
@@ -306,6 +309,85 @@ class RouteCliTest(CliCase):
             data = self.run_plan(*argv, code=2)
             self.assertEqual(data["error"]["code"], "invalid_request")
             self.assertEqual(data["coverage"]["notices"], plan.NOTICES)
+
+
+class DriftCliTest(CliCase):
+    def bound_fixture(self, initiative, tickets):
+        from factory import binding
+
+        body = BODY.replace("- #N", "\n".join(f"- #{n}" for n in tickets))
+        body = body.replace("**Plan**\n", "**Plan**\n" + "\n".join(f"NOW #{n} bounded slice" for n in tickets) + "\n")
+        parent = issue(initiative, body, ["initiative"])
+        self.responses[PREFIX + f"issues/{initiative}"] = {"json": parent}
+        self.page(1, [parent])
+        baseline = binding.from_issue(config.Config(self.root, REPO), initiative, parent)
+        for number in tickets:
+            self.responses[PREFIX + f"issues/{number}"] = {
+                "json": issue(number, binding.render(baseline), ["ready-for-agent"])}
+        return parent, baseline
+
+    def test_listed_district_and_factory_bindings_drift_without_local_admission(self):
+        for project, initiative, tickets in (("district", 177, [175, 176]), ("factory", 537, [619])):
+            with self.subTest(project=project):
+                _, baseline = self.bound_fixture(initiative, tickets)
+                listed = self.run_plan("list")["plans"][0]
+                inspected = self.run_plan("inspect", str(initiative))["plan"]
+                self.assertFalse(listed["malformed"])
+                self.assertFalse(inspected["malformed"])
+                self.assertEqual(listed["links"], tickets)
+                self.assertEqual(inspected["links"], tickets)
+                for ticket in tickets:
+                    data = self.run_plan("drift", str(ticket))
+                    self.assertEqual(data["drift"]["status"], "unchanged")
+                    self.assertEqual(data["drift"]["baseline"], baseline)
+                    self.assertEqual(data["drift"]["changed_sections"], [])
+                    self.assertEqual(data["errors"], [])
+        self.assertFalse((self.root / ".factory/events.jsonl").exists())
+
+    def test_ticket_baseline_detects_changes_and_retains_unavailable_source(self):
+        parent, baseline = self.bound_fixture(177, [175, 176])
+        parent["body"] = parent["body"].replace("NOW #175 bounded slice", "NEXT #175 revised slice")
+        data = self.run_plan("drift", "175")
+        self.assertEqual(data["drift"]["status"], "changed")
+        self.assertEqual(data["drift"]["changed_sections"], ["Plan"])
+        self.assertEqual(data["drift"]["baseline"], baseline)
+        self.responses[PREFIX + "issues/177"] = {"exit": 1, "stderr": "HTTP 404"}
+        data = self.run_plan("drift", "175", code=1)
+        self.assertEqual(data["drift"]["status"], "unavailable")
+        self.assertEqual(data["drift"]["baseline"], baseline)
+        self.assertIsNone(data["drift"]["observed"])
+
+    def test_missing_or_invalid_ticket_binding_still_fails(self):
+        from factory import binding
+
+        _, baseline = self.bound_fixture(177, [175, 176])
+        for body in ("ordinary unbound ticket", "Initiative: #177",
+                     binding.render(baseline).replace(baseline["sha256"], "0" * 64)):
+            with self.subTest(body=body):
+                self.responses[PREFIX + "issues/175"]["json"]["body"] = body
+                data = self.run_plan("drift", "175", code=1)
+                self.assertEqual(data["error"]["code"], "invalid_binding")
+                self.assertIsNone(data["drift"])
+
+    def test_retained_baseline_wins_over_edited_live_ticket(self):
+        from factory import binding
+
+        parent, baseline = self.bound_fixture(537, [619])
+        lifecycle.append(self.root / ".factory/events.jsonl", {
+            "event": "plan-bound", "schema_version": 1, "ticket": 619, "baseline": baseline,
+            "issue": {"title": "Accepted slice", "body": binding.render(baseline), "comments": []}})
+        parent["body"] = parent["body"].replace("NOW #619 bounded slice", "NEXT #619 revised slice")
+        revised = binding.from_issue(config.Config(self.root, REPO), 537, parent)
+        self.responses[PREFIX + "issues/619"]["json"]["body"] = binding.render(revised)
+        self.responses_path.write_text(json.dumps(self.responses))
+        proc = subprocess.run([sys.executable, "-m", "factory", "plan", "drift", "619"],
+                              cwd=self.root, env={**self.env, "PYTHONPATH": str(ROOT)},
+                              capture_output=True, timeout=60, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        report = json.loads(proc.stdout)["drift"]
+        self.assertEqual(report["status"], "changed")
+        self.assertEqual(report["baseline"], baseline)
+        self.assertEqual(report["observed"]["sha256"], revised["sha256"])
 
 if __name__ == "__main__":
     unittest.main()
