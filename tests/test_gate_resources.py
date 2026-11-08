@@ -1,6 +1,7 @@
 """Real gate contention and interruption, confined to disposable repositories/locks."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -16,9 +17,9 @@ from unittest.mock import patch
 from factory import lifecycle
 
 try:
-    from interrupts import deliverable_sigint, detached_launcher_sigint
+    from interrupts import LAUNCHER_MODES, deliverable_sigint, detached_launcher_sigint
 except ImportError:  # full-suite discovery imports tests as a package
-    from tests.interrupts import deliverable_sigint, detached_launcher_sigint
+    from tests.interrupts import LAUNCHER_MODES, deliverable_sigint, detached_launcher_sigint
 try:
     from lock_attribution import (
         assert_unattributed_hold,
@@ -48,6 +49,16 @@ while not (control / (step + ".go")).exists():
 print(step + " output")
 raise SystemExit(int(os.environ.get("GATE_FAILURE", "0")) if step == "exclusive" else 0)
 '''
+
+# A raw (helper-less) gate under a hostile launcher must still be waiting this long
+# after SIGINT; the same bound as the real interrupt's communicate in finish().
+UNDELIVERED_WINDOW = 15
+
+
+def runner_sigint() -> tuple[object, bool]:
+    return (signal.getsignal(signal.SIGINT),
+            signal.SIGINT in signal.pthread_sigmask(signal.SIG_BLOCK, set()))
+
 
 HOLDER = '''import fcntl, select, sys
 from pathlib import Path
@@ -126,17 +137,19 @@ class GateResourcesTest(unittest.TestCase):
             if stream is not None:
                 stream.close()
 
-    def gate(self, label: str, failure: int = 0):
+    def gate(self, label: str, failure: int = 0, *, deliverable: bool = True):
         control = self.base / label
         control.mkdir()
-        # The gate inherits SIGINT from this runner; the interrupt tests need it deliverable.
-        self.enterContext(deliverable_sigint())
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "factory", "gate", "--skip", "conflict-markers",
-             "--report", str(control / "report.md")], cwd=self.repo,
-            env={**self.env, "GATE_CONTROL": str(control), "GATE_FAILURE": str(failure)},
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        )
+        # The gate inherits SIGINT from this runner; the interrupt tests need it
+        # deliverable, but only the spawn is changed. ``deliverable=False`` is the
+        # raw negative control.
+        with deliverable_sigint() if deliverable else contextlib.nullcontext():
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "factory", "gate", "--skip", "conflict-markers",
+                 "--report", str(control / "report.md")], cwd=self.repo,
+                env={**self.env, "GATE_CONTROL": str(control), "GATE_FAILURE": str(failure)},
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
         self.addCleanup(self.stop, proc)
         return proc, control
 
@@ -400,6 +413,51 @@ class GateResourcesTest(unittest.TestCase):
         # interrupted gate must still receive the test's SIGINT and emit exit.
         self.enterContext(detached_launcher_sigint())
         self.test_uninstrumented_holder_and_killed_requester_remain_distinct()
+
+    def test_interrupted_requester_exits_under_blocked_only_launcher_sigint(self) -> None:
+        self.enterContext(detached_launcher_sigint("blocked"))
+        self.test_uninstrumented_holder_and_killed_requester_remain_distinct()
+
+    def test_interrupted_requester_exits_under_ignored_only_launcher_sigint(self) -> None:
+        self.enterContext(detached_launcher_sigint("ignored"))
+        self.test_uninstrumented_holder_and_killed_requester_remain_distinct()
+
+    def test_deliverable_sigint_covers_only_the_gate_spawn(self) -> None:
+        for mode in LAUNCHER_MODES:
+            with self.subTest(mode), detached_launcher_sigint(mode):
+                hostile = runner_sigint()
+                self.gate("scope-" + mode)
+                self.assertEqual(runner_sigint(), hostile)
+                with patch.object(subprocess, "Popen", side_effect=OSError("spawn refused")), \
+                        self.assertRaisesRegex(OSError, "spawn refused"):
+                    self.gate("spawn-failure-" + mode)
+                self.assertEqual(runner_sigint(), hostile)
+
+    def assert_raw_interrupt_is_not_delivered(self, mode: str) -> None:
+        # Negative control: the same interrupted requester, spawned without the
+        # helper under the hostile launcher, never sees SIGINT and keeps waiting.
+        holder = self.external_holder()
+        with detached_launcher_sigint(mode):
+            raw, _ = self.gate("raw-requester", deliverable=False)
+        wait = self.event(raw, "wait")
+        raw.send_signal(signal.SIGINT)
+        with patch.object(self, "wait_timeout", UNDELIVERED_WINDOW), \
+                self.assertRaisesRegex(self.failureException, "did not emit exit"):
+            self.event(raw, "exit")
+        self.assertIsNone(raw.poll())
+        self.assertIsNone(holder.poll())
+        self.assertTrue(flock_blocked(self.lock))
+        self.assertFalse(any(row.get("execution_id") == wait["execution_id"]
+                             and row.get("kind") in {"lock_acquired", "wait_end", "exit"} for row in self.rows()))
+
+    def test_raw_interrupt_is_not_delivered_under_detached_launcher_sigint(self) -> None:
+        self.assert_raw_interrupt_is_not_delivered("both")
+
+    def test_raw_interrupt_is_not_delivered_under_blocked_only_launcher_sigint(self) -> None:
+        self.assert_raw_interrupt_is_not_delivered("blocked")
+
+    def test_raw_interrupt_is_not_delivered_under_ignored_only_launcher_sigint(self) -> None:
+        self.assert_raw_interrupt_is_not_delivered("ignored")
 
 
 if __name__ == "__main__":
