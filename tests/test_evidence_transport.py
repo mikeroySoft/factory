@@ -53,6 +53,10 @@ try:
     import test_evidence as _base
 except ImportError:  # full-suite discovery imports tests as a package
     from tests import test_evidence as _base
+try:
+    from interrupts import deliverable_sigint, detached_launcher_sigint
+except ImportError:  # full-suite discovery imports tests as a package
+    from tests.interrupts import deliverable_sigint, detached_launcher_sigint
 
 # Contract label shape: the ready-for-human marker plus 19 label slots, each
 # exactly 50 chars ("中" * 48 + two-digit slot position). CJK labels carry the
@@ -320,6 +324,8 @@ class EvidenceTransportTest(unittest.TestCase):
         self.responses[PREFIX + "issues"] = {"json": [], "sleep": 60, "fork": True}
         self.responses_path.write_text(json.dumps(self.responses))
         payload = json.dumps({"schema_version": 1, "repository": REPO, "op": "observe"}).encode()
+        # A SIGINT blocked in this runner would stay blocked in the CLI and its read loop.
+        self.enterContext(deliverable_sigint())
         proc = subprocess.Popen(
             [sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(self.root)],
             cwd=self.root, env=self.env, stdin=subprocess.PIPE,
@@ -355,5 +361,11 @@ class EvidenceTransportTest(unittest.TestCase):
         while time.monotonic() < deadline and self.marker_pids():
             time.sleep(0.2)
         self.assertEqual(self.marker_pids(), [], "direct SIGINT left live descendant processes")
+
+    def test_direct_cli_sigint_exits_under_detached_launcher_sigint(self):
+        # A detached launcher can hand the suite SIGINT ignored and blocked; the
+        # CLI must still receive the test's SIGINT instead of waiting out its read.
+        self.enterContext(detached_launcher_sigint())
+        self.test_direct_cli_sigint_unwounds_without_orphans()
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,11 @@ from unittest.mock import patch
 
 from factory import lifecycle
 
+try:
+    from interrupts import deliverable_sigint, detached_launcher_sigint
+except ImportError:  # full-suite discovery imports tests as a package
+    from tests.interrupts import deliverable_sigint, detached_launcher_sigint
+
 CHECK = '''import os, sys, time
 from pathlib import Path
 control = Path(os.environ["GATE_CONTROL"])
@@ -112,6 +117,8 @@ class GateResourcesTest(unittest.TestCase):
     def gate(self, label: str, failure: int = 0):
         control = self.base / label
         control.mkdir()
+        # The gate inherits SIGINT from this runner; the interrupt tests need it deliverable.
+        self.enterContext(deliverable_sigint())
         proc = subprocess.Popen(
             [sys.executable, "-m", "factory", "gate", "--skip", "conflict-markers",
              "--report", str(control / "report.md")], cwd=self.repo,
@@ -325,6 +332,12 @@ class GateResourcesTest(unittest.TestCase):
                 resume.cancel()
                 resume.join()
                 send_signal(proc, signal.SIGCONT)
+
+    def test_interrupted_requester_exits_under_detached_launcher_sigint(self) -> None:
+        # A detached launcher can hand the suite SIGINT ignored and blocked; the
+        # interrupted gate must still receive the test's SIGINT and emit exit.
+        self.enterContext(detached_launcher_sigint())
+        self.test_uninstrumented_holder_and_killed_requester_remain_distinct()
 
 
 if __name__ == "__main__":
