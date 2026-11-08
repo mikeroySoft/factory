@@ -836,10 +836,16 @@ def interpreter_probe(cfg: config.Config) -> tuple[bool, str]:
         if not origin:
             continue
         # Check both spellings: resolving alone hides lexical checkout imports,
-        # while lexical checks alone miss symlinks back into the checkout.
-        for resolve in (False, True):
+        # while lexical checks alone miss symlinks back into the checkout. A
+        # directory alias in the origin's spelling (PYTHONPATH, __path__, /var on
+        # Darwin) must not hide a symlinked checkout file, so also resolve each
+        # directory prefix while keeping the rest of the origin lexical.
+        lexical = Path(os.path.abspath(origin))
+        spellings = [(lexical, False), (Path(origin).resolve(), True)] + [
+            (parent.resolve() / lexical.relative_to(parent), True) for parent in lexical.parents
+        ]
+        for loaded, resolve in spellings:
             root = cfg.root.resolve() if resolve else Path(os.path.abspath(cfg.root))
-            loaded = Path(origin).resolve() if resolve else Path(os.path.abspath(origin))
             package_roots = [
                 path.resolve() if resolve else Path(os.path.abspath(path)) for path in installed
             ]
