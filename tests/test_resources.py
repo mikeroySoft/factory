@@ -12,6 +12,19 @@ from unittest.mock import patch
 
 from factory import lifecycle
 
+try:
+    from lock_attribution import (
+        assert_unattributed_hold,
+        flock_blocked,
+        kernel_attributes_lock_holders,
+    )
+except ImportError:  # full-suite discovery imports tests as a package
+    from tests.lock_attribution import (
+        assert_unattributed_hold,
+        flock_blocked,
+        kernel_attributes_lock_holders,
+    )
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -82,15 +95,35 @@ with lifecycle.scope(Path(sys.argv[1]), {stage!r}) as execution:
     def snapshot(self) -> dict:
         return lifecycle.resources(self.path, [(self.lock, "host")])[0]
 
+    def row(self, kind: str, pid: int) -> dict:
+        matches = [row for row in lifecycle.read_events(self.path)
+                   if row.get("kind") == kind and row["process"]["pid"] == pid]
+        self.assertEqual(len(matches), 1, (kind, pid))
+        return matches[0]
+
+    def assert_ordered(self, *events: dict) -> None:
+        rows = lifecycle.read_events(self.path)
+        positions = [rows.index(event) for event in events]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(len(set(positions)), len(positions))
+
     def test_requester_is_not_owner_and_acquires_only_after_release(self) -> None:
+        attributed = kernel_attributes_lock_holders()
         holder = self.holder()
         self.assertEqual(holder.stdout.readline().strip(), "held")
         requester = self.holder(stage="requester")
         self.assertEqual(requester.stdout.readline().strip(), "waiting")
+        self.assertNotEqual(requester.pid, holder.pid)
         first = self.snapshot()
-        self.assertEqual((first["state"], first["ownership"]), ("held", "confirmed"))
-        self.assertEqual(first["owner"]["process"]["pid"], holder.pid)
+        if attributed:
+            self.assertEqual((first["state"], first["ownership"]), ("held", "confirmed"))
+            self.assertEqual(first["owner"]["process"]["pid"], holder.pid)
+        else:
+            assert_unattributed_hold(self, first)
         self.assertEqual([request["process"]["pid"] for request in first["requests"]], [requester.pid])
+        # The journal is not exclusion: the kernel must still refuse the lock.
+        self.assertTrue(flock_blocked(self.lock))
+        self.assertIsNone(requester.poll())
         states = {state["stage"]: state for state in lifecycle.observe(self.path)}
         self.assertEqual(states["requester"]["state"], "active")
         self.assertEqual(states["requester"]["wait"]["reason"], "exclusive_resource")
@@ -99,10 +132,15 @@ with lifecycle.scope(Path(sys.argv[1]), {stage!r}) as execution:
         self.assertEqual(unchanged["event_id"], first["event_id"])
         self.signal(holder)
         self.assertEqual(holder.wait(timeout=10), 0)
+        # Admission reopens: the requester's own blocking flock returns.
         self.assertEqual(requester.stdout.readline().strip(), "held")
+        self.assertTrue(flock_blocked(self.lock))
         second = self.snapshot()
-        self.assertEqual(second["owner"]["process"]["pid"], requester.pid)
-        self.assertNotEqual(second["owner"]["acquisition_id"], first["owner"]["acquisition_id"])
+        if attributed:
+            self.assertEqual(second["owner"]["process"]["pid"], requester.pid)
+            self.assertNotEqual(second["owner"]["acquisition_id"], first["owner"]["acquisition_id"])
+        else:
+            assert_unattributed_hold(self, second)
         self.assertEqual(second["resource"]["id"], first["resource"]["id"])
         self.assertEqual(second["requests"], [])
         waiting = next(state for state in lifecycle.observe(self.path) if state["stage"] == "requester")
@@ -111,6 +149,19 @@ with lifecycle.scope(Path(sys.argv[1]), {stage!r}) as execution:
         self.assertEqual(requester.wait(timeout=10), 0)
         released = self.snapshot()
         self.assertEqual((released["state"], released["ownership"], released["owner"]), ("free", "none", None))
+        self.assertFalse(flock_blocked(self.lock))
+        held = self.row("lock_acquired", holder.pid)
+        request = self.row("resource_requested", requester.pid)
+        release = self.row("lock_released", holder.pid)
+        acquired = self.row("lock_acquired", requester.pid)
+        self.assert_ordered(held, request, release)
+        self.assert_ordered(request, acquired)
+        self.assertEqual({row["resource"]["id"] for row in (held, request, release, acquired)},
+                         {first["resource"]["id"]})
+        self.assertEqual(request["execution_id"], acquired["execution_id"])
+        self.assertNotEqual(request["execution_id"], held["execution_id"])
+        self.assertEqual(release["acquisition_id"], held["acquisition_id"])
+        self.assertNotEqual(acquired["acquisition_id"], held["acquisition_id"])
 
     def test_external_holder_is_unknown_and_observers_deduplicate(self) -> None:
         holder = self.holder(instrumented=False)
@@ -132,35 +183,76 @@ print(json.dumps(lifecycle.resources(Path(sys.argv[1]), [(sys.argv[2], 'host')])
         self.assertEqual(len(lifecycle.read_events(self.path)), 1)
 
     def test_live_old_holder_cannot_own_external_replacement_during_release_gap(self) -> None:
+        attributed = kernel_attributes_lock_holders()
         old = self.holder(delay_release=True)
         self.assertEqual(old.stdout.readline().strip(), "held")
-        self.assertEqual(self.snapshot()["owner"]["process"]["pid"], old.pid)
+        if attributed:
+            self.assertEqual(self.snapshot()["owner"]["process"]["pid"], old.pid)
+        else:
+            assert_unattributed_hold(self, self.snapshot())
+        self.assertTrue(flock_blocked(self.lock))
         self.signal(old)
         self.assertEqual(old.stdout.readline().strip(), "unlocked")
+        # The old process is alive but its kernel lock is gone: admission is open.
+        self.assertFalse(flock_blocked(self.lock))
         replacement = self.holder(instrumented=False)
         self.assertEqual(replacement.stdout.readline().strip(), "held")
+        self.assertNotEqual(replacement.pid, old.pid)
+        self.assertTrue(flock_blocked(self.lock))
         observed = self.snapshot()
         self.assertIsNone(old.poll())
         self.assertEqual((observed["state"], observed["ownership"], observed["owner"]), ("held", "unknown", None))
+        if not attributed:
+            assert_unattributed_hold(self, observed)
         self.signal(old)
         self.assertEqual(old.wait(timeout=10), 0)
         self.assertEqual(self.snapshot()["event_id"], observed["event_id"])
+        self.assertTrue(flock_blocked(self.lock))
+        request = self.row("resource_requested", old.pid)
+        held = self.row("lock_acquired", old.pid)
+        release = self.row("lock_released", old.pid)
+        self.assert_ordered(request, held, release)
+        self.assertEqual({row["resource"]["id"] for row in (request, held, release)}, {observed["resource"]["id"]})
+        self.assertFalse(any(row["process"]["pid"] == replacement.pid for row in lifecycle.read_events(self.path)))
 
     def test_dead_holder_replacement_and_old_release_do_not_erase_new_owner(self) -> None:
+        attributed = kernel_attributes_lock_holders()
         old = self.holder()
         self.assertEqual(old.stdout.readline().strip(), "held")
         before = self.snapshot()
+        if not attributed:
+            assert_unattributed_hold(self, before)
         acquired = next(row for row in lifecycle.read_events(self.path) if row["kind"] == "lock_acquired")
+        self.assertTrue(flock_blocked(self.lock))
         old.kill()
         old.wait(timeout=10)
+        # The kernel dropped the dead holder's lock; admission is open again.
+        self.assertFalse(flock_blocked(self.lock))
         replacement = self.holder(stage="replacement")
         self.assertEqual(replacement.stdout.readline().strip(), "held")
+        self.assertNotEqual(replacement.pid, old.pid)
+        self.assertTrue(flock_blocked(self.lock))
         after = self.snapshot()
-        self.assertEqual(after["owner"]["process"]["pid"], replacement.pid)
+        if attributed:
+            self.assertEqual(after["owner"]["process"]["pid"], replacement.pid)
+        else:
+            assert_unattributed_hold(self, after)
+        request = self.row("resource_requested", replacement.pid)
+        replaced = self.row("lock_acquired", replacement.pid)
         lifecycle.append(self.path, {**acquired, "kind": "lock_released", "sequence": acquired["sequence"] + 1,
                                      "event_id": "late-old-release", "locks": []})
-        self.assertEqual(self.snapshot()["owner"], after["owner"])
-        self.assertNotEqual(after["owner"]["execution_id"], before["owner"]["execution_id"])
+        late = next(row for row in lifecycle.read_events(self.path) if row.get("event_id") == "late-old-release")
+        self.assert_ordered(acquired, request, replaced, late)
+        self.assertEqual({row["resource"]["id"] for row in (acquired, request, replaced, late)},
+                         {after["resource"]["id"]})
+        self.assertNotEqual(replaced["execution_id"], acquired["execution_id"])
+        self.assertNotEqual(replaced["acquisition_id"], acquired["acquisition_id"])
+        if attributed:
+            self.assertEqual(self.snapshot()["owner"], after["owner"])
+            self.assertNotEqual(after["owner"]["execution_id"], before["owner"]["execution_id"])
+        else:
+            assert_unattributed_hold(self, self.snapshot())
+        self.assertTrue(flock_blocked(self.lock))
 
     def test_killed_requester_loses_pending_wait_and_request_once(self) -> None:
         holder = self.holder(instrumented=False)
@@ -210,12 +302,31 @@ with open(sys.argv[2], 'a+') as lock:
     print('scope-exited', flush=True)
     sys.stdin.readline()
 """)
+        attributed = kernel_attributes_lock_holders()
         self.assertEqual(holder.stdout.readline().strip(), "held")
-        self.assertEqual(self.snapshot()["ownership"], "confirmed")
+        if attributed:
+            self.assertEqual(self.snapshot()["ownership"], "confirmed")
+        else:
+            assert_unattributed_hold(self, self.snapshot())
+        self.assertTrue(flock_blocked(self.lock))
         self.signal(holder)
         self.assertEqual(holder.stdout.readline().strip(), "scope-exited")
+        # The process still holds the real lock after its execution ended.
+        self.assertTrue(flock_blocked(self.lock))
         observed = self.snapshot()
         self.assertEqual((observed["state"], observed["ownership"], observed["owner"]), ("held", "unknown", None))
+        if not attributed:
+            assert_unattributed_hold(self, observed)
+        acquired = self.row("lock_acquired", holder.pid)
+        ended = self.row("exit", holder.pid)
+        self.assertEqual(acquired["execution_id"], ended["execution_id"])
+        self.assertEqual(acquired["resource"]["id"], observed["resource"]["id"])
+        self.assert_ordered(acquired, ended)
+        self.signal(holder)
+        self.assertEqual(holder.wait(timeout=10), 0)
+        self.assertFalse(flock_blocked(self.lock))
+        released = self.snapshot()
+        self.assertEqual((released["state"], released["ownership"], released["owner"]), ("free", "none", None))
 
     def test_unavailable_attribution_never_confirms_even_a_live_acquisition(self) -> None:
         holder = self.holder()

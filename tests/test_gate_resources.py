@@ -19,6 +19,18 @@ try:
     from interrupts import deliverable_sigint, detached_launcher_sigint
 except ImportError:  # full-suite discovery imports tests as a package
     from tests.interrupts import deliverable_sigint, detached_launcher_sigint
+try:
+    from lock_attribution import (
+        assert_unattributed_hold,
+        flock_blocked,
+        kernel_attributes_lock_holders,
+    )
+except ImportError:  # full-suite discovery imports tests as a package
+    from tests.lock_attribution import (
+        assert_unattributed_hold,
+        flock_blocked,
+        kernel_attributes_lock_holders,
+    )
 
 CHECK = '''import os, sys, time
 from pathlib import Path
@@ -163,22 +175,33 @@ class GateResourcesTest(unittest.TestCase):
         self.assertEqual(terminal["outcome"], "product_feedback" if expected else "completed")
 
     def test_requests_are_not_owners_and_lock_outlives_exclusive_check(self) -> None:
+        attributed = kernel_attributes_lock_holders()
         first, a = self.gate("first")
         self.until((a / "exclusive.ready").exists, "first exclusive check did not start")
         acquired = self.event(first, "lock_acquired")
         held = self.resource()
-        self.assertEqual((held["state"], held["ownership"]), ("held", "confirmed"))
-        self.assertEqual(held["owner"]["execution_id"], acquired["execution_id"])
+        if attributed:
+            self.assertEqual((held["state"], held["ownership"]), ("held", "confirmed"))
+            self.assertEqual(held["owner"]["execution_id"], acquired["execution_id"])
+        else:
+            assert_unattributed_hold(self, held)
+        self.assertTrue(flock_blocked(self.lock))
 
         second, b = self.gate("second", failure=3)
+        self.assertNotEqual(second.pid, first.pid)
         requested = self.event(second, "resource_requested")
         waiting = self.event(second, "wait")
+        self.assertNotEqual(requested["execution_id"], acquired["execution_id"])
         self.assertEqual((waiting["wait"]["reason"], waiting["wait"]["mode"]),
                          ("exclusive_resource", "blocking"))
         self.assertEqual(requested["resource"]["id"], acquired["resource"]["id"])
         self.assertEqual(waiting["wait"]["resource"]["id"], acquired["resource"]["id"])
         held = self.resource()
-        self.assertEqual(held["owner"]["execution_id"], acquired["execution_id"])
+        if attributed:
+            self.assertEqual(held["owner"]["execution_id"], acquired["execution_id"])
+        else:
+            assert_unattributed_hold(self, held)
+        self.assertTrue(flock_blocked(self.lock))
         self.assertEqual([row["execution_id"] for row in held["requests"]], [requested["execution_id"]])
         self.assertTrue(held["requests"][0]["blocking"])
         state = next(row for row in lifecycle.observe(self.events)
@@ -190,7 +213,13 @@ class GateResourcesTest(unittest.TestCase):
         (a / "exclusive.go").touch()
         self.until((a / "later.ready").exists, "later ordinary check did not start")
         self.assertFalse((b / "exclusive.ready").exists())
-        self.assertEqual(self.resource()["owner"]["execution_id"], acquired["execution_id"])
+        if attributed:
+            self.assertEqual(self.resource()["owner"]["execution_id"], acquired["execution_id"])
+        else:
+            assert_unattributed_hold(self, self.resource())
+        # The real lock, not only the journal, outlives the exclusive check.
+        self.assertTrue(flock_blocked(self.lock))
+        self.assertFalse((b / "exclusive.ready").exists())
         self.finish(first, a)
         self.until((b / "exclusive.ready").exists, "second gate did not acquire after unlock")
         next_acquired = self.event(second, "lock_acquired")
@@ -198,6 +227,7 @@ class GateResourcesTest(unittest.TestCase):
         self.assertEqual(released["acquisition_id"], acquired["acquisition_id"])
         self.assertNotEqual(next_acquired["acquisition_id"], acquired["acquisition_id"])
         rows = self.rows()
+        self.assertLess(rows.index(acquired), rows.index(requested))
         self.assertLess(rows.index(requested), rows.index(released))
         later_exit = next(row for row in rows if row.get("stage") == "gate-check"
                           and row["kind"] == "exit" and row["process"]["pid"] == first.pid
@@ -206,14 +236,21 @@ class GateResourcesTest(unittest.TestCase):
         self.assertLess(rows.index(later_exit), rows.index(next_acquired))
         ended_wait = self.event(second, "wait_end")
         self.assertGreater(ended_wait["sequence"], next_acquired["sequence"])
+        self.assertEqual(next_acquired["execution_id"], requested["execution_id"])
+        self.assertEqual(next_acquired["resource"]["id"], acquired["resource"]["id"])
         for _ in range(2):
             held = self.resource()
             self.assertEqual(held["resource"]["id"], acquired["resource"]["id"])
-            self.assertEqual(held["owner"]["execution_id"], next_acquired["execution_id"])
+            if attributed:
+                self.assertEqual(held["owner"]["execution_id"], next_acquired["execution_id"])
+            else:
+                assert_unattributed_hold(self, held)
             self.assertEqual(held["requests"], [])
+        self.assertTrue(flock_blocked(self.lock))
         self.finish(second, b, expected=1)
         free = self.resource()
         self.assertEqual((free["state"], free["ownership"], free["owner"]), ("free", "none", None))
+        self.assertFalse(flock_blocked(self.lock))
 
     def test_uninstrumented_holder_and_killed_requester_remain_distinct(self) -> None:
         holder = self.external_holder()
@@ -257,10 +294,15 @@ class GateResourcesTest(unittest.TestCase):
         self.assertEqual(self.resource()["state"], "free")
 
     def test_dead_holder_is_not_carried_into_external_or_new_gate_ownership(self) -> None:
+        attributed = kernel_attributes_lock_holders()
         first, a = self.gate("killed-holder")
         self.until((a / "exclusive.ready").exists, "holding gate check did not start")
         acquired = self.event(first, "lock_acquired")
-        self.assertEqual(self.resource()["owner"]["execution_id"], acquired["execution_id"])
+        if attributed:
+            self.assertEqual(self.resource()["owner"]["execution_id"], acquired["execution_id"])
+        else:
+            assert_unattributed_hold(self, self.resource())
+        self.assertTrue(flock_blocked(self.lock))
         self.stop(first)
         state = self.until(lambda: next((row for row in lifecycle.observe(self.events)
                            if row["execution_id"] == acquired["execution_id"] and row["state"] != "active"), None),
@@ -268,23 +310,43 @@ class GateResourcesTest(unittest.TestCase):
         self.assertEqual(state["state"], "unknown")  # F01 cannot prove absence of scrubbed descendants.
         free = self.resource()
         self.assertEqual((free["state"], free["ownership"], free["owner"]), ("free", "none", None))
+        self.assertFalse(flock_blocked(self.lock))
         holder = self.external_holder()
+        self.assertNotEqual(holder.pid, first.pid)
+        self.assertTrue(flock_blocked(self.lock))
         held = self.resource()
         self.assertEqual((held["state"], held["ownership"], held["owner"]), ("held", "unknown", None))
+        if not attributed:
+            assert_unattributed_hold(self, held)
         self.assertEqual(held["resource"]["id"], acquired["resource"]["id"])
         holder.stdin.write("release\n")
         holder.stdin.flush()
         self.assertEqual(holder.wait(timeout=self.wait_timeout), 0)
+        self.assertFalse(flock_blocked(self.lock))
         second, b = self.gate("replacement")
+        self.assertNotIn(second.pid, {first.pid, holder.pid})
         self.until((b / "exclusive.ready").exists, "replacement gate did not acquire")
         replacement = self.event(second, "lock_acquired")
+        requested = self.event(second, "resource_requested")
+        self.assertNotEqual(replacement["execution_id"], acquired["execution_id"])
+        self.assertNotEqual(replacement["acquisition_id"], acquired["acquisition_id"])
+        self.assertEqual(requested["execution_id"], replacement["execution_id"])
+        rows = self.rows()
+        self.assertLess(rows.index(acquired), rows.index(requested))
+        self.assertLess(rows.index(requested), rows.index(replacement))
+        self.assertFalse(any(row["process"]["pid"] == holder.pid for row in rows))
+        self.assertTrue(flock_blocked(self.lock))
         for _ in range(2):
             held = self.resource()
-            self.assertEqual(held["owner"]["execution_id"], replacement["execution_id"])
+            if attributed:
+                self.assertEqual(held["owner"]["execution_id"], replacement["execution_id"])
+            else:
+                assert_unattributed_hold(self, held)
             self.assertEqual(held["resource"]["id"], acquired["resource"]["id"])
         self.assertFalse(any(row.get("execution_id") == acquired["execution_id"]
                              and row.get("kind") == "lock_released" for row in self.rows()))
         self.finish(second, b)
+        self.assertFalse(flock_blocked(self.lock))
 
     def test_interrupted_requester_that_never_exits_hits_deadline(self) -> None:
         self.external_holder()
