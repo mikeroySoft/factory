@@ -4252,7 +4252,8 @@ def cleanup_after_merge(n: int, head: str) -> None:
     if wt.is_dir():
         run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT, check=False)
     run(["git", "branch", "-D", f"agent/{n}"], cwd=ROOT, check=False)
-    ticket_lock(n).unlink(missing_ok=True)
+    # The ticket lock is kept: decisions and later passes coordinate on its inode, and
+    # unlinking it under a live holder lets the next opener lock a second inode.
 
 
 def land_pass(dry_run: bool) -> None:
