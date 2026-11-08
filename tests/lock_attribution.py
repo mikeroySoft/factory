@@ -14,6 +14,11 @@ from pathlib import Path
 from factory import darwin_observer, platform_identity
 
 UNATTRIBUTED_EVIDENCE = {"lock_state": "held", "attribution": "unavailable", "holder_pids": None}
+# The exact row schema lifecycle.resources() returns; it carries no capacity field.
+RESOURCE_ROW_KEYS = frozenset({
+    "resource", "state", "ownership", "owner", "requests", "evidence",
+    "event_id", "at", "observed_at",
+})
 
 
 def lock_holders_attributable() -> bool:
@@ -39,11 +44,24 @@ def flock_blocked(path: Path) -> bool:
 
 
 def assert_unattributed_hold(case: unittest.TestCase, observed: dict) -> None:
-    """A held lock without attribution: held/unknown, no owner, holder count unavailable.
+    """A held lock without attribution: held/unknown, no owner, owner evidence unavailable.
 
-    Exact equality excludes every wrong reading of unknown: state is not free,
-    there is no owner pid, and ``holder_pids`` is None, so the partial holder
-    count is neither full (``[pid]``) nor zero (``[]``).
+    Exact equality excludes every wrong reading of unknown: the row has exactly
+    the lifecycle.resources() schema, state is not free, there is no owner pid,
+    and ``holder_pids`` is None rather than ``[pid]`` or ``[]``. None proves
+    only that passive owner evidence is unavailable; it says nothing about
+    dispatcher capacity.
+
+    Capacity is a different surface: runtime_local.dispatcher()'s
+    ``capacity`` row ({"configured", "active", "complete"}), which reads
+    ``active: None, complete: False`` when Darwin has no passive lock table.
+    Native tests already cover it against real FLOCK contention, admission
+    waits and reopen in tests/test_native_capability.py:
+    test_linux_kernel_table_counts_only_live_ticket_flocks,
+    test_external_holder_blocks_admission_until_the_process_exits,
+    test_numeric_ticket_lock_is_not_a_capacity_count and
+    test_gate_exclusive_still_blocks_when_passive_capacity_is_unavailable.
     """
+    case.assertEqual(set(observed), RESOURCE_ROW_KEYS)
     case.assertEqual((observed["state"], observed["ownership"], observed["owner"]), ("held", "unknown", None))
     case.assertEqual(observed["evidence"], UNATTRIBUTED_EVIDENCE)
