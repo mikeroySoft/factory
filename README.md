@@ -1075,6 +1075,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    bypasses only function protection on bug tickets. An `upstream sync:`
    ticket's worker otherwise gets no override; only upstream-authored content
    is exempt (`--upstream`, above).
+   Local gate runs only (the dispatcher does not pass it): `factory gate
+   --add-only-allow <path>=<blob> --add-only-allow-base <commit>` exempts exactly
+   the named add-only files from both checks when a human supplies the reviewed
+   blob ids. Each path must be canonical, inside `add_only_paths` and outside
+   `protected_paths`, an in-place regular-file text edit, and both its committed
+   blob and its working-tree bytes (`git hash-object --no-filters`) must equal the
+   approved blob; `<commit>` must be the merge-base. Any refusal fails
+   `protected-paths`; every other add-only file and test stays protected.
    A bug worker must add the reproducing test in its own commit before the fix
    and put `Repro test: <test ID>` in its handoff. The test may be added during
    a later retry, review bounce, or manager FIX, not just the first branch commit.

@@ -207,16 +207,62 @@ def check_leaks(base: str) -> tuple[bool, str]:
 
 
 ADD_ONLY_NOTE = "add-only path removed or changed existing lines"
+_BLOB = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def parse_add_only_allow(value: str) -> tuple[str, str]:
+    """`<path>=<blob-sha>`: a canonical repository-relative path and a full lowercase blob id."""
+    path, sep, sha = value.rpartition("=")
+    if not sep or not _BLOB.fullmatch(sha):
+        raise argparse.ArgumentTypeError(f"expected <path>=<full blob sha>: {value!r}")
+    parts = path.split("/")
+    if not path or "\\" in path or any(part in ("", ".", "..") for part in parts):
+        raise argparse.ArgumentTypeError(f"non-canonical path: {path!r}")
+    return path, sha
+
+
+def _verify_allows(
+    base: str, allow: dict[str, str], allow_base: str | None, raw: dict[str, tuple[str, str, str]],
+    protected: list[str], add_only: list[str],
+) -> str:
+    """Empty when every approved `{path: blob}` names an in-place text edit of an add-only file
+    whose committed and working-tree bytes both equal the approved blob, against the approved
+    merge-base; otherwise the first refusal."""
+    common = timed(["git", "merge-base", base, "HEAD"])
+    pinned = timed(["git", "rev-parse", "--verify", "-q", f"{allow_base}^{{commit}}"]) if allow_base else None
+    if common.returncode or pinned is None or pinned.returncode or pinned.stdout.strip() != common.stdout.strip():
+        return f"add-only allow base {allow_base!r} is not the merge-base {common.stdout.strip()!r}"
+    for path, sha in allow.items():
+        if any(fnmatch.fnmatchcase(path, g) for g in protected) or not any(
+            fnmatch.fnmatchcase(path, g) for g in add_only
+        ):
+            return f"{path}: outside add-only scope"
+        old_mode, new_mode, status = raw.get(path, ("", "", ""))
+        if status != "M" or old_mode != new_mode or new_mode not in ("100644", "100755"):
+            return f"{path}: not an in-place regular-file edit ({status or 'unchanged'} {old_mode}->{new_mode})"
+        numstat = timed(["git", "diff", "--no-renames", "--numstat", f"{base}...HEAD", "--", path])
+        if numstat.returncode or numstat.stdout.startswith("-\t-\t"):
+            return f"{path}: binary or unreadable diff"
+        committed = timed(["git", "rev-parse", "--verify", "-q", f"HEAD:{path}"]).stdout.strip()
+        if not os.path.isfile(path) or os.path.islink(path):
+            return f"{path}: working tree is not a regular file"
+        worktree = timed(["git", "hash-object", "--no-filters", "--", path]).stdout.strip()
+        if committed != sha or worktree != sha:
+            return f"{path}: approved {sha}, committed {committed or '-'}, working tree {worktree or '-'}"
+    return ""
 
 
 def check_protected_paths(
-    base: str, upstream: list[str] = (), add_only_override: bool = False
+    base: str, upstream: list[str] = (), add_only_override: bool = False,
+    allow: dict[str, str] | None = None, allow_base: str | None = None,
 ) -> tuple[bool, str, str]:
     """(passed, reason, detail): reason is `protected_paths`, or `add_only_paths` when
     every hit is an add-only glob whose change was not purely additive. With `upstream`
     (the tip, then the staged head) a hit is ignored when its HEAD content equals the
     staged head's, or equals the tip's for a path upstream itself changed since it
-    diverged from `base`; fork-only paths the worker deletes or resets still count."""
+    diverged from `base`; fork-only paths the worker deletes or resets still count.
+    `allow` ({path: blob}, externally approved) exempts exactly those add-only files once
+    `_verify_allows` accepts every entry; any refusal fails the whole check."""
     listing = timed(["git", "ls-tree", "--name-only", base, "--", CONFIG_NAME])
     if listing.returncode:
         # A new repository has no base commit yet; no worker diff exists to guard.
@@ -240,15 +286,21 @@ def check_protected_paths(
         return False, "protected_paths", proc.stdout + proc.stderr
     fields = proc.stdout.split("\0")
     hits, not_additive, additive = [], [], []  # additive: add-only files modified in place, pending numstat
+    raw = {}
     for meta, path in zip(fields[::2], fields[1::2]):
         old_mode, new_mode, _, _, status = meta.lstrip(":").split()
+        raw[path] = (old_mode, new_mode, status)
         if any(fnmatch.fnmatchcase(path, g) for g in protected):
             hits.append(path)
+        elif path in (allow or {}):
+            continue
         elif any(fnmatch.fnmatchcase(path, g) for g in add_only):
             if status == "M" and old_mode == new_mode:
                 additive.append(path)
             elif status != "A":
                 not_additive.append(path)
+    if allow and (refusal := _verify_allows(base, allow, allow_base, raw, protected, add_only)):
+        return False, "add_only_paths", refusal
     if upstream and (candidates := hits + not_additive + additive):
         tip = upstream[0]
         fork_point = timed(["git", "merge-base", base, tip])
@@ -434,7 +486,9 @@ def _tests_at(ref: str) -> tuple[dict[str, dict], str]:
     return found, ""
 
 
-def check_existing_tests(base: str) -> tuple[bool, str]:
+def check_existing_tests(base: str, exempt: frozenset[str] = frozenset()) -> tuple[bool, str]:
+    """`exempt`: paths whose exact content was externally approved (`--add-only-allow`); test
+    functions in them may change, every other existing test may not."""
     common = timed(["git", "merge-base", base, "HEAD"])
     if common.returncode:
         return False, common.stdout + common.stderr
@@ -447,7 +501,8 @@ def check_existing_tests(base: str) -> tuple[bool, str]:
     changed = [
         f"{record['display']}: {'deleted' if key not in after else 'modified'}"
         for key, record in before.items()
-        if key not in after or record["source"] != after[key]["source"]
+        if (key not in after or record["source"] != after[key]["source"])
+        and record.get("path") not in exempt
     ]
     return not changed, "\n".join(changed)
 
@@ -633,6 +688,12 @@ def main(argv: list[str]) -> int:
                         help="ticket-authorized existing-test override")
     parser.add_argument("--add-only-override", action="store_true",
                         help="manager- or human-authorized edits to add-only paths")
+    parser.add_argument("--add-only-allow", action="append", default=[], type=parse_add_only_allow,
+                        metavar="PATH=BLOB",
+                        help="externally reviewed add-only edit (repeatable): PATH may change in place only "
+                        "when its committed and working-tree bytes both hash to BLOB; needs --add-only-allow-base")
+    parser.add_argument("--add-only-allow-base", metavar="COMMIT",
+                        help="merge-base the --add-only-allow blobs were reviewed against")
     parser.add_argument("--bug", action="store_true",
                         help="enforce failing-test-first and existing-test protection")
     parser.add_argument("--repro-test", help="test ID named by the worker handoff")
@@ -647,6 +708,11 @@ def main(argv: list[str]) -> int:
                         "release: only the `when = \"release\"` checks")
     parser.add_argument("--blocking-mutation", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    allowed = [path for path, _ in args.add_only_allow]
+    if len(set(allowed)) != len(allowed):
+        parser.error("--add-only-allow names a path more than once")
+    if allowed and not args.add_only_allow_base:
+        parser.error("--add-only-allow needs --add-only-allow-base")
     configure(config.load())
     previous_tmpdir = os.environ.get("TMPDIR")
     with tempfile.TemporaryDirectory(prefix="factory-gate-") as tmpdir:
@@ -694,7 +760,8 @@ def execute(args: argparse.Namespace, execution) -> int:
     if args.tier == "attempt":
         if not args.protected_override:
             passed, reason, detail = check_protected_paths(
-                args.base, args.upstream, args.add_only_override
+                args.base, args.upstream, args.add_only_override,
+                dict(args.add_only_allow), args.add_only_allow_base,
             )
             if not passed:
                 execution.outcome, execution.reason = "project_escalation", reason
@@ -708,7 +775,7 @@ def execute(args: argparse.Namespace, execution) -> int:
         if args.bug and not (
             args.protected_override or args.test_override or args.add_only_override
         ):
-            passed, detail = check_existing_tests(args.base)
+            passed, detail = check_existing_tests(args.base, frozenset(dict(args.add_only_allow)))
             if not passed:
                 execution.outcome, execution.reason = "project_escalation", "protected_tests"
                 report = Path(args.report)
