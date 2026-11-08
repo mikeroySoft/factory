@@ -30,11 +30,13 @@ class DashboardPortBindTest(unittest.TestCase):
     doctor = base.DashboardPortTest.doctor
     ss_line = staticmethod(base.DashboardPortTest.ss_line)
 
-    def holder(self, family: int, address: str, *, v6only: int | None = None) -> int:
+    def holder(self, family: int, address: str, *, v6only: int | None = None, reuseport: bool = False) -> int:
         listener = socket.socket(family, socket.SOCK_STREAM)
         self.addCleanup(listener.close)
         if v6only is not None:
             listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, v6only)
+        if reuseport:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         listener.bind((address, 0))
         listener.listen()
         return listener.getsockname()[1]
@@ -85,17 +87,33 @@ class DashboardPortBindTest(unittest.TestCase):
         code, row = self.port_row(ss)
         self.assertEqual((code, row["status"], row["detail"]), (0, "PASS", "available on 127.0.0.1"))
 
-    def test_missing_ss_is_never_reported_free(self) -> None:
+    def test_missing_ss_never_decides_the_port_verdict(self) -> None:
+        """Real holders, missing `ss`: only native bind evidence (Darwin) may pass a free specific port."""
         with socket.socket() as unused:
             unused.bind(("127.0.0.1", 0))
             free = unused.getsockname()[1]
-        for name, port in (("free", free), ("held", self.holder(socket.AF_INET6, "::", v6only=0))):
+        cases = [("free", "127.0.0.1", free, platform_identity.darwin()),
+                 ("free, wildcard host", "0.0.0.0", free, False)]
+        for name, family, address, v6only, reuseport in (
+            ("specific 127.0.0.1", socket.AF_INET, "127.0.0.1", None, False),
+            ("specific 127.0.0.1 SO_REUSEPORT", socket.AF_INET, "127.0.0.1", None, True),
+            ("IPv4 0.0.0.0", socket.AF_INET, "0.0.0.0", None, False),
+            ("dual-stack ::", socket.AF_INET6, "::", 0, False),
+            ("v4-mapped ::ffff:127.0.0.1", socket.AF_INET6, "::ffff:127.0.0.1", 0, False),
+        ):
+            port = self.holder(family, address, v6only=v6only, reuseport=reuseport)
+            cases.append((name, "127.0.0.1", port, False))
+        for name, host, port, native_free in cases:
             with self.subTest(port=name), patch.object(
                 onboard, "sh", side_effect=FileNotFoundError(errno.ENOENT, "No such file", "ss")
-            ):
-                ok, detail = onboard._dashboard_port_check(self.cfg, "127.0.0.1", port)
-                self.assertFalse(ok)
-                self.assertIn("could not be checked (ss:", detail)
+            ) as sh:
+                ok, detail = onboard._dashboard_port_check(self.cfg, host, port)
+                if native_free:
+                    self.assertEqual((ok, detail), (True, "available on 127.0.0.1"))
+                    sh.assert_not_called()
+                else:
+                    self.assertFalse(ok)
+                    self.assertIn("could not be checked (ss:", detail)
 
 
 if __name__ == "__main__":

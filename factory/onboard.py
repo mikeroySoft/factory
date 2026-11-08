@@ -396,6 +396,12 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
                 return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
             collision = True
 
+        # Darwin has no `ss`. There, the target bind plus both wildcard probes
+        # succeeding is the positive evidence that nothing serves host:port.
+        # (A `0.0.0.0` host collides with its own held probe and stays closed.)
+        if not collision and platform_identity.darwin():
+            return True, f"available on {host}"
+
         # Keep a free probe held through `ss`; the later install-to-service bind
         # remains inherently racy. A collision that vanishes here fails closed.
         try:

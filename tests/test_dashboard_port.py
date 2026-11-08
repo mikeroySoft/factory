@@ -205,7 +205,10 @@ class DashboardPortTest(unittest.TestCase):
     def test_doctor_fails_closed_when_ss_fails(self) -> None:
         probe = self.listener()
         self.cfg.dashboard_port = probe.getsockname()[1]
-        probe.close()
+        if not platform_identity.darwin():
+            probe.close()
+        # On Darwin a free specific port is decided by native binds without `ss`
+        # (test_dashboard_port_bind); `ss` failing must still fail a held port closed.
         ss = subprocess.CompletedProcess([], 1, "", "permission denied")
         code, output, _ = self.doctor(ss)
         row = next(row for row in json.loads(output)["rows"] if row["label"] == f"dashboard port {self.cfg.dashboard_port}")
@@ -215,6 +218,8 @@ class DashboardPortTest(unittest.TestCase):
     def test_doctor_ignores_a_listener_on_an_unrelated_address(self) -> None:
         if platform_identity.darwin():
             self.assert_foreign_loopback_unavailable()
+            # SIMULATION: no 127.0.0.2 alias exists here, so the port is free and the
+            # scripted `ss` row below is never consulted (native binds decide on Darwin).
             probe = self.listener()
             self.cfg.dashboard_port = probe.getsockname()[1]
             probe.close()
