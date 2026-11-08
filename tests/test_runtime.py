@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from factory import lifecycle
+from factory import lifecycle, platform_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = '''
@@ -59,7 +59,7 @@ class RuntimeCliTest(unittest.TestCase):
         self.addCleanup(context.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         (self.root / ".factory.toml").write_text('[repo]\nslug = "example/runtime"\n[gate]\nlock = "' + str(self.root / "gpu.lock") + '"\n')
         self.journal = self.root / ".factory/events.jsonl"
@@ -144,20 +144,25 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertEqual(executions[interrupted.execution_id]["state"], "interrupted")
         self.assertIsNone(executions[interrupted.execution_id]["ended_at"])
         resources = {row["resource"]["lock"]["path"]: row for row in first["resources"]}
-        self.assertEqual(resources[str(self.root / "gpu.lock")]["ownership"], "confirmed")
-        self.assertEqual(resources[str(self.root / "gpu.lock")]["owner"]["acquisition_id"],
-                         acquisition["acquisition_id"])
+        gpu = resources[str(self.root / "gpu.lock")]
+        if platform_identity.darwin():
+            self.assertEqual((gpu["state"], gpu["ownership"], gpu["owner"]), ("unknown", "unknown", None))
+            self.assertEqual(gpu["evidence"]["attribution"], "unavailable")
+        else:
+            self.assertEqual(gpu["ownership"], "confirmed")
+            self.assertEqual(gpu["owner"]["acquisition_id"], acquisition["acquisition_id"])
         self.assertEqual(resources[str(self.root / "external.lock")]["ownership"], "unknown")
         self.assertIsNone(resources[str(self.root / "external.lock")]["owner"])
         self.assertEqual(first["dispatcher"]["capacity"],
-                         {"configured": 2, "active": 1, "complete": True})
+                         {"configured": 2, "active": None, "complete": False} if platform_identity.darwin()
+                         else {"configured": 2, "active": 1, "complete": True})
         self.assertEqual(first["events"], second["events"])
         self.assertGreater(second["generated_at"], first["generated_at"])
         self.assertEqual([(r["event_id"], r["at"]) for r in first["resources"]],
                          [(r["event_id"], r["at"]) for r in second["resources"]])
         released = next(row for row in third["resources"]
                         if row["resource"]["lock"]["path"] == str(self.root / "gpu.lock"))
-        self.assertEqual(released["ownership"], "none")
+        self.assertEqual(released["ownership"], "unknown" if platform_identity.darwin() else "none")
         self.assertIsNone(released["owner"])
         self.assertEqual(release["acquisition_id"], acquisition["acquisition_id"])
         self.assertIn(release["event_id"], [row["event_id"] for row in third["events"]])
@@ -279,8 +284,11 @@ class RuntimeCliTest(unittest.TestCase):
         self.assertIn(execution.dispatcher_run_id, data["dispatcher"]["run_ids"])
         resource = next(row for row in data["resources"]
                         if row["resource"]["lock"]["path"] == str(self.root / "gpu.lock"))
-        self.assertEqual(resource["observation"], "fresh")
-        self.assertEqual(resource["owner"]["acquisition_id"], acquisition["acquisition_id"])
+        if platform_identity.darwin():
+            self.assertEqual((resource["observation"], resource["owner"]), ("unavailable", None))
+        else:
+            self.assertEqual(resource["observation"], "fresh")
+            self.assertEqual(resource["owner"]["acquisition_id"], acquisition["acquisition_id"])
 
     def test_hung_service_queries_are_bounded_and_local_facts_survive(self):
         import shutil

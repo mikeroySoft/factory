@@ -217,7 +217,7 @@ class ConfigTest(unittest.TestCase):
         from unittest import mock
 
         with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d), "[journal]\nmax_mb = 1\nretention = 4\n")
+            repo = make_repo(Path(d).resolve(), "[journal]\nmax_mb = 1\nretention = 4\n")
             worktree = Path(d) / "worker"
             git(repo, "worktree", "add", "-q", str(worktree), "-b", "agent/1")
             path = repo / ".factory" / "events.jsonl"
@@ -273,7 +273,7 @@ print(json.dumps({
 
     def test_defaults_from_origin(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d))
+            repo = make_repo(Path(d).resolve())
             cfg = config.load(repo)
             self.assertEqual(cfg.repo, "acme/widgets")
             self.assertEqual(cfg.name, "widgets")
@@ -317,7 +317,7 @@ model = "m"
 port = 1
 """
         with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d), toml)
+            repo = make_repo(Path(d).resolve(), toml)
             cfg = config.load(repo)
             self.assertEqual((cfg.repo, cfg.upstream, cfg.main), ("other/name", "up", "trunk"))
             self.assertEqual((cfg.max_active, cfg.signoff, cfg.check_timeout), (5, False, 7))
@@ -878,7 +878,7 @@ class HostConfigTest(unittest.TestCase):
         gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
         toml = '[triage]\nmodel = "m"\n[dashboard]\ntheme = "t.css"\n[gate]\nlock = "/tmp/l"\ntimeout = 5\n[dispatch]\nmax_atempts = 2\n[manager]\nunknown = true\n'
         with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d), toml)
+            repo = make_repo(Path(d).resolve(), toml)
             (repo / ".github/ISSUE_TEMPLATE").mkdir(parents=True)
             (repo / ".github/ISSUE_TEMPLATE/agent_task.md").write_text("custom\n")
             proc = factory(repo, "doctor", "--json", path=stub_bin(Path(d), gh=gh, systemctl="echo inactive"))

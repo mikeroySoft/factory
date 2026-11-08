@@ -16,7 +16,7 @@ from factory import config, dispatch, lifecycle
 class PrimePilotConfigTest(unittest.TestCase):
     def test_label_rule_selects_versioned_worker_and_expands_contained_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
             subprocess.run(
                 ["git", "remote", "add", "origin", "git@github.com:mikeroySoft/rocm-cli.git"],

@@ -16,7 +16,7 @@ from unittest import mock
 from factory import binding, config, dispatch, lifecycle
 
 ROOT = Path(__file__).resolve().parents[1]
-GH = '''#!/usr/bin/python
+GH = '#!' + sys.executable + '''
 import json, os, sys
 from pathlib import Path
 p = Path(os.environ['BINDING_STATE'])

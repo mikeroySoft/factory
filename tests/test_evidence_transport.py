@@ -119,7 +119,7 @@ class EvidenceTransportTest(unittest.TestCase):
         self.addCleanup(context.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.directory = Path(self.temp.name)
+        self.directory = Path(self.temp.name).resolve()
         self.root = self.directory / "repo"
         self.root.mkdir()
         self.tools = self.directory / "bin"
