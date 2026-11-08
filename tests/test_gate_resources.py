@@ -50,9 +50,14 @@ print(step + " output")
 raise SystemExit(int(os.environ.get("GATE_FAILURE", "0")) if step == "exclusive" else 0)
 '''
 
-# A raw (helper-less) gate under a hostile launcher must still be waiting this long
-# after SIGINT; the same bound as the real interrupt's communicate in finish().
-UNDELIVERED_WINDOW = 15
+# A raw (helper-less) gate under a hostile launcher must still not have emitted
+# exit this long after SIGINT: GateResourcesTest.wait_timeout, the bound within
+# which the positive control (test_uninstrumented_holder_..., via event(..., "exit"))
+# must see the helper-spawned gate's exit.
+UNDELIVERED_WINDOW = 60
+# The disposable holder must outlive that window, or its own safety timeout
+# would release the lock and let the raw gate finish for an unrelated reason.
+HOLDER_TIMEOUT = UNDELIVERED_WINDOW * 2
 
 
 def runner_sigint() -> tuple[object, bool]:
@@ -65,7 +70,7 @@ from pathlib import Path
 with open(sys.argv[1], "w") as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     Path(sys.argv[2]).touch()
-    if not select.select([sys.stdin], [], [], 30)[0]:
+    if not select.select([sys.stdin], [], [], float(sys.argv[3]))[0]:
         raise SystemExit("disposable holder control timed out")
     sys.stdin.readline()
     fcntl.flock(lock, fcntl.LOCK_UN)
@@ -73,7 +78,7 @@ with open(sys.argv[1], "w") as lock:
 
 
 class GateResourcesTest(unittest.TestCase):
-    wait_timeout = 60
+    wait_timeout = UNDELIVERED_WINDOW
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -170,7 +175,8 @@ class GateResourcesTest(unittest.TestCase):
     def external_holder(self):
         ready = self.base / "external.ready"
         ready.unlink(missing_ok=True)
-        proc = subprocess.Popen([sys.executable, "-c", HOLDER, str(self.lock), str(ready)],
+        proc = subprocess.Popen([sys.executable, "-c", HOLDER, str(self.lock), str(ready),
+                                 str(HOLDER_TIMEOUT)],
                                 env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True)
         self.addCleanup(self.stop, proc)
@@ -254,8 +260,12 @@ class GateResourcesTest(unittest.TestCase):
         self.assertEqual(released["acquisition_id"], acquired["acquisition_id"])
         self.assertNotEqual(next_acquired["acquisition_id"], acquired["acquisition_id"])
         rows = self.rows()
-        self.assertLess(rows.index(acquired), rows.index(requested))
-        self.assertLess(rows.index(requested), rows.index(released))
+        # Removed as true by construction: acquired < requested (the second gate is
+        # spawned only after acquired was read) and requested < released (release is
+        # triggered only after requested was read). The real facts are held["requests"]
+        # naming requested while flock_blocked, and released.acquisition_id above.
+        # later_exit < next_acquired is kept: it orders two processes' independently
+        # written rows and fails if the gate unlocks before its later check exits.
         later_exit = next(row for row in rows if row.get("stage") == "gate-check"
                           and row["kind"] == "exit" and self.pid_of(row) == first.pid
                           and any(event.get("check") == "later" and event["execution_id"] == row["execution_id"]
@@ -359,7 +369,10 @@ class GateResourcesTest(unittest.TestCase):
         self.assertNotEqual(replacement["acquisition_id"], acquired["acquisition_id"])
         self.assertEqual(requested["execution_id"], replacement["execution_id"])
         rows = self.rows()
-        self.assertLess(rows.index(acquired), rows.index(requested))
+        # acquired < requested was true by construction (the replacement gate is
+        # spawned after the first was stopped) and is removed; distinct execution and
+        # acquisition ids above are the real check. The replacement's own
+        # request < acquisition is the product's order and is kept.
         self.assertLess(rows.index(requested), rows.index(replacement))
         self.assertFalse(any(self.pid_of(row) == holder.pid for row in rows))
         self.assertTrue(flock_blocked(self.lock))

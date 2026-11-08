@@ -30,6 +30,28 @@ INHERITED = {
     "ignored": {"ignored": True, "default": False, "blocked": False},
 }
 MISSING = str(Path(__file__).resolve().parent / "no-such-interpreter-for-spawn-failure")
+KNOWN = (signal.default_int_handler, False)
+RESTORE_TESTS = (
+    "test_launcher_setup_failure_restores_mask_and_disposition",
+    "test_foreign_handler_replaced_here_is_not_left_ignored",
+    "test_mask_is_restored_when_restoring_the_handler_fails",
+)
+# Runs RESTORE_TESTS in a runner that starts with SIGINT ignored and blocked, and
+# reports that starting state, the test result, and the state left afterwards.
+HOSTILE_RUNNER = """import json, signal, sys, unittest
+def state():
+    return {"ignored": signal.getsignal(signal.SIGINT) == signal.SIG_IGN,
+            "blocked": signal.SIGINT in signal.pthread_sigmask(signal.SIG_BLOCK, set())}
+start = state()
+sys.path.insert(0, sys.argv[1])
+import test_interrupts
+suite = unittest.defaultTestLoader.loadTestsFromNames(
+    ["InterruptsTest." + name for name in test_interrupts.RESTORE_TESTS], test_interrupts)
+result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(suite)
+print(json.dumps({"start": start, "end": state(), "run": result.testsRun,
+                  "failures": len(result.failures), "errors": len(result.errors),
+                  "skipped": len(result.skipped), "ok": result.wasSuccessful()}))
+"""
 
 
 class SetupFailure(Exception):
@@ -45,6 +67,30 @@ def child_sigint() -> dict:
 def runner_sigint() -> tuple[object, bool]:
     return (signal.getsignal(signal.SIGINT),
             signal.SIGINT in signal.pthread_sigmask(signal.SIG_BLOCK, set()))
+
+
+def put_back_runner_sigint(handler: object, mask: object) -> None:
+    """Restore a saved handler and mask; the mask even if the handler fails.
+
+    A None handler was not installed from Python and cannot be reinstalled. If
+    the disposition is still that unknown one it is left alone; otherwise it is
+    set to SIG_DFL, the nearest deliverable disposition, rather than raising
+    TypeError from ``signal.signal(SIGINT, None)``.
+    """
+    try:
+        if handler is None:
+            if signal.getsignal(signal.SIGINT) is not None:
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+        else:
+            signal.signal(signal.SIGINT, handler)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+
+
+def establish_known_sigint() -> None:
+    """Python's default handler, SIGINT unblocked: independent of the runner's start."""
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
 
 
 def failing_mask(how: int):
@@ -97,8 +143,44 @@ class InterruptsTest(unittest.TestCase):
         # These tests replace the real handler and mask; put both back afterwards.
         handler = signal.getsignal(signal.SIGINT)
         mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
-        self.addCleanup(signal.pthread_sigmask, signal.SIG_SETMASK, mask)
-        self.addCleanup(signal.signal, signal.SIGINT, handler)
+        self.addCleanup(put_back_runner_sigint, handler, mask)
+
+    def known_sigint(self) -> tuple[object, bool]:
+        """Establish KNOWN for this test step and return it, checked."""
+        establish_known_sigint()
+        self.assertEqual(runner_sigint(), KNOWN)
+        return KNOWN
+
+    def test_keep_runner_sigint_restores_a_foreign_none_handler(self) -> None:
+        # A saved None handler must not make cleanup raise TypeError.
+        for current, expected in ((signal.SIG_IGN, signal.SIG_DFL),
+                                  (signal.default_int_handler, signal.SIG_DFL)):
+            with self.subTest(current=current):
+                self.keep_runner_sigint()
+                establish_known_sigint()
+                mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+                signal.signal(signal.SIGINT, current)
+                put_back_runner_sigint(None, mask)
+                self.assertIs(signal.getsignal(signal.SIGINT), expected)
+                self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), mask)
+        self.keep_runner_sigint()
+        establish_known_sigint()
+        getsignal, install, installed = reported_foreign()
+        with getsignal, install:
+            put_back_runner_sigint(None, signal.pthread_sigmask(signal.SIG_BLOCK, set()))
+        self.assertEqual(installed, [])
+
+    def test_restore_tests_pass_when_the_runner_starts_hostile(self) -> None:
+        with detached_launcher_sigint("both"):
+            self.assertEqual(child_sigint(), INHERITED["both"])
+            proc = subprocess.run([sys.executable, "-c", HOSTILE_RUNNER, str(Path(__file__).resolve().parent)],
+                                  capture_output=True, text=True, timeout=120, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        report = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(report, {"start": {"ignored": True, "blocked": True},
+                                  "end": {"ignored": True, "blocked": True},
+                                  "run": len(RESTORE_TESTS), "failures": 0, "errors": 0,
+                                  "skipped": 0, "ok": True}, proc.stderr)
 
     def test_detached_launcher_state_reaches_children(self) -> None:
         # The hazard itself: an ignored or blocked SIGINT survives exec.
@@ -160,11 +242,12 @@ class InterruptsTest(unittest.TestCase):
                 self.assertEqual(runner_sigint(), before)
 
     def test_launcher_setup_failure_restores_mask_and_disposition(self) -> None:
+        self.keep_runner_sigint()
         cases = [("both", failing_mask(signal.SIG_BLOCK)), ("blocked", failing_mask(signal.SIG_BLOCK)),
                  ("ignored", failing_mask(signal.SIG_UNBLOCK)), ("both", failing_handler(signal.SIG_IGN))]
         for mode, failure in cases:
             with self.subTest(mode):
-                before = runner_sigint()
+                before = self.known_sigint()
                 with self.assertRaises(SetupFailure), failure, detached_launcher_sigint(mode):
                     self.fail("setup failure entered the block")
                 self.assertEqual(runner_sigint(), before)
@@ -188,7 +271,7 @@ class InterruptsTest(unittest.TestCase):
         self.keep_runner_sigint()
         for mode in ("both", "ignored"):
             with self.subTest(mode):
-                signal.signal(signal.SIGINT, signal.default_int_handler)
+                self.known_sigint()
                 mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
                 with foreign_snapshot(), detached_launcher_sigint(mode):
                     self.assertIs(signal.getsignal(signal.SIGINT), signal.SIG_IGN)
@@ -211,7 +294,7 @@ class InterruptsTest(unittest.TestCase):
         self.keep_runner_sigint()
         for mode in ("both", "blocked"):
             with self.subTest(mode):
-                before = runner_sigint()
+                before = self.known_sigint()
                 self.assertFalse(before[1])
                 launcher = detached_launcher_sigint(mode)
                 launcher.__enter__()
@@ -234,9 +317,8 @@ class InterruptsTest(unittest.TestCase):
             with self.subTest(mode), detached_launcher_sigint(mode):
                 hostile = runner_sigint()
                 self.assertTrue(hostile[1])
-                with self.assertRaises(SetupFailure):
-                    with failing_handler(signal.SIG_IGN), deliverable_sigint():
-                        self.assertEqual(runner_sigint(), (signal.default_int_handler, False))
+                with self.assertRaises(SetupFailure), failing_handler(signal.SIG_IGN), deliverable_sigint():
+                    self.assertEqual(runner_sigint(), (signal.default_int_handler, False))
                 # SIG_IGN could not be put back, but the hostile mask was.
                 self.assertEqual(runner_sigint()[1], hostile[1])
                 self.assertIs(signal.getsignal(signal.SIGINT), signal.default_int_handler)

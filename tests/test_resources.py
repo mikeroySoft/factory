@@ -10,16 +10,20 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from factory import lifecycle
+from factory import darwin_observer, lifecycle, platform_identity
 
 try:
     from lock_attribution import (
+        NO_DARWIN_HOST_ID,
+        UNQUERYABLE_OBSERVER,
         assert_unattributed_hold,
         flock_blocked,
         lock_holders_attributable,
     )
 except ImportError:  # full-suite discovery imports tests as a package
     from tests.lock_attribution import (
+        NO_DARWIN_HOST_ID,
+        UNQUERYABLE_OBSERVER,
         assert_unattributed_hold,
         flock_blocked,
         lock_holders_attributable,
@@ -168,7 +172,10 @@ with lifecycle.scope(Path(sys.argv[1]), {stage!r}) as execution:
         request = self.row("resource_requested", requester.pid)
         release = self.row("lock_released", holder.pid)
         acquired = self.row("lock_acquired", requester.pid)
-        self.assert_ordered(held, request, release)
+        # held < request < release is true by construction (the requester is
+        # spawned after "held", the holder is released after "waiting"); the real
+        # check is first["requests"] above. request < acquired is the requester's
+        # own product order and is kept.
         self.assert_ordered(request, acquired)
         self.assertEqual({row["resource"]["id"] for row in (held, request, release, acquired)},
                          {first["resource"]["id"]})
@@ -256,7 +263,10 @@ print(json.dumps(lifecycle.resources(Path(sys.argv[1]), [(sys.argv[2], 'host')])
         lifecycle.append(self.path, {**acquired, "kind": "lock_released", "sequence": acquired["sequence"] + 1,
                                      "event_id": "late-old-release", "locks": []})
         late = next(row for row in lifecycle.read_events(self.path) if row.get("event_id") == "late-old-release")
-        self.assert_ordered(acquired, request, replaced, late)
+        # acquired < request (replacement spawned after the kill) and replaced < late
+        # (late appended by this test) are true by construction; the requester's own
+        # request < acquisition is product order and is kept.
+        self.assert_ordered(request, replaced)
         self.assertEqual({row["resource"]["id"] for row in (acquired, request, replaced, late)},
                          {after["resource"]["id"]})
         self.assertNotEqual(replaced["execution_id"], acquired["execution_id"])
@@ -335,7 +345,8 @@ with open(sys.argv[2], 'a+') as lock:
         ended = self.row("exit", holder.pid)
         self.assertEqual(acquired["execution_id"], ended["execution_id"])
         self.assertEqual(acquired["resource"]["id"], observed["resource"]["id"])
-        self.assert_ordered(acquired, ended)
+        # acquired < ended is true by construction (acquired precedes "held"; exit
+        # follows this test's signal); the same-execution check above is the real one.
         self.signal(holder)
         self.assertEqual(holder.wait(timeout=10), 0)
         self.assertFalse(flock_blocked(self.lock))
@@ -400,6 +411,44 @@ with open(sys.argv[2], 'a+') as lock:
                        {"next_at": None}, {"observed_at": "2030-01-01T12:00:01Z"}):
             self.assertIsNone(lifecycle.observe_schedule(self.path, **{**arguments, **change})["wait"])
         self.assertEqual(lifecycle.observe(self.path), [])
+
+    def test_darwin_without_host_id_reports_not_local_unknown(self) -> None:
+        # The product contract when Darwin cannot name this host: the lock is
+        # recorded under the unknown host, is never local, and is not read.
+        holder = self.holder(instrumented=False)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        self.assertTrue(flock_blocked(self.lock))
+        with patch.object(platform_identity, "darwin", return_value=True), \
+                patch.object(platform_identity, "host_id", return_value=None), \
+                patch.object(lifecycle, "_lock_state", side_effect=AssertionError("read a non-local lock")):
+            observed = self.snapshot()
+            with self.assertRaisesRegex(AssertionError, "Darwin host_id\\(\\) is None"):
+                lock_holders_attributable()
+        self.assertEqual(observed["resource"]["host_id"], lifecycle._UNKNOWN_HOST)
+        self.assertEqual((observed["state"], observed["ownership"], observed["owner"]), ("unknown", "unknown", None))
+        self.assertEqual(observed["evidence"],
+                         {"lock_state": "unknown", "attribution": "unavailable", "holder_pids": None})
+        self.assertIn("not local", NO_DARWIN_HOST_ID)
+
+    def test_darwin_attribution_capability_fails_closed(self) -> None:
+        class Observer:
+            def host_id(self):
+                return "observer-host"
+
+        previous = darwin_observer.installed()
+        self.addCleanup(darwin_observer.install, previous)
+        with patch.object(platform_identity, "darwin", return_value=True):
+            darwin_observer.install(None)
+            with patch.object(platform_identity, "host_id", return_value="native-host"):
+                self.assertFalse(lock_holders_attributable())
+            # Installed is not "supplies holders"; the API cannot say which, so fail.
+            darwin_observer.install(Observer())
+            with self.assertRaisesRegex(AssertionError, "no capability"):
+                lock_holders_attributable()
+        self.assertIn("fails closed", UNQUERYABLE_OBSERVER)
+        with patch.object(platform_identity, "darwin", return_value=False), \
+                patch.object(platform_identity, "host_id", side_effect=AssertionError("queried")):
+            self.assertTrue(lock_holders_attributable())
 
 
 if __name__ == "__main__":

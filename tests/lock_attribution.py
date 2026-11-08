@@ -1,8 +1,9 @@
 """Platform capability for kernel lock-holder attribution, and real-flock probes.
 
 Non-Darwin hosts take the /proc/locks path for FLOCK holders. The guarded
-Darwin path has no non-spawning holder source, so attribution exists there only
-when an observer backend is installed (factory.platform_identity.lock_holders). The branch is on that
+Darwin path has no non-spawning holder source; an installed observer backend
+(factory.platform_identity.lock_holders) may supply holders, but nothing in its
+API says whether it will, so that case fails closed. The branch is on
 capability, never on what a snapshot happened to report.
 """
 from __future__ import annotations
@@ -21,15 +22,40 @@ RESOURCE_ROW_KEYS = frozenset({
 })
 
 
+NO_DARWIN_HOST_ID = (
+    "Darwin host_id() is None: lifecycle.resources() records the lock under a "
+    "per-process unknown host, treats it as not local and reports state/ownership "
+    "'unknown' without reading the kernel lock (pinned by "
+    "test_resources.test_darwin_without_host_id_reports_not_local_unknown). A held-lock "
+    "assertion here would be meaningless, so this test fails instead of passing vacuously.")
+UNQUERYABLE_OBSERVER = (
+    "a Darwin observer backend is installed, but the observer API "
+    "(factory.darwin_observer / platform_identity.lock_holders) has no capability "
+    "query for lock-holder attribution: backend.lock_holders() returns list|None per "
+    "call, and None means 'not supplied' for any reason. Whether holders will be "
+    "attributed cannot be known without a probe, so this fails closed.")
+
+
 def lock_holders_attributable() -> bool:
-    """True when this host can name a lock's holders: not Darwin, or Darwin
-    with an installed observer.
+    """True when this host can name a lock's holders; fails when that cannot be known.
 
     This is not "is Linux". Every non-Darwin host takes the /proc/locks path,
-    so this is True there whether or not that source exists. On Darwin it is
-    True only with an installed observer backend.
+    so this is True there whether or not that source exists. On Darwin:
+
+    * no host_id: resources() cannot treat any lock as local (NO_DARWIN_HOST_ID),
+      so the caller's held/unattributed assertions do not apply; fail clearly.
+    * no installed observer: native attribution is unavailable; False.
+    * an installed observer: it must actually supply holders, but the observer
+      API has no non-experimental capability query (UNQUERYABLE_OBSERVER).
+      Assuming either answer could pass vacuously, so fail closed.
     """
-    return not platform_identity.darwin() or darwin_observer.installed() is not None
+    if not platform_identity.darwin():
+        return True
+    if platform_identity.host_id() is None:
+        raise AssertionError(NO_DARWIN_HOST_ID)
+    if darwin_observer.installed() is None:
+        return False
+    raise AssertionError(UNQUERYABLE_OBSERVER)
 
 
 def flock_blocked(path: Path) -> bool:
