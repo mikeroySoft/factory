@@ -1,6 +1,8 @@
 """Portable identity regressions; real-host cases also run in macOS discovery."""
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import fcntl
 import json
 import os
@@ -280,6 +282,49 @@ class BootProbeTest(unittest.TestCase):
             patch("factory.platform_identity._sysctl_string", return_value=BOOT),
         ):
             self.assertEqual(platform_identity.boot_id(), BOOT)
+
+
+class NativeProbeFailureTest(unittest.TestCase):
+    """Real ctypes/libSystem/IOKit failures map to unknown (None), never a crash or a value."""
+
+    def setUp(self):
+        self.enterContext(patch("factory.darwin_observer.installed", return_value=None))
+        self.find = ctypes.util.find_library
+
+    def redirect(self, name, path):
+        return patch("ctypes.util.find_library", side_effect=lambda lib: path if lib == name else self.find(lib))
+
+    def test_sysctl_missing_libc_is_unknown(self):
+        missing = "/nonexistent/factory-libSystem.dylib"
+        if platform_identity.darwin():
+            with self.assertRaises(OSError):
+                ctypes.CDLL(missing)
+        with self.redirect("System", missing):
+            self.assertIsNone(platform_identity._sysctl_string("kern.bootsessionuuid"))
+            self.assertIsNone(platform_identity.boot_id())
+
+    def test_sysctl_unencodable_name_is_unknown(self):
+        # Surrogate name: name.encode raises UnicodeEncodeError (a ValueError) deterministically.
+        # No sysctl's bytes are structurally invalid UTF-8 on every Darwin host, so
+        # UnicodeDecodeError has no deterministic native trigger here.
+        self.assertIsNone(platform_identity._sysctl_string("kern.\udcff"))
+        if platform_identity.darwin():
+            self.assertEqual(platform_identity.boot_id(), str(uuid.UUID(platform_identity._sysctl_string("kern.bootsessionuuid"))))
+
+    def test_iokit_native_failures_are_unknown_host(self):
+        missing_symbols = self.redirect("IOKit", self.find("System"))
+        missing_library = self.redirect("IOKit", "/nonexistent/factory-IOKit")
+        real_key = platform_identity._cf_string
+        not_a_uuid = patch.object(platform_identity, "_cf_string",
+                                  lambda cf, text: real_key(cf, b"IOPlatformSerialNumber"))
+        for label, scope, native in (("missing symbols", missing_symbols, AttributeError),
+                                     ("missing library", missing_library, OSError),
+                                     ("serial is not a UUID", not_a_uuid, ValueError)):
+            with self.subTest(label), scope:
+                if platform_identity.darwin():
+                    with self.assertRaises(native):
+                        platform_identity._iokit_host_id()
+                self.assertIsNone(platform_identity.host_id())
 
 
 class _Scripted:

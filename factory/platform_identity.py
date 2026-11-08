@@ -46,7 +46,7 @@ def _sysctl_string(name: str) -> str | None:
         if fn(name.encode("utf-8"), buf, ctypes.byref(needed), None, 0) != 0:
             return None
         return buf.raw[:needed.value].rstrip(b"\x00").decode("utf-8", errors="strict").strip() or None
-    except Exception:
+    except (OSError, ValueError):
         return None
 
 
@@ -146,7 +146,7 @@ def host_id() -> str | None:
         return None
     try:
         return _iokit_host_id()
-    except Exception:
+    except (OSError, AttributeError, ValueError):
         return None
 
 
