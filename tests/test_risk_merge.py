@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import functools
+import hashlib
 import importlib
 import inspect
 import io
 import itertools
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -43,6 +46,108 @@ def high_events(*, head: str = HEAD, second: bool = True, mutation: str = "PASS"
     return rows
 
 
+def journal_state(directory: Path) -> tuple[int, str] | None:
+    path = directory / ".factory" / "events.jsonl"
+    if not path.exists():
+        return None
+    data = path.read_bytes()
+    return len(data), hashlib.sha256(data).hexdigest()
+
+
+# Every binding `dispatch.configure` writes (factory/dispatch.py:80-101): 11 rebound globals,
+# 7 containers it clears in place, and the functools.cache it clears.
+_UNSET = object()
+DISPATCH_REBOUND = (
+    "cfg", "ROOT", "REPO", "UPSTREAM", "UPSTREAM_REPO", "FACTORY", "LOGS",
+    "SYNC_LOG", "EVENTS", "MAX_ACTIVE", "MAX_ATTEMPTS",
+)
+DISPATCH_CLEARED = (
+    "_PENDING_REVIEWS", "_PENDING_SECOND_REVIEWS", "_PENDING_RISK", "_LOW_FALLBACK",
+    "UNAVAILABLE_WORKERS", "VERIFIED_WORKERS", "_ESCALATED",
+)
+DISPATCH_CACHED = "host_claim_login"
+DISPATCH_NAMES = (*DISPATCH_REBOUND, *DISPATCH_CLEARED, DISPATCH_CACHED)
+# Points where isolate_journal can be made to fail, in order; each precedes one mutation.
+ISOLATION_STEPS = (
+    "tempdir", *(f"fresh:{name}" for name in DISPATCH_CLEARED), f"fresh:{DISPATCH_CACHED}",
+    "chdir", "done",
+)
+
+
+def dispatch_bindings() -> dict[str, object]:
+    """Each binding configure() touches, by identity; `_UNSET` when the attribute is absent."""
+    return {name: getattr(dispatch, name, _UNSET) for name in DISPATCH_NAMES}
+
+
+def container_contents(bindings: dict[str, object]) -> dict[str, object]:
+    return {name: type(bindings[name])(bindings[name]) for name in DISPATCH_CLEARED}
+
+
+def restore_dispatch(bindings: dict[str, object], cwd: str) -> None:
+    """Put back cwd and the exact original objects. Nothing original is cleared or refilled."""
+    errors: list[Exception] = []
+
+    def attempt(action, *args) -> None:
+        try:
+            action(*args)
+        except Exception as exc:  # keep restoring; the first error is raised below
+            errors.append(exc)
+
+    attempt(os.chdir, cwd)
+    for name, value in bindings.items():
+        if value is not _UNSET:
+            attempt(setattr, dispatch, name, value)
+        elif hasattr(dispatch, name):
+            attempt(delattr, dispatch, name)
+    if errors:
+        raise errors[0]
+
+
+def _no_fault(step: str) -> None:
+    return None
+
+
+def isolate_journal(
+    test: unittest.TestCase, fault: typing.Callable[[str], None] = _no_fault,
+) -> tuple[Path, dict[Path, tuple[int, str] | None]]:
+    """Run one test whose Config(Path(".")) dispatch writes events in a private cwd.
+
+    configure() only ever sees fresh containers and a fresh host_claim_login cache, so the
+    originals are never cleared. Cleanups are LIFO: temp.cleanup is registered first, so the
+    restore (cwd and every original binding) runs before the directory is removed. Each
+    cleanup is registered before the mutation it undoes, so a partial setup is undone too.
+    """
+    cwd = os.getcwd()
+    checkouts = {Path(cwd).resolve(), Path(__file__).resolve().parents[1]}
+    before = {checkout: journal_state(checkout) for checkout in checkouts}
+    originals = dispatch_bindings()
+    fault("tempdir")
+    temp = tempfile.TemporaryDirectory()
+    test.addCleanup(temp.cleanup)
+    test.addCleanup(restore_dispatch, originals, cwd)
+    for name in DISPATCH_CLEARED:
+        fault(f"fresh:{name}")
+        setattr(dispatch, name, type(originals[name])())
+    fault(f"fresh:{DISPATCH_CACHED}")
+    setattr(dispatch, DISPATCH_CACHED, functools.cache(originals[DISPATCH_CACHED].__wrapped__))
+    root = Path(temp.name).resolve()
+    fault("chdir")
+    os.chdir(root)
+    fault("done")
+    return root, before
+
+
+def assert_journal_isolated(
+    test: unittest.TestCase, root: Path, before: dict[Path, tuple[int, str] | None],
+) -> None:
+    for checkout, state in before.items():
+        test.assertEqual(journal_state(checkout), state, checkout)
+    test.assertTrue(dispatch.EVENTS.resolve().is_relative_to(root), dispatch.EVENTS)
+    written = journal_state(root)
+    test.assertIsNotNone(written)
+    test.assertGreater(written[0], 0)
+
+
 class HighEvidenceTest(unittest.TestCase):
     def test_high_requires_two_distinct_reviews_and_blocking_mutation(self) -> None:
         self.assertTrue(dispatch._head_evidence_matches(high_events(), 7, HEAD))
@@ -72,6 +177,7 @@ class HighEvidenceTest(unittest.TestCase):
         ))
 
     def test_merge_stage_removes_approval_when_high_path_has_no_risk_row(self) -> None:
+        journal_root, journal_before = isolate_journal(self)
         cfg = config.Config(Path("."), "acme/widgets")
         dispatch.configure(cfg)
         events = [
@@ -115,6 +221,7 @@ class HighEvidenceTest(unittest.TestCase):
             [call.args[0] for call in run.call_args_list],
         )
         self.assertEqual(escalate.call_args.kwargs["code"], "approval_missing")
+        assert_journal_isolated(self, journal_root, journal_before)
 
 
 class ReviewPolicyTest(unittest.TestCase):
@@ -193,6 +300,7 @@ class ReviewPolicyTest(unittest.TestCase):
         self.assertIn("second reviewer: REVISE", context)
 
     def test_high_without_changed_factory_code_records_mutation_skip(self) -> None:
+        journal_root, journal_before = isolate_journal(self)
         cfg = config.Config(Path("."), "acme/widgets")
         dispatch.configure(cfg)
 
@@ -212,6 +320,7 @@ class ReviewPolicyTest(unittest.TestCase):
 
         self.assertEqual(verdict, "APPROVE")
         self.assertEqual(dispatch._PENDING_RISK[7]["mutation"], "SKIP")
+        assert_journal_isolated(self, journal_root, journal_before)
 
     def test_mutation_blocking_fails_and_lists_changed_line_survivor(self) -> None:
         class TestOutcome(Enum):
@@ -316,6 +425,7 @@ class ReviewPolicyTest(unittest.TestCase):
         self.assertIn("second finding", packet)
 
     def test_disagree_cases_and_agreement_are_distinct(self) -> None:
+        journal_root, journal_before = isolate_journal(self)
         cfg = config.Config(Path("."), "acme/widgets")
         cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
         dispatch.configure(cfg)
@@ -351,8 +461,10 @@ class ReviewPolicyTest(unittest.TestCase):
                     result = dispatch.pr_gate_and_review(Path("."), 7, "attempt", HEAD, {})
                 self.assertEqual(result[0], expected)
                 self.assertEqual(dispatch._PENDING_RISK[7]["disagreement"], disagreement)
+        assert_journal_isolated(self, journal_root, journal_before)
 
     def test_json_parsed_high_review_verdicts_drive_result_and_actionability(self) -> None:
+        journal_root, journal_before = isolate_journal(self)
         cfg = config.Config(Path("."), "acme/widgets")
         cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
         finding = {
@@ -409,6 +521,7 @@ class ReviewPolicyTest(unittest.TestCase):
 
                 self.assertEqual(result[0], expected)
                 self.assertIs(dispatch._PENDING_RISK[7]["actionable"], actionable)
+        assert_journal_isolated(self, journal_root, journal_before)
 
 
 class ConfigTest(unittest.TestCase):
@@ -804,6 +917,183 @@ class MutationExecutionTest(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(mutation.run_tests("factory/example.py"), 1)
         self.assertEqual(executed, [])
+
+
+class JournalIsolationRestoreTest(unittest.TestCase):
+    """isolate_journal restores cwd and every binding configure() touches before the tempdir goes."""
+
+    ISOLATED = (
+        (HighEvidenceTest, "test_merge_stage_removes_approval_when_high_path_has_no_risk_row"),
+        (ReviewPolicyTest, "test_high_without_changed_factory_code_records_mutation_skip"),
+        (ReviewPolicyTest, "test_disagree_cases_and_agreement_are_distinct"),
+        (ReviewPolicyTest, "test_json_parsed_high_review_verdicts_drive_result_and_actionability"),
+    )
+
+    def setUp(self) -> None:
+        # The proofs use stand-in "originals": the real containers and cache are only rebound,
+        # never cleared, seeded or mutated, and that is checked last.
+        real, cwd = dispatch_bindings(), os.getcwd()
+        real_contents = container_contents(real)
+        real_cache = real[DISPATCH_CACHED].cache_info()
+        self.addCleanup(self.assert_untouched, real, real_contents, real_cache, cwd)
+        self.addCleanup(restore_dispatch, real, cwd)
+        for name in DISPATCH_CLEARED:
+            setattr(dispatch, name, type(real[name])())
+        setattr(dispatch, DISPATCH_CACHED, functools.cache(real[DISPATCH_CACHED].__wrapped__))
+
+    def assert_untouched(self, bindings, contents, cache, cwd) -> None:
+        for name in DISPATCH_NAMES:
+            self.assertIs(getattr(dispatch, name, _UNSET), bindings[name], name)
+        self.assertEqual(container_contents(bindings), contents)
+        self.assertEqual(bindings[DISPATCH_CACHED].cache_info(), cache)
+        self.assertEqual(os.getcwd(), cwd)
+
+    def seed_sentinels(self) -> None:
+        dispatch.configure(config.Config(Path("sentinel-root"), "sentinel/repo"))
+        dispatch._PENDING_REVIEWS[99] = {"verdict": "sentinel"}
+        dispatch._PENDING_SECOND_REVIEWS[99] = {"verdict": "sentinel-second"}
+        dispatch._PENDING_RISK[99] = {"head": "sentinel"}
+        dispatch._LOW_FALLBACK.add(99)
+        dispatch.UNAVAILABLE_WORKERS["sentinel"] = "down"
+        dispatch.VERIFIED_WORKERS.add("sentinel")
+        dispatch._ESCALATED.add(99)
+        with mock.patch.object(dispatch, "gh_json", return_value={"login": "Sentinel"}):
+            self.assertEqual(dispatch.host_claim_login(), "sentinel")
+        self.assertEqual(dispatch.host_claim_login.cache_info().currsize, 1)
+
+    def unset_bindings(self) -> None:
+        for name in DISPATCH_REBOUND:
+            if hasattr(dispatch, name):
+                delattr(dispatch, name)
+
+    def expect(self) -> dict[str, object]:
+        bindings = dispatch_bindings()
+        return {
+            "bindings": bindings, "contents": container_contents(bindings),
+            "cache": bindings[DISPATCH_CACHED].cache_info(), "cwd": os.getcwd(),
+        }
+
+    def recording_tempdir(self, expected: dict[str, object]):
+        """A TemporaryDirectory whose cleanup records what was already restored when it ran."""
+        created: list[Path] = []
+        observed: list[dict[str, object]] = []
+
+        class RecordingTemporaryDirectory(tempfile.TemporaryDirectory):
+            def __init__(inner, *args, **kwargs) -> None:
+                super().__init__(*args, **kwargs)
+                created.append(Path(inner.name))
+
+            def cleanup(inner) -> None:
+                bindings = expected["bindings"]
+                observed.append({
+                    "dir_present": Path(inner.name).is_dir(),
+                    "cwd_restored": os.getcwd() == expected["cwd"],
+                    "bindings_restored": [
+                        name for name in DISPATCH_NAMES
+                        if getattr(dispatch, name, _UNSET) is not bindings[name]
+                    ] == [],
+                    "contents_unchanged": container_contents(bindings) == expected["contents"],
+                    "cache_unchanged": bindings[DISPATCH_CACHED].cache_info() == expected["cache"],
+                    "journal": journal_state(Path(inner.name)),
+                })
+                super().cleanup()
+
+        return RecordingTemporaryDirectory, created, observed
+
+    def run_case(self, case: unittest.TestCase, expected: dict[str, object]):
+        recording, created, observed = self.recording_tempdir(expected)
+        result = unittest.TestResult()
+        with mock.patch.object(tempfile, "TemporaryDirectory", recording):
+            case.run(result)
+        self.assertEqual(result.testsRun, 1)
+        return result, created, observed
+
+    def assert_restored_first(self, created: list[Path], observed: list[dict[str, object]]) -> None:
+        self.assertEqual(len(created), 1)
+        self.assertEqual(len(observed), 1)
+        restored = {key: value for key, value in observed[0].items() if key != "journal"}
+        self.assertEqual(restored, dict.fromkeys(restored, True))
+        self.assertFalse(created[0].exists())
+
+    def assert_restored(self, expected: dict[str, object], seeded: bool) -> None:
+        bindings = expected["bindings"]
+        for name in DISPATCH_NAMES:
+            self.assertIs(getattr(dispatch, name, _UNSET), bindings[name], name)
+        for name in DISPATCH_REBOUND:
+            self.assertEqual(hasattr(dispatch, name), bindings[name] is not _UNSET, name)
+        self.assertEqual(container_contents(bindings), expected["contents"])
+        self.assertEqual(bindings[DISPATCH_CACHED].cache_info(), expected["cache"])
+        self.assertEqual(os.getcwd(), expected["cwd"])
+        if seeded:
+            self.assertEqual(expected["contents"]["_PENDING_RISK"], {99: {"head": "sentinel"}})
+            with mock.patch.object(dispatch, "gh_json", side_effect=AssertionError("cache lost")):
+                self.assertEqual(dispatch.host_claim_login(), "sentinel")
+
+    def prepared(self):
+        for prepare in (self.seed_sentinels, self.unset_bindings):
+            with self.subTest(prepare=prepare.__name__):
+                prepare()
+                yield prepare == self.seed_sentinels
+
+    def test_success_restores_before_tempdir_cleanup(self) -> None:
+        for seeded in self.prepared():
+            for cls, name in self.ISOLATED:
+                with self.subTest(test=name):
+                    expected = self.expect()
+                    result, created, observed = self.run_case(cls(name), expected)
+                    self.assertEqual((result.errors, result.failures), ([], []))
+                    self.assert_restored_first(created, observed)
+                    self.assertIsNotNone(observed[0]["journal"])
+                    self.assert_restored(expected, seeded)
+
+    def test_setup_failure_at_each_step_restores_before_tempdir_cleanup(self) -> None:
+        for seeded in self.prepared():
+            for step in ISOLATION_STEPS:
+                with self.subTest(step=step):
+                    expected = self.expect()
+
+                    def fault(current: str, step: str = step) -> None:
+                        if current == step:
+                            raise OSError(f"setup failed at {step}")
+
+                    class Case(unittest.TestCase):
+                        def test_isolated(inner) -> None:
+                            isolate_journal(inner, fault)
+                            inner.fail("setup should have failed")
+
+                    result, created, observed = self.run_case(Case("test_isolated"), expected)
+                    self.assertEqual(result.failures, [])
+                    self.assertEqual(len(result.errors), 1)
+                    self.assertIn(f"setup failed at {step}", result.errors[0][1])
+                    if step == "tempdir":
+                        self.assertEqual((created, observed), ([], []))
+                    else:
+                        self.assert_restored_first(created, observed)
+                    self.assert_restored(expected, seeded)
+
+    def test_assertion_failure_in_body_restores_before_tempdir_cleanup(self) -> None:
+        for seeded in self.prepared():
+            expected = self.expect()
+
+            class Case(unittest.TestCase):
+                def test_isolated(inner) -> None:
+                    isolate_journal(inner)
+                    dispatch.configure(config.Config(Path("."), "acme/widgets"))
+                    dispatch._PENDING_RISK[7] = {"head": HEAD}
+                    dispatch._ESCALATED.add(7)
+                    dispatch.VERIFIED_WORKERS.add("body")
+                    with mock.patch.object(dispatch, "gh_json", return_value={"login": "Body"}):
+                        dispatch.host_claim_login()
+                    dispatch.record("risk", ticket=7, head=HEAD, tier="Low", matched_rules=[])
+                    inner.assertEqual("test body", "failed")
+
+            result, created, observed = self.run_case(Case("test_isolated"), expected)
+            self.assertEqual(result.errors, [])
+            self.assertEqual(len(result.failures), 1)
+            self.assertIn("'test body' != 'failed'", result.failures[0][1])
+            self.assert_restored_first(created, observed)
+            self.assertIsNotNone(observed[0]["journal"])
+            self.assert_restored(expected, seeded)
 
 
 if __name__ == "__main__":
