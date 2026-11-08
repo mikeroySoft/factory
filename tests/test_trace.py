@@ -134,6 +134,7 @@ class TraceEmissionTest(unittest.TestCase):
         self.events = self.cfg.factory / "events.jsonl"
         dispatch.configure(self.cfg)
         triage.configure(self.cfg)
+        self.enterContext(mock.patch.object(triage, "_promotion_refusal", return_value=None))
 
     def decisions(self, stage: str) -> list[dict]:
         return [row for row in lifecycle.read_events(self.events)

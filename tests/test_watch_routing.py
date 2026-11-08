@@ -234,6 +234,7 @@ class TriageIdentityTest(unittest.TestCase):
         self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: "", "GH_CONFIG_DIR": "/owner"}))
         self.enterContext(mock.patch.dict(triage.__dict__))
         self.cfg = config.Config(Path(temporary.name), ENGINE)
+        self.cfg.triage_allowed_user_ids = [101]
         self.cfg.factory.mkdir()
         triage.configure(self.cfg)
         self.calls: list[tuple] = []
@@ -242,6 +243,11 @@ class TriageIdentityTest(unittest.TestCase):
 
     def gh(self, *args, execution=None) -> str:
         self.calls.append(args)
+        if args[0] == "api":
+            if args[1].endswith("/timeline"):
+                return json.dumps([[{"event": "labeled", "label": {"name": LABEL_TRIAGE},
+                                     "actor": {"id": 101}}]])
+            return json.dumps({"user": {"id": 101}})
         if args[:2] == ("issue", "list"):
             return json.dumps([{"number": 7}])
         return json.dumps(self.issue("factory-bot")) if args[:2] == ("issue", "view") else ""
