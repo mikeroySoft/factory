@@ -16,13 +16,13 @@ try:
     from lock_attribution import (
         assert_unattributed_hold,
         flock_blocked,
-        kernel_attributes_lock_holders,
+        lock_holders_attributable,
     )
 except ImportError:  # full-suite discovery imports tests as a package
     from tests.lock_attribution import (
         assert_unattributed_hold,
         flock_blocked,
-        kernel_attributes_lock_holders,
+        lock_holders_attributable,
     )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,9 +95,23 @@ with lifecycle.scope(Path(sys.argv[1]), {stage!r}) as execution:
     def snapshot(self) -> dict:
         return lifecycle.resources(self.path, [(self.lock, "host")])[0]
 
+    def pid_of(self, row: dict) -> int:
+        """A journal row's process pid; a row without process identity fails clearly."""
+        process = row.get("process")
+        self.assertIsInstance(process, dict,
+                              f"{row.get('kind')} row has no process identity: {row!r}")
+        return process["pid"]
+
+    def test_row_without_process_fails_clearly(self) -> None:
+        for row in ({"kind": "exit", "process": None}, {"kind": "exit"}):
+            with self.subTest(row=row), \
+                    self.assertRaisesRegex(self.failureException, "exit row has no process identity"):
+                self.pid_of(row)
+        self.assertEqual(self.pid_of({"kind": "exit", "process": {"pid": 7}}), 7)
+
     def row(self, kind: str, pid: int) -> dict:
         matches = [row for row in lifecycle.read_events(self.path)
-                   if row.get("kind") == kind and row["process"]["pid"] == pid]
+                   if row.get("kind") == kind and self.pid_of(row) == pid]
         self.assertEqual(len(matches), 1, (kind, pid))
         return matches[0]
 
@@ -108,7 +122,7 @@ with lifecycle.scope(Path(sys.argv[1]), {stage!r}) as execution:
         self.assertEqual(len(set(positions)), len(positions))
 
     def test_requester_is_not_owner_and_acquires_only_after_release(self) -> None:
-        attributed = kernel_attributes_lock_holders()
+        attributed = lock_holders_attributable()
         holder = self.holder()
         self.assertEqual(holder.stdout.readline().strip(), "held")
         requester = self.holder(stage="requester")
@@ -183,7 +197,7 @@ print(json.dumps(lifecycle.resources(Path(sys.argv[1]), [(sys.argv[2], 'host')])
         self.assertEqual(len(lifecycle.read_events(self.path)), 1)
 
     def test_live_old_holder_cannot_own_external_replacement_during_release_gap(self) -> None:
-        attributed = kernel_attributes_lock_holders()
+        attributed = lock_holders_attributable()
         old = self.holder(delay_release=True)
         self.assertEqual(old.stdout.readline().strip(), "held")
         if attributed:
@@ -213,10 +227,10 @@ print(json.dumps(lifecycle.resources(Path(sys.argv[1]), [(sys.argv[2], 'host')])
         release = self.row("lock_released", old.pid)
         self.assert_ordered(request, held, release)
         self.assertEqual({row["resource"]["id"] for row in (request, held, release)}, {observed["resource"]["id"]})
-        self.assertFalse(any(row["process"]["pid"] == replacement.pid for row in lifecycle.read_events(self.path)))
+        self.assertFalse(any(self.pid_of(row) == replacement.pid for row in lifecycle.read_events(self.path)))
 
     def test_dead_holder_replacement_and_old_release_do_not_erase_new_owner(self) -> None:
-        attributed = kernel_attributes_lock_holders()
+        attributed = lock_holders_attributable()
         old = self.holder()
         self.assertEqual(old.stdout.readline().strip(), "held")
         before = self.snapshot()
@@ -302,7 +316,7 @@ with open(sys.argv[2], 'a+') as lock:
     print('scope-exited', flush=True)
     sys.stdin.readline()
 """)
-        attributed = kernel_attributes_lock_holders()
+        attributed = lock_holders_attributable()
         self.assertEqual(holder.stdout.readline().strip(), "held")
         if attributed:
             self.assertEqual(self.snapshot()["ownership"], "confirmed")

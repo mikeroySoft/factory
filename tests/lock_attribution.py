@@ -1,8 +1,8 @@
 """Platform capability for kernel lock-holder attribution, and real-flock probes.
 
-Linux reads FLOCK holders from /proc/locks. The guarded Darwin path has no
-non-spawning holder source, so attribution exists there only when a backend is
-installed (factory.platform_identity.lock_holders). The branch is on that
+Non-Darwin hosts take the /proc/locks path for FLOCK holders. The guarded
+Darwin path has no non-spawning holder source, so attribution exists there only
+when an observer backend is installed (factory.platform_identity.lock_holders). The branch is on that
 capability, never on what a snapshot happened to report.
 """
 from __future__ import annotations
@@ -16,7 +16,14 @@ from factory import darwin_observer, platform_identity
 UNATTRIBUTED_EVIDENCE = {"lock_state": "held", "attribution": "unavailable", "holder_pids": None}
 
 
-def kernel_attributes_lock_holders() -> bool:
+def lock_holders_attributable() -> bool:
+    """True when this host can name a lock's holders: not Darwin, or Darwin
+    with an installed observer.
+
+    This is not "is Linux". Every non-Darwin host takes the /proc/locks path,
+    so this is True there whether or not that source exists. On Darwin it is
+    True only with an installed observer backend.
+    """
     return not platform_identity.darwin() or darwin_observer.installed() is not None
 
 

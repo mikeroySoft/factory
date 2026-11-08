@@ -21,11 +21,30 @@ def _snapshot() -> tuple[object, object]:
 
 
 def _restore(mask: object, handler: object) -> None:
-    # Handler first, so a SIGINT left pending by the mask meets the restored disposition.
-    # None means a handler not installed from Python; it was never replaced here.
-    if handler is not None and signal.getsignal(signal.SIGINT) != handler:
-        signal.signal(signal.SIGINT, handler)
-    signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+    """Put back the snapshot: handler first, then the mask, each independently.
+
+    Handler first, so a SIGINT left pending by the mask meets the restored
+    disposition. The mask is restored in its own ``finally``: a failure to
+    restore the handler must not also leave SIGINT blocked or unblocked.
+
+    ``handler is None`` means the snapshot found a handler that was not
+    installed from Python (``signal.getsignal`` cannot name it), so it cannot be
+    reinstalled. If the disposition is still that unknown one (``getsignal`` is
+    still None), nothing here replaced it and it is left alone. If this module
+    replaced it (``SIG_IGN`` for a launcher, ``default_int_handler`` for
+    delivery), it is restored to ``SIG_DFL``: the nearest disposition that
+    keeps SIGINT deliverable and invents no Python-level behaviour. Leaving
+    ``SIG_IGN`` would make every later child of this runner immune to SIGINT.
+    """
+    try:
+        current = signal.getsignal(signal.SIGINT)
+        if handler is None:
+            if current is not None:
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+        elif current != handler:
+            signal.signal(signal.SIGINT, handler)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
 @contextlib.contextmanager

@@ -24,13 +24,13 @@ try:
     from lock_attribution import (
         assert_unattributed_hold,
         flock_blocked,
-        kernel_attributes_lock_holders,
+        lock_holders_attributable,
     )
 except ImportError:  # full-suite discovery imports tests as a package
     from tests.lock_attribution import (
         assert_unattributed_hold,
         flock_blocked,
-        kernel_attributes_lock_holders,
+        lock_holders_attributable,
     )
 
 CHECK = '''import os, sys, time
@@ -106,6 +106,20 @@ class GateResourcesTest(unittest.TestCase):
             '[gate]\ntimeout = 30\nlock = ' + json.dumps(str(self.lock)) + '\n' + checks
         )
 
+    def pid_of(self, row: dict) -> int:
+        """A journal row's process pid; a row without process identity fails clearly."""
+        process = row.get("process")
+        self.assertIsInstance(process, dict,
+                              f"{row.get('kind')} row has no process identity: {row!r}")
+        return process["pid"]
+
+    def test_row_without_process_fails_clearly(self) -> None:
+        for row in ({"kind": "exit", "process": None}, {"kind": "exit"}):
+            with self.subTest(row=row), \
+                    self.assertRaisesRegex(self.failureException, "exit row has no process identity"):
+                self.pid_of(row)
+        self.assertEqual(self.pid_of({"kind": "exit", "process": {"pid": 7}}), 7)
+
     def rows(self) -> list[dict]:
         return lifecycle.read_events(self.events)
 
@@ -124,7 +138,7 @@ class GateResourcesTest(unittest.TestCase):
         proc.wait(timeout=self.wait_timeout)
         # gate.timed starts each check in its own session; do not leave it behind.
         children = [row["child_process"] for row in self.rows()
-                    if row.get("kind") == "child_start" and row["process"]["pid"] == proc.pid]
+                    if row.get("kind") == "child_start" and self.pid_of(row) == proc.pid]
         for child in children:
             if lifecycle._process_state(child) == "alive":
                 try:
@@ -166,7 +180,7 @@ class GateResourcesTest(unittest.TestCase):
     def event(self, proc: subprocess.Popen, kind: str):
         return self.until(lambda: next((row for row in self.rows()
                           if row.get("stage") == "gate" and row.get("kind") == kind
-                          and row["process"]["pid"] == proc.pid), None),
+                          and self.pid_of(row) == proc.pid), None),
                           f"gate {proc.pid} did not emit {kind}")
 
     def resource(self):
@@ -188,7 +202,7 @@ class GateResourcesTest(unittest.TestCase):
         self.assertEqual(terminal["outcome"], "product_feedback" if expected else "completed")
 
     def test_requests_are_not_owners_and_lock_outlives_exclusive_check(self) -> None:
-        attributed = kernel_attributes_lock_holders()
+        attributed = lock_holders_attributable()
         first, a = self.gate("first")
         self.until((a / "exclusive.ready").exists, "first exclusive check did not start")
         acquired = self.event(first, "lock_acquired")
@@ -243,7 +257,7 @@ class GateResourcesTest(unittest.TestCase):
         self.assertLess(rows.index(acquired), rows.index(requested))
         self.assertLess(rows.index(requested), rows.index(released))
         later_exit = next(row for row in rows if row.get("stage") == "gate-check"
-                          and row["kind"] == "exit" and row["process"]["pid"] == first.pid
+                          and row["kind"] == "exit" and self.pid_of(row) == first.pid
                           and any(event.get("check") == "later" and event["execution_id"] == row["execution_id"]
                                   for event in rows))
         self.assertLess(rows.index(later_exit), rows.index(next_acquired))
@@ -307,7 +321,7 @@ class GateResourcesTest(unittest.TestCase):
         self.assertEqual(self.resource()["state"], "free")
 
     def test_dead_holder_is_not_carried_into_external_or_new_gate_ownership(self) -> None:
-        attributed = kernel_attributes_lock_holders()
+        attributed = lock_holders_attributable()
         first, a = self.gate("killed-holder")
         self.until((a / "exclusive.ready").exists, "holding gate check did not start")
         acquired = self.event(first, "lock_acquired")
@@ -347,7 +361,7 @@ class GateResourcesTest(unittest.TestCase):
         rows = self.rows()
         self.assertLess(rows.index(acquired), rows.index(requested))
         self.assertLess(rows.index(requested), rows.index(replacement))
-        self.assertFalse(any(row["process"]["pid"] == holder.pid for row in rows))
+        self.assertFalse(any(self.pid_of(row) == holder.pid for row in rows))
         self.assertTrue(flock_blocked(self.lock))
         for _ in range(2):
             held = self.resource()

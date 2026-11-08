@@ -26,6 +26,7 @@ otherwise re-run its 19 tests); reusable helpers are bound from it narrowly.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -54,9 +55,18 @@ try:
 except ImportError:  # full-suite discovery imports tests as a package
     from tests import test_evidence as _base
 try:
-    from interrupts import deliverable_sigint, detached_launcher_sigint
+    from interrupts import LAUNCHER_MODES, deliverable_sigint, detached_launcher_sigint
 except ImportError:  # full-suite discovery imports tests as a package
-    from tests.interrupts import deliverable_sigint, detached_launcher_sigint
+    from tests.interrupts import LAUNCHER_MODES, deliverable_sigint, detached_launcher_sigint
+
+# The interrupted CLI must exit within this bound; a raw (helper-less) CLI under a
+# hostile launcher must still be running after it.
+UNDELIVERED_WINDOW = 15
+
+
+def runner_sigint() -> tuple[object, bool]:
+    return (signal.getsignal(signal.SIGINT),
+            signal.SIGINT in signal.pthread_sigmask(signal.SIG_BLOCK, set()))
 
 # Contract label shape: the ready-for-human marker plus 19 label slots, each
 # exactly 50 chars ("中" * 48 + two-digit slot position). CJK labels carry the
@@ -316,20 +326,21 @@ class EvidenceTransportTest(unittest.TestCase):
         if data["cases"]:
             self.assertEqual(data["cases"][0]["number"], 100, "trimming keeps the newest cases")
 
-    def test_direct_cli_sigint_unwounds_without_orphans(self):
-        """Ctrl+C during a hung read: the producer already unwinds through its
-        per-read finally block on the baseline; this guards that path for no
-        published envelope, prompt signal exit (-2 unhandled, 130 handled), and
-        no orphaned marker descendant in the gh descent."""
+    def spawn_hung_cli(self, *, deliverable: bool = True) -> subprocess.Popen:
+        """Start the evidence CLI on a hung, forking issues read and wait until
+        both the read and its marker descendant are live (pre-interrupt controls).
+
+        The CLI inherits SIGINT from this runner: a blocked or ignored SIGINT here
+        would stay so in the CLI and its read loop, so only the spawn is made
+        deliverable. ``deliverable=False`` is the raw negative control."""
         self.responses[PREFIX + "issues"] = {"json": [], "sleep": 60, "fork": True}
         self.responses_path.write_text(json.dumps(self.responses))
         payload = json.dumps({"schema_version": 1, "repository": REPO, "op": "observe"}).encode()
-        # A SIGINT blocked in this runner would stay blocked in the CLI and its read loop.
-        self.enterContext(deliverable_sigint())
-        proc = subprocess.Popen(
-            [sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(self.root)],
-            cwd=self.root, env=self.env, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with deliverable_sigint() if deliverable else contextlib.nullcontext():
+            proc = subprocess.Popen(
+                [sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(self.root)],
+                cwd=self.root, env=self.env, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.addCleanup(self.reap_process, proc)
         proc.stdin.write(payload)  # far under the pipe buffer; the child closes on EOF
         proc.stdin.close()
@@ -348,11 +359,19 @@ class EvidenceTransportTest(unittest.TestCase):
             if not descended:
                 time.sleep(0.05)
         self.assertTrue(descended, "marker descendant was not visible before interrupt; coverage gap")
+        return proc
+
+    def test_direct_cli_sigint_unwounds_without_orphans(self):
+        """Ctrl+C during a hung read: the producer already unwinds through its
+        per-read finally block on the baseline; this guards that path for no
+        published envelope, prompt signal exit (-2 unhandled, 130 handled), and
+        no orphaned marker descendant in the gh descent."""
+        proc = self.spawn_hung_cli()
         proc.send_signal(signal.SIGINT)
         try:
-            proc.wait(timeout=15)
+            proc.wait(timeout=UNDELIVERED_WINDOW)
         except subprocess.TimeoutExpired:
-            self.fail("the CLI did not exit within 15s after SIGINT")
+            self.fail(f"the CLI did not exit within {UNDELIVERED_WINDOW}s after SIGINT")
         self.assertEqual(proc.stdout.read(), b"", "a cancelled read must not publish an envelope")
         proc.stdout.close()
         proc.stderr.close()
@@ -367,5 +386,60 @@ class EvidenceTransportTest(unittest.TestCase):
         # CLI must still receive the test's SIGINT instead of waiting out its read.
         self.enterContext(detached_launcher_sigint())
         self.test_direct_cli_sigint_unwounds_without_orphans()
+
+    def test_direct_cli_sigint_exits_under_blocked_only_launcher_sigint(self):
+        self.enterContext(detached_launcher_sigint("blocked"))
+        self.test_direct_cli_sigint_unwounds_without_orphans()
+
+    def test_direct_cli_sigint_exits_under_ignored_only_launcher_sigint(self):
+        self.enterContext(detached_launcher_sigint("ignored"))
+        self.test_direct_cli_sigint_unwounds_without_orphans()
+
+    def test_deliverable_sigint_covers_only_the_cli_spawn(self):
+        for mode in LAUNCHER_MODES:
+            with self.subTest(mode), detached_launcher_sigint(mode):
+                hostile = runner_sigint()
+                with patch.object(subprocess, "Popen", side_effect=OSError("spawn refused")), \
+                        self.assertRaisesRegex(OSError, "spawn refused"):
+                    self.spawn_hung_cli()
+                self.assertEqual(runner_sigint(), hostile)
+
+    def assert_raw_interrupt_is_not_delivered(self, mode: str) -> None:
+        # Negative control: the same hung CLI, spawned without the helper under
+        # the hostile launcher, never sees the real SIGINT and keeps reading.
+        with detached_launcher_sigint(mode):
+            raw = self.spawn_hung_cli(deliverable=False)
+        raw.send_signal(signal.SIGINT)
+        with self.assertRaises(subprocess.TimeoutExpired,
+                               msg=f"raw CLI exited after SIGINT under {mode} launcher; control is void"):
+            raw.wait(timeout=UNDELIVERED_WINDOW)
+        self.assertIsNone(raw.poll(), "raw CLI must still be alive after the undelivered SIGINT")
+        self.assertIsNone(raw.returncode)
+        self.assertTrue(self.marker_pids(), "the raw CLI's hung read must still be live")
+
+    def test_raw_interrupt_is_not_delivered_under_detached_launcher_sigint(self):
+        self.assert_raw_interrupt_is_not_delivered("both")
+
+    def test_raw_interrupt_is_not_delivered_under_blocked_only_launcher_sigint(self):
+        self.assert_raw_interrupt_is_not_delivered("blocked")
+
+    def test_raw_cli_overrides_an_inherited_ignored_sigint(self):
+        # No ignored-only negative control exists for this CLI: evidence.main()
+        # installs its own SIGINT handler, which replaces an inherited SIG_IGN
+        # (only a blocked mask survives that). Pin that fact, so the blocked and
+        # both controls above stay the ones that prove the helper is needed here.
+        with detached_launcher_sigint("ignored"):
+            raw = self.spawn_hung_cli(deliverable=False)
+        raw.send_signal(signal.SIGINT)
+        try:
+            raw.wait(timeout=UNDELIVERED_WINDOW)
+        except subprocess.TimeoutExpired:
+            self.fail(f"the raw CLI did not exit within {UNDELIVERED_WINDOW}s after SIGINT")
+        self.assertEqual(raw.stdout.read(), b"", "a cancelled read must not publish an envelope")
+        raw.stdout.close()
+        raw.stderr.close()
+        self.assertEqual(raw.returncode, 130, "the CLI's own handler, not SIG_IGN, met the SIGINT")
+
+
 if __name__ == "__main__":
     unittest.main()

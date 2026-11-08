@@ -10,8 +10,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 try:
+    import interrupts
     from interrupts import LAUNCHER_MODES, deliverable_sigint, detached_launcher_sigint
 except ImportError:  # full-suite discovery imports tests as a package
+    from tests import interrupts
     from tests.interrupts import LAUNCHER_MODES, deliverable_sigint, detached_launcher_sigint
 
 REPORT = '''import json, signal
@@ -67,7 +69,37 @@ def failing_handler(target: object):
     return patch.object(signal, "signal", install)
 
 
+def foreign_snapshot():
+    """Snapshot as if the runner's SIGINT handler had not been installed from
+    Python: ``signal.getsignal`` reports None for such a handler. The mask is real."""
+    real = interrupts._snapshot
+
+    def snapshot():
+        mask, _ = real()
+        return mask, None
+    return patch.object(interrupts, "_snapshot", snapshot)
+
+
+def reported_foreign():
+    """signal.getsignal reports a still-foreign (None) handler; installs are recorded."""
+    installed = []
+    real_install = signal.signal
+
+    def install(signum, handler):
+        installed.append((signum, handler))
+        return real_install(signum, handler)
+    return (patch.object(signal, "getsignal", lambda signum: None),
+            patch.object(signal, "signal", install), installed)
+
+
 class InterruptsTest(unittest.TestCase):
+    def keep_runner_sigint(self) -> None:
+        # These tests replace the real handler and mask; put both back afterwards.
+        handler = signal.getsignal(signal.SIGINT)
+        mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        self.addCleanup(signal.pthread_sigmask, signal.SIG_SETMASK, mask)
+        self.addCleanup(signal.signal, signal.SIGINT, handler)
+
     def test_detached_launcher_state_reaches_children(self) -> None:
         # The hazard itself: an ignored or blocked SIGINT survives exec.
         for mode in LAUNCHER_MODES:
@@ -149,6 +181,67 @@ class InterruptsTest(unittest.TestCase):
                     self.assertEqual(runner_sigint(), hostile)
                     self.assertEqual(child_sigint(), INHERITED[mode])
                 self.assertEqual(runner_sigint(), before)
+
+    def test_foreign_handler_replaced_here_is_not_left_ignored(self) -> None:
+        # A handler Python cannot name (snapshot None) that this module replaced
+        # with SIG_IGN is restored to SIG_DFL, never left ignored.
+        self.keep_runner_sigint()
+        for mode in ("both", "ignored"):
+            with self.subTest(mode):
+                signal.signal(signal.SIGINT, signal.default_int_handler)
+                mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+                with foreign_snapshot(), detached_launcher_sigint(mode):
+                    self.assertIs(signal.getsignal(signal.SIGINT), signal.SIG_IGN)
+                self.assertIs(signal.getsignal(signal.SIGINT), signal.SIG_DFL)
+                self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), mask)
+                self.assertEqual(child_sigint(), {"ignored": False, "default": True, "blocked": False})
+
+    def test_foreign_handler_left_in_place_is_not_replaced(self) -> None:
+        # Still foreign at restore time: nothing here replaced it, so no install.
+        self.keep_runner_sigint()
+        mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        getsignal, install, installed = reported_foreign()
+        with getsignal, install:
+            interrupts._restore(mask, None)
+        self.assertEqual(installed, [])
+        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), mask)
+
+    def test_mask_is_restored_when_restoring_the_handler_fails(self) -> None:
+        # Modes whose hostile mask blocks SIGINT, so a skipped mask restore is visible.
+        self.keep_runner_sigint()
+        for mode in ("both", "blocked"):
+            with self.subTest(mode):
+                before = runner_sigint()
+                self.assertFalse(before[1])
+                launcher = detached_launcher_sigint(mode)
+                launcher.__enter__()
+                self.assertTrue(runner_sigint()[1])
+                # Force a handler restore (blocked mode leaves the handler alone).
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                with self.assertRaises(SetupFailure), failing_handler(before[0]):
+                    launcher.__exit__(None, None, None)
+                # The handler restore failed, but the mask is the runner's again.
+                self.assertIs(signal.getsignal(signal.SIGINT), signal.SIG_IGN)
+                self.assertFalse(runner_sigint()[1])
+                signal.signal(signal.SIGINT, before[0])
+                self.assertEqual(runner_sigint(), before)
+
+    def test_deliverable_mask_is_restored_when_restoring_the_handler_fails(self) -> None:
+        # Only "both" both ignores (so a handler restore happens) and blocks (so a
+        # skipped mask restore is visible).
+        self.keep_runner_sigint()
+        for mode in ("both",):
+            with self.subTest(mode), detached_launcher_sigint(mode):
+                hostile = runner_sigint()
+                self.assertTrue(hostile[1])
+                with self.assertRaises(SetupFailure):
+                    with failing_handler(signal.SIG_IGN), deliverable_sigint():
+                        self.assertEqual(runner_sigint(), (signal.default_int_handler, False))
+                # SIG_IGN could not be put back, but the hostile mask was.
+                self.assertEqual(runner_sigint()[1], hostile[1])
+                self.assertIs(signal.getsignal(signal.SIGINT), signal.default_int_handler)
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                self.assertEqual(runner_sigint(), hostile)
 
 
 if __name__ == "__main__":
