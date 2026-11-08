@@ -153,6 +153,7 @@ class DecisionLockRaceTest(unittest.TestCase):
                 results[role] = self.apply(preview)
             except BaseException as exc:  # reported by the assertions below
                 errors[role] = exc
+                raise
 
         winner = threading.Thread(target=run, args=("winner",), name="winner")
         loser = threading.Thread(target=run, args=("loser",), name="loser")
@@ -240,7 +241,7 @@ class DecisionLockRaceTest(unittest.TestCase):
             with self.subTest(label):
                 calls: list[str] = []
 
-                def counting(path, flags, mode=0o777, *, dir_fd=None):
+                def counting(path, flags, mode=0o777, *, dir_fd=None, calls=calls):
                     calls.append(path)
                     return REAL_OPEN(path, flags, mode, dir_fd=dir_fd)
 
@@ -326,7 +327,7 @@ class DecisionLockRaceTest(unittest.TestCase):
                 moved = self.root / f"moved-{vanish}"
                 replacement: list[tuple[tuple[int, int], tuple[int, int]]] = []
 
-                def replace_directory() -> None:
+                def replace_directory(path=path, moved=moved, vanish=vanish, replacement=replacement) -> None:
                     path.rename(moved)
                     if vanish:
                         (moved / "apply-x.lock").unlink()
