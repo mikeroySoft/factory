@@ -83,22 +83,36 @@ def container_contents(bindings: dict[str, object]) -> dict[str, object]:
     return {name: type(bindings[name])(bindings[name]) for name in DISPATCH_CLEARED}
 
 
-def restore_dispatch(bindings: dict[str, object], cwd: str) -> None:
+# What each restore operation in restore_dispatch can raise; anything else is a bug and
+# propagates at once. ValueError (NUL in path) is excluded: cwd always comes from os.getcwd().
+RESTORE_ERRORS = (
+    # os.chdir(cwd): the saved cwd was removed (FileNotFoundError), replaced by a file
+    # (NotADirectoryError) or lost its search permission (PermissionError).
+    OSError,
+    # setattr/delattr on the module: a read-only descriptor (property without setter or
+    # deleter) or, for delattr, a name that vanished between hasattr() and delattr().
+    AttributeError,
+)
+
+
+def restore_dispatch(
+    bindings: dict[str, object], cwd: str, target: types.ModuleType = dispatch,
+) -> None:
     """Put back cwd and the exact original objects. Nothing original is cleared or refilled."""
     errors: list[Exception] = []
 
     def attempt(action, *args) -> None:
         try:
             action(*args)
-        except Exception as exc:  # keep restoring; the first error is raised below
+        except RESTORE_ERRORS as exc:  # keep restoring; the first error is raised below
             errors.append(exc)
 
     attempt(os.chdir, cwd)
     for name, value in bindings.items():
         if value is not _UNSET:
-            attempt(setattr, dispatch, name, value)
-        elif hasattr(dispatch, name):
-            attempt(delattr, dispatch, name)
+            attempt(setattr, target, name, value)
+        elif hasattr(target, name):
+            attempt(delattr, target, name)
     if errors:
         raise errors[0]
 
@@ -1094,6 +1108,99 @@ class JournalIsolationRestoreTest(unittest.TestCase):
             self.assert_restored_first(created, observed)
             self.assertIsNotNone(observed[0]["journal"])
             self.assert_restored(expected, seeded)
+
+
+class _RestoreTarget(types.ModuleType):
+    """A module whose `frozen` and `sealed` bindings are read-only properties: setattr/delattr
+    on either really fail."""
+
+    @property
+    def frozen(self) -> str:
+        return "frozen"
+
+    @property
+    def sealed(self) -> str:
+        return "sealed"
+
+
+class _ExplodingTarget(_RestoreTarget):
+    def __setattr__(self, name: str, value: object) -> None:
+        if name == "boom":
+            raise RuntimeError("unexpected restore failure")
+        super().__setattr__(name, value)
+
+
+class RestoreFailureTest(unittest.TestCase):
+    """Each restore operation fails for real; every other restoration still runs, and the
+    first error is re-raised. The failing binding sits between bindings set before and
+    after it, so a loop that stops at the first error leaves later ones unrestored."""
+
+    def setUp(self) -> None:
+        home = os.getcwd()
+        dirs = [tempfile.TemporaryDirectory() for _ in range(3)]
+        for directory in dirs:
+            self.addCleanup(directory.cleanup)
+        self.addCleanup(os.chdir, home)
+        saved, elsewhere, scratch = (Path(d.name).resolve() for d in dirs)
+        self.saved, self.elsewhere = str(saved), str(elsewhere)
+        self.removed = str(scratch / "removed")
+        self.not_a_dir = scratch / "file"
+        self.not_a_dir.write_text("not a directory")
+        os.chdir(self.elsewhere)
+
+    def target(self, cls: type[_RestoreTarget] = _RestoreTarget) -> _RestoreTarget:
+        module = cls("restore_target")
+        for name in ("before", "after_set", "after_del"):
+            setattr(module, name, "stale")
+        return module
+
+    @staticmethod
+    def bindings(failing: dict[str, object]) -> dict[str, object]:
+        return {"before": "orig-before", **failing, "after_set": "orig-after", "after_del": _UNSET}
+
+    def assert_rest_restored(self, target: _RestoreTarget, cwd: str) -> None:
+        self.assertEqual(target.before, "orig-before")
+        self.assertEqual(target.after_set, "orig-after")
+        self.assertFalse(hasattr(target, "after_del"))
+        self.assertEqual(os.getcwd(), cwd)
+
+    def test_each_failing_restore_op_still_runs_the_rest_and_reraises(self) -> None:
+        cases = (
+            ("chdir-missing", {}, self.removed, FileNotFoundError, self.removed),
+            ("chdir-not-a-dir", {}, str(self.not_a_dir), NotADirectoryError, str(self.not_a_dir)),
+            ("setattr-readonly", {"frozen": "x"}, self.saved, AttributeError, "has no setter"),
+            ("delattr-readonly", {"frozen": _UNSET}, self.saved, AttributeError, "has no deleter"),
+        )
+        for op, failing, cwd, error, detail in cases:
+            with self.subTest(op=op):
+                os.chdir(self.elsewhere)
+                target = self.target()
+                with self.assertRaises(error) as raised:
+                    restore_dispatch(self.bindings(failing), cwd, target)
+                self.assertIs(type(raised.exception), error)
+                self.assertIn(detail, str(raised.exception))
+                expected_cwd = self.elsewhere if op.startswith("chdir") else self.saved
+                self.assert_rest_restored(target, expected_cwd)
+
+    def test_first_error_wins_when_several_ops_fail(self) -> None:
+        target = self.target()
+        # chdir fails (FileNotFoundError), setattr on `frozen` and delattr on `sealed` both
+        # fail (AttributeError); the chdir error is first and must be the one raised.
+        bindings = self.bindings({"frozen": "x", "sealed": _UNSET})
+        with self.assertRaises(FileNotFoundError) as raised:
+            restore_dispatch(bindings, self.removed, target)
+        self.assertIs(type(raised.exception), FileNotFoundError)
+        self.assertEqual(raised.exception.filename, self.removed)
+        self.assertEqual(target.frozen, "frozen")
+        self.assertEqual(target.sealed, "sealed")
+        self.assert_rest_restored(target, self.elsewhere)
+
+    def test_error_outside_the_restore_boundary_propagates_immediately(self) -> None:
+        target = self.target(_ExplodingTarget)
+        with self.assertRaisesRegex(RuntimeError, "unexpected restore failure"):
+            restore_dispatch(self.bindings({"boom": 1}), self.saved, target)
+        self.assertEqual(target.before, "orig-before")
+        self.assertEqual(target.after_set, "stale")
 
 
 if __name__ == "__main__":
