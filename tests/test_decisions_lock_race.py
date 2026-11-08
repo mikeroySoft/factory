@@ -11,6 +11,9 @@ fd, a symlinked name is never followed, and a name that vanishes after EEXIST is
 again a bounded number of times. Not supported, so never asserted: mutual exclusion against
 a third party that unlinks, replaces or renames the lock name or the state directory while
 an apply holds its lock.
+
+This is a bounded create-race correction (b2), not replacement-resistant exactly-once:
+the held-name unlink/recreate limitation remains OPEN.
 """
 from __future__ import annotations
 
@@ -60,7 +63,12 @@ def make_lock(path) -> tuple[int, int]:
 
 
 def spurious_enoent(name: str, victims: set[str]):
-    """os.open failing each victim thread's first plain O_CREAT open of an existing name."""
+    """os.open failing each victim thread's first plain O_CREAT open of an existing name.
+
+    Regression guard only: the pre-fix `_lock_file` opened with plain O_CREAT and hit this
+    ENOENT. The current `_lock_file` never issues that open (O_CREAT|O_EXCL, then no O_CREAT),
+    so with the fix applied the injection never fires and the real EEXIST path runs instead.
+    """
     injected: list[str] = []
 
     def fake(path, flags, mode=0o777, *, dir_fd=None):
@@ -101,7 +109,7 @@ class DecisionLockRaceTest(unittest.TestCase):
         self.addCleanup(os.close, fd)
         return fd
 
-    def test_enoent_loser_of_the_create_race_waits_and_replays_the_single_receipt(self) -> None:
+    def test_create_race_loser_reopens_after_eexist_waits_and_replays_the_single_receipt(self) -> None:
         preview = self.proposal([{"op": "issue", "number": 7, "comment": "Raced once"}])
         name = f"apply-{preview['proposal_id']}.lock"
         in_effect, release, loser_blocked = threading.Event(), threading.Event(), threading.Event()
