@@ -177,6 +177,7 @@ exclusive = false
 # max_tokens = 2048    # positive output-token limit sent on every request
 # chat_template_kwargs = { enable_thinking = false }  # optional, passed through unchanged
 # Requests to the same URL queue across repositories/processes on this host user.
+# retry_cap = 5        # seconds: cap 1s, 2s exponential delays; at most 3 serial completion attempts
 # service = "my-model.service"  # opt in to a two-minute liveness timer installed by `factory install`
 
 [journal]

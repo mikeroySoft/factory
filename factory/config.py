@@ -101,7 +101,7 @@ KNOWN_KEYS = {
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
     "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
-    "triage": ("url", "model", "timeout", "service", "max_tokens", "chat_template_kwargs"),
+    "triage": ("url", "model", "timeout", "retry_cap", "service", "max_tokens", "chat_template_kwargs"),
     "journal": ("max_mb", "retention"),
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
@@ -254,6 +254,7 @@ class Config:
     triage_timeout: int = 60  # seconds per triage model request
     triage_max_tokens: int = 2048
     triage_chat_template_kwargs: dict | None = None
+    triage_retry_cap: float = 5.0  # maximum seconds between completion availability retries
     triage_service: str | None = None  # systemd user service restarted by the optional liveness probe
     manager_model: str | None = None  # dashboard's no-tools OMP briefing; never a command
     dashboard_port: int = 8765
@@ -955,6 +956,10 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         except (TypeError, ValueError) as exc:
             raise ConfigError("triage.chat_template_kwargs must contain JSON-compatible values") from exc
         cfg.triage_chat_template_kwargs = kwargs
+    cap = triage.get("retry_cap", cfg.triage_retry_cap)
+    if type(cap) not in (int, float) or not math.isfinite(cap) or cap < 0:
+        raise ConfigError("triage.retry_cap must be a finite non-negative number of seconds")
+    cfg.triage_retry_cap = cap
     service = triage.get("service")
     if service is not None and (
         not isinstance(service, str)
