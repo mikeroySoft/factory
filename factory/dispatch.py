@@ -2156,7 +2156,7 @@ def run_gate(
     tier: str = "attempt", upstream: list[str] = (), bug: bool = False,
     repro_test: str | None = None, no_repro_test: str | None = None,
     base: str | None = None, timeout: float | None = None, blocking_mutation: bool = False,
-    mutation_proof: bool = False,
+    mutation_proof: bool = False, mutation_duration: float | None = None,
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -2201,6 +2201,8 @@ def run_gate(
         cmd.append("--blocking-mutation")
     if mutation_proof:
         cmd.append("--mutation-proof")
+    if mutation_duration is not None:  # as given: the gate's parser is the one validation point
+        cmd.append(f"--mutation-duration={mutation_duration}")
     proc = run(cmd, cwd=wt, check=False, timeout=timeout)
     if report.exists():
         text = report.read_text()
@@ -3002,8 +3004,13 @@ def risk_disagreement_transition(
 
 def pr_gate_and_review(
     wt: Path, n: int, report: str, head: str, pr_runs: dict[str, tuple[bool, str]],
+    mutation_duration: float | None = None,
 ) -> tuple[str | None, str, bool]:
-    """Apply the per-head Low, Medium, or High gate and review policy."""
+    """Apply the per-head Low, Medium, or High gate and review policy.
+
+    `mutation_duration` (manual API; no production caller passes it) is an explicit total
+    for the opted High proof check only, forwarded as `gate --mutation-duration`; elsewhere
+    it is ignored. On the opted path it always starts a new gate run, never a cached one."""
     _PENDING_RISK.pop(n, None)
     tier, rules = risk_for_head(n, head)
     policy_tier = "Medium" if tier == "Low" and n in _LOW_FALLBACK else tier
@@ -3011,17 +3018,18 @@ def pr_gate_and_review(
     proof = policy_tier == "High" and _mutation_proof_opted()
     caller_base = f"origin/{cfg.main}"  # what run_gate passes as --base
     base_commit = _resolved_commit(wt, caller_base) if proof else None
+    duration = mutation_duration if proof else None
     proof_fields = {"mutation_proof": config.MUTATION_PROOF} if proof else {}
     proof_status = "FAIL"  # until a gate proof header bound to this head and base says otherwise
     if policy_tier != "Low" and any(check.when == "pr" for check in cfg.checks):
         # A cached run without a proof header (Medium, or pre-opt-in), or one bound to
-        # another base or head, never stands in for one.
-        if head not in pr_runs or (
+        # another base or head, never stands in for one; nor for an explicit duration.
+        if head not in pr_runs or duration is not None or (
             proof and (_mutation_proof(pr_runs[head][1], head, base_commit) or ("STALE",))[0] == "STALE"
         ):
             pr_runs[head] = run_gate(
                 wt, f"{n}-pr", tier="pr", blocking_mutation=policy_tier == "High",
-                base=caller_base, mutation_proof=proof,
+                base=caller_base, mutation_proof=proof, mutation_duration=duration,
             )
         ok, pr_report = pr_runs[head]
         if proof:

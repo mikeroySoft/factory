@@ -11,6 +11,7 @@ import ast
 import fcntl
 import fnmatch
 import json
+import math
 import os
 import re
 import signal
@@ -33,6 +34,7 @@ CHECK_TIMEOUT = 1200  # seconds; overridable via --check-timeout
 MUTATION_PROOF_ENV = "FACTORY_MUTATION_PROOF"
 MUTATION_PROOF_BASE_ENV = "FACTORY_MUTATION_PROOF_BASE"  # the caller base, resolved by the gate
 MUTATION_PROOF_MAX_BYTES = 64 * 1024
+MUTATION_RESERVE = 60  # scripts/mutation.py's cleanup reserve; an explicit total must exceed it
 MUTATION_PROOF_COUNTS = ("planned", "ran", "killed", "survived", "timeouts", "blocking_survivors",
                          "not_started", "cut_short", "broken")
 MUTATION_PROOF_KEYS = {"protocol", "version", "mode", "status", "reason", "exit", "files", "counts",
@@ -49,16 +51,31 @@ def configure(c: Config) -> None:
     CHECK_TIMEOUT = cfg.check_timeout
 
 
+def mutation_duration(value: str) -> float:
+    """`--mutation-duration`: an explicit total for the opted proof check, finite and longer
+    than the runner's existing cleanup reserve (scripts/mutation.py RESERVE)."""
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {value!r}") from None
+    if not math.isfinite(seconds) or seconds <= MUTATION_RESERVE:
+        raise argparse.ArgumentTypeError(
+            f"must be finite and greater than the {MUTATION_RESERVE}s cleanup reserve: {value!r}")
+    return seconds
+
+
 def timed(
     cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None,
     proof_path: Path | None = None, proof_base: str | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run a command with the per-check timeout.
+    """Run a command with the per-check timeout (`timeout`, when given, for this call only).
 
     A wedged check must FAIL, not sit on the GPU lock (ticket #5's gate hung
     for 2h). The check runs in its own session so a timeout kills the whole
     tree (cargo/test grandchildren included), not just the direct child.
     """
+    limit = CHECK_TIMEOUT if timeout is None else timeout
     execution = lifecycle.current()
     # The handoff row is still recorded, but the check never inherits the context:
     # a repo's own tests would otherwise append their fixture rows to the live ledger.
@@ -80,7 +97,7 @@ def timed(
     if execution:
         execution.child(proc.pid)
     try:
-        out, _ = proc.communicate(timeout=CHECK_TIMEOUT)
+        out, _ = proc.communicate(timeout=limit)
         if execution:
             execution.emit("result", command=cmd, returncode=proc.returncode, timed_out=False)
             if proc.returncode < 0:
@@ -91,13 +108,13 @@ def timed(
         if execution:
             execution.outcome = "unknown"
             execution.reason = "check_timeout"
-            execution.emit("timeout", command=cmd, timeout_seconds=CHECK_TIMEOUT)
+            execution.emit("timeout", command=cmd, timeout_seconds=limit)
         os.killpg(proc.pid, signal.SIGKILL)
         out, _ = proc.communicate()
         if execution:
             execution.emit("result", command=cmd, returncode=proc.returncode, timed_out=True)
         return subprocess.CompletedProcess(
-            cmd, 124, f"{out}\ncheck timed out after {CHECK_TIMEOUT}s", ""
+            cmd, 124, f"{out}\ncheck timed out after {limit}s", ""
         )
     finally:
         if execution and proc.poll() is not None:
@@ -216,9 +233,12 @@ def _read_proof_file(path: Path) -> bytes | None:
         return handle.read(MUTATION_PROOF_MAX_BYTES + 1)
 
 
-def _proof_run(cmd: list[str], base: str) -> tuple[str, str, str, mutation_scope.Scope | None]:
+def _proof_run(
+    cmd: list[str], base: str, duration: float | None = None,
+) -> tuple[str, str, str, mutation_scope.Scope | None]:
     """`(output, status, why, scope)`: the caller base is resolved to a commit once, before
-    the run, and the scope recomputed from that commit after it (a moved HEAD fails)."""
+    the run, and the scope recomputed from that commit after it (a moved HEAD fails).
+    `duration` (explicit `--mutation-duration`) is this check's enclosing timeout."""
     try:
         expected = mutation_scope.compute(base)
         dirty = mutation_scope.tracked_mismatches(expected.head, Path.cwd())
@@ -229,7 +249,8 @@ def _proof_run(cmd: list[str], base: str) -> tuple[str, str, str, mutation_scope
                             f"{', '.join(dirty[:20])}"), None
     with tempfile.TemporaryDirectory(prefix="factory-mutation-proof-") as directory:
         path = Path(directory) / "proof.json"
-        proc = timed(cmd, proof_path=path, proof_base=expected.base)
+        limit = {} if duration is None else {"timeout": duration}
+        proc = timed(cmd, proof_path=path, proof_base=expected.base, **limit)
         data = _read_proof_file(path)
     status, why = read_mutation_proof(data, proc.returncode, expected)
     try:
@@ -244,10 +265,12 @@ def _proof_run(cmd: list[str], base: str) -> tuple[str, str, str, mutation_scope
     return f"{proc.stdout}{proc.stderr}", status, why, expected
 
 
-def run_mutation_proof(cmd: list[str], base: str) -> tuple[bool, str, str, str]:
+def run_mutation_proof(
+    cmd: list[str], base: str, duration: float | None = None,
+) -> tuple[bool, str, str, str]:
     """Like `run`, plus the report status decided by the runner's completion record and,
     for PASS/SKIP, the ` base=… head=… scope=…` binding the dispatcher checks."""
-    output, status, why, scope = _proof_run(cmd, base)
+    output, status, why, scope = _proof_run(cmd, base, duration)
     execution = lifecycle.current()
     if execution and execution.reason in {"check_timeout", "check_terminated_by_signal"}:
         status, why = "FAIL", f"{execution.reason} overrides any completion record"
@@ -375,6 +398,55 @@ def parse_add_only_allow(value: str) -> tuple[str, str]:
     return path, sha
 
 
+# The one PM-reviewed protected change the product itself knows: `proof = "mutation-v1"` added
+# to the committed `.factory.toml` of the reviewed base. No other tuple can ever be exempted.
+REVIEWED_TRANSITION = (CONFIG_NAME, "36dee1c6386165f2f434c32d09ee98d26c88e7d4",
+                       "7c1c0aad5e8bf221df02c1c2329cda354530f1c5")
+REVIEWED_TRANSITION_BASE = "19457e840460e0163e1172f08580538c4dcae767"
+
+
+def parse_protected_transition(value: str) -> tuple[str, str, str]:
+    """`.factory.toml=<pre blob>:<post blob>`: full lowercase blob ids, pre differing from post."""
+    path, sep, pins = value.partition("=")
+    pre, colon, post = pins.partition(":")
+    if (not sep or not colon or path != CONFIG_NAME or pre == post
+            or not _BLOB.fullmatch(pre) or not _BLOB.fullmatch(post)):
+        raise argparse.ArgumentTypeError(f"expected {CONFIG_NAME}=<pre blob>:<post blob>: {value!r}")
+    return path, pre, post
+
+
+def _verify_transition(
+    base: str, transition: tuple[str, str, str], transition_base: str | None,
+    raw: dict[str, tuple[str, str, str]],
+) -> str:
+    """Empty when `transition` is the reviewed tuple observed exactly: the supplied reviewed
+    base, the gate base and the merge-base all resolve to the reviewed commit, the path is an
+    in-place 100644 edit from `pre` to `post`, and the working tree is a non-executable regular
+    file hashing to `post`; otherwise the refusal."""
+    path, pre, post = transition
+    refused = f"protected transition {path}={pre}:{post} (base {transition_base}) refused: "
+    if tuple(transition) != REVIEWED_TRANSITION:
+        return refused + "not the reviewed transition"
+    commits = [timed(["git", "rev-parse", "--verify", "-q", f"{ref}^{{commit}}"]).stdout.strip()
+               for ref in (transition_base, base)]
+    commits.append(timed(["git", "merge-base", base, "HEAD"]).stdout.strip())
+    if commits != [REVIEWED_TRANSITION_BASE] * 3:
+        return refused + f"reviewed base, gate base, merge-base are {commits}, not {REVIEWED_TRANSITION_BASE}"
+    old_mode, new_mode, status = raw.get(path, ("", "", ""))
+    if (old_mode, new_mode, status) != ("100644", "100644", "M"):
+        return refused + f"not an in-place 100644 edit ({status or 'unchanged'} {old_mode}->{new_mode})"
+    blobs = [timed(["git", "rev-parse", "--verify", "-q", f"{ref}:{path}"]).stdout.strip()
+             for ref in (REVIEWED_TRANSITION_BASE, "HEAD")]
+    if blobs != [pre, post]:
+        return refused + f"committed {blobs[0] or '-'} -> {blobs[1] or '-'}"
+    if os.path.islink(path) or not os.path.isfile(path) or os.stat(path).st_mode & 0o111:
+        return refused + "working tree is not a non-executable regular file"
+    worktree = timed(["git", "hash-object", "--no-filters", "--", path]).stdout.strip()
+    if worktree != post:
+        return refused + f"working tree {worktree or '-'}"
+    return ""
+
+
 def _verify_allows(
     base: str, allow: dict[str, str], allow_base: str | None, raw: dict[str, tuple[str, str, str]],
     protected: list[str], add_only: list[str],
@@ -409,6 +481,7 @@ def _verify_allows(
 def check_protected_paths(
     base: str, upstream: list[str] = (), add_only_override: bool = False,
     allow: dict[str, str] | None = None, allow_base: str | None = None,
+    transition: tuple[str, str, str] | None = None, transition_base: str | None = None,
 ) -> tuple[bool, str, str]:
     """(passed, reason, detail): reason is `protected_paths`, or `add_only_paths` when
     every hit is an add-only glob whose change was not purely additive. With `upstream`
@@ -416,7 +489,9 @@ def check_protected_paths(
     staged head's, or equals the tip's for a path upstream itself changed since it
     diverged from `base`; fork-only paths the worker deletes or resets still count.
     `allow` ({path: blob}, externally approved) exempts exactly those add-only files once
-    `_verify_allows` accepts every entry; any refusal fails the whole check."""
+    `_verify_allows` accepts every entry; any refusal fails the whole check. `transition`
+    ((path, pre, post), with `transition_base`) exempts only that path's protected hit, only
+    for the reviewed tuple `_verify_transition` accepts; otherwise the check fails."""
     listing = timed(["git", "ls-tree", "--name-only", base, "--", CONFIG_NAME])
     if listing.returncode:
         # A new repository has no base commit yet; no worker diff exists to guard.
@@ -455,6 +530,10 @@ def check_protected_paths(
                 not_additive.append(path)
     if allow and (refusal := _verify_allows(base, allow, allow_base, raw, protected, add_only)):
         return False, "add_only_paths", refusal
+    if transition:
+        if refusal := _verify_transition(base, transition, transition_base, raw):
+            return False, "protected_paths", refusal
+        hits = [path for path in hits if path != transition[0]]
     if upstream and (candidates := hits + not_additive + additive):
         tip = upstream[0]
         fork_point = timed(["git", "merge-base", base, tip])
@@ -848,6 +927,13 @@ def main(argv: list[str]) -> int:
                         "when its committed and working-tree bytes both hash to BLOB; needs --add-only-allow-base")
     parser.add_argument("--add-only-allow-base", metavar="COMMIT",
                         help="merge-base the --add-only-allow blobs were reviewed against")
+    parser.add_argument("--protected-transition", action="append", default=[],
+                        type=parse_protected_transition, metavar="PATH=PRE:POST",
+                        help="the one product-known reviewed protected change (given once): PATH must "
+                        "change in place from blob PRE to POST, committed and working tree, against "
+                        "the reviewed base; needs --protected-transition-base")
+    parser.add_argument("--protected-transition-base", action="append", default=[], metavar="COMMIT",
+                        help="reviewed merge-base of --protected-transition (given once)")
     parser.add_argument("--bug", action="store_true",
                         help="enforce failing-test-first and existing-test protection")
     parser.add_argument("--repro-test", help="test ID named by the worker handoff")
@@ -864,12 +950,25 @@ def main(argv: list[str]) -> int:
     # Passed by the dispatcher only for High heads of repositories whose check declares
     # `proof = "mutation-v1"`; that check's status then comes from its completion record.
     parser.add_argument("--mutation-proof", action="store_true", help=argparse.SUPPRESS)
+    # Explicit total seconds for the opted proof check only: its enclosing timeout and the
+    # runner's `--duration`. Absent: the legacy budgets. Never changes other checks.
+    parser.add_argument("--mutation-duration", type=mutation_duration, default=None,
+                        metavar="SECONDS", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.mutation_duration is not None and not args.mutation_proof:
+        parser.error("--mutation-duration needs --mutation-proof")
     allowed = [path for path, _ in args.add_only_allow]
     if len(set(allowed)) != len(allowed):
         parser.error("--add-only-allow names a path more than once")
     if allowed and not args.add_only_allow_base:
         parser.error("--add-only-allow needs --add-only-allow-base")
+    transitions, transition_bases = args.protected_transition, args.protected_transition_base
+    if len(transitions) > 1 or len(transition_bases) > 1:
+        parser.error("--protected-transition and --protected-transition-base are each given at most once")
+    if len(transitions) != len(transition_bases):
+        parser.error("--protected-transition and --protected-transition-base need each other")
+    args.protected_transition = transitions[0] if transitions else None
+    args.protected_transition_base = transition_bases[0] if transition_bases else None
     configure(config.load())
     previous_tmpdir = os.environ.get("TMPDIR")
     with tempfile.TemporaryDirectory(prefix="factory-gate-") as tmpdir:
@@ -913,13 +1012,19 @@ def execute(args: argparse.Namespace, execution) -> int:
     skip = {name.strip() for name in args.skip.split(",") if name.strip()}
     if LEAK_RE is None:
         skip.add("leak-scan")
+    audit = []  # the reviewed protected transition this run actually verified and exempted
 
     if args.tier == "attempt":
         if not args.protected_override:
             passed, reason, detail = check_protected_paths(
                 args.base, args.upstream, args.add_only_override,
                 dict(args.add_only_allow), args.add_only_allow_base,
+                args.protected_transition, args.protected_transition_base,
             )
+            if passed and args.protected_transition:
+                path, pre, post = REVIEWED_TRANSITION
+                audit.append(f"- protected-transition: {path} {pre} -> {post} "
+                             f"(reviewed base {REVIEWED_TRANSITION_BASE})")
             if not passed:
                 execution.outcome, execution.reason = "project_escalation", reason
                 report = Path(args.report)
@@ -958,7 +1063,9 @@ def execute(args: argparse.Namespace, execution) -> int:
         return [*check.run, *(["--blocking"] if blocking else [])]
 
     def run_proved(check: config.Check) -> tuple[bool, str]:
-        passed, output, status, binding = run_mutation_proof(command(check), args.base)
+        duration = args.mutation_duration
+        cmd = [*command(check), *([] if duration is None else ["--duration", str(duration)])]
+        passed, output, status, binding = run_mutation_proof(cmd, args.base, duration)
         proofs[check.name] = (status, binding)
         return passed, output
 
@@ -1021,6 +1128,7 @@ def execute(args: argparse.Namespace, execution) -> int:
         "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "",
         *([*proof_lines, ""] if proof_lines else []), "## Host toolchain",
         f"ROCm: {host['rocm']}", f"Kernel: {host['kernel']}", f"amdgpu: {host['amdgpu']}", "",
+        *audit,
     ]
     for name, status, _ in results:
         lines.append(f"- {name}: {status}")

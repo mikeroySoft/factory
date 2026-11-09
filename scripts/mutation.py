@@ -8,8 +8,8 @@ after a complete trial even when mutants survive. ``--blocking`` exits nonzero f
 completed survivors on changed lines, except exact reviewed ``--equivalents`` matches.
 Invalid or stale equivalent entries, tool and baseline failures always exit nonzero.
 Mutants are sampled deterministically (sorted, then shuffled with a fixed
-seed, capped at CAP). One absolute deadline, `[gate].timeout` - 60,
-covers preparation, the baseline and every mutant: each run is bounded by the time
+seed, capped at CAP). One absolute deadline, `[gate].timeout` - 60 (or, with an
+explicit ``--duration SECONDS``, exactly SECONDS - 60, unclamped), covers preparation, the baseline and every mutant: each run is bounded by the time
 left, and mutants not started or cut short are reported as incomplete.
 
 Each worker runs in its own copy of the tree because cosmic-ray mutates files on disk;
@@ -39,6 +39,7 @@ import argparse
 import collections
 import errno
 import json
+import math
 import os
 import random
 import re
@@ -57,6 +58,7 @@ from pathlib import Path, PurePosixPath
 CAP = 200
 BASE = "origin/main"  # without a gate-named base (report-only and unopted runs)
 SEED = 197
+RESERVE = 60  # seconds kept for cleanup after the one deadline
 WORKERS = min(16, os.cpu_count() or 1)
 COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", ".factory", "__pycache__", ".ruff_cache")
 PROOF_ENV = "FACTORY_MUTATION_PROOF"
@@ -208,6 +210,18 @@ def on_changed_line(mutation, lines: dict[str, set[int]]) -> bool:
     return not lines[str(mutation.module_path)].isdisjoint(
         range(mutation.start_pos[0], mutation.end_pos[0] + 1),
     )
+
+
+def total_duration(value: str) -> float:
+    """`--duration SECONDS`: an explicit total, finite and longer than the cleanup RESERVE."""
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {value!r}") from None
+    if not math.isfinite(seconds) or seconds <= RESERVE:
+        raise argparse.ArgumentTypeError(
+            f"must be finite and greater than the {RESERVE}s cleanup reserve: {value!r}")
+    return seconds
 
 
 def gate_timeout() -> int:
@@ -377,6 +391,9 @@ def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: boo
     parser.add_argument("--blocking", action="store_true")
     parser.add_argument("--equivalents", metavar="FILE", help="reviewed equivalent-mutants JSON file")
     parser.add_argument("--test-module", default=None)
+    parser.add_argument("--duration", type=total_duration, default=None, metavar="SECONDS",
+                        help="explicit total: the deadline is SECONDS - RESERVE after the anchor, "
+                        "instead of max(1, [gate].timeout - RESERVE)")
     args = parser.parse_args(argv)
     if args.test_module is not None:
         return run_tests(args.test_module)
@@ -437,7 +454,8 @@ def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: boo
     from attrs import evolve
     from cosmic_ray.mutating import mutate_and_test
     from cosmic_ray.work_item import TestOutcome
-    deadline = time.monotonic() + max(1, gate_timeout() - 60)
+    window = max(1, gate_timeout() - RESERVE) if args.duration is None else args.duration - RESERVE
+    deadline = time.monotonic() + window
     root = Path.cwd()
     started = time.monotonic()
     # Enumeration reads the checkout: its tracked bytes must be the pinned head's, before
