@@ -10,6 +10,7 @@ import argparse
 import ast
 import fcntl
 import fnmatch
+import json
 import os
 import re
 import signal
@@ -19,7 +20,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-from factory import config, lifecycle
+from factory import config, lifecycle, mutation_scope
 from factory.config import CONFIG_NAME, Config
 
 cfg: Config
@@ -28,6 +29,15 @@ LEAK_RE: re.Pattern[str] | None = None
 GPU_CHECKS: set[str] = set()
 TAIL_LINES = 80
 CHECK_TIMEOUT = 1200  # seconds; overridable via --check-timeout
+# Completion-record transport for `proof = "mutation-v1"` checks (scripts/mutation.py writes it).
+MUTATION_PROOF_ENV = "FACTORY_MUTATION_PROOF"
+MUTATION_PROOF_BASE_ENV = "FACTORY_MUTATION_PROOF_BASE"  # the caller base, resolved by the gate
+MUTATION_PROOF_MAX_BYTES = 64 * 1024
+MUTATION_PROOF_COUNTS = ("planned", "ran", "killed", "survived", "timeouts", "blocking_survivors",
+                         "not_started", "cut_short", "broken")
+MUTATION_PROOF_KEYS = {"protocol", "version", "mode", "status", "reason", "exit", "files", "counts",
+                       "scope"}
+SKIP_NO_FACTORY_CODE = "SKIP (no changed factory code)"
 
 
 def configure(c: Config) -> None:
@@ -40,7 +50,8 @@ def configure(c: Config) -> None:
 
 
 def timed(
-    cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None
+    cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None,
+    proof_path: Path | None = None, proof_base: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a command with the per-check timeout.
 
@@ -53,6 +64,13 @@ def timed(
     # a repo's own tests would otherwise append their fixture rows to the live ledger.
     env = execution.env() if execution else dict(os.environ)
     env.pop(lifecycle.CONTEXT_ENV, None)
+    # Only the gate names a completion-record path, and only for the opted-in check.
+    env.pop(MUTATION_PROOF_ENV, None)
+    env.pop(MUTATION_PROOF_BASE_ENV, None)
+    if proof_path is not None:
+        env[MUTATION_PROOF_ENV] = str(proof_path)
+        if proof_base is not None:
+            env[MUTATION_PROOF_BASE_ENV] = proof_base
     if pythonpath is not None:
         env["PYTHONPATH"] = str(pythonpath)
     proc = subprocess.Popen(
@@ -102,8 +120,144 @@ def _check_status(name: str, passed: bool, output: str, blocking_mutation: bool)
         and passed
         and "no mutable files" in output.splitlines()
     ):
-        return "SKIP (no changed factory code)"
+        return SKIP_NO_FACTORY_CODE
     return "PASS" if passed else "FAIL"
+
+
+def _proof_counts(counts: object) -> dict[str, int] | None:
+    if not isinstance(counts, dict) or counts.keys() != set(MUTATION_PROOF_COUNTS):
+        return None
+    if any(type(value) is not int or value < 0 for value in counts.values()):
+        return None
+    return counts
+
+
+def read_mutation_proof(
+    data: bytes | None, returncode: int, expected: mutation_scope.Scope,
+) -> tuple[str, str]:
+    """`("PASS" | SKIP_NO_FACTORY_CODE | "FAIL", why)` from a mutation-v1 completion record.
+
+    Exit status and stdout are never proof. A missing, oversized, malformed, report-only,
+    incomplete or self-contradictory record fails, as does one whose `exit` differs from
+    the observed returncode (the gate reports a timeout as 124, a signal as negative), and
+    a skip or complete record whose scope or files differ from `expected`, the gate's own
+    factory.mutation_scope computation for the caller's base."""
+    if data is None:
+        return "FAIL", "missing completion record"
+    if len(data) > MUTATION_PROOF_MAX_BYTES:
+        return "FAIL", "oversized completion record"
+    try:
+        record = json.loads(data)
+    except ValueError:
+        return "FAIL", "malformed completion record"
+    if not isinstance(record, dict) or record.keys() != MUTATION_PROOF_KEYS:
+        return "FAIL", "malformed completion record"
+    counts, files = _proof_counts(record["counts"]), record["files"]
+    if (
+        record["protocol"] != "factory-mutation-proof"
+        or type(record["version"]) is not int or record["version"] != 1
+        or type(record["exit"]) is not int
+        or not all(isinstance(record[key], str) and record[key] for key in ("mode", "status", "reason"))
+        or counts is None
+        or not isinstance(files, list) or not all(isinstance(path, str) and path for path in files)
+    ):
+        return "FAIL", "malformed or unsupported completion record"
+    if record["exit"] != returncode:
+        return "FAIL", f"record exit {record['exit']} contradicts observed exit {returncode}"
+    if record["mode"] != "blocking":
+        return "FAIL", f"{record['mode']} run is not blocking mutation proof"
+    status, reason = record["status"], record["reason"]
+    if status not in {"skip", "complete"}:
+        return "FAIL", f"{status} ({reason})"
+    if record["scope"] != expected.receipt():
+        return "FAIL", f"stale or mismatched scope: record {record['scope']!r}, gate {expected.receipt()!r}"
+    applicable = expected.line_count
+    if status == "skip":
+        if (applicable == 0 and reason == "no-applicable-files" and not files
+                and not any(counts.values()) and returncode == 0):
+            return SKIP_NO_FACTORY_CODE, "no added or modified factory/*.py destination lines"
+        return "FAIL", f"contradictory skip record ({applicable} applicable changed lines)"
+    if files != sorted(expected.lines):
+        return "FAIL", "record files differ from the applicable files"
+    blocking = counts["blocking_survivors"]
+    expected_reason = ("blocking-survivors" if blocking
+                       else "no-mutation-candidates" if counts["planned"] == 0
+                       else "no-blocking-survivors")
+    if not (
+        applicable
+        and counts["ran"] == counts["planned"]
+        and counts["killed"] + counts["survived"] == counts["ran"]
+        and counts["not_started"] == counts["cut_short"] == counts["broken"] == 0
+        and counts["timeouts"] <= counts["killed"]
+        and blocking <= counts["survived"]
+        and reason == expected_reason
+        and returncode == (1 if blocking else 0)
+    ):
+        return "FAIL", "contradictory complete record"
+    if blocking:
+        return "FAIL", f"complete with {blocking} blocking survivors"
+    if counts["planned"] == 0:
+        return "PASS", (f"complete: 0 mutation candidates enumerated on {applicable} applicable "
+                        f"changed lines (not a skip)")
+    # Timeout-scored kills are the runner's legacy scoring, disclosed rather than re-judged.
+    return "PASS", (f"complete: ran {counts['ran']} of {counts['planned']} mutants, "
+                    f"{counts['killed']} killed ({counts['timeouts']} by timeout), "
+                    f"{counts['survived']} survived")
+
+
+def _read_proof_file(path: Path) -> bytes | None:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return f"unreadable: {exc}".encode()  # parsed as malformed: fails closed
+    with os.fdopen(fd, "rb") as handle:
+        return handle.read(MUTATION_PROOF_MAX_BYTES + 1)
+
+
+def _proof_run(cmd: list[str], base: str) -> tuple[str, str, str, mutation_scope.Scope | None]:
+    """`(output, status, why, scope)`: the caller base is resolved to a commit once, before
+    the run, and the scope recomputed from that commit after it (a moved HEAD fails)."""
+    try:
+        expected = mutation_scope.compute(base)
+        dirty = mutation_scope.tracked_mismatches(expected.head, Path.cwd())
+    except mutation_scope.ScopeError as exc:
+        return "", "FAIL", f"caller base {base!r} has no resolvable scope: {exc}", None
+    if dirty:  # the scope names committed blobs: never certify other bytes; nothing runs
+        return "", "FAIL", (f"tracked inputs differ from HEAD {expected.head}: "
+                            f"{', '.join(dirty[:20])}"), None
+    with tempfile.TemporaryDirectory(prefix="factory-mutation-proof-") as directory:
+        path = Path(directory) / "proof.json"
+        proc = timed(cmd, proof_path=path, proof_base=expected.base)
+        data = _read_proof_file(path)
+    status, why = read_mutation_proof(data, proc.returncode, expected)
+    try:
+        after = mutation_scope.compute(expected.base)
+        changed = mutation_scope.tracked_mismatches(expected.head, Path.cwd())
+    except mutation_scope.ScopeError as exc:
+        after, changed = exc, []
+    if status != "FAIL" and after != expected:
+        status, why = "FAIL", "HEAD or the applicable scope changed during the run"
+    elif status != "FAIL" and changed:
+        status, why = "FAIL", f"tracked inputs changed during the run: {', '.join(changed[:20])}"
+    return f"{proc.stdout}{proc.stderr}", status, why, expected
+
+
+def run_mutation_proof(cmd: list[str], base: str) -> tuple[bool, str, str, str]:
+    """Like `run`, plus the report status decided by the runner's completion record and,
+    for PASS/SKIP, the ` base=… head=… scope=…` binding the dispatcher checks."""
+    output, status, why, scope = _proof_run(cmd, base)
+    execution = lifecycle.current()
+    if execution and execution.reason in {"check_timeout", "check_terminated_by_signal"}:
+        status, why = "FAIL", f"{execution.reason} overrides any completion record"
+    passed = status != "FAIL"
+    if execution and not passed and execution.outcome == "completed":
+        execution.outcome = "product_feedback"
+        execution.reason = "configured_check_failed"
+    binding = (f" base={scope.base} head={scope.head} scope={scope.fingerprint}"
+               if passed and scope else "")
+    return passed, f"{output}\nmutation proof: {status} ({why})\n", status, binding
 
 
 
@@ -707,6 +861,9 @@ def main(argv: list[str]) -> int:
                         "pr: only the `when = \"pr\"` checks (release ones reported SKIP); "
                         "release: only the `when = \"release\"` checks")
     parser.add_argument("--blocking-mutation", action="store_true", help=argparse.SUPPRESS)
+    # Passed by the dispatcher only for High heads of repositories whose check declares
+    # `proof = "mutation-v1"`; that check's status then comes from its completion record.
+    parser.add_argument("--mutation-proof", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     allowed = [path for path, _ in args.add_only_allow]
     if len(set(allowed)) != len(allowed):
@@ -791,14 +948,22 @@ def execute(args: argparse.Namespace, execution) -> int:
     # listed checks of a later tier are reported `SKIP (<tier> tier)` instead of run.
     rank = config.CHECK_TIERS.index(args.tier)
     listed = [check for check in cfg.checks if config.CHECK_TIERS.index(check.when) >= rank]
+    proofs: dict[str, tuple[str, str]] = {}  # check name -> (record-decided status, binding)
+
+    def proved(check: config.Check) -> bool:
+        return args.mutation_proof and check.proof == config.MUTATION_PROOF
+
+    def command(check: config.Check) -> list[str]:
+        blocking = args.blocking_mutation and (check.name == "mutation" or proved(check))
+        return [*check.run, *(["--blocking"] if blocking else [])]
+
+    def run_proved(check: config.Check) -> tuple[bool, str]:
+        passed, output, status, binding = run_mutation_proof(command(check), args.base)
+        proofs[check.name] = (status, binding)
+        return passed, output
+
     configured = [
-        (
-            check.name,
-            lambda c=check: run([
-                *c.run,
-                *(["--blocking"] if args.blocking_mutation and c.name == "mutation" else []),
-            ]),
-        )
+        (check.name, (lambda c=check: run_proved(c)) if proved(check) else (lambda c=check: run(command(c))))
         for check in listed
     ]
     checks = [
@@ -839,7 +1004,9 @@ def execute(args: argparse.Namespace, execution) -> int:
                 if fields.get("failed_tests"):
                     fields["changed_paths"] = changed_paths(args.base)
                 check.emit("result", check=name, passed=passed, **fields)
-                status = _check_status(name, passed, output, args.blocking_mutation)
+                status = proofs[name][0] if name in proofs else _check_status(
+                    name, passed, output, args.blocking_mutation,
+                )
                 results.append((name, status, output))
             if not passed and (outcome == "completed" or check.outcome == "unknown"):
                 outcome, reason = check.outcome, check.reason
@@ -847,8 +1014,12 @@ def execute(args: argparse.Namespace, execution) -> int:
         if gpu_lock is not None:
             _release_exclusive(execution, gpu_lock)
 
+    # Gate-written, above every check output: the dispatcher reads proof status only here.
+    proof_lines = [f"Mutation proof: {name} {status.split()[0]}{binding}"
+                   for name, (status, binding) in proofs.items()]
     lines = [
-        "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "", "## Host toolchain",
+        "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "",
+        *([*proof_lines, ""] if proof_lines else []), "## Host toolchain",
         f"ROCm: {host['rocm']}", f"Kernel: {host['kernel']}", f"amdgpu: {host['amdgpu']}", "",
     ]
     for name, status, _ in results:

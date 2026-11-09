@@ -111,8 +111,12 @@ KNOWN_KEYS = {
 }
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
-CHECK_KEYS = ("name", "run", "exclusive", "when")
+CHECK_KEYS = ("name", "run", "exclusive", "when", "proof")
 CHECK_TIERS = ("attempt", "pr", "release")
+# Repository-owned opt-in (`proof = "mutation-v1"` on a `when = "pr"` check): High-risk PR
+# gates then accept that check only from the runner's own completion record, never from
+# its exit status or stdout. Unset (every existing repository) keeps exit-status behaviour.
+MUTATION_PROOF = "mutation-v1"
 BAND_METRICS = frozenset({
     "gate_failure_rate",
     "gate_failures_by_check",
@@ -147,6 +151,7 @@ class Check:
     run: list[str]
     exclusive: bool = False
     when: str = "attempt"
+    proof: str | None = None
 
 
 @dataclass(frozen=True)
@@ -927,7 +932,11 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         when = c.get("when", "attempt")
         if when not in CHECK_TIERS:
             raise ConfigError(f'{path}: gate.check[{i}].when ({c.get("name")!r}) must be "attempt", "pr" or "release", got {when!r}')
-        cfg.checks.append(Check(c["name"], list(c["run"]), bool(c.get("exclusive", False)), when))
+        proof = c.get("proof")
+        if proof is not None and (proof != MUTATION_PROOF or when != "pr"):
+            raise ConfigError(f'{path}: gate.check[{i}].proof ({c.get("name")!r}) must be '
+                              f'"{MUTATION_PROOF}" on a when = "pr" check, got {proof!r}')
+        cfg.checks.append(Check(c["name"], list(c["run"]), bool(c.get("exclusive", False)), when, proof))
     names = [c.name for c in cfg.checks]
     if len(set(names)) != len(names) or {"conflict-markers", "leak-scan", "protected-paths"} & set(names):
         raise ConfigError(f"{path}: gate check names must be unique and not conflict-markers/leak-scan/protected-paths")
