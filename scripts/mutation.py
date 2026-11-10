@@ -294,12 +294,6 @@ def main(argv: list[str] | None = None) -> int:
               f"{remaining:.0f}s left before the deadline")
 
         sampled = len(mutations)
-        # Full waves avoid admitting a partial final wave that cannot finish.
-        capacity = workers * int((deadline - baseline_finished) / baseline) if baseline > 0 else sampled
-        mutations = mutations[:capacity]
-        sized_out = sampled - len(mutations)
-        print(f"sample: {len(mutations)} of {sampled} fit at baseline {baseline:.0f}s, "
-              f"{workers} workers, {deadline - started:.0f}s deadline; {sized_out} sized out")
 
         queue = collections.deque(mutations)  # popleft is atomic under the GIL
         results = []
@@ -349,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     timeouts = sum(result.output == "timeout" for _, result in results)
     print(f"ran {len(results)} of {sampled} mutants in {elapsed:.0f}s: "
           f"{timeouts} timeouts (included in killed); {summary}; {len(survivors)} survived")
-    not_run = sized_out + len(queue) + len(cut)
+    not_run = len(queue) + len(cut)
     if not_run:
         print(f"budget-limited: {not_run} of {sampled} not run "
               f"(baseline {baseline:.0f}s, {workers} workers, {deadline - started:.0f}s)")
