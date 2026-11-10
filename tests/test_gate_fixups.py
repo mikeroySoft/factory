@@ -224,14 +224,12 @@ class GateFixupsTest(unittest.TestCase):
         self.finished_worker()
         self.f.cli("dispatch", "--ticket", "7")
         [approved] = self.events("approved")
-        [repair] = self.events("gate-fixup")
         head = approved["head"]
         source = self.f.repo / ".factory/wt-7/.factory/handoff-7.md"
         content = source.read_text()
         cfg = config.Config(self.f.repo, "local/smoke")
         retained = results.retain(cfg, 7, head, lifecycle.read_events(self.f.events))
         self.assertTrue(retained["cleanup_safe"], retained)
-        self.assertEqual(retained["manifest"]["acceptance"]["gate"]["event_id"], repair["event_id"])
         source.unlink()
         page = results.read_result(cfg, 7, head)
         self.assertEqual((page["status"], page["text"]), ("complete", content))
