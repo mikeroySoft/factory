@@ -11,7 +11,6 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, manage
-from factory import dashboard
 
 
 class ManagerRoundsTest(unittest.TestCase):
@@ -105,6 +104,8 @@ class ManagerRoundsTest(unittest.TestCase):
                     dispatch.EVENTS.write_text("")
 
     def test_oversized_failure_evidence_remains_visible_and_survives_next_round(self) -> None:
+        from factory import dashboard
+
         wt = self.cfg.factory / "wt-7"
         (wt / ".factory").mkdir(parents=True)
         paths = {
