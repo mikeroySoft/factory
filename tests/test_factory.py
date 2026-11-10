@@ -1740,6 +1740,8 @@ PY
 
     def test_manage_skips_second_escalation_when_rounds_exhausted(self) -> None:
         repo, stubs, _ = self.scenario(round_number=2)
+        with (repo / config.CONFIG_NAME).open("a") as stream:
+            stream.write("rounds = 1\n")
         result = factory(repo, "manage", path=stubs)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("issue edit", (Path(stubs) / "gh.log").read_text())
