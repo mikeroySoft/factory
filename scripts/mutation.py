@@ -283,17 +283,17 @@ def main(argv: list[str] | None = None) -> int:
         if proc.returncode:
             print(f"baseline suite failed:\n{proc.stdout[-3000:]}")
             return 1
-        timeout = max(60.0, 3 * baseline)
+        remaining = deadline - baseline_finished
+        timeout = min(max(60.0, 3 * baseline), remaining / 4)
         print(f"baseline: {baseline:.0f}s, per-mutant timeout {timeout:.0f}s, "
-              f"{deadline - baseline_finished:.0f}s left before the deadline")
+              f"{remaining:.0f}s left before the deadline")
 
         queue = collections.deque(mutations)  # popleft is atomic under the GIL
         results = []
-        cut = []  # mutants whose run the deadline cut short: neither killed nor survived
+        cut = []  # budget-limited runs: neither killed nor survived
 
         def worker(copy: Path) -> None:
-            # Most mutants die before a full baseline-length run. Use the remaining
-            # budget, but never count a deadline-cut run as killed or survived.
+            # A timeout below baseline cannot disprove a survivor or equivalent.
             while (left := deadline - time.monotonic()) > 0:
                 try:
                     mutation = queue.popleft()
@@ -303,8 +303,12 @@ def main(argv: list[str] | None = None) -> int:
                 result = mutate_and_test(
                     [local], test_command(copy, str(mutation.module_path)), min(timeout, left),
                 )
-                if left < timeout and result.output == "timeout":
+                if result.output == "timeout" and (
+                    timeout < baseline or left < timeout or time.monotonic() >= deadline
+                ):
                     cut.append(mutation)
+                    if timeout >= baseline:
+                        return
                 else:
                     results.append((mutation, result))
 
@@ -328,8 +332,9 @@ def main(argv: list[str] | None = None) -> int:
         name = (result.test_outcome or result.worker_outcome).value
         counts[name] = counts.get(name, 0) + 1
     summary = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"
+    timeouts = sum(result.output == "timeout" for _, result in results)
     print(f"ran {len(results)} of {len(mutations)} mutants in {time.monotonic() - started:.0f}s: "
-          f"{summary}; {len(survivors)} survived")
+          f"{timeouts} timeouts (included in killed); {summary}; {len(survivors)} survived")
     if queue or cut:
         print(f"incomplete: {len(queue)} mutants not started and {len(cut)} cut short by the "
               f"{deadline - started:.0f}s deadline")

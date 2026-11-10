@@ -1127,6 +1127,28 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    out (or the head came from a manager FIX) the ticket escalates with `pr checks failed`. Otherwise
    the reviewer runs the diff itself and gets the gate report and issue snapshot
    inline, including every comment (the triage brief, approved scope changes).
+   Native-host acceptance belongs in the worker handoff's `## Native-host proof`
+   section (`Head SHA: <tested commit>`, results and any archive/tree digest), or
+   in a worktree-relative proof file cited by that handoff (for example
+   `Proof: .factory/macos-proof.txt`, containing
+   `Verified source revision: <tested commit>`). A plain `Native-host proof:`
+   label may also introduce file citations on following lines, up to the next
+   Markdown heading. Paths containing spaces must be quoted with backticks,
+   single quotes or double quotes. Before each ticket review,
+   including manager FIX and refresh reviews, the dispatcher posts the evidence
+   to the PR and supplies the same text inline as untrusted worker evidence.
+   Recorded proof SHAs are checked against the gated head; stale/conflicting
+   proof shows both revisions, while absent/unbound/unsafe evidence is explicitly
+   not supplied as current-head proof. Re-run native proof after a refresh.
+   Reads are bounded to 256 KiB, reject symlinks, worktree escapes and NUL-containing
+   filenames (reported as unavailable evidence rather than aborting review), and use
+   existing credential redaction/withholding rules; excerpts are capped at 4,000
+   characters and comments at 20,000, with explicit truncation notices and
+   archive/tree digests retained when present. Successful publication is
+   journaled by head and content hash to avoid duplicate comments on same-head
+   retries or second reviews. Failed publication is stated in the packet and
+   retried at the next review; it introduces no human gate. A reviewer never
+   needs to open the gitignored worktree proof file.
    Every finding cites `path:line`; a required fix also cites an acceptance
    criterion, a documented rule with its source, or a concrete correctness/security
    defect with its trigger and impact — preferences and hypothetical extensibility
@@ -1195,8 +1217,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    disagreement path. Mutation runs related tests first and stops after the first
    failure; a surviving mutant still has to pass every discovered test. The
    deterministic 200-mutant sample uses the gate timeout minus 60 seconds for
-   preparation, baseline, and mutants together. Unstarted and deadline-cut
-   mutants are reported as incomplete, not survivors or blocking failures;
+   preparation, baseline, and mutants together. After baseline completes, each
+   mutant gets `min(max(60, 3 * baseline), remaining / 4)` seconds, with `remaining`
+   fixed at baseline completion. Per-mutant timeouts count as killed, with their
+   timeout count shown separately in summaries and gate reports, unless the cap
+   is below baseline duration: those runs stay incomplete and cannot disprove
+   reviewed equivalents. Workers continue with remaining mutants after such cuts.
+   Unstarted mutants, deadline-shortened runs and timeout results returned at or
+   after the absolute deadline are also incomplete, not survivors or blocking failures;
    a baseline that never passes within the deadline and tool failures still fail.
    Scratch workers use local shared clones with independent Git metadata and the
    current working files overlaid, so Git-dependent tests run without skips.
@@ -1862,6 +1890,23 @@ branches, or merge state.
   `keep` row at merge; a missing claim reports the exact `factory eval` command.
   The same setting installs a persistent weekly timer using `[eval] profile`;
   scheduled drops beyond noise set `flagged: true` in the journal.
+- **Runner preflight**: before assigning a ticket (including `dispatch --ticket`),
+  reap abandoned `factory-runner-*` scratch roots, then require at least 1 GiB
+  free and 10,000 free inodes on both the repository and temporary filesystems.
+  Filesystems reporting no inode limit skip the inode check. Low storage records
+  `runner-infra` with reason `runner_storage_low`, path, resource, available, and
+  minimum; an unreadable filesystem records `runner_storage_unavailable`.
+  Neither claims the ticket nor records an attempt or escalation; retry next pass.
+  Watch treats both refusal reasons as host conditions: transient refusals are
+  ignored; an uninterrupted streak spanning `[watch].host_failure_minutes`
+  files with the `host` label rather than as a Factory lifecycle defect.
+  Reviewer, gate, and isolated GitHub-config roots hold directory flocks for their
+  owner's lifetime. After normal exit or a crash, only confirmed live process use
+  (cwd, open files, or inherited scratch environment) retains an unlocked root.
+  Unknown/unreadable process visibility alone never protects it. Linux process
+  state is parsed as bytes so non-UTF-8 process names do not interrupt cleanup.
+  Read-only review snapshots are removable, and legacy one-day temp sweeping
+  remains in place.
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
   (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`, `conflict-requeue`,
   `merged`, `escalate`, `upstream-sync`, and `human-decision`; `gate`,
