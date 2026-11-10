@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, manage
+from factory import dashboard
 
 
 class ManagerRoundsTest(unittest.TestCase):
@@ -102,6 +103,75 @@ class ManagerRoundsTest(unittest.TestCase):
                     with gzip.open(dispatch.EVENTS.with_name("events.jsonl.1.gz"), "wb") as stream:
                         stream.write(dispatch.EVENTS.read_bytes())
                     dispatch.EVENTS.write_text("")
+
+    def test_oversized_failure_evidence_remains_visible_and_survives_next_round(self) -> None:
+        wt = self.cfg.factory / "wt-7"
+        (wt / ".factory").mkdir(parents=True)
+        paths = {
+            "Last gate report": wt / ".factory" / "gate-report-7.md",
+            "Latest review findings": self.cfg.factory / "review-7.md",
+            "Handoff": wt / ".factory" / "handoff-7.md",
+        }
+        reason = 'review failed: preserve "界" and \\revision'
+        log = self.cfg.factory / "logs" / "7.log"
+        head = "a" * 40
+        evidence_ref = "refs/factory-evidence/" + '界"\\' * 150
+        packet = self.cfg.factory / "escalations" / "7.md"
+        for padding in ("x" * 40000, "界𐐷" * 4000, '"\\\n\t\0' * 4000):
+            with self.subTest(padding=repr(padding[:5])):
+                dispatch.EVENTS.unlink(missing_ok=True)
+                markers = {title: f"previous {title}: reject stale revision" for title in paths}
+                for title, path in paths.items():
+                    path.write_text(padding + markers[title])
+                extra = padding + "previous additional evidence: reviewers disagree"
+                with lifecycle.scope(dispatch.EVENTS, "ticket", ticket=7) as execution, \
+                        mock.patch.object(dispatch, "run"), mock.patch.object(dispatch, "unclaim"):
+                    dispatch.escalate(
+                        7, reason, log, extra=extra, code="review_revise",
+                        refreshed_head=head, evidence_ref=evidence_ref,
+                    )
+                with mock.patch.object(dashboard, "FACTORY", self.cfg.factory, create=True):
+                    rows, history = dashboard.bounded_journal_rows()
+                escalations = [row for row in rows if row.get("event") == "escalate"]
+                self.assertEqual(len(escalations), 1, history)
+                row = escalations[0]
+                self.assertNotIn("row_limit", history["gaps"])
+                self.assertEqual(
+                    {key: row[key] for key in (
+                        "ticket", "code", "reason", "round", "log", "packet",
+                        "refreshed_head", "evidence_ref", "execution_id", "dispatcher_run_id",
+                    )},
+                    {
+                        "ticket": 7, "code": "review_revise", "reason": reason, "round": 1,
+                        "log": str(log), "packet": str(packet), "refreshed_head": head,
+                        "evidence_ref": evidence_ref, "execution_id": execution.execution_id,
+                        "dispatcher_run_id": execution.dispatcher_run_id,
+                    },
+                )
+                for line in dispatch.EVENTS.read_bytes().splitlines(keepends=True):
+                    self.assertLessEqual(len(line), dashboard.DASHBOARD_EVENT_ROW_CAP)
+                for title, marker in markers.items():
+                    self.assertIn(marker, row["failure_details"][title])
+                self.assertIn(
+                    "previous additional evidence: reviewers disagree",
+                    row["failure_details"]["Additional evidence"],
+                )
+                first_packet = packet.read_text()
+                self.assertNotIn("Previous round failure", first_packet)
+                self.assertIn(extra, first_packet)
+                for path in paths.values():
+                    path.write_text("current evidence: preserve accepted baseline")
+                with mock.patch.object(dispatch, "run"), mock.patch.object(dispatch, "unclaim"):
+                    dispatch.escalate(7, reason, log, code="review_revise")
+                prompt = self.prompt()
+                self.assert_rule(prompt)
+                for text in (packet.read_text(), prompt):
+                    previous = text.split("## Previous round failure\n\n", 1)[1].split("## Attempts", 1)[0]
+                    self.assertIn(reason, previous)
+                    for marker in markers.values():
+                        self.assertIn(marker, previous)
+                    self.assertIn("previous additional evidence: reviewers disagree", previous)
+                    self.assertIn("current evidence: preserve accepted baseline", text)
 
     def test_distinct_previous_failure_survives_rotation_and_manager_transport_failure(self) -> None:
         previous = "review: remove the revision check"
