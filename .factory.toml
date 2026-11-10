@@ -2,7 +2,7 @@
 # Gate checks proposed by District from: --check
 
 [gate]
-protected_paths = [".factory.toml", "**/acceptance/**", "**/*review*prompt*", "TRACKING*", "**/TRACKING*"]
+protected_paths = [".factory.toml", "mutation-equivalents.json", "**/acceptance/**", "**/*review*prompt*", "TRACKING*", "**/TRACKING*"]
 add_only_paths = ["tests/**"]
 
 [[gate.check]]
@@ -39,6 +39,8 @@ run = [
     "mutation",
     "python",
     "scripts/mutation.py",
+    "--equivalents",
+    "mutation-equivalents.json",
 ]
 exclusive = false
 when = "pr"
