@@ -3204,6 +3204,8 @@ def push_and_pr(
 
 
 def pr_comment(n: int, text: str) -> None:
+    if pending := _PENDING_REVIEWS.get(n):
+        text = f"Reviewed head: {pending['head']}\n\n{text}"
     body_file = FACTORY / f"review-{n}.md"
     body_file.write_text(text + "\n")
     posted = run(
