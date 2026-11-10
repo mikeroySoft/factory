@@ -174,6 +174,17 @@ class ManagerRoundsTest(unittest.TestCase):
                     self.assertIn("previous additional evidence: reviewers disagree", previous)
                     self.assertIn("current evidence: preserve accepted baseline", text)
 
+    def test_oversized_metadata_does_not_erase_previous_failure_evidence(self) -> None:
+        reason = "manager requires a human: " + "界" * 6000
+        details = {"Latest review findings": "reject stale revision; preserve accepted baseline"}
+        dispatch.record("escalate", ticket=7, reason=reason, round=1, failure_details=details)
+        packet, number = self.escalation("review still rejects stale revision")
+        self.assertEqual(number, 2)
+        for text in (packet.read_text(), self.prompt()):
+            previous = text.split("## Previous round failure\n\n", 1)[1].split("## Attempts", 1)[0]
+            self.assertIn(reason, previous)
+            self.assertIn(details["Latest review findings"], previous)
+
     def test_distinct_previous_failure_survives_rotation_and_manager_transport_failure(self) -> None:
         previous = "review: remove the revision check"
         current = "review: restore the revision check"
