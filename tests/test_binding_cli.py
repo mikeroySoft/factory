@@ -61,6 +61,8 @@ elif a[:2] == ['issue', 'comment']:
 else:
     sys.exit('unexpected external operation: ' + repr(a))
 '''
+# Use the test runner's interpreter; the retained shebang below becomes a comment.
+GH = f'#!{sys.executable}\n' + GH
 WORKER = '''import json, os, subprocess, sys
 from pathlib import Path
 prompt = Path(sys.argv[1])
@@ -225,3 +227,17 @@ class BindingCli(unittest.TestCase):
         ):
             dispatch.build_prompt(7, self.repo)
         self.assertFalse((self.repo / '.factory/brief-7.md').exists())
+
+    def test_local_baseline_and_unchanged_drift(self):
+        baseline = self.proposed()
+        self.assertEqual(baseline['initiative'], 50)
+        self.assertEqual(baseline['sections']['Outcome'], 'Ship bounded work')
+        self.ticket(8, baseline)
+        admitted = self.cli('dispatch', '--ticket', '8')
+        self.assertEqual(admitted.returncode, 0, admitted.stdout + admitted.stderr)
+        result = self.cli('plan', 'drift', '8')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        drift = json.loads(result.stdout)['drift']
+        self.assertEqual(drift['status'], 'unchanged')
+        self.assertEqual(drift['changed_sections'], [])
+        self.assertEqual(drift['observed']['sha256'], baseline['sha256'])

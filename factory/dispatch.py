@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 
-from factory import __version__, brief, config, generation, lifecycle, risk
+from factory import __version__, brief, config, generation, lifecycle, risk, runner
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -299,7 +299,7 @@ _REMOTE_REFS = threading.Lock()
 def without_github(env: dict[str, str]):
     """`env` for worker and reviewer agents: no GitHub token, and gh reads a fresh empty
     config dir. The dispatcher's own gh and git push keep the configured identity."""
-    with tempfile.TemporaryDirectory(prefix="factory-no-gh-") as empty:
+    with runner.temp_root("no-gh") as empty:
         yield {k: v for k, v in env.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")} | {"GH_CONFIG_DIR": empty}
 
 
@@ -334,6 +334,7 @@ def _make_tree_writable(root: Path) -> None:
 
 
 def _sweep_stale_factory_tempdirs() -> None:
+    runner.reap()
     cutoff = time.time() - 24 * 60 * 60
     root = Path(tempfile.gettempdir())
     for pattern in ("factory-review-*", "factory-gate-*"):
@@ -360,8 +361,8 @@ def _run_reviewer(
     clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     if env_overrides:
         clean.update({key: value for key, value in env_overrides.items() if not key.startswith("GIT_")})
-    with tempfile.TemporaryDirectory(prefix="factory-review-") as tmp, \
-            without_github(clean) as env:
+    with runner.temp_root("review") as tmp, \
+            without_github({**clean, "TMPDIR": tmp}) as env:
         review_dir = Path(tmp)
         try:
             if source is not None:
@@ -5032,6 +5033,11 @@ def process_ticket(
         return
 
     with lifecycle.scope(EVENTS, "ticket", ticket=n) as execution:
+        if failure := runner.preflight(ROOT):
+            record("runner-infra", ticket=n, **failure)
+            execution.outcome, execution.reason = "mechanism_failure", failure["reason"]
+            log(f"#{n}: skipped ({failure}); runner infrastructure, retry next pass")
+            return False
         deadline = time.monotonic() + budget_min * 60
         lock_fd = ticket_lock(n).open("w")  # held for the life of this pipeline
         request = execution.resource("requested", lock_path, scope="repository")

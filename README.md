@@ -1881,6 +1881,23 @@ branches, or merge state.
   `keep` row at merge; a missing claim reports the exact `factory eval` command.
   The same setting installs a persistent weekly timer using `[eval] profile`;
   scheduled drops beyond noise set `flagged: true` in the journal.
+- **Runner preflight**: before assigning a ticket (including `dispatch --ticket`),
+  reap abandoned `factory-runner-*` scratch roots, then require at least 1 GiB
+  free and 10,000 free inodes on both the repository and temporary filesystems.
+  Filesystems reporting no inode limit skip the inode check. Low storage records
+  `runner-infra` with reason `runner_storage_low`, path, resource, available, and
+  minimum; an unreadable filesystem records `runner_storage_unavailable`.
+  Neither claims the ticket nor records an attempt or escalation; retry next pass.
+  Watch treats both refusal reasons as host conditions: transient refusals are
+  ignored; an uninterrupted streak spanning `[watch].host_failure_minutes`
+  files with the `host` label rather than as a Factory lifecycle defect.
+  Reviewer, gate, and isolated GitHub-config roots hold directory flocks for their
+  owner's lifetime. After normal exit or a crash, only confirmed live process use
+  (cwd, open files, or inherited scratch environment) retains an unlocked root.
+  Unknown/unreadable process visibility alone never protects it. Linux process
+  state is parsed as bytes so non-UTF-8 process names do not interrupt cleanup.
+  Read-only review snapshots are removable, and legacy one-day temp sweeping
+  remains in place.
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
   (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`, `conflict-requeue`,
   `merged`, `escalate`, `upstream-sync`, and `human-decision`; `gate`,

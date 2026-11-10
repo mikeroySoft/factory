@@ -21,7 +21,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-from factory import config, lifecycle, mutation_scope
+from factory import config, lifecycle, mutation_scope, runner
 from factory.config import CONFIG_NAME, Config
 
 cfg: Config
@@ -971,7 +971,7 @@ def main(argv: list[str]) -> int:
     args.protected_transition_base = transition_bases[0] if transition_bases else None
     configure(config.load())
     previous_tmpdir = os.environ.get("TMPDIR")
-    with tempfile.TemporaryDirectory(prefix="factory-gate-") as tmpdir:
+    with runner.temp_root("gate") as tmpdir:
         os.environ["TMPDIR"] = tmpdir
         try:
             with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
