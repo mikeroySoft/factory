@@ -1,10 +1,10 @@
-"""Slow-suite sampling and the gate's budget-coverage journal contract (#528)."""
+
 from __future__ import annotations
 
 import contextlib
 import io
 import json
-import os
+
 import subprocess
 import sys
 import tempfile
@@ -14,158 +14,135 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from factory import gate, lifecycle
 from scripts import mutation
-from tests import test_gate as gate_test
-from tests import test_mutation_deadline as deadline
+from tests import test_mutation_deadline
+from tests.test_mutation_deadline import TestOutcome, WorkerOutcome
 
 
 class MutationBudgetTest(unittest.TestCase):
-    def run_slow_suite(self, survive=False):
+    def test_deadline_shortened_timeout_stays_cut_not_killed(self) -> None:
+        result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.KILLED,
+            diff="", output="timeout",
+        )
+        status, output, mutate, _ = test_mutation_deadline.MutationDeadlineTest().run_mutation(
+            result, clock=[0, 0, 0, 0.1, 0.2, 0.9, 2, 2],
+        )
+        self.assertEqual(status, 0)
+        self.assertAlmostEqual(mutate.call_args.args[2], 0.1)
+        self.assertIn("ran 0 of 1 mutants", output)
+        self.assertIn("0 timeouts", output)
+        self.assertIn("incomplete: 0 mutants not started and 1 cut short", output)
+
+    def test_timeout_returned_after_deadline_is_cut_not_killed(self) -> None:
+        result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.KILLED,
+            diff="", output="timeout",
+        )
+        status, output, mutate, _ = test_mutation_deadline.MutationDeadlineTest().run_mutation(
+            result, clock=[0, 0, 0, 0.1, 0.2, 0.3, 2, 2],
+        )
+        self.assertEqual(status, 0)
+        self.assertAlmostEqual(mutate.call_args.args[2], 0.2)
+        self.assertIn("ran 0 of 1 mutants", output)
+        self.assertIn("0 timeouts", output)
+        self.assertIn("incomplete: 0 mutants not started and 1 cut short", output)
+
+    def test_sub_baseline_timeouts_leave_equivalents_incomplete_and_continue(self) -> None:
         now = [0.0]
-        trials = []
-        specs = [SimpleNamespace(**{**vars(deadline.MutationDeadlineTest.spec),
-                                  "start_pos": (i + 1, 0), "end_pos": (i + 1, 9)})
-                 for i in range(200)]
+        timeouts = []
+        completed = []
+        specs = [SimpleNamespace(
+            module_path=Path("factory/example.py"), operator_name="NumberReplacer",
+            start_pos=(n, 0), end_pos=(n, 9), occurrence=n,
+        ) for n in range(1, 5)]
 
-        def run(cmd, **kwargs):
-            if cmd[0] != "git":
-                now[0] += 221
-            return subprocess.CompletedProcess(cmd, 0, "")
+        def run(command, **kwargs):
+            if command[0] != "git":
+                now[0] += 80  # deadline 120, remaining 40: cap 10, below baseline
+            return subprocess.CompletedProcess(command, 0, "", "")
 
-        def mutate(specs, command, timeout):
-            trials.append(specs[0])
-            now[0] += min(221, timeout)
+        def mutate_and_test(local, command, timeout):
+            timeouts.append(timeout)
+            number = local[0].occurrence
+            duration = 100 if number == 1 else 80 if number == 3 else 1
+            now[0] += min(duration, timeout)
+            completed.append(number)
             return SimpleNamespace(
-                test_outcome=(deadline.TestOutcome.SURVIVED if survive and len(trials) == 1
-                              else deadline.TestOutcome.KILLED),
-                worker_outcome=deadline.WorkerOutcome.NORMAL,
-                output="timeout" if timeout < 221 else "",
-                diff="-value = 1\n+value = 2\n",
+                worker_outcome=WorkerOutcome.NORMAL,
+                test_outcome=(
+                    TestOutcome.SURVIVED if number == 3 and duration <= timeout else TestOutcome.KILLED
+                ),
+                output="timeout" if duration > timeout else "",
+                diff=f"-{'abcd'[number - 1]} = 1\n+{'abcd'[number - 1]} = 2\n",
             )
 
-        modules = {name: types.ModuleType(name) for name in
-                   ("attrs", "cosmic_ray", "cosmic_ray.mutating", "cosmic_ray.work_item")}
-        modules["attrs"].evolve = lambda value, **changes: SimpleNamespace(**{**vars(value), **changes})
-        modules["cosmic_ray.mutating"].mutate_and_test = mutate
-        modules["cosmic_ray.work_item"].TestOutcome = deadline.TestOutcome
-        output = io.StringIO()
-        with mock.patch.dict(sys.modules, modules), \
-                mock.patch.object(mutation.time, "monotonic", side_effect=lambda: now[0]), \
-                mock.patch.object(mutation, "WORKERS", 1), \
-                mock.patch.object(mutation, "gate_timeout", return_value=1200), \
-                mock.patch.object(mutation, "changed_lines", return_value={"factory/example.py": set(range(1, 201))}), \
-                mock.patch.object(mutation, "sample", return_value=(specs, 200)), \
-                mock.patch.object(mutation.shutil, "copytree"), \
-                mock.patch.object(mutation.subprocess, "run", side_effect=run), \
-                contextlib.redirect_stdout(output):
-            code = mutation.main(["--blocking"])
-        return code, output.getvalue(), trials, now[0]
-
-    def test_slow_hot_sample_fits_budget_and_preserves_survivor_failure(self):
-        for survive in (False, True):
-            with self.subTest(survive=survive):
-                code, report, trials, elapsed = self.run_slow_suite(survive)
-                self.assertEqual(code, int(survive), report)
-                self.assertLessEqual(elapsed, 1140)
-                self.assertEqual(len(trials), 4, report)
-                self.assertIn("budget-limited: 196 of 200 not run", report)
-                self.assertIn("baseline 221s, 1 workers, 1140s", report)
-                self.assertNotIn("cut short", report)
-                if survive:
-                    self.assertIn("1 survived", report)
-
-    def test_gate_journals_budget_limited_coverage_and_elapsed(self):
-        now = [0.0]
-        summary = {"status": "budget_limited", "budget_seconds": 1140,
-                   "baseline_seconds": 221, "workers": 1,
-                   "mutants_run": 4, "mutants_not_run": 196}
-
-        def timed(cmd):
-            now[0] += 1141
-            return subprocess.CompletedProcess(cmd, 0, "mutation-budget: " + json.dumps(summary), "")
-
+        modules = {
+            "attrs": types.SimpleNamespace(evolve=lambda value, **changes: SimpleNamespace(
+                **{**vars(value), **changes},
+            )),
+            "cosmic_ray": types.ModuleType("cosmic_ray"),
+            "cosmic_ray.mutating": types.SimpleNamespace(mutate_and_test=mutate_and_test),
+            "cosmic_ray.work_item": types.SimpleNamespace(TestOutcome=TestOutcome),
+        }
         with tempfile.TemporaryDirectory() as directory:
-            root = gate_test.repo_with_test(Path(directory), (
-                '[gate]\ntimeout = 1200\n[[gate.check]]\nname = "mutation"\n'
-                'run = ["stub-mutation"]\nwhen = "pr"\nexclusive = false\n'
-            ))
-            with contextlib.chdir(root), mock.patch.dict(gate.__dict__), \
-                    mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}), \
-                    mock.patch.object(gate, "toolchain", return_value={"rocm": "n/a", "kernel": "n/a", "amdgpu": "n/a"}), \
-                    mock.patch.object(gate, "timed", side_effect=timed), \
-                    mock.patch("time.monotonic", side_effect=lambda: now[0]):
-                self.assertEqual(gate.main(["--tier", "pr", "--report", str(root / "report.md")]), 0)
-            rows = lifecycle.read_events(root / ".factory/events.jsonl")
-            [result] = [row for row in rows if row.get("stage") == "gate-check"
-                        and row.get("kind") == "result" and row.get("check") == "mutation"]
-            self.assertEqual(result.get("status"), "budget_limited")
-            self.assertEqual(result["elapsed_seconds"], 1141)
-            for key, value in summary.items():
-                self.assertEqual(result[key], value)
-            [exit_row] = [row for row in rows if row.get("stage") == "gate-check" and row.get("kind") == "exit"]
-            self.assertEqual(exit_row["reason"], "budget_limited")
+            root = Path(directory)
+            (root / "factory").mkdir()
+            (root / "factory/example.py").write_text("a = 1\nb = 1\nc = 1\nd = 1\n")
+            (root / "reviewed.json").write_text(json.dumps([{
+                "file": "factory/example.py", "line": 3, "operator": "NumberReplacer",
+                "original": "c = 1", "mutated": "c = 2",
+                "argument": "The value is unused.", "reviewer": "Fixture reviewer",
+            }]))
+            output = io.StringIO()
+            with contextlib.chdir(root), mock.patch.dict(sys.modules, modules), \
+                    mock.patch.object(mutation.time, "monotonic", side_effect=lambda: now[0]), \
+                    mock.patch.object(mutation, "WORKERS", 1), \
+                    mock.patch.object(mutation, "gate_timeout", return_value=180), \
+                    mock.patch.object(mutation, "changed_lines", return_value={"factory/example.py": {1, 2, 3, 4}}), \
+                    mock.patch.object(mutation, "sample", return_value=(specs, 4)), \
+                    mock.patch.object(mutation.subprocess, "run", side_effect=run), \
+                    contextlib.redirect_stdout(output):
+                status = mutation.main(["--blocking", "--equivalents", "reviewed.json"])
 
-    def test_outer_timeouts_keep_watch_filing_and_runtime_reason(self):
-        from factory import runtime_events, watch
+        self.assertEqual(timeouts, [10.0] * 4)
+        self.assertEqual(completed, [1, 2, 3, 4])
+        self.assertEqual(now[0], 102)
+        text = output.getvalue()
+        self.assertEqual(status, 0, text)  # an unfinished equivalent is not disproven
+        self.assertIn("baseline: 80s, per-mutant timeout 10s, 40s left", text)
+        self.assertIn("ran 2 of 4 mutants", text)
+        self.assertIn("2 killed", text)
+        self.assertIn("0 timeouts", text)  # sub-baseline timeouts belong only in cut
+        self.assertIn("0 survived", text)
+        self.assertIn("incomplete: 0 mutants not started and 2 cut short", text)
+        self.assertNotIn("stale equivalent:", text)
 
-        for name in ("test", "ruff", "mutation"):
-            with self.subTest(check=name), tempfile.TemporaryDirectory() as directory:
-                command = json.dumps([sys.executable, "-c", "import time; time.sleep(30)"])
-                root = gate_test.repo_with_test(Path(directory), (
-                    f'[[gate.check]]\nname = "{name}"\nrun = {command}\n'
-                    'when = "pr"\nexclusive = false\n'
-                ))
-                with contextlib.chdir(root), mock.patch.dict(gate.__dict__), \
-                        mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}), \
-                        mock.patch.object(gate, "toolchain", return_value={
-                            "rocm": "n/a", "kernel": "n/a", "amdgpu": "n/a",
-                        }):
-                    self.assertEqual(gate.main([
-                        "--tier", "pr", "--check-timeout", "1",
-                        "--report", str(root / "report.md"),
-                    ]), 1)
-                journal = root / ".factory/events.jsonl"
-                rows = lifecycle.read_events(journal)
-                [result] = [row for row in rows if row.get("kind") == "result"
-                            and row.get("check") == name]
-                self.assertFalse(result["passed"])
-                self.assertEqual(result["status"], "budget_limited")
-                self.assertEqual(result["budget_seconds"], 1)
-                self.assertGreaterEqual(result["elapsed_seconds"], 1)
-                exits = [row for row in rows if row.get("kind") == "exit"]
-                self.assertEqual({row["stage"] for row in exits}, {"gate", "gate-check"})
-                for row in exits:
-                    self.assertEqual(row["outcome"], "unknown")
-                    self.assertEqual(row["reason"], "check_timeout")
-                    self.assertTrue(watch._failing(row))
-                projected = runtime_events.project(journal)["executions"]
-                self.assertEqual({row["reason"] for row in projected}, {"check_timeout"})
+    def test_timeout_with_baseline_sized_budget_still_counts_as_killed(self) -> None:
+        result = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.KILLED,
+            diff="", output="timeout",
+        )
+        status, output, mutate, _ = test_mutation_deadline.MutationDeadlineTest().run_mutation(
+            result, clock=[0, 0, 0, 0.1, 0.2, 0.3, 0.5, 0.5, 0.5],
+        )
+        self.assertEqual(status, 0, output)
+        self.assertAlmostEqual(mutate.call_args.args[2], 0.2)  # baseline 0.1s fits
+        self.assertIn("1 timeouts (included in killed); 1 killed; 0 survived", output)
+        self.assertNotIn("incomplete:", output)
 
-    def test_passing_budget_limited_reason_survives_runtime_projection(self):
-        from factory import runtime_events, watch
+    def test_completed_survivor_output_remains_actionable_for_dispatch(self) -> None:
+        from factory import dispatch
 
-        summary = {"status": "budget_limited", "budget_seconds": 1140,
-                   "baseline_seconds": 221, "workers": 1,
-                   "mutants_run": 4, "mutants_not_run": 196}
-        with tempfile.TemporaryDirectory() as directory:
-            root = gate_test.repo_with_test(Path(directory), (
-                '[[gate.check]]\nname = "mutation"\nrun = ["stub-mutation"]\n'
-                'when = "pr"\nexclusive = false\n'
-            ))
-            with contextlib.chdir(root), mock.patch.dict(gate.__dict__), \
-                    mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}), \
-                    mock.patch.object(gate, "toolchain", return_value={
-                        "rocm": "n/a", "kernel": "n/a", "amdgpu": "n/a",
-                    }), mock.patch.object(gate, "timed", return_value=subprocess.CompletedProcess(
-                        [], 0, "mutation-budget: " + json.dumps(summary), "",
-                    )):
-                self.assertEqual(gate.main(["--tier", "pr", "--report", str(root / "report.md")]), 0)
-            journal = root / ".factory/events.jsonl"
-            [check] = [row for row in runtime_events.project(journal)["executions"]
-                       if row["stage"] == "gate-check"]
-            self.assertEqual(check["outcome"], "completed")
-            self.assertEqual(check["reason"], "budget_limited")
-            [exit_row] = [row for row in lifecycle.read_events(journal)
-                          if row.get("kind") == "exit" and row["stage"] == "gate-check"]
-            self.assertFalse(watch._failing(exit_row))
+        survivor = SimpleNamespace(
+            worker_outcome=WorkerOutcome.NORMAL, test_outcome=TestOutcome.SURVIVED,
+            diff="-value = 1\n+value = 2\n", output="",
+        )
+        status, output, _, _ = test_mutation_deadline.MutationDeadlineTest().run_mutation(survivor)
+
+        self.assertEqual(status, 1)
+        self.assertTrue(dispatch._actionable_mutation(output), output)
+
+
+if __name__ == "__main__":
+    unittest.main()

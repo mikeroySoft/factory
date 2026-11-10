@@ -1199,15 +1199,16 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Non-mutation PR-check failures use the ordinary gate-failure loop, not the
    disagreement path. Mutation runs related tests first and stops after the first
    failure; a surviving mutant still has to pass every discovered test. The
-   deterministic sample (up to 200 mutants, changed lines first) uses the gate
-   timeout minus 60 seconds for preparation, baseline, and mutants together.
-   After measuring the baseline, it admits only full worker waves that fit the
-   remaining time: `workers * floor(remaining / baseline)`, capped by the sample.
-   The report names the baseline, workers, deadline, chosen size, and sized-out
-   or otherwise not-run count. Budget-limited coverage alone does not block;
-   completed changed-line survivors still do. Unstarted and deadline-cut trials
-   remain incomplete, not survivors; a baseline that never passes within the
-   deadline and tool failures still fail.
+   deterministic 200-mutant sample uses the gate timeout minus 60 seconds for
+   preparation, baseline, and mutants together. After baseline completes, each
+   mutant gets `min(max(60, 3 * baseline), remaining / 4)` seconds, with `remaining`
+   fixed at baseline completion. Per-mutant timeouts count as killed, with their
+   timeout count shown separately in summaries and gate reports, unless the cap
+   is below baseline duration: those runs stay incomplete and cannot disprove
+   reviewed equivalents. Workers continue with remaining mutants after such cuts.
+   Unstarted mutants, deadline-shortened runs and timeout results returned at or
+   after the absolute deadline are also incomplete, not survivors or blocking failures;
+   a baseline that never passes within the deadline and tool failures still fail.
    Scratch workers use local shared clones with independent Git metadata and the
    current working files overlaid, so Git-dependent tests run without skips.
    Baseline and mutant subprocesses disable bytecode writes, preventing cached
@@ -1872,6 +1873,23 @@ branches, or merge state.
   `keep` row at merge; a missing claim reports the exact `factory eval` command.
   The same setting installs a persistent weekly timer using `[eval] profile`;
   scheduled drops beyond noise set `flagged: true` in the journal.
+- **Runner preflight**: before assigning a ticket (including `dispatch --ticket`),
+  reap abandoned `factory-runner-*` scratch roots, then require at least 1 GiB
+  free and 10,000 free inodes on both the repository and temporary filesystems.
+  Filesystems reporting no inode limit skip the inode check. Low storage records
+  `runner-infra` with reason `runner_storage_low`, path, resource, available, and
+  minimum; an unreadable filesystem records `runner_storage_unavailable`.
+  Neither claims the ticket nor records an attempt or escalation; retry next pass.
+  Watch treats both refusal reasons as host conditions: transient refusals are
+  ignored; an uninterrupted streak spanning `[watch].host_failure_minutes`
+  files with the `host` label rather than as a Factory lifecycle defect.
+  Reviewer, gate, and isolated GitHub-config roots hold directory flocks for their
+  owner's lifetime. After normal exit or a crash, only confirmed live process use
+  (cwd, open files, or inherited scratch environment) retains an unlocked root.
+  Unknown/unreadable process visibility alone never protects it. Linux process
+  state is parsed as bytes so non-UTF-8 process names do not interrupt cleanup.
+  Read-only review snapshots are removable, and legacy one-day temp sweeping
+  remains in place.
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
   (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`, `conflict-requeue`,
   `merged`, `escalate`, `upstream-sync`, and `human-decision`; `gate`,

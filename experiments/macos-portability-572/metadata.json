@@ -1,0 +1,97 @@
+{
+  "root": "/private/tmp/factory-572-z2uygc2o",
+  "checkout": "/private/tmp/factory-572-z2uygc2o/checkout",
+  "sha": {
+    "command": [
+      "git",
+      "-C",
+      "/private/tmp/factory-572-z2uygc2o/checkout",
+      "rev-parse",
+      "origin/main"
+    ],
+    "exit": 0,
+    "stdout": "3c2c99140113aeae25fffc24b7666c9015428a21\n",
+    "stderr": ""
+  },
+  "macos": {
+    "command": [
+      "sw_vers"
+    ],
+    "exit": 0,
+    "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2\nBuildVersion:\t\t26B123\n",
+    "stderr": ""
+  },
+  "architecture": {
+    "command": [
+      "uname",
+      "-m"
+    ],
+    "exit": 0,
+    "stdout": "arm64\n",
+    "stderr": ""
+  },
+  "uv": {
+    "command": [
+      "uv",
+      "--version"
+    ],
+    "exit": 0,
+    "stdout": "uv 0.12.23 (Homebrew 2026-10-03 aarch64-apple-darwin)\n",
+    "stderr": ""
+  },
+  "command": [
+    "uv",
+    "run",
+    "--frozen",
+    "--no-managed-python",
+    "python",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests"
+  ],
+  "environment_overrides": {
+    "XDG_CONFIG_HOME": "/private/tmp/factory-572-z2uygc2o/xdg",
+    "UV_CACHE_DIR": "/private/tmp/factory-572-z2uygc2o/uv-cache",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "PYTHONUNBUFFERED": "1"
+  },
+  "started_at": "2026-11-06T07:36:48.442531+00:00",
+  "suite_exit": 1,
+  "finished_at": "2026-11-06T08:03:48.953797+00:00",
+  "python": {
+    "command": [
+      "/private/tmp/factory-572-z2uygc2o/checkout/.venv/bin/python",
+      "--version"
+    ],
+    "exit": 0,
+    "stdout": "Python 3.14.8\n",
+    "stderr": ""
+  },
+  "checkout_status": {
+    "command": [
+      "git",
+      "-C",
+      "/private/tmp/factory-572-z2uygc2o/checkout",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "suite_log_sha256": "a722bc9d542330634f1503dbfc6acc240b0a260dcfea0635c9184a29cd4cb7f9",
+  "unchanged": {
+    "launchctl_factory": true,
+    "protected_files": true,
+    "engine_files": true,
+    "engine_provenance": true,
+    "legacy_engine_shas": true,
+    "benito_head": true,
+    "benito_status": true,
+    "benito_diff": true
+  }
+}
