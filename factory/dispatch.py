@@ -1231,7 +1231,8 @@ def _bounded_failure_details(row: dict) -> dict[str, str]:
             low = limit
         else:
             high = limit - 1
-    return {title: text[-low:] if low else "" for title, text in details.items()}
+    # Metadata can already exceed the cap; do not also erase evidence for uncapped readers.
+    return {title: text[-low:] for title, text in details.items()} if low else details
 
 
 def record(event: str, **fields: object) -> None:
