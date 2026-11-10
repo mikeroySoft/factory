@@ -160,7 +160,10 @@ def iso(ts: float) -> str:
 
 
 def sh(cmd: list[str], cwd: Path | None = None) -> str:
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
+    except OSError:
+        return ""
     return proc.stdout if proc.returncode == 0 else ""
 
 
@@ -535,9 +538,17 @@ def upstream_state(gh: dict | None, issues: list[dict]) -> dict:
 # ---------------------------------------------------------------- systemd
 
 
-def journal_runs() -> list[dict]:
-    out = sh(["journalctl", "--user", "-u", f"{cfg.unit}.service", "-o", "json", "-n", "3000", "--no-pager"])
-    return parse_journal(out)[-100:]
+def journal_runs() -> list[dict] | None:
+    if sys.platform != "linux":
+        return None
+    try:
+        proc = subprocess.run(
+            ["journalctl", "--user", "-u", f"{cfg.unit}.service", "-o", "json", "-n", "3000", "--no-pager"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    return parse_journal(proc.stdout)[-100:] if proc.returncode == 0 else None
 
 
 def parse_journal(out: str) -> list[dict]:
@@ -655,8 +666,8 @@ def dispatcher(runtime: dict) -> dict:
         },
         "service_active": state["service_active"],
         "schedule": schedule,
-        "consecutive_failures": consecutive_failures(runs),
-        "runs": runs,
+        "consecutive_failures": consecutive_failures(runs) if runs is not None else 0,
+        "runs": runs or [],
         "observation": state["observation"],
         "observed_at": state["observed_at"],
         "capacity": state["capacity"],

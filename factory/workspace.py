@@ -25,7 +25,7 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 
-from factory import briefing, config, flow, runtime_events, runtime_local, settings, trace
+from factory import briefing, config, flow, runtime_events, runtime_local, settings
 from factory.config import Config
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -1015,6 +1015,8 @@ class Workspace:
         return {key: item for key, item in value.items() if not key.startswith("_")}
 
     def trace(self, slug: str, ticket: int) -> dict:
+        from factory import trace
+
         cfg = self.repository_config(slug)
         return trace.explain(trace.read_rows(cfg.factory / "events.jsonl"), ticket)
 
