@@ -7,8 +7,7 @@ import sys
 import unittest
 from unittest import mock
 
-from factory import config, dispatch, lifecycle, manage
-from factory import results
+from factory import config, dispatch, lifecycle, manage, results
 from tests import test_dispatch_lifecycle as support
 
 
