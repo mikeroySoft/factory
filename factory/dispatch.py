@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 
-from factory import __version__, brief, config, generation, lifecycle, risk, runner
+from factory import __version__, brief, config, generation, lifecycle, risk, runner, runtime_events
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -1216,6 +1216,24 @@ def attempt_plan_dir(wt: Path, _attempt: int) -> Path:
     return wt / ".factory" / "plans" / "current"
 
 
+def _bounded_failure_details(row: dict) -> dict[str, str]:
+    details = row["failure_details"]
+    if len(lifecycle._dump([row])) <= runtime_events.ROW_LIMIT:
+        return details
+    # Keep a tail from every source; budget the actual envelope, UTF-8, escapes and newline.
+    low, high = 0, runtime_events.ROW_LIMIT
+    while low < high:
+        limit = (low + high + 1) // 2
+        candidate = {**row, "failure_details": {
+            title: text[-limit:] for title, text in details.items()
+        }}
+        if len(lifecycle._dump([candidate])) <= runtime_events.ROW_LIMIT:
+            low = limit
+        else:
+            high = limit - 1
+    return {title: text[-low:] if low else "" for title, text in details.items()}
+
+
 def record(event: str, **fields: object) -> None:
     """Append one row to .factory/events.jsonl: the factory's audit trail.
 
@@ -1237,6 +1255,8 @@ def record(event: str, **fields: object) -> None:
         from factory import trace
 
         trace.validate(row)
+    if event == "escalate" and "failure_details" in row:
+        row["failure_details"] = _bounded_failure_details(row)
     lifecycle.append(EVENTS, row)
 
 
