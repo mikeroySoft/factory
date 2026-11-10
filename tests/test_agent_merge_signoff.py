@@ -89,6 +89,10 @@ class AgentMergeSignoffTest(unittest.TestCase):
         )
         self.assertFalse(git(repo, "show", "-s", f"--format={SIGNOFF_FORMAT}", human_merge))
 
+    def assert_original_commits_reachable(self, repo: Path, merge: str, existing: dict[str, str]) -> None:
+        ancestors = set(git(repo, "rev-list", merge).splitlines())
+        self.assertTrue(set(existing) <= ancestors, f"Original commits lost: {set(existing) - ancestors}")
+
     def test_upstream_sync_merge_signs_only_its_new_commit_and_honors_opt_out(self) -> None:
         for signoff in (True, False):
             with self.subTest(signoff=signoff), tempfile.TemporaryDirectory() as directory:
@@ -104,6 +108,8 @@ class AgentMergeSignoffTest(unittest.TestCase):
                 merge = git(repo, "rev-parse", "HEAD")
                 self.assert_merge_policy(repo, merge, signoff)
                 self.assert_history_untouched(repo, existing)
+
+                self.assert_original_commits_reachable(repo, merge, existing)
 
     def test_pr_refresh_merge_signs_only_its_new_commit_and_honors_opt_out(self) -> None:
         for signoff in (True, False):
@@ -144,6 +150,8 @@ class AgentMergeSignoffTest(unittest.TestCase):
                 self.assert_merge_policy(wt, merge, signoff)
                 self.assert_history_untouched(repo, existing)
 
+                self.assert_original_commits_reachable(repo, merge, existing)
+
     def test_chore_refresh_merge_signs_only_its_new_commit_and_honors_opt_out(self) -> None:
         branch = "agent/curate-2026-11-06-t7"
         for signoff in (True, False):
@@ -160,6 +168,7 @@ class AgentMergeSignoffTest(unittest.TestCase):
                 merge = git(origin, "rev-parse", branch)
                 self.assert_merge_policy(repo, merge, signoff)
                 self.assert_history_untouched(repo, existing)
+                self.assert_original_commits_reachable(repo, merge, existing)
 
 
 if __name__ == "__main__":

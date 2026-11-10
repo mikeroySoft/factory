@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, manage
+from factory import results
 from tests import test_dispatch_lifecycle as support
 
 
@@ -206,6 +207,75 @@ class GateFixupsTest(unittest.TestCase):
         self.assertFalse(self.events("review"))
         self.assertEqual([row["code"] for row in self.events("escalate")], ["pr_checks_failed"])
         self.assertEqual(self.count.read_text(), "ran\n")
+
+    def finished_worker(self):
+        self.f.worker.write_text(
+            self.f.worker.read_text()
+            + "import subprocess\n"
+            + "subprocess.run(['git', 'add', 'change.txt'], check=True)\n"
+            + "subprocess.run(['git', 'commit', '-qm', 'worker finished'], check=True)\n"
+            + "Path('.factory').mkdir(exist_ok=True)\n"
+            + "Path('.factory/handoff-7.md').write_text('## Changed\\nDone.\\n"
+            + "## Still unverified\\nNone.\\n## Next\\nNothing.\\n')\n"
+        )
+
+    def test_pr_repaired_head_retains_handoff_after_source_removal(self):
+        self.configure("Path('fixed.txt').write_text('pr fix\\n')\n", pr=True)
+        self.finished_worker()
+        self.f.cli("dispatch", "--ticket", "7")
+        [approved] = self.events("approved")
+        [repair] = self.events("gate-fixup")
+        head = approved["head"]
+        source = self.f.repo / ".factory/wt-7/.factory/handoff-7.md"
+        content = source.read_text()
+        cfg = config.Config(self.f.repo, "local/smoke")
+        retained = results.retain(cfg, 7, head, lifecycle.read_events(self.f.events))
+        self.assertTrue(retained["cleanup_safe"], retained)
+        self.assertEqual(retained["manifest"]["acceptance"]["gate"]["event_id"], repair["event_id"])
+        source.unlink()
+        page = results.read_result(cfg, 7, head)
+        self.assertEqual((page["status"], page["text"]), ("complete", content))
+        self.assertTrue(results.retain(cfg, 7, head, lifecycle.read_events(self.f.events))["cleanup_safe"])
+
+    def pr_repair_after_deadline(self, *, finished):
+        self.configure("Path('fixed.txt').write_text('pr fix\\n')\n", pr=True)
+        if finished:
+            self.finished_worker()
+        self.f.state.write_text("{}")
+        clock = [0]
+        real_review = dispatch.review
+
+        def review(*args, **kwargs):
+            verdict = real_review(*args, **kwargs)
+            clock[0] = 10_000
+            return verdict
+
+        issue = {"number": 7, "title": "local change", "body": "Acceptance: make the local change",
+                 "comments": [], "labels": [{"name": "ready-for-agent"}]}
+        with mock.patch.dict(os.environ, self.f.env), \
+                mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(dispatch, "review", side_effect=review):
+            dispatch.configure(config.load(self.f.repo))
+            dispatch.process_ticket(issue, 1, False, forced=True)
+        [attempt] = self.events("attempt")
+        [repair] = self.events("gate-fixup")
+        self.assertEqual(attempt["finished"], finished)
+        self.assertEqual(repair["previous_head"], attempt["head"])
+        self.assertNotEqual(repair["head"], attempt["head"])
+        return repair["head"]
+
+    def test_pr_repaired_finished_worker_defers_actionable_rework_after_deadline(self):
+        head = self.pr_repair_after_deadline(finished=True)
+        self.assertEqual(self.events("escalate"), [])
+        [rework] = self.events("review-rework")
+        self.assertEqual((rework["head"], rework["deferred"], rework["round"]), (head, True, 1))
+        self.assertIn("First review requires revision.", rework["findings"])
+
+    def test_pr_repair_does_not_mark_unfinished_worker_finished(self):
+        self.pr_repair_after_deadline(finished=False)
+        self.assertEqual(self.events("review-rework"), [])
+        self.assertEqual([row["code"] for row in self.events("escalate")], ["budget"])
+
 
 
 if __name__ == "__main__":
