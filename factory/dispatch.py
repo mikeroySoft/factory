@@ -2984,6 +2984,15 @@ def _worker_model_for_head(n: int, head: str) -> str | None:
     ), None)
 
 
+def _worker_finished_for_head(n: int, head: str) -> bool:
+    return next((
+        event.get("finished", False)
+        for event in reversed(lifecycle.read_events(EVENTS))
+        if event.get("ticket") == n and event.get("head") == head
+        and event.get("event") in {"attempt", "gate-fixup"}
+    ), False)
+
+
 def risk_disagreement_packet(
     head: str, rules: list[str], primary: str, primary_findings: str,
     second: str, second_findings: str, mutation: str, mutation_findings: str,
@@ -3058,6 +3067,7 @@ def pr_gate_and_review(
                     record(
                         "gate-fixup", ticket=n, head=candidate, previous_head=head,
                         gate="PASS", actual_head=actual, clean=True,
+                        finished=_worker_finished_for_head(n, head),
                     )
                     push_agent(wt, n, head)
                     record_risk(wt, n, candidate)
@@ -5315,12 +5325,7 @@ def process_ticket(
                 ):
                     break
                 if time.monotonic() > deadline:
-                    finished = next((
-                        row.get("finished", False)
-                        for row in reversed(lifecycle.read_events(EVENTS))
-                        if row.get("event") == "attempt" and row.get("ticket") == n
-                        and row.get("head") == gate_head
-                    ), False)
+                    finished = _worker_finished_for_head(n, gate_head)
                     if actionable and finished:
                         _record_rework(n, gate_head, findings, deferred=True)
                         execution.wait("review_rework", mode="retry_next_pass", head=gate_head)

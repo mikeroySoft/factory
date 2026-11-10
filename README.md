@@ -1118,6 +1118,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    their existing same-head retry; PR-tier failures get one pass per uncached
    head, then recheck the attempt gate before publishing and reviewing a new
    head. Protected-path checks still apply to every repair commit.
+   A PR repair's `gate-fixup` receipt binds acceptance and handoff retention to
+   the repaired head and carries forward the previous head's recorded worker
+   completion, so a late actionable review can still defer rework to the next pass.
    With `[dispatch].signoff = true` (the default), Factory signs off merge commits
    at creation, including upstream sync and refresh merges. It never retrofits
    trailers by amending or rewriting human or other pre-existing commits.
