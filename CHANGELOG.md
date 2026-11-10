@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+
+## 0.4.9 — 2026-11-09
+
 - `factory install` and `doctor` reject a service interpreter that imports Factory from the repository checkout even when the import path spells the checkout through a directory alias (a symlinked checkout on `PYTHONPATH`, a `__path__` entry, or macOS `/var`) and the checkout file is a symlink.
 - On macOS, the doctor and install dashboard-port check also detects a listening `0.0.0.0` or `::` holder, which BSD `SO_REUSEADDR` lets a `127.0.0.1` bind sit beside. A port passes as free there only when the host bind and both wildcard bind probes succeed, without consulting `ss`. Any detected holder still needs `ss` attribution: one that `ss` cannot attribute fails as in use by an unknown process, and a missing `ss` fails the check rather than reporting the port free.
 - Decision lock files are created with `O_CREAT|O_EXCL` and opened without `O_CREAT` after `EEXIST`, so on macOS a concurrent apply of the same proposal waits for the first and returns its receipt instead of failing `storage_unavailable` when its create raced the other apply's. A lock name removed after `EEXIST` is re-created at most three times; a removed directory or symlinked lock name still fails closed.
