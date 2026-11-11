@@ -122,25 +122,31 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
                 "PASS",
             )
 
-    def test_repeatedly_stale_proof_defers_without_worker_rework(self) -> None:
+    def test_twice_moved_base_defers_without_worker_rework(self) -> None:
         runs: dict[str, tuple[bool, str]] = {}
+        third_base = git(
+            self.repo, "commit-tree", f"{self.new_base}^{{tree}}",
+            "-p", self.new_base, "-m", "move main again",
+        )
+        moved_bases = iter((self.new_base, third_base))
 
         def stale_gate(*_args, **_kwargs):
-            git(self.repo, "update-ref", "refs/remotes/origin/main", self.new_base)
-            return True, proof("PASS", "f" * 40, self.head)
+            moved = next(moved_bases)
+            git(self.repo, "update-ref", "refs/remotes/origin/main", moved)
+            return True, proof("PASS", moved, self.head)
 
         with mock.patch.object(dispatch, "run_gate", side_effect=stale_gate) as runner:
             verdict, _, pr_failed = dispatch.pr_gate_and_review(
                 self.repo, 7, "attempt report", self.head, runs,
             )
-        self.assertEqual((verdict, pr_failed), (None, False))
+        self.assertEqual((verdict, pr_failed), ("WAIT", False))
         self.assertEqual(runner.call_count, 2)
         self.assertNotIn(self.head, runs)
         self.assertEqual(self.risk_failures(), [])
         self.assertEqual(self.review_roles, [])
 
         with mock.patch.object(dispatch, "run_gate", return_value=(
-            True, proof("PASS", self.new_base, self.head),
+            True, proof("PASS", third_base, self.head),
         )):
             recovered, _, failed = dispatch.pr_gate_and_review(
                 self.repo, 7, "attempt report", self.head, runs,
@@ -164,6 +170,31 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
         self.assertEqual(self.review_roles, ["primary", "second", "primary", "second"])
         self.assertEqual(gate.call_count, 1, "the recovered same-head proof remains cacheable")
         self.assertEqual(self.risk_failures(), [])
+
+    def test_stale_proof_without_base_move_fails_closed(self) -> None:
+        report = proof("PASS", self.old_base, "f" * 40)
+        with mock.patch.object(dispatch, "run_gate", return_value=(True, report)) as runner:
+            verdict, findings, pr_failed = dispatch.pr_gate_and_review(
+                self.repo, 7, "attempt report", self.head, {},
+            )
+
+        self.assertEqual((verdict, pr_failed), ("REVISE", True))
+        self.assertEqual(findings, report)
+        self.assertEqual(runner.call_count, 1)
+        self.assertEqual(len(self.risk_failures()), 1)
+        self.assertEqual(self.review_roles, [])
+
+    def test_unbound_proof_fails_closed(self) -> None:
+        report = "- mutation: PASS\n"
+        with mock.patch.object(dispatch, "run_gate", return_value=(True, report)):
+            verdict, findings, pr_failed = dispatch.pr_gate_and_review(
+                self.repo, 7, "attempt report", self.head, {},
+            )
+
+        self.assertEqual((verdict, pr_failed), ("REVISE", True))
+        self.assertEqual(findings, report)
+        self.assertEqual(len(self.risk_failures()), 1)
+        self.assertEqual(self.review_roles, [])
 
     def test_real_pr_gate_failure_still_returns_revise_and_records_failure(self) -> None:
         report = proof("PASS", self.old_base, self.head) + "- protected-paths: FAIL\n"
