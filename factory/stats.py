@@ -16,7 +16,7 @@ from pathlib import Path
 from statistics import pstdev
 from typing import Any
 
-from factory import config, feedback, lifecycle, onboard, risk
+from factory import config, feedback, github, lifecycle, onboard, risk
 from factory.config import LABEL_AGENT, LABEL_HUMAN, USAGE_FIELDS, Config
 
 cfg: Config
@@ -46,7 +46,7 @@ def gh(*args: str) -> Any:
     if completed.returncode:
         print(completed.stderr.strip() or "gh command failed", file=sys.stderr)
         raise SystemExit(completed.returncode)
-    return json.loads(completed.stdout)
+    return github.json_output(args, completed.stdout)
 
 
 def graphql(*, query: str, variables: dict) -> dict:
@@ -353,13 +353,14 @@ def weekly_metrics(
 
 def stuck_over_days(now: datetime, days: int = 7) -> list[dict] | str:
     """One bounded GitHub read for stale open ready-for-human issues."""
+    args = ["issue", "list", "--repo", REPOSITORY, "--state", "open",
+            "--label", LABEL_HUMAN, "--limit", "1000", "--json", "number,title,url,updatedAt"]
     try:
         completed = subprocess.run(
-            ["gh", "issue", "list", "--repo", REPOSITORY, "--state", "open",
-             "--label", LABEL_HUMAN, "--limit", "1000", "--json", "number,title,url,updatedAt"],
+            ["gh", *args],
             text=True, capture_output=True, check=False, timeout=10,
         )
-        issues = json.loads(completed.stdout) if completed.returncode == 0 else None
+        issues = github.json_output(args, completed.stdout) if completed.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
         return "unavailable"
     if not isinstance(issues, list):

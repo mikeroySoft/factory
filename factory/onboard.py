@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, config, lifecycle
+from factory import __version__, config, github, lifecycle
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -567,9 +567,10 @@ def doctor(argv: list[str]) -> int:
     level = perm.stdout.strip()
     report(level in ("WRITE", "MAINTAIN", "ADMIN"), f"push access to {cfg.repo}", level or perm.stderr.strip())
 
-    labels = sh(["gh", "label", "list", "--repo", cfg.repo, "--limit", "200", "--json", "name", "--jq", "[.[].name]"])
+    label_args = ["label", "list", "--repo", cfg.repo, "--limit", "200", "--json", "name", "--jq", "[.[].name]"]
+    labels = sh(["gh", *label_args])
     try:
-        have = set(json.loads(labels.stdout or "[]"))
+        have = set(github.json_output(label_args, labels.stdout or "[]"))
     except ValueError:
         have = set()
     missing = sorted(set(LABELS) - have)

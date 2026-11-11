@@ -968,6 +968,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 
 ## How a ticket moves
 
+GitHub CLI issue/PR listings use explicit limits (normally 1000; watch's bug
+lookup uses 200). A result count at or above its limit aborts with a possible
+truncation error before pipeline or metrics decisions use the partial list.
+Raise that call's limit above the repository population or implement exhausted
+pagination before retrying. Doctor applies the same check to its 200-label
+listing. For `stats --week`, command/network failures still leave
+`stuck_over_days` unavailable; a saturated list is an error, not a stale-ticket
+count.
+
 1. **Triage.** Runtime bugs filed by `factory watch` (the issue number is in a
    journaled `watch` row, or the issue's author is the account triage posts
    as, because another install's watch routed it here; with a first-line

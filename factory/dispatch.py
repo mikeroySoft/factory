@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 
-from factory import __version__, brief, config, generation, lifecycle, risk, runner
+from factory import __version__, brief, config, generation, github, lifecycle, risk, runner
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -286,7 +286,7 @@ def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedP
 
 def gh_json(args: list[str], env: dict[str, str] | None = None) -> object:
     out = run(["gh", *args], env=env).stdout
-    return json.loads(out)
+    return github.json_output(args, out)
 
 
 # Held around every ticket pipeline's `git fetch` and `git push`: concurrent tickets share the
@@ -651,7 +651,7 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
         # Only a later election can supersede the expired owner's transition.
         if "requeue" not in elected_host_claim(claims) and gh_json(
             ["pr", "list", "--repo", REPO, "--state", "open",
-             "--head", f"agent/{n}", "--json", "number"]
+             "--head", f"agent/{n}", "--limit", "1000", "--json", "number"]
         ):
             return "open PR"
     return None
@@ -3159,7 +3159,7 @@ def push_and_pr(
     if int(ahead) == 0:
         return False
     existing = gh_json(
-        ["pr", "list", "--repo", REPO, "--head", branch, "--json", "number,baseRefName"]
+        ["pr", "list", "--repo", REPO, "--head", branch, "--limit", "1000", "--json", "number,baseRefName"]
     )
     if existing and existing[0].get("baseRefName") != cfg.main:
         log(
@@ -3262,7 +3262,7 @@ def open_sync_issue() -> int | None:
             "--state",
             "open",
             "--limit",
-            "200",
+            "1000",
             "--json",
             "number,title",
         ]
@@ -4306,6 +4306,8 @@ def merge_pass_locked(dry_run: bool) -> None:
             REPO,
             "--state",
             "open",
+            "--limit",
+            "1000",
             "--json",
             "number,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision",
         ]
