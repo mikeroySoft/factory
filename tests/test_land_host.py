@@ -229,6 +229,37 @@ class LandHostTest(unittest.TestCase):
         self.assertTrue(self.github.merged)
         self.assertEqual([row["head"] for row in self.events(tank, "merged")], [head])
 
+    def test_foreign_claimed_pr_does_not_end_merge_pass_before_own_pr(self):
+        tank = self.dispatcher("tank")
+        self.claim("ultron")
+        foreign_claims = self.comments.copy()
+        self.comments.clear()
+        self.claim("tank")
+        head = self.approve(tank)
+        tank_json = tank.gh_json.side_effect
+
+        def two_prs(args):
+            if args[:2] == ["pr", "list"]:
+                # PR #101 (ticket 8, elected by ultron) sorts before tank's PR #102.
+                return [*tank_json(args), {**self.github.pr(), "number": 101, "headRefName": "agent/8"}]
+            if args[:3] == ["api", "--paginate", "--slurp"] and "/issues/8/" in args[3]:
+                self.reads["tank"].append(args)
+                return [foreign_claims]
+            return tank_json(args)
+
+        with mock.patch.object(tank, "gh_json", side_effect=two_prs), \
+                mock.patch.object(tank, "pr_checks", wraps=tank.pr_checks) as checks:
+            tank.merge_pass_locked(False)
+        self.assertEqual({call.args[0] for call in checks.call_args_list}, {102})
+        self.assertTrue(self.github.merged)
+        self.assertEqual([(row["pr"], row["head"]) for row in self.events(tank, "merged")], [(102, head)])
+        self.assertEqual(self.events(tank, "escalate"), [])
+        self.assertFalse(any("101" in cmd or "agent/8" in cmd or "origin/agent/8" in cmd
+                             for cmd in self.commands["tank"]))
+        foreign_reads = [args for args in self.reads["tank"]
+                         if "101" in args or any(arg == "8" or "/issues/8/" in arg for arg in args)]
+        self.assertEqual(foreign_reads, [["api", "--paginate", "--slurp", "repos/acme/widgets/issues/8/comments"]])
+
     def test_single_host_without_host_name_still_lands(self):
         single = self.dispatcher(None)
         # land_host, like triage_host, is ignored when host_name is absent.
