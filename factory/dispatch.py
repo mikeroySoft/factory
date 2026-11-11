@@ -1999,8 +1999,8 @@ def _launch_failure(wt: Path, logfile: Path, offset: int, launch_head: str, code
     return "auth_failed", stderr_tail(line.strip())[-200:]
 
 
-class WorktreeDiverged(RuntimeError):
-    """A kept worktree and a journaled dispatcher push have diverged."""
+class WorktreeReconcileError(RuntimeError):
+    """A kept worktree cannot safely advance to a journaled dispatcher push."""
 
 
 def ensure_worktree(n: int) -> Path:
@@ -2028,12 +2028,18 @@ def ensure_worktree(n: int) -> Path:
                 return wt
             if run(["git", "merge-base", "--is-ancestor", head, remote], cwd=wt, check=False).returncode:
                 local_only = run(["git", "log", "--format=%H %s", f"{remote}..HEAD"], cwd=wt).stdout.strip()
-                raise WorktreeDiverged(
+                raise WorktreeReconcileError(
                     f"agent/{n}: kept HEAD {head} has local-only commits relative to dispatcher-pushed "
                     f"origin/agent/{n} {remote}; worktree kept at {wt}; reconcile before a worker runs:\n"
                     f"{local_only}"
                 )
-            run(["git", "merge", "--ff-only", remote], cwd=wt)
+            merged = run(["git", "merge", "--ff-only", remote], cwd=wt, check=False)
+            if merged.returncode:
+                raise WorktreeReconcileError(
+                    f"agent/{n}: could not fast-forward kept HEAD {head} to dispatcher-pushed "
+                    f"origin/agent/{n} {remote}; worktree kept at {wt}; reconcile before a worker runs:\n"
+                    f"{stderr_tail(merged.stderr or merged.stdout)}"
+                )
             record("worktree-fast-forward", ticket=n, before=head, head=remote)
         return wt
     with _REMOTE_REFS:
@@ -3989,7 +3995,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         return False
     try:
         wt = ensure_worktree(n)
-    except WorktreeDiverged as exc:
+    except WorktreeReconcileError as exc:
         escalate(n, str(exc), None, code="lease_refused")
         return False
 
@@ -5321,7 +5327,7 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
-        except (LeaseRefused, WorktreeDiverged) as exc:
+        except (LeaseRefused, WorktreeReconcileError) as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except WorkerUnavailable as exc:
             # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.
