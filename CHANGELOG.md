@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `exit_grace` no longer terminates a worker that committed or wrote its handoff and is still waiting on a live child process (its gate run or a commit). The quiet clock holds while any descendant or member of the worker's process group is alive, read with one `ps` call when the grace would fire, and restarts when the last child ends; a worker with no live children is still terminated after `exit_grace` seconds (#761).
+- `exit_grace` no longer terminates a worker that committed or wrote its handoff while its child processes are still using CPU (its gate run or a commit it waits on). Once the worker is done, each poll reads its descendants and process-group members with one `ps` call; a child appearing, using CPU or ending counts as activity, so the clock runs a full `exit_grace` from when they stop. An idle helper child (an eval kernel, an MCP server) does not hold it, and a worker with no busy children is still terminated after `exit_grace` seconds (#761).
 
 ## 0.4.9 — 2026-11-09
 

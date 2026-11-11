@@ -1071,8 +1071,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `[dispatch].idle_timeout` minutes is killed as `stuck` (a failed attempt,
    retried). One that committed or wrote its handoff, then stayed quiet for
    `[dispatch].exit_grace` seconds without exiting, is terminated and gated;
-   that clock waits while the worker still has a live child process (a gate
-   or commit it is waiting on) and restarts when the last one ends.
+   a worker whose child processes are still using CPU (a gate or commit it
+   waits on) is not quiet, so that clock runs from when they stop; an idle
+   helper child (an eval kernel or MCP server) does not hold it.
    The attempt journal row and escalation packet name the timeout that fired.
    If a budget-killed worker never reaches its next gate and the ticket's last
    gate in the current generation passed, escalation uses `budget`, not

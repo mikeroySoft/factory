@@ -1783,23 +1783,34 @@ def _activity(wt: Path, logfile: Path, handoff: Path) -> tuple:
             git("status", "--porcelain", "--untracked-files=all"), stat(handoff))
 
 
-def _live_children(root_pid: int) -> list[int]:
-    """Live (non-zombie) descendants of `root_pid` or members of its process group, excluding it.
-    One portable `ps` call (no /proc on macOS); [] when `ps` fails or prints nothing usable."""
+def _live_children(root_pid: int) -> dict[int, float]:
+    """Live (non-zombie) descendants of `root_pid` or members of its process group, excluding it,
+    mapped to their cumulative CPU seconds. One portable `ps` call (no /proc on macOS); {} when
+    `ps` fails or prints nothing usable."""
+    def cpu(text: str) -> float:
+        # Linux `[[DD-]HH:]MM:SS`, macOS `M:SS.hh` / `H:MM:SS.hh`; unparsable -> 0.0.
+        with suppress(ValueError):
+            days, _, clock = text.rpartition("-")
+            seconds = 0.0
+            for part in clock.split(":"):
+                seconds = seconds * 60 + float(part)
+            return (int(days) if days else 0) * 86400 + seconds
+        return 0.0
+
     try:
         out = subprocess.run(
-            ["ps", "-A", "-o", "pid=,ppid=,pgid=,stat="],
+            ["ps", "-A", "-o", "pid=,ppid=,pgid=,stat=,time="],
             capture_output=True, encoding="utf-8", errors="replace", check=False, timeout=5,
         ).stdout
     except (OSError, subprocess.SubprocessError):
-        return []
+        return {}
     rows = {}
     for line in out.splitlines():
         with suppress(ValueError, IndexError):
             fields = line.split()
-            rows[int(fields[0])] = (int(fields[1]), int(fields[2]), fields[3])
+            rows[int(fields[0])] = (int(fields[1]), int(fields[2]), fields[3], cpu(fields[4]))
     kids: dict[int, list[int]] = {}
-    for pid, (ppid, _, _) in rows.items():
+    for pid, (ppid, *_) in rows.items():
         kids.setdefault(ppid, []).append(pid)
     tree, todo = set(), [root_pid]
     while todo:
@@ -1807,19 +1818,19 @@ def _live_children(root_pid: int) -> list[int]:
             if kid not in tree:
                 tree.add(kid)
                 todo.append(kid)
-    return sorted(
-        pid for pid, (_, pgid, stat) in rows.items()
+    return {
+        pid: seconds for pid, (_, pgid, stat, seconds) in rows.items()
         if pid != root_pid and (pid in tree or pgid == root_pid) and not stat.startswith("Z")
-    )
+    }
 
 
 def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadline: float,
            start: tuple) -> str | None:
     """Wait for the worker to exit; None if it did, else the timeout that fired first.
-    `exit_grace` counts quiet time only once the worker has no live children (a gate or commit
-    it waits on). Raises KeyboardInterrupt within WATCH_POLL of the dispatcher's interrupt; the
-    caller stops the worker."""
-    state, changed, waited = start, time.monotonic(), False
+    Once done, a child appearing, using CPU or ending counts as activity for `exit_grace` (a gate
+    or commit it waits on); an idle helper child does not. Raises KeyboardInterrupt within
+    WATCH_POLL of the dispatcher's interrupt; the caller stops the worker."""
+    state, changed, children = start, time.monotonic(), ()
     while True:
         try:
             proc.wait(timeout=WATCH_POLL)
@@ -1828,19 +1839,20 @@ def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadl
             raise_if_interrupted()
         now, current = time.monotonic(), _activity(wt, logfile, handoff)
         if current != state:
-            state, changed, waited = current, now, False
-        quiet = now - changed
+            state, changed = current, now
         # Done: committed or wrote its handoff during this run. A done worker is never "stuck".
         done = current[1] != start[1] or current[3] != start[3]
+        if done and cfg.exit_grace:
+            # Compare pid -> CPU seconds each poll: a busy gate keeps changing it, the last child
+            # ending changes it once more, and an idle helper (eval kernel, MCP server) never does.
+            seen = tuple(sorted(_live_children(proc.pid).items()))
+            if seen != children:
+                children, changed = seen, now
+        quiet = now - changed
         if now >= deadline:
             return "budget_min"
         if done and cfg.exit_grace and quiet >= cfg.exit_grace:
-            if _live_children(proc.pid):
-                waited = True  # still waiting on its own child (gate, commit): not hung; recheck each poll
-            elif waited:
-                changed, waited = now, False  # its child just ended: a full grace from now
-            else:
-                return "exit_grace"
+            return "exit_grace"
         if not done and cfg.idle_timeout and quiet >= cfg.idle_timeout * 60:
             return "idle_timeout"
 
@@ -1871,7 +1883,7 @@ def run_worker(
     """Run the worker; return its exit code and the timeout that stopped it, if any.
 
     `idle_timeout`: no log output and no worktree change (stuck mid-work).
-    `exit_grace`: committed or wrote `handoff`, then stayed quiet with no live children, without exiting.
+    `exit_grace`: committed or wrote `handoff`, then stayed quiet (no child CPU use either), without exiting.
     `budget_min`: the ticket's overall wall-clock deadline passed.
     Evaluation replays set `journal=False`; their aggregate result is the durable evidence.
     """
