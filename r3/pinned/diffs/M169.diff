@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -43,5 +43,5 @@
+     try:
+         processes = list(Path("/proc").iterdir())
+-    except OSError:
++    except CosmicRayTestingException:
+         return False
+     for process in processes:

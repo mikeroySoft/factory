@@ -1,0 +1,152 @@
+# Throwaway proof workflow for factory PR #694 class (a) mutants (ruling r3-1630 / r3-2100).
+# Lives only on branch r3-classA-ci. Never merged; no PR.
+name: r3-classA
+on:
+  push:
+    branches: [r3-classA-ci]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mutant:
+    name: mutant ${{ matrix.id }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        id: [M044, M071, M091, M098, M105, M132, M138, M141, M148, M169, M171, M194]
+    env:
+      MUTANT_ID: ${{ matrix.id }}
+      HEAD_SHA: 17797266029cf78b035e60252b98f2010237eb0f
+      BASE_SHA: 19457e840460e0163e1172f08580538c4dcae767
+      WRAPPER_SHA256: a67ab4a08e78687e76f244379bd88252e18e42e3ed2e1b88f3972ab37f115116
+      SELECTION_STAMP: 3dd1d72ed28e7da89781b5c47c1f2a4ee8db0c5e4aa77bfc60ab4baafed6a847
+    steps:
+      - name: Checkout pinned proof inputs (this branch)
+        uses: actions/checkout@v4
+        with:
+          path: inputs
+          persist-credentials: false
+      - name: Checkout factory at the pinned head
+        uses: actions/checkout@v4
+        with:
+          ref: 17797266029cf78b035e60252b98f2010237eb0f
+          fetch-depth: 0
+          path: clone
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+      - name: Hermetic environment (stub gh, empty gh config, ext4 TMPDIR, default SIGINT)
+        run: |
+          set -euo pipefail
+          R3_BASE="$RUNNER_TEMP/r3"
+          mkdir -p "$R3_BASE"/{tmp,uv-cache,gh-empty,stub,receipt,runs,logs}
+          printf '#!/bin/sh\necho "hermetic gh stub: no network" >&2\nexit 1\n' > "$R3_BASE/stub/gh"
+          chmod +x "$R3_BASE/stub/gh"
+          {
+            echo "R3_BASE=$R3_BASE"
+            echo "R3_CHECKOUT=$GITHUB_WORKSPACE/clone"
+            echo "R3_EXPECT=$GITHUB_WORKSPACE/inputs/r3/pinned"
+            echo "R3_VERIFY_OUT=$R3_BASE/receipt/wrapper-verify.json"
+            echo "TMPDIR=$R3_BASE/tmp"
+            echo "UV_CACHE_DIR=$R3_BASE/uv-cache"
+            echo "UV_PROJECT_ENVIRONMENT=$R3_BASE/venv"
+            echo "GH_TOKEN="
+            echo "GH_CONFIG_DIR=$R3_BASE/gh-empty"
+            echo "PYTHONDONTWRITEBYTECODE=1"
+            echo "PYTHONPATH=$GITHUB_WORKSPACE/clone"
+            echo "NO_COLOR=1"
+          } >> "$GITHUB_ENV"
+          echo "$R3_BASE/stub" >> "$GITHUB_PATH"
+      - name: Verify wrapper and pinned inputs by sha256
+        run: |
+          set -euo pipefail
+          cd inputs/r3
+          got="$(sha256sum wrapper/rerun-r3-wrapper.py | cut -d' ' -f1)"
+          test "$got" = "$WRAPPER_SHA256" || { echo "WRAPPER SHA MISMATCH: $got"; exit 1; }
+          sha256sum -c SHA256SUMS
+          grep -q "$SELECTION_STAMP" pinned/mutants200.json
+          echo "wrapper sha256 OK: $got"
+      - name: Install like CI (uv sync, frozen, system python) and warm the uv cache
+        run: |
+          set -euo pipefail
+          # CI: pip install '.[atlas]' plus a frozen uv sync of the mutation group with the runner python.
+          # Both land in one env here so the wrapper python has factory, atlas and cosmic-ray.
+          uv sync --project clone --frozen --no-managed-python --python "$(python -c 'import sys; print(sys.executable)')" --extra atlas --group mutation
+          echo "$R3_BASE/venv/bin" >> "$GITHUB_PATH"
+          echo "UV_OFFLINE=1" >> "$GITHUB_ENV"
+      - name: Receipt
+        run: |
+          set -euo pipefail
+          for v in UV_NO_SYNC VIRTUAL_ENV ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_API_KEY FACTORY_MUTATION_PROOF FACTORY_MUTATION_PROOF_BASE GITHUB_TOKEN GH_ENTERPRISE_TOKEN; do
+            if [ -n "${!v-}" ]; then echo "forbidden env set: $v"; exit 1; fi
+          done
+          if env | grep -q '^UV_NO_INSTALL'; then echo "forbidden UV_NO_INSTALL*"; exit 1; fi
+          PY="$R3_BASE/venv/bin/python"
+          sigint="$("$PY" -c 'import signal; print(signal.getsignal(signal.SIGINT) is signal.default_int_handler)')"
+          test "$sigint" = True
+          cd clone
+          head="$(git rev-parse HEAD)"
+          mb="$(git merge-base HEAD 19457e84)"
+          test "$head" = "$HEAD_SHA"
+          test "$mb" = "$BASE_SHA"
+          export HEAD_OBSERVED="$head" MERGE_BASE_OBSERVED="$mb"
+          python3 - <<'PY'
+          import json, os, platform, subprocess, hashlib, pathlib
+          def sh(*a, **k):
+              return subprocess.run(a, capture_output=True, text=True, **k).stdout.strip()
+          base = os.environ["R3_BASE"]
+          receipt = {
+            "mutant_id": os.environ["MUTANT_ID"],
+            "run_url": f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
+            "workflow_commit": os.environ["GITHUB_SHA"],
+            "checked_out_head": os.environ["HEAD_OBSERVED"],
+            "merge_base_19457e84": os.environ["MERGE_BASE_OBSERVED"],
+            "wrapper_sha256": hashlib.sha256(pathlib.Path(os.environ["GITHUB_WORKSPACE"], "inputs/r3/wrapper/rerun-r3-wrapper.py").read_bytes()).hexdigest(),
+            "wrapper_sha256_expected": os.environ["WRAPPER_SHA256"],
+            "mutants200_sha256": hashlib.sha256(pathlib.Path(os.environ["R3_EXPECT"], "mutants200.json").read_bytes()).hexdigest(),
+            "selection_stamp": os.environ["SELECTION_STAMP"],
+            "R3_BASE": base, "R3_CHECKOUT": os.environ["R3_CHECKOUT"], "R3_EXPECT": os.environ["R3_EXPECT"],
+            "R3_VERIFY_OUT": os.environ["R3_VERIFY_OUT"], "TMPDIR": os.environ["TMPDIR"], "UV_CACHE_DIR": os.environ["UV_CACHE_DIR"],
+            "GH_TOKEN_set_empty": os.environ.get("GH_TOKEN") == "", "GH_CONFIG_DIR": os.environ["GH_CONFIG_DIR"],
+            "gh_resolves_to": sh("bash", "-c", "command -v gh"),
+            "gh_stub_exit": subprocess.run(["gh", "pr", "checks", "1"], capture_output=True).returncode,
+            "sigint_default": True,
+            "uv_offline": os.environ.get("UV_OFFLINE"),
+            "python": sh(f"{base}/venv/bin/python", "-VV"), "system_python": sh("/usr/bin/python3", "-VV"),
+            "uv": sh("uv", "--version"), "git": sh("git", "--version"),
+            "tmpdir_stat_f": sh("stat", "-f", os.environ["TMPDIR"]),
+            "tmpdir_df": sh("df", "-T", os.environ["TMPDIR"]),
+            "runner_image": os.environ.get("ImageVersion"), "runner_os": os.environ.get("ImageOS"),
+            "nproc": sh("nproc"),
+            "clone_git_status_porcelain": sh("git", "-C", os.environ["R3_CHECKOUT"], "status", "--porcelain"),
+            "env_var_names": sorted(os.environ),
+          }
+          pathlib.Path(base, "receipt", "receipt.json").write_text(json.dumps(receipt, indent=1))
+          print(json.dumps({k: v for k, v in receipt.items() if k != "env_var_names"}, indent=1))
+          PY
+      - name: Wrapper verify (dry, runs no tests)
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/inputs/r3/wrapper/rerun-r3-wrapper.py" verify "$MUTANT_ID" 2>&1 | tee "$R3_BASE/logs/classA-verify-$MUTANT_ID.log"
+          grep -q '^ALL-MATCH' "$R3_BASE/logs/classA-verify-$MUTANT_ID.log"
+      - name: Wrapper run (baseline then one mutant)
+        run: |
+          set +e
+          python "$GITHUB_WORKSPACE/inputs/r3/wrapper/rerun-r3-wrapper.py" run --go r3-1630 "$R3_BASE/runs/classA-$MUTANT_ID" --workers 1 --duration 12700 "$MUTANT_ID" > "$R3_BASE/logs/classA-run-$MUTANT_ID.out" 2>&1
+          code=$?
+          echo "{\"wrapper_process_exit\": $code}" > "$R3_BASE/receipt/wrapper-process-exit.json"
+          tail -n 60 "$R3_BASE/logs/classA-run-$MUTANT_ID.out"
+          exit $code
+      - name: Upload proof artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r3-classA-${{ matrix.id }}
+          path: |
+            ${{ runner.temp }}/r3/runs
+            ${{ runner.temp }}/r3/logs
+            ${{ runner.temp }}/r3/receipt
+          if-no-files-found: warn

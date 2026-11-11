@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -52,5 +52,5 @@
+                 continue
+             stat = (process / "stat").read_bytes()
+-            if stat[stat.rfind(b")") + 2:].split()[0] in {b"Z", b"X"}:
++            if stat[stat.rfind(b")") ** 2:].split()[0] in {b"Z", b"X"}:
+                 continue
+         except (OSError, IndexError):

@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -54,5 +54,5 @@
+             if stat[stat.rfind(b")") + 2:].split()[0] in {b"Z", b"X"}:
+                 continue
+-        except (OSError, IndexError):
++        except (CosmicRayTestingException, IndexError):
+             continue
+         with suppress(OSError):

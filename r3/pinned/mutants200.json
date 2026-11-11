@@ -1,0 +1,4209 @@
+{
+ "selected_sha256": "3dd1d72ed28e7da89781b5c47c1f2a4ee8db0c5e4aa77bfc60ab4baafed6a847",
+ "head": "17797266029cf78b035e60252b98f2010237eb0f",
+ "seed": 197,
+ "cap": 200,
+ "hot": 1761,
+ "mutants": [
+  {
+   "id": "M000",
+   "index": 0,
+   "file": "factory/gate.py",
+   "line": 443,
+   "start_pos": [
+    443,
+    23
+   ],
+   "end_pos": [
+    443,
+    24
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_FloorDiv",
+   "operator_args": {},
+   "occurrence": 9,
+   "hot": true,
+   "describe": "`return refused + \"working tree is not a non-executable regular file\"` -> `return refused // \"working tree is not a non-executable regular file\"`",
+   "diff_sha256": "4bb77b445b54585f22d39abd272c56fdb9736dd062ad6a8271a08d7a3b42a523",
+   "mutated_sha256": "eef18c1f505d87bf63f3439fd65ecdd04498f78ae1237baed6fea68b2ee883dd"
+  },
+  {
+   "id": "M001",
+   "index": 1,
+   "file": "factory/decisions.py",
+   "line": 67,
+   "start_pos": [
+    67,
+    40
+   ],
+   "end_pos": [
+    67,
+    41
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Mod",
+   "operator_args": {},
+   "occurrence": 7,
+   "hot": true,
+   "describe": "`_LOCK_FLAGS = os.O_RDWR | os.O_NOFOLLOW | getattr(os, \"O_CLOEXEC\", 0)` -> `_LOCK_FLAGS = os.O_RDWR | os.O_NOFOLLOW % getattr(os, \"O_CLOEXEC\", 0)`",
+   "diff_sha256": "de3f34a1b16f99243f95edc3c681a934491d36e895a170e1b4906e1bdce9a333",
+   "mutated_sha256": "e23a99f167d1690ed980f6c594b0a473459a2815d658c9ea9db813210b39541e"
+  },
+  {
+   "id": "M002",
+   "index": 2,
+   "file": "factory/runner.py",
+   "line": 127,
+   "start_pos": [
+    127,
+    15
+   ],
+   "end_pos": [
+    127,
+    22
+   ],
+   "operator": "core/ExceptionReplacer",
+   "operator_args": {},
+   "occurrence": 5,
+   "hot": true,
+   "describe": "`except OSError as exc:` -> `except CosmicRayTestingException as exc:`",
+   "diff_sha256": "e338407eea275f4c027e6e42ee55aabd4bf4027d35e1cbc8c0023528ffd64eab",
+   "mutated_sha256": "b44136d45010464f85bb9741015d52f352a06dbadcfa6852c904bcc546c20e39"
+  },
+  {
+   "id": "M003",
+   "index": 3,
+   "file": "factory/gate.py",
+   "line": 1128,
+   "start_pos": [
+    1128,
+    37
+   ],
+   "end_pos": [
+    1128,
+    39
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_NotEq",
+   "operator_args": {},
+   "occurrence": 57,
+   "hot": true,
+   "describe": "`\"# Gate report\" if args.tier == \"attempt\" else f\"# Gate report ({args.tier} tier` -> `\"# Gate report\" if args.tier != \"attempt\" else f\"# Gate report ({args.tier} tier`",
+   "diff_sha256": "a481056c3587f62215f0429b31af82fa86712da68bb7e866f36fd6538e1051b8",
+   "mutated_sha256": "5defcd006c7b533d828564ef4f3802fd110aced298e3fe5e801270d9aad4624d"
+  },
+  {
+   "id": "M004",
+   "index": 4,
+   "file": "factory/gate.py",
+   "line": 193,
+   "start_pos": [
+    193,
+    23
+   ],
+   "end_pos": [
+    193,
+    25
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_GtE",
+   "operator_args": {},
+   "occurrence": 4,
+   "hot": true,
+   "describe": "`if (applicable == 0 and reason == \"no-applicable-files\" and not files` -> `if (applicable >= 0 and reason == \"no-applicable-files\" and not files`",
+   "diff_sha256": "29142b7570b9c5c77941c6ed1c634429539f603fa39b27c1934e99860cd2295d",
+   "mutated_sha256": "fbdda09dcad7ae3f0888a9fda85e80d066264bcde7eaf2fef4a9234871af6002"
+  },
+  {
+   "id": "M005",
+   "index": 5,
+   "file": "factory/mutation_scope.py",
+   "line": 86,
+   "start_pos": [
+    86,
+    32
+   ],
+   "end_pos": [
+    86,
+    33
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Pow",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`def resolve(ref: str, cwd: Path | None = None) -> str:` -> `def resolve(ref: str, cwd: Path ** None = None) -> str:`",
+   "diff_sha256": "5f00ecda9ff3c559386f79f479689fb810e54c3c9811a0761497642816b75670",
+   "mutated_sha256": "a5e0896c9560c1052e1e35124a7086a63bad14c357ad1afd8522919aaf87a628"
+  },
+  {
+   "id": "M006",
+   "index": 6,
+   "file": "factory/gate.py",
+   "line": 436,
+   "start_pos": [
+    436,
+    36
+   ],
+   "end_pos": [
+    436,
+    38
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Eq",
+   "operator_args": {},
+   "occurrence": 17,
+   "hot": true,
+   "describe": "`if (old_mode, new_mode, status) != (\"100644\", \"100644\", \"M\"):` -> `if (old_mode, new_mode, status) == (\"100644\", \"100644\", \"M\"):`",
+   "diff_sha256": "32bd5003730029e00d99ef03d9e07ee8a8a74a019a1c1e6823d9dd0932d4a6af",
+   "mutated_sha256": "718cf5c3bdb604fe5f6f241dafecdd4f3e383613faf5e4206ee721af0c4fea9f"
+  },
+  {
+   "id": "M007",
+   "index": 7,
+   "file": "factory/gate.py",
+   "line": 261,
+   "start_pos": [
+    261,
+    34
+   ],
+   "end_pos": [
+    261,
+    36
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_GtE",
+   "operator_args": {},
+   "occurrence": 10,
+   "hot": true,
+   "describe": "`if status != \"FAIL\" and after != expected:` -> `if status != \"FAIL\" and after >= expected:`",
+   "diff_sha256": "b1e6187f38758d145231a4994723e47ce833983f988a0f73601e39970cec4005",
+   "mutated_sha256": "44ea44ad45e789d31c0ad279f7c801051a508a66659582d4833f8bce58c23c50"
+  },
+  {
+   "id": "M008",
+   "index": 8,
+   "file": "factory/dispatch.py",
+   "line": 3037,
+   "start_pos": [
+    3037,
+    81
+   ],
+   "end_pos": [
+    3037,
+    83
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 114,
+   "hot": true,
+   "describe": "`verdict, proof_scope = _mutation_proof(pr_report, head, base_commit) or (\"FAIL\",` -> `verdict, proof_scope = _mutation_proof(pr_report, head, base_commit) and (\"FAIL\"`",
+   "diff_sha256": "b502b5bec550ec5fbaf200e6ee6516171856bd2404c6527e79408ac28e2026a0",
+   "mutated_sha256": "0d2e69e18c25c511ff0d829e4c221ad52aff0d5f3262ea0210ac4d14a4fd58c8"
+  },
+  {
+   "id": "M009",
+   "index": 9,
+   "file": "factory/gate.py",
+   "line": 484,
+   "start_pos": [
+    484,
+    37
+   ],
+   "end_pos": [
+    484,
+    38
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_FloorDiv",
+   "operator_args": {},
+   "occurrence": 16,
+   "hot": true,
+   "describe": "`transition: tuple[str, str, str] | None = None, transition_base: str | None = No` -> `transition: tuple[str, str, str] // None = None, transition_base: str | None = N`",
+   "diff_sha256": "7da9349eb81b35500508d6aad720ace1640007018a3e1b66e19aef559b8f636e",
+   "mutated_sha256": "9d8d38c91f1bb3e1bf9783b3383b1a093bf6be8d5e697d1006e75a1bcc0d72c0"
+  },
+  {
+   "id": "M010",
+   "index": 10,
+   "file": "factory/gate.py",
+   "line": 153,
+   "start_pos": [
+    153,
+    16
+   ],
+   "end_pos": [
+    153,
+    17
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_LShift",
+   "operator_args": {},
+   "occurrence": 6,
+   "hot": true,
+   "describe": "`data: bytes | None, returncode: int, expected: mutation_scope.Scope,` -> `data: bytes << None, returncode: int, expected: mutation_scope.Scope,`",
+   "diff_sha256": "b1a5a3f5046f1edcd6ea01a20fa61ec1dd432889edc4579c5f208f31a7866caa",
+   "mutated_sha256": "8b61ca514f378caab47f39aa067ad8d7502e5398b372966078f560adbfc99b58"
+  },
+  {
+   "id": "M011",
+   "index": 11,
+   "file": "factory/gate.py",
+   "line": 162,
+   "start_pos": [
+    162,
+    12
+   ],
+   "end_pos": [
+    162,
+    14
+   ],
+   "operator": "core/ReplaceComparisonOperator_Is_IsNot",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`if data is None:` -> `if data is not None:`",
+   "diff_sha256": "6b8079f56f3d6570400126c29ca617a1b1fa570ae155c085c61d9e2102ffc8a4",
+   "mutated_sha256": "98c8c149341d9dce951c7a7eca0fa3cc5871e486b3d85f134e249761129bbc54"
+  },
+  {
+   "id": "M012",
+   "index": 12,
+   "file": "factory/runner.py",
+   "line": 92,
+   "start_pos": [
+    92,
+    19
+   ],
+   "end_pos": [
+    92,
+    22
+   ],
+   "operator": "core/ReplaceUnaryOperator_Delete_Not",
+   "operator_args": {},
+   "occurrence": 3,
+   "hot": true,
+   "describe": "`if not _users(root):` -> `if  _users(root):`",
+   "diff_sha256": "c870b59285781253a626e65a3caa44b25906652efc4fa45bef95b352619266fd",
+   "mutated_sha256": "934de976a9fded5cfcbd300973066d8d889eeb100db59bc2262bf949d640cc79"
+  },
+  {
+   "id": "M013",
+   "index": 13,
+   "file": "factory/gate.py",
+   "line": 442,
+   "start_pos": [
+    442,
+    81
+   ],
+   "end_pos": [
+    442,
+    82
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitAnd_BitXor",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`if os.path.islink(path) or not os.path.isfile(path) or os.stat(path).st_mode & 0` -> `if os.path.islink(path) or not os.path.isfile(path) or os.stat(path).st_mode ^ 0`",
+   "diff_sha256": "42cc8c658e50b1e56fcd34b5819c9111cc76abdeab2f35294c17870a8d58a3f6",
+   "mutated_sha256": "f1f4c9b4d6422db89b57bd9c055bc2270afefe85b2287ad7d100ce6b9a7e0689"
+  },
+  {
+   "id": "M014",
+   "index": 14,
+   "file": "factory/mutation_scope.py",
+   "line": 124,
+   "start_pos": [
+    124,
+    53
+   ],
+   "end_pos": [
+    124,
+    54
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_LShift",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`files[path][1].update(range(start, start + count))` -> `files[path][1].update(range(start, start << count))`",
+   "diff_sha256": "4f565fe2c246821ded5cb272f8a31a5e382447784d73725588d4ee3fcc84786c",
+   "mutated_sha256": "2f51750dde474cc4a4cef4fa805ae06b348bef33fc594c87f000afa3adb6e197"
+  },
+  {
+   "id": "M015",
+   "index": 15,
+   "file": "factory/gate.py",
+   "line": 446,
+   "start_pos": [
+    446,
+    23
+   ],
+   "end_pos": [
+    446,
+    24
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_Mod",
+   "operator_args": {},
+   "occurrence": 10,
+   "hot": true,
+   "describe": "`return refused + f\"working tree {worktree or '-'}\"` -> `return refused % f\"working tree {worktree or '-'}\"`",
+   "diff_sha256": "3d281f3503b96f49407d3e64b0bc7770feeff025b4a2b4da84715e16896696fa",
+   "mutated_sha256": "5a64f49553b6f4fcd9bb37986a8ce5e8647842163f366b86ce8c809a6ec49b39"
+  },
+  {
+   "id": "M016",
+   "index": 16,
+   "file": "factory/dispatch.py",
+   "line": 2944,
+   "start_pos": [
+    2944,
+    19
+   ],
+   "end_pos": [
+    2944,
+    21
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Gt",
+   "operator_args": {},
+   "occurrence": 32,
+   "hot": true,
+   "describe": "`if len(proofs) != 1:` -> `if len(proofs) > 1:`",
+   "diff_sha256": "321198693a4fd035f396a94e40aa432ed8f34d1ce494a8192da789d43abb2a4b",
+   "mutated_sha256": "120c638ca95b3373bf7e493550da90f055829d8f6cff644f007f737524c2f490"
+  },
+  {
+   "id": "M017",
+   "index": 17,
+   "file": "factory/gate.py",
+   "line": 70,
+   "start_pos": [
+    70,
+    19
+   ],
+   "end_pos": [
+    70,
+    20
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Sub",
+   "operator_args": {},
+   "occurrence": 4,
+   "hot": true,
+   "describe": "`timeout: float | None = None,` -> `timeout: float - None = None,`",
+   "diff_sha256": "d6f2a2cc6592baff9792d1b7d4abb840bbf68519cf57bef2ac56a5752d0ccf6e",
+   "mutated_sha256": "48ad157134d671e67283a1ea38f7fa43cdeda558b8988e04182f273f910e4bc3"
+  },
+  {
+   "id": "M018",
+   "index": 18,
+   "file": "factory/runner.py",
+   "line": 129,
+   "start_pos": [
+    129,
+    45
+   ],
+   "end_pos": [
+    129,
+    46
+   ],
+   "operator": "core/ReplaceBinaryOperator_Mul_RShift",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`available = {\"bytes\": stats.f_bavail * stats.f_frsize, \"inodes\": stats.f_favail}` -> `available = {\"bytes\": stats.f_bavail >> stats.f_frsize, \"inodes\": stats.f_favail`",
+   "diff_sha256": "cf798424223611f4c076feff8f09eb66032311e165378a05a9700aefa3817743",
+   "mutated_sha256": "1882cdc39e795909090785b03ad3a77f0ccd063cb505a62a76423ad04c0d5bad"
+  },
+  {
+   "id": "M019",
+   "index": 19,
+   "file": "factory/runner.py",
+   "line": 97,
+   "start_pos": [
+    97,
+    12
+   ],
+   "end_pos": [
+    97,
+    20
+   ],
+   "operator": "core/ReplaceContinueWithBreak",
+   "operator_args": {},
+   "occurrence": 5,
+   "hot": true,
+   "describe": "`continue  # Held owner, concurrent reap, or unavailable directory.` -> `break  # Held owner, concurrent reap, or unavailable directory.`",
+   "diff_sha256": "c6e49592ab65b49220056bf9361368c443207fadd9cf19093cbdf2776c61fb0c",
+   "mutated_sha256": "1c035738b409ff24ec13ce5c6128e53728a957b2a241a56995e8ff720d5ec05c"
+  },
+  {
+   "id": "M020",
+   "index": 20,
+   "file": "factory/mutation_scope.py",
+   "line": 117,
+   "start_pos": [
+    117,
+    24
+   ],
+   "end_pos": [
+    117,
+    25
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`path = line[6:]` -> `path = line[ 7:]`",
+   "diff_sha256": "c796784ee1e8211e2b244cccbd352d85dcac1ee7b13cf4ac58c33b8adcedf4dd",
+   "mutated_sha256": "cd73689c279d9bf04b0cb2cb0ed4d7c01d9b01d95dcdd907163d0312c2360bb0"
+  },
+  {
+   "id": "M021",
+   "index": 21,
+   "file": "factory/gate.py",
+   "line": 207,
+   "start_pos": [
+    207,
+    34
+   ],
+   "end_pos": [
+    207,
+    36
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_NotEq",
+   "operator_args": {},
+   "occurrence": 10,
+   "hot": true,
+   "describe": "`and counts[\"not_started\"] == counts[\"cut_short\"] == counts[\"broken\"] == 0` -> `and counts[\"not_started\"] != counts[\"cut_short\"] == counts[\"broken\"] == 0`",
+   "diff_sha256": "61c8b534242afbd49c6065f2d57265f4e72056b25b03ccc382470487f0fbc5d2",
+   "mutated_sha256": "6453e43248987bb7f1c3a808ddc18d7b5f99c50d1ab3c58316d72b2e95d2ac3c"
+  },
+  {
+   "id": "M022",
+   "index": 22,
+   "file": "factory/gate.py",
+   "line": 436,
+   "start_pos": [
+    436,
+    7
+   ],
+   "end_pos": [
+    436,
+    64
+   ],
+   "operator": "core/AddNot",
+   "operator_args": {},
+   "occurrence": 60,
+   "hot": true,
+   "describe": "`if (old_mode, new_mode, status) != (\"100644\", \"100644\", \"M\"):` -> `if not (old_mode, new_mode, status) != (\"100644\", \"100644\", \"M\"):`",
+   "diff_sha256": "6d496614f2e0cbddd5c8458496d7eb26dcd44eb94f676a6f552ee1a8c0f6319e",
+   "mutated_sha256": "089026a41085451e159f384fb926d8d0e05b9b7892ec848575a25d5b2cb6db21"
+  },
+  {
+   "id": "M023",
+   "index": 23,
+   "file": "factory/runner.py",
+   "line": 129,
+   "start_pos": [
+    129,
+    45
+   ],
+   "end_pos": [
+    129,
+    46
+   ],
+   "operator": "core/ReplaceBinaryOperator_Mul_Div",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`available = {\"bytes\": stats.f_bavail * stats.f_frsize, \"inodes\": stats.f_favail}` -> `available = {\"bytes\": stats.f_bavail / stats.f_frsize, \"inodes\": stats.f_favail}`",
+   "diff_sha256": "a19210ece31ab8d90d9ddaab3f694321332e1f982a60555a795d607d372aa3ab",
+   "mutated_sha256": "a9115d9e9e4494f98a02ee10a2f286a70de4207040befffc24d5c5d612f426c4"
+  },
+  {
+   "id": "M024",
+   "index": 24,
+   "file": "factory/mutation_scope.py",
+   "line": 148,
+   "start_pos": [
+    148,
+    39
+   ],
+   "end_pos": [
+    148,
+    40
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Div",
+   "operator_args": {},
+   "occurrence": 6,
+   "hot": true,
+   "describe": "`def tracked_paths(head: str, cwd: Path | None = None) -> frozenset[str]:` -> `def tracked_paths(head: str, cwd: Path / None = None) -> frozenset[str]:`",
+   "diff_sha256": "9370357d27c7eb0c6e3c9b36a704ecb45a526f0a3e7bd9613637f917499c486b",
+   "mutated_sha256": "ee905bf38a73fb4f987a9e6cf608a74b82086cbca9ab5c36ba115fb68ffaf842"
+  },
+  {
+   "id": "M025",
+   "index": 25,
+   "file": "factory/gate.py",
+   "line": 433,
+   "start_pos": [
+    433,
+    45
+   ],
+   "end_pos": [
+    433,
+    46
+   ],
+   "operator": "core/ReplaceBinaryOperator_Mul_Add",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`if commits != [REVIEWED_TRANSITION_BASE] * 3:` -> `if commits != [REVIEWED_TRANSITION_BASE] + 3:`",
+   "diff_sha256": "3400f157d60ec9987ec7ee7e908ba9c5dd2f34c8b70da58dfe1089fee42ddeb4",
+   "mutated_sha256": "e3f619180a4e5ac8376af7988ce63763188165b10c00953370c9e5090c47a081"
+  },
+  {
+   "id": "M026",
+   "index": 26,
+   "file": "factory/runner.py",
+   "line": 13,
+   "start_pos": [
+    13,
+    21
+   ],
+   "end_pos": [
+    13,
+    23
+   ],
+   "operator": "core/ReplaceBinaryOperator_Pow_Sub",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`MIN_FREE_BYTES = 1024**3` -> `MIN_FREE_BYTES = 1024-3`",
+   "diff_sha256": "6814fc8ef449b15150aa67f221ac80920705311847dfdef63d214630d1abac8f",
+   "mutated_sha256": "4b1fdd75e5b7c1374e43302f9e08a65e8ce025fe6d3d595179eec2b39aacf5e2"
+  },
+  {
+   "id": "M027",
+   "index": 27,
+   "file": "factory/gate.py",
+   "line": 197,
+   "start_pos": [
+    197,
+    13
+   ],
+   "end_pos": [
+    197,
+    15
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_LtE",
+   "operator_args": {},
+   "occurrence": 8,
+   "hot": true,
+   "describe": "`if files != sorted(expected.lines):` -> `if files <= sorted(expected.lines):`",
+   "diff_sha256": "6b276e581c8a0644d31a959c164a5f935664fe1508446fdc87a50d34409ba5c2",
+   "mutated_sha256": "35e9834f0e3b1156f76c8d8a34760104f48a1f6e72e4044b58d8db4477cfeb12"
+  },
+  {
+   "id": "M028",
+   "index": 28,
+   "file": "factory/mutation_scope.py",
+   "line": 88,
+   "start_pos": [
+    88,
+    15
+   ],
+   "end_pos": [
+    88,
+    17
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`if not ref or ref.startswith(\"-\"):` -> `if not ref and ref.startswith(\"-\"):`",
+   "diff_sha256": "1e963f83909a5ee74b7f33642591048c92e269fd5f8fe3a71ee007a253ef245b",
+   "mutated_sha256": "62f9ac721a71c06fe4117f174b6dcd7e8ce54eede846b8ca322637e3b176c8f4"
+  },
+  {
+   "id": "M029",
+   "index": 29,
+   "file": "factory/dispatch.py",
+   "line": 2944,
+   "start_pos": [
+    2944,
+    19
+   ],
+   "end_pos": [
+    2944,
+    21
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_LtE",
+   "operator_args": {},
+   "occurrence": 32,
+   "hot": true,
+   "describe": "`if len(proofs) != 1:` -> `if len(proofs) <= 1:`",
+   "diff_sha256": "ca1acaad5f65895824762fd18087a3bdcf8b999a75878d24b1ab5160ce5f27ec",
+   "mutated_sha256": "252e5cefe4dce1696999dcee6c8e480c66da799797c61a3919d4243882286156"
+  },
+  {
+   "id": "M030",
+   "index": 30,
+   "file": "factory/gate.py",
+   "line": 413,
+   "start_pos": [
+    413,
+    12
+   ],
+   "end_pos": [
+    413,
+    14
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 17,
+   "hot": true,
+   "describe": "`or not _BLOB.fullmatch(pre) or not _BLOB.fullmatch(post)):` -> `and not _BLOB.fullmatch(pre) or not _BLOB.fullmatch(post)):`",
+   "diff_sha256": "cdc882eb5ab37263b77fb99b7f5363b26b086baa5a8cda31b60da3e878c282d4",
+   "mutated_sha256": "7c09a8c26673e0eec9f5896512ad5df0b1fe1bae7d30e6b53e4885b05e897e4f"
+  },
+  {
+   "id": "M031",
+   "index": 31,
+   "file": "factory/gate.py",
+   "line": 440,
+   "start_pos": [
+    440,
+    13
+   ],
+   "end_pos": [
+    440,
+    15
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_LtE",
+   "operator_args": {},
+   "occurrence": 18,
+   "hot": true,
+   "describe": "`if blobs != [pre, post]:` -> `if blobs <= [pre, post]:`",
+   "diff_sha256": "9510c68ccdf67a25de91f1f0c6870c74cc85292e549a674f93c4bc0a71a168dc",
+   "mutated_sha256": "a3408e600dcbb2aa1b6f94bba72dacd5394d717f8ceec9835a26f41ce6f93a3f"
+  },
+  {
+   "id": "M032",
+   "index": 32,
+   "file": "factory/dispatch.py",
+   "line": 2950,
+   "start_pos": [
+    2950,
+    61
+   ],
+   "end_pos": [
+    2950,
+    63
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 105,
+   "hot": true,
+   "describe": "`if status != \"FAIL\" and (not scope or proof_head != head or base is None or proo` -> `if status != \"FAIL\" and (not scope or proof_head != head and base is None or pro`",
+   "diff_sha256": "a1729d1d88cf09d60ee1d867df2b2253dbac76f44acbc5e3f4bea46dfe28083f",
+   "mutated_sha256": "82adb69e8f0f14c1b707f69ac40c630f0735354cbed3f995ac063f4f0ba83fdf"
+  },
+  {
+   "id": "M033",
+   "index": 33,
+   "file": "factory/mutation_scope.py",
+   "line": 115,
+   "start_pos": [
+    115,
+    15
+   ],
+   "end_pos": [
+    115,
+    95
+   ],
+   "operator": "core/AddNot",
+   "operator_args": {},
+   "occurrence": 4,
+   "hot": true,
+   "describe": "`if not line.startswith(\"+++ b/\") or (blob is not None and not _OID.fullmatch(blo` -> `if not not line.startswith(\"+++ b/\") or (blob is not None and not _OID.fullmatch`",
+   "diff_sha256": "5658ae7f8a6cc176bf978b0a69a9ea721fc459da7e8455c19415894079c69fc4",
+   "mutated_sha256": "cd8afdde04b683c9d7fc19bf805fa75e412c2326c15808eef2477a2037aef033"
+  },
+  {
+   "id": "M034",
+   "index": 34,
+   "file": "factory/config.py",
+   "line": 936,
+   "start_pos": [
+    936,
+    40
+   ],
+   "end_pos": [
+    936,
+    42
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_GtE",
+   "operator_args": {},
+   "occurrence": 10,
+   "hot": true,
+   "describe": "`if proof is not None and (proof != MUTATION_PROOF or when != \"pr\"):` -> `if proof is not None and (proof >= MUTATION_PROOF or when != \"pr\"):`",
+   "diff_sha256": "a20ca012ec6965cbfe1210a596a9ace24ea934e01e65b050949b988a5672a790",
+   "mutated_sha256": "2f00ad136a7b6fcedff7167844bd46d790d28fbab1e44614ca1824a24512f5fb"
+  },
+  {
+   "id": "M035",
+   "index": 35,
+   "file": "factory/runner.py",
+   "line": 122,
+   "start_pos": [
+    122,
+    40
+   ],
+   "end_pos": [
+    122,
+    41
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Pow",
+   "operator_args": {},
+   "occurrence": 6,
+   "hot": true,
+   "describe": "`def preflight(repository: Path) -> dict | None:` -> `def preflight(repository: Path) -> dict ** None:`",
+   "diff_sha256": "c05cd550a0e06dd9b25fdff79f6e6fe9408e4cc6a5492692a51090960ef2da33",
+   "mutated_sha256": "250c8ac95301846e98da3a7638e1055187cc8959046ad5dae33c03e15953d24e"
+  },
+  {
+   "id": "M036",
+   "index": 36,
+   "file": "factory/mutation_scope.py",
+   "line": 113,
+   "start_pos": [
+    113,
+    31
+   ],
+   "end_pos": [
+    113,
+    32
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`blob = match.group(1)` -> `blob = match.group( 0)`",
+   "diff_sha256": "ba6278408a843d3b1726e8b33d87429da8a9db9126f4d2d45fc17bd327427306",
+   "mutated_sha256": "0c7d38b3a00422616b692b8e8c1e1fbdd8ea4d1f98f8fa7a953c6287ef15a952"
+  },
+  {
+   "id": "M037",
+   "index": 37,
+   "file": "factory/runner.py",
+   "line": 35,
+   "start_pos": [
+    35,
+    82
+   ],
+   "end_pos": [
+    35,
+    86
+   ],
+   "operator": "core/ReplaceTrueWithFalse",
+   "operator_args": {},
+   "occurrence": 4,
+   "hot": true,
+   "describe": "`[\"ps\", \"axeww\", \"-o\", \"pid=,command=\"], capture_output=True, text=True, timeout=` -> `[\"ps\", \"axeww\", \"-o\", \"pid=,command=\"], capture_output=True, text=False, timeout`",
+   "diff_sha256": "e06f7bb62fcc52d379cacc7e872f8d9aaaa7b18ee757a7e0d466f411a1b1b6fe",
+   "mutated_sha256": "c53cfb7b9dad5d56a0a19b785dceb0ea88a1e746db66bb8c53b4671f88c7dce0"
+  },
+  {
+   "id": "M038",
+   "index": 38,
+   "file": "factory/gate.py",
+   "line": 70,
+   "start_pos": [
+    70,
+    19
+   ],
+   "end_pos": [
+    70,
+    20
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_BitAnd",
+   "operator_args": {},
+   "occurrence": 4,
+   "hot": true,
+   "describe": "`timeout: float | None = None,` -> `timeout: float & None = None,`",
+   "diff_sha256": "ea03391948ed1454336cb3ae03a74a708d2ca20cead35dbc56945d5592cd5f96",
+   "mutated_sha256": "f1b49ac02e6215b181d7c859b2f5649b1ba6781a16e36c93ae9962aba3ac80b3"
+  },
+  {
+   "id": "M039",
+   "index": 39,
+   "file": "factory/dispatch.py",
+   "line": 2942,
+   "start_pos": [
+    2942,
+    7
+   ],
+   "end_pos": [
+    2942,
+    17
+   ],
+   "operator": "core/AddNot",
+   "operator_args": {},
+   "occurrence": 369,
+   "hot": true,
+   "describe": "`if not proofs:` -> `if not not proofs:`",
+   "diff_sha256": "42639c16f58172f5c5069dcda3fd4937dd2af939fc885fec3373d5f88f4b5f85",
+   "mutated_sha256": "c61bd4abd99922e59a9320726e5c4ad797e691fe492ef81ca5cf86ab0a6d712a"
+  },
+  {
+   "id": "M040",
+   "index": 40,
+   "file": "factory/gate.py",
+   "line": 1059,
+   "start_pos": [
+    1059,
+    51
+   ],
+   "end_pos": [
+    1059,
+    53
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_Is",
+   "operator_args": {},
+   "occurrence": 33,
+   "hot": true,
+   "describe": "`return args.mutation_proof and check.proof == config.MUTATION_PROOF` -> `return args.mutation_proof and check.proof is config.MUTATION_PROOF`",
+   "diff_sha256": "f9f0576e773ccda28981436385bfb884abad54ac3bd694371773a3edff55a450",
+   "mutated_sha256": "9d2905f7506b76ceb29e079916e7664d435b52c0cca075d20caae1b1c40dec33"
+  },
+  {
+   "id": "M041",
+   "index": 41,
+   "file": "factory/gate.py",
+   "line": 201,
+   "start_pos": [
+    201,
+    77
+   ],
+   "end_pos": [
+    201,
+    78
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 26,
+   "hot": true,
+   "describe": "`else \"no-mutation-candidates\" if counts[\"planned\"] == 0` -> `else \"no-mutation-candidates\" if counts[\"planned\"] == 1`",
+   "diff_sha256": "e30e0dcb9d4cc468d29d2fd0b830113dd1f146a39bdcacceefa474a0691fd124",
+   "mutated_sha256": "350b96e79e738fec8c6c952085fb67d4d200836905d868320ddf6a0642fc36bb"
+  },
+  {
+   "id": "M042",
+   "index": 42,
+   "file": "factory/gate.py",
+   "line": 197,
+   "start_pos": [
+    197,
+    13
+   ],
+   "end_pos": [
+    197,
+    15
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_GtE",
+   "operator_args": {},
+   "occurrence": 8,
+   "hot": true,
+   "describe": "`if files != sorted(expected.lines):` -> `if files >= sorted(expected.lines):`",
+   "diff_sha256": "497b0ca54bb1acf0ba7c3fceda6b2578d36398f5a457749e24c3b66dfa8eea2d",
+   "mutated_sha256": "2c97112ffb64b32421be974e673ef812a612fa9beadcb4d546fe6dcf03c1595d"
+  },
+  {
+   "id": "M043",
+   "index": 43,
+   "file": "factory/dispatch.py",
+   "line": 2948,
+   "start_pos": [
+    2948,
+    37
+   ],
+   "end_pos": [
+    2948,
+    39
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Eq",
+   "operator_args": {},
+   "occurrence": 33,
+   "hot": true,
+   "describe": "`if not listed or listed.group(1) != status:` -> `if not listed or listed.group(1) == status:`",
+   "diff_sha256": "1366fd401939e702da80c7134342ce7691a47b2708531f6ad70a6b4617d09397",
+   "mutated_sha256": "866bf378e9c411f7d0b255f76f7d04dc44909361a8813c52036113b86f199c4e"
+  },
+  {
+   "id": "M044",
+   "index": 44,
+   "file": "factory/runner.py",
+   "line": 53,
+   "start_pos": [
+    53,
+    28
+   ],
+   "end_pos": [
+    53,
+    29
+   ],
+   "operator": "core/ReplaceBinaryOperator_Div_BitOr",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`stat = (process / \"stat\").read_bytes()` -> `stat = (process | \"stat\").read_bytes()`",
+   "diff_sha256": "e4dfe5e811e8512903d57017014140ecb1595363557f100bde7cb3db10298136",
+   "mutated_sha256": "29c15ae0bcd65fbf30f9eb070e8cec0b4a192be95c1c8b4ce8a90df071c38eb2"
+  },
+  {
+   "id": "M045",
+   "index": 45,
+   "file": "factory/decisions.py",
+   "line": 901,
+   "start_pos": [
+    901,
+    47
+   ],
+   "end_pos": [
+    901,
+    48
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Div",
+   "operator_args": {},
+   "occurrence": 22,
+   "hot": true,
+   "describe": "`fd = os.open(name, _LOCK_FLAGS | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory` -> `fd = os.open(name, _LOCK_FLAGS / os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory`",
+   "diff_sha256": "5a810e6b9a46872a4cf956bc279754c02279ce11c8f8b54bda7c51aa1f9ace54",
+   "mutated_sha256": "d4788522d5f900b6dce223f90232bb507cb0a85faa1b00372f32e16d7218b8b0"
+  },
+  {
+   "id": "M046",
+   "index": 46,
+   "file": "factory/gate.py",
+   "line": 412,
+   "start_pos": [
+    412,
+    8
+   ],
+   "end_pos": [
+    412,
+    11
+   ],
+   "operator": "core/ReplaceUnaryOperator_Delete_Not",
+   "operator_args": {},
+   "occurrence": 15,
+   "hot": true,
+   "describe": "`if (not sep or not colon or path != CONFIG_NAME or pre == post` -> `if ( sep or not colon or path != CONFIG_NAME or pre == post`",
+   "diff_sha256": "9fca5c9a27f9cfaec453e662fbc056a6f9f535e9b6d15743cd46ad40257f5e12",
+   "mutated_sha256": "a637f2109c70cb43c60dbba76bc89053194098e34832fc01fd573beb27e70bc5"
+  },
+  {
+   "id": "M047",
+   "index": 47,
+   "file": "factory/mutation_scope.py",
+   "line": 200,
+   "start_pos": [
+    200,
+    107
+   ],
+   "end_pos": [
+    200,
+    109
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_NotEq",
+   "operator_args": {},
+   "occurrence": 3,
+   "hot": true,
+   "describe": "`same = not target.is_symlink() and target.is_file() and _blob_id(target.read_byt` -> `same = not target.is_symlink() and target.is_file() and _blob_id(target.read_byt`",
+   "diff_sha256": "bbf1a13796f4b4ad38f98f21dd2470383c3029b18f2a8d8512a1ee78ceed98ba",
+   "mutated_sha256": "aca9357be1408dd0a8c29e66af106dc5b40656f2fedaf32b3b7a6b3a5ae778d0"
+  },
+  {
+   "id": "M048",
+   "index": 48,
+   "file": "factory/gate.py",
+   "line": 170,
+   "start_pos": [
+    170,
+    36
+   ],
+   "end_pos": [
+    170,
+    38
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 3,
+   "hot": true,
+   "describe": "`if not isinstance(record, dict) or record.keys() != MUTATION_PROOF_KEYS:` -> `if not isinstance(record, dict) and record.keys() != MUTATION_PROOF_KEYS:`",
+   "diff_sha256": "4e80334ff102b2bfaffd82e51dc665c1145d3601bd1855c8266e03e5e09b108c",
+   "mutated_sha256": "91b8a4eaadfd3afa7bf178c50661d0d6cf8bac8447ac153c6cde860be4d82b46"
+  },
+  {
+   "id": "M049",
+   "index": 49,
+   "file": "factory/decisions.py",
+   "line": 897,
+   "start_pos": [
+    897,
+    17
+   ],
+   "end_pos": [
+    897,
+    43
+   ],
+   "operator": "core/ZeroIterationForLoop",
+   "operator_args": {},
+   "occurrence": 7,
+   "hot": true,
+   "describe": "`for _ in range(_LOCK_OPEN_ATTEMPTS):` -> `for _ in []:`",
+   "diff_sha256": "baa608f358d905b0d522dd485887daa6b5eef1e5836f01028790c9e5430ac4c5",
+   "mutated_sha256": "3fc64cc7035d0c9d2e7b591d041d98dc00db9335c82bbe1344261715d35491a0"
+  },
+  {
+   "id": "M050",
+   "index": 50,
+   "file": "factory/mutation_scope.py",
+   "line": 86,
+   "start_pos": [
+    86,
+    32
+   ],
+   "end_pos": [
+    86,
+    33
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_BitXor",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`def resolve(ref: str, cwd: Path | None = None) -> str:` -> `def resolve(ref: str, cwd: Path ^ None = None) -> str:`",
+   "diff_sha256": "7ee7766452b70547044d97573ed5aec31f1b1c2abcdb03e292ac8230fab3b99f",
+   "mutated_sha256": "630fe6cabea4a04c7c5be7a9d91d656a23211fd4033716f3a63145cd01b04e5f"
+  },
+  {
+   "id": "M051",
+   "index": 51,
+   "file": "factory/onboard.py",
+   "line": 868,
+   "start_pos": [
+    868,
+    71
+   ],
+   "end_pos": [
+    868,
+    72
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_Pow",
+   "operator_args": {},
+   "occurrence": 8,
+   "hot": true,
+   "describe": "`spellings = [(lexical, False), (Path(origin).resolve(), True)] + [` -> `spellings = [(lexical, False), (Path(origin).resolve(), True)] ** [`",
+   "diff_sha256": "c84d81c11453c9602a559294b2004602c68117220facd3bf5de13f00c65fda72",
+   "mutated_sha256": "b0ed69d0864398ce051d464f3c52a1eda1243395038ce76c184a035729b72905"
+  },
+  {
+   "id": "M052",
+   "index": 52,
+   "file": "factory/mutation_scope.py",
+   "line": 168,
+   "start_pos": [
+    168,
+    44
+   ],
+   "end_pos": [
+    168,
+    45
+   ],
+   "operator": "core/ReplaceBinaryOperator_Div_LShift",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`mode = os.lstat(Path(directory) / rel).st_mode` -> `mode = os.lstat(Path(directory) << rel).st_mode`",
+   "diff_sha256": "6ba6efe5ecfb8f4c4980b0c01008339d0854037cac2f7f1d777f4df00be8a7ad",
+   "mutated_sha256": "b890556359a6a3c85a8708c07fe58528a71b58b47271438640e177dbd1619322"
+  },
+  {
+   "id": "M053",
+   "index": 53,
+   "file": "factory/runner.py",
+   "line": 106,
+   "start_pos": [
+    106,
+    15
+   ],
+   "end_pos": [
+    106,
+    32
+   ],
+   "operator": "core/ExceptionReplacer",
+   "operator_args": {},
+   "occurrence": 4,
+   "hot": true,
+   "describe": "`except FileNotFoundError:` -> `except CosmicRayTestingException:`",
+   "diff_sha256": "555d860c805a90dcbf45176485a8d4fd6fba6d13dd909c5b04d8be508a50075b",
+   "mutated_sha256": "c032c4b22c8e750730447657f0e021e4be848d39c99ae40289481eb48be32d6f"
+  },
+  {
+   "id": "M054",
+   "index": 54,
+   "file": "factory/mutation_scope.py",
+   "line": 130,
+   "start_pos": [
+    130,
+    38
+   ],
+   "end_pos": [
+    130,
+    40
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_NotEq",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`digest = hashlib.sha1 if len(oid) == 40 else hashlib.sha256` -> `digest = hashlib.sha1 if len(oid) != 40 else hashlib.sha256`",
+   "diff_sha256": "adbb0eb77da4abb90f6109b412ad2ebddc19763d966ab692d133559e47af38ec",
+   "mutated_sha256": "ae72398ef86da24c4afbe3c03bec8560465d4abbc92cd397d28bfe6b0f59d3ae"
+  },
+  {
+   "id": "M055",
+   "index": 55,
+   "file": "factory/gate.py",
+   "line": 966,
+   "start_pos": [
+    966,
+    26
+   ],
+   "end_pos": [
+    966,
+    27
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 142,
+   "hot": true,
+   "describe": "`if len(transitions) > 1 or len(transition_bases) > 1:` -> `if len(transitions) > 2 or len(transition_bases) > 1:`",
+   "diff_sha256": "3745bfd57872bf5ce5651b7c94af1fcafefb513e40a05e397da2913c7dfd07ae",
+   "mutated_sha256": "3ab4c838e13957104d0eff2fde2be86f527bb5f5ef2cda1138354ca3358c133e"
+  },
+  {
+   "id": "M056",
+   "index": 56,
+   "file": "factory/gate.py",
+   "line": 443,
+   "start_pos": [
+    443,
+    23
+   ],
+   "end_pos": [
+    443,
+    24
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_Div",
+   "operator_args": {},
+   "occurrence": 9,
+   "hot": true,
+   "describe": "`return refused + \"working tree is not a non-executable regular file\"` -> `return refused / \"working tree is not a non-executable regular file\"`",
+   "diff_sha256": "925156e33662594b281146e1b9dd55c4547a2fbaa0351f8a8508e20155212511",
+   "mutated_sha256": "75b5b0e1e8f908c4702d337dc30f3768ad0bd9ced04e050d6ccc0bfacec38948"
+  },
+  {
+   "id": "M057",
+   "index": 57,
+   "file": "factory/gate.py",
+   "line": 419,
+   "start_pos": [
+    419,
+    70
+   ],
+   "end_pos": [
+    419,
+    71
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Mul",
+   "operator_args": {},
+   "occurrence": 12,
+   "hot": true,
+   "describe": "`base: str, transition: tuple[str, str, str], transition_base: str | None,` -> `base: str, transition: tuple[str, str, str], transition_base: str * None,`",
+   "diff_sha256": "8014f2f2e81ca1822e59617022d9c265318746c2474576b9953bc28730e6070d",
+   "mutated_sha256": "62af0641a39a40122bb73ec34161b203fc8aab85e568e418e89918717064c509"
+  },
+  {
+   "id": "M058",
+   "index": 58,
+   "file": "factory/gate.py",
+   "line": 278,
+   "start_pos": [
+    278,
+    21
+   ],
+   "end_pos": [
+    278,
+    24
+   ],
+   "operator": "core/ReplaceUnaryOperator_Delete_Not",
+   "operator_args": {},
+   "occurrence": 9,
+   "hot": true,
+   "describe": "`if execution and not passed and execution.outcome == \"completed\":` -> `if execution and  passed and execution.outcome == \"completed\":`",
+   "diff_sha256": "1f01b5133c72418e531f990e2d3275830d29113ce1d07739b5237e0a6dd71fb7",
+   "mutated_sha256": "19aa112d4d6cada5d0e665fbfd7eeef77e83789a2ba040340ae6a77c763b643b"
+  },
+  {
+   "id": "M059",
+   "index": 59,
+   "file": "factory/gate.py",
+   "line": 193,
+   "start_pos": [
+    193,
+    23
+   ],
+   "end_pos": [
+    193,
+    25
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_LtE",
+   "operator_args": {},
+   "occurrence": 4,
+   "hot": true,
+   "describe": "`if (applicable == 0 and reason == \"no-applicable-files\" and not files` -> `if (applicable <= 0 and reason == \"no-applicable-files\" and not files`",
+   "diff_sha256": "a1f5f8a3b17915524168c27bd4df5102b918fa2d1c4c734f1d66058b33f21654",
+   "mutated_sha256": "2f0a8ea6d91857d4fdee3e47a19b75e2f6c56b225bdc6633e9e73aac91e245ec"
+  },
+  {
+   "id": "M060",
+   "index": 60,
+   "file": "factory/config.py",
+   "line": 936,
+   "start_pos": [
+    936,
+    58
+   ],
+   "end_pos": [
+    936,
+    60
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 99,
+   "hot": true,
+   "describe": "`if proof is not None and (proof != MUTATION_PROOF or when != \"pr\"):` -> `if proof is not None and (proof != MUTATION_PROOF and when != \"pr\"):`",
+   "diff_sha256": "8fe6f70ca5996f9113e907f7a26f960ab0c2e97decef347d1f46bfb19cf8862b",
+   "mutated_sha256": "82d179b55f3f3f304bb3f2f884ca1a0299ea2a8b0e378872b0a04091b8d02da9"
+  },
+  {
+   "id": "M061",
+   "index": 61,
+   "file": "factory/gate.py",
+   "line": 209,
+   "start_pos": [
+    209,
+    21
+   ],
+   "end_pos": [
+    209,
+    23
+   ],
+   "operator": "core/ReplaceComparisonOperator_LtE_NotEq",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`and blocking <= counts[\"survived\"]` -> `and blocking != counts[\"survived\"]`",
+   "diff_sha256": "bb6082f36721712297ddb9f1bc73814a633faee901e8b4f5d6f08992c2893fcc",
+   "mutated_sha256": "8ba58cd1b26ed42ad1853db9aa2044136e6cb1fb92f933eacc5873b27f31324a"
+  },
+  {
+   "id": "M062",
+   "index": 62,
+   "file": "factory/mutation_scope.py",
+   "line": 195,
+   "start_pos": [
+    195,
+    33
+   ],
+   "end_pos": [
+    195,
+    34
+   ],
+   "operator": "core/ReplaceBinaryOperator_Div_Pow",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`target = Path(directory) / path` -> `target = Path(directory) ** path`",
+   "diff_sha256": "74a8d5a5c9100582562594fda5092b6aacd4a9bad4ab505f8ccfb463a56f70a7",
+   "mutated_sha256": "ce430944234c6c554404db0135a4f01559d6c9a32e4bb021217fe2eb3df02a7a"
+  },
+  {
+   "id": "M063",
+   "index": 63,
+   "file": "factory/gate.py",
+   "line": 182,
+   "start_pos": [
+    182,
+    22
+   ],
+   "end_pos": [
+    182,
+    24
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Lt",
+   "operator_args": {},
+   "occurrence": 5,
+   "hot": true,
+   "describe": "`if record[\"exit\"] != returncode:` -> `if record[\"exit\"] < returncode:`",
+   "diff_sha256": "58ead426d17147a4795ae109b3e57b7ae5b99eb2e7b34752aa9f16ad036d4147",
+   "mutated_sha256": "9cb937656f3616ab8d03275ee85fe2aab006f731f7c70e69befb1cb61915b66c"
+  },
+  {
+   "id": "M064",
+   "index": 64,
+   "file": "factory/gate.py",
+   "line": 61,
+   "start_pos": [
+    61,
+    45
+   ],
+   "end_pos": [
+    61,
+    47
+   ],
+   "operator": "core/ReplaceComparisonOperator_LtE_Lt",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`if not math.isfinite(seconds) or seconds <= MUTATION_RESERVE:` -> `if not math.isfinite(seconds) or seconds < MUTATION_RESERVE:`",
+   "diff_sha256": "05157df80e9fc286e222d1b6c1a1c377769c4667233de2e81d919b60d4356445",
+   "mutated_sha256": "c37a015af9263ac96ed1869b2852a49ea57e62cda687b656351812e9b7d709b6"
+  },
+  {
+   "id": "M065",
+   "index": 65,
+   "file": "factory/gate.py",
+   "line": 433,
+   "start_pos": [
+    433,
+    45
+   ],
+   "end_pos": [
+    433,
+    46
+   ],
+   "operator": "core/ReplaceBinaryOperator_Mul_BitXor",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`if commits != [REVIEWED_TRANSITION_BASE] * 3:` -> `if commits != [REVIEWED_TRANSITION_BASE] ^ 3:`",
+   "diff_sha256": "a88f16db577dd089643b25491557973149a546365adc959517811c27287e1936",
+   "mutated_sha256": "2ddeacabc5f0dedbac880396a051a49c3c864d332be0e9d6b5793680f76addca"
+  },
+  {
+   "id": "M066",
+   "index": 66,
+   "file": "factory/gate.py",
+   "line": 441,
+   "start_pos": [
+    441,
+    23
+   ],
+   "end_pos": [
+    441,
+    24
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_Pow",
+   "operator_args": {},
+   "occurrence": 8,
+   "hot": true,
+   "describe": "`return refused + f\"committed {blobs[0] or '-'} -> {blobs[1] or '-'}\"` -> `return refused ** f\"committed {blobs[0] or '-'} -> {blobs[1] or '-'}\"`",
+   "diff_sha256": "a81a8d497d8b940b5d573ad0452d7d3fc6bc21177381898867955672645a1476",
+   "mutated_sha256": "953884e766a221b7cea7c71c35aea50967e51e26e61adfdf8481eca92ff2ad1d"
+  },
+  {
+   "id": "M067",
+   "index": 67,
+   "file": "factory/runner.py",
+   "line": 91,
+   "start_pos": [
+    91,
+    54
+   ],
+   "end_pos": [
+    91,
+    55
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_BitAnd",
+   "operator_args": {},
+   "occurrence": 3,
+   "hot": true,
+   "describe": "`fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)` -> `fcntl.flock(descriptor, fcntl.LOCK_EX & fcntl.LOCK_NB)`",
+   "diff_sha256": "bcd3dcf612db739d0bf34cd1394b3cef7aa427e41f87d19dc9aaa0d8d3bfe00a",
+   "mutated_sha256": "15cb2d749704ba14671e0bfd3aa2b07e318dfc537c17c7ff8825772ddc20989a"
+  },
+  {
+   "id": "M068",
+   "index": 68,
+   "file": "factory/gate.py",
+   "line": 251,
+   "start_pos": [
+    251,
+    31
+   ],
+   "end_pos": [
+    251,
+    32
+   ],
+   "operator": "core/ReplaceBinaryOperator_Div_Mod",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`path = Path(directory) / \"proof.json\"` -> `path = Path(directory) % \"proof.json\"`",
+   "diff_sha256": "8c812f205585b1dc40c8b533753f3656238b47232e211baf86b498b220afaba3",
+   "mutated_sha256": "a1daea54cbf2fa93ff607c586a8db1bde4ba32c17df838e9871686a1204743a3"
+  },
+  {
+   "id": "M069",
+   "index": 69,
+   "file": "factory/gate.py",
+   "line": 237,
+   "start_pos": [
+    237,
+    47
+   ],
+   "end_pos": [
+    237,
+    48
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_BitAnd",
+   "operator_args": {},
+   "occurrence": 9,
+   "hot": true,
+   "describe": "`cmd: list[str], base: str, duration: float | None = None,` -> `cmd: list[str], base: str, duration: float & None = None,`",
+   "diff_sha256": "5e3c251b6989d95ecf6d48a8cd688cc57bb2b4bf299f885d856d5b015fee88fd",
+   "mutated_sha256": "e5b21698dd638820eb2f62c40e14e11eabc9748af9ef9920ab288161cbd18185"
+  },
+  {
+   "id": "M070",
+   "index": 70,
+   "file": "factory/gate.py",
+   "line": 251,
+   "start_pos": [
+    251,
+    31
+   ],
+   "end_pos": [
+    251,
+    32
+   ],
+   "operator": "core/ReplaceBinaryOperator_Div_Add",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`path = Path(directory) / \"proof.json\"` -> `path = Path(directory) + \"proof.json\"`",
+   "diff_sha256": "9afff6d1fc1f442366731323ffd744ad9f55c7d76766c1efc9f09e1c1fc61682",
+   "mutated_sha256": "e6687ad3f7e56c78a64e88ea25a86e2facd06a875c23d16b2db69151a8f59ece"
+  },
+  {
+   "id": "M071",
+   "index": 71,
+   "file": "factory/runner.py",
+   "line": 18,
+   "start_pos": [
+    18,
+    60
+   ],
+   "end_pos": [
+    18,
+    61
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_LShift",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`return value == str(root) or value.startswith(str(root) + os.sep)` -> `return value == str(root) or value.startswith(str(root) << os.sep)`",
+   "diff_sha256": "1f29de6498123f4d7d30868c2059b238e752e390184a5ab9ffb10c22f287ecc8",
+   "mutated_sha256": "288c82f7c950a36f593469c1acf2c649ba6de3cd6e3276e67d7af6d824a0874d"
+  },
+  {
+   "id": "M072",
+   "index": 72,
+   "file": "factory/gate.py",
+   "line": 269,
+   "start_pos": [
+    269,
+    47
+   ],
+   "end_pos": [
+    269,
+    48
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_RShift",
+   "operator_args": {},
+   "occurrence": 11,
+   "hot": true,
+   "describe": "`cmd: list[str], base: str, duration: float | None = None,` -> `cmd: list[str], base: str, duration: float >> None = None,`",
+   "diff_sha256": "74ad5673691ba03b9e11de23f4c3cd70ea7e83fd2bb23e63e2c07f970768643b",
+   "mutated_sha256": "d0f715b6259e5c9053bd0d2209e1471c3fa3a291546ceab1b231938fcc6aa333"
+  },
+  {
+   "id": "M073",
+   "index": 73,
+   "file": "factory/gate.py",
+   "line": 225,
+   "start_pos": [
+    225,
+    42
+   ],
+   "end_pos": [
+    225,
+    43
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Add",
+   "operator_args": {},
+   "occurrence": 7,
+   "hot": true,
+   "describe": "`def _read_proof_file(path: Path) -> bytes | None:` -> `def _read_proof_file(path: Path) -> bytes + None:`",
+   "diff_sha256": "266f6eaa6caeafaafb518b75d0b27445dff5b581b3b8738471131948a87df879",
+   "mutated_sha256": "43802d686341cd839f8c076d9f90c1e3e2e138f48b29fd895063fc5e5f1cc11d"
+  },
+  {
+   "id": "M074",
+   "index": 74,
+   "file": "factory/gate.py",
+   "line": 205,
+   "start_pos": [
+    205,
+    26
+   ],
+   "end_pos": [
+    205,
+    28
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_Gt",
+   "operator_args": {},
+   "occurrence": 8,
+   "hot": true,
+   "describe": "`and counts[\"ran\"] == counts[\"planned\"]` -> `and counts[\"ran\"] > counts[\"planned\"]`",
+   "diff_sha256": "63e81c323e295c35bdf8e5d407ad90f3bf5c27a33dbd6e065f6dc6868e1c62ea",
+   "mutated_sha256": "0c60c57344f712d94ebecee54a38da873be1372268570fbbe85f75debad4c7d6"
+  },
+  {
+   "id": "M075",
+   "index": 75,
+   "file": "factory/gate.py",
+   "line": 484,
+   "start_pos": [
+    484,
+    37
+   ],
+   "end_pos": [
+    484,
+    38
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_BitXor",
+   "operator_args": {},
+   "occurrence": 16,
+   "hot": true,
+   "describe": "`transition: tuple[str, str, str] | None = None, transition_base: str | None = No` -> `transition: tuple[str, str, str] ^ None = None, transition_base: str | None = No`",
+   "diff_sha256": "5704cb956ec562204f206c6952b4812fe3cb6bc1b72046731243dae8bb3e9db6",
+   "mutated_sha256": "8e42ba6b47e224c7b35d4341cf94b88616e371911cdffddf4552d856d03cb260"
+  },
+  {
+   "id": "M076",
+   "index": 76,
+   "file": "factory/gate.py",
+   "line": 193,
+   "start_pos": [
+    193,
+    23
+   ],
+   "end_pos": [
+    193,
+    25
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_NotEq",
+   "operator_args": {},
+   "occurrence": 4,
+   "hot": true,
+   "describe": "`if (applicable == 0 and reason == \"no-applicable-files\" and not files` -> `if (applicable != 0 and reason == \"no-applicable-files\" and not files`",
+   "diff_sha256": "5755700efb1c036ebafd404e8c9dfe2e798b58884703f7d64a24e891c447ca12",
+   "mutated_sha256": "dd95c9db00b2938116a24aa312e8ed9857fa9c9809828d737e15ca0043b92d00"
+  },
+  {
+   "id": "M077",
+   "index": 77,
+   "file": "factory/mutation_scope.py",
+   "line": 81,
+   "start_pos": [
+    81,
+    7
+   ],
+   "end_pos": [
+    81,
+    22
+   ],
+   "operator": "core/AddNot",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`if proc.returncode:` -> `if not proc.returncode:`",
+   "diff_sha256": "26a72c4e7f5310223b22cdd563fcf1b412ab37b42048b53446860179bc017e81",
+   "mutated_sha256": "438616b0da917c3f4a2a8f953bdaec1768a1a1b29a8b09d72b11d63d3b7b1230"
+  },
+  {
+   "id": "M078",
+   "index": 78,
+   "file": "factory/dispatch.py",
+   "line": 2955,
+   "start_pos": [
+    2955,
+    48
+   ],
+   "end_pos": [
+    2955,
+    49
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_RShift",
+   "operator_args": {},
+   "occurrence": 97,
+   "hot": true,
+   "describe": "`def _resolved_commit(wt: Path, ref: str) -> str | None:` -> `def _resolved_commit(wt: Path, ref: str) -> str >> None:`",
+   "diff_sha256": "5b15f645076dfd0f65f6508ea456c3de440fc90b3bc143c0ca88ef85c4ac790d",
+   "mutated_sha256": "438d13271c0bc69c766bf68db3a714d0d24ec7c3354bfcc2b203958715b92217"
+  },
+  {
+   "id": "M079",
+   "index": 79,
+   "file": "factory/mutation_scope.py",
+   "line": 134,
+   "start_pos": [
+    134,
+    31
+   ],
+   "end_pos": [
+    134,
+    32
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Add",
+   "operator_args": {},
+   "occurrence": 5,
+   "hot": true,
+   "describe": "`def _tree(head: str, cwd: Path | None) -> list[tuple[str, str, str]]:` -> `def _tree(head: str, cwd: Path + None) -> list[tuple[str, str, str]]:`",
+   "diff_sha256": "e89a6ab8db76a2561bdded9f6ca9ddcdd7a1fd9c7eb9cdc1b3b9622bb27ae36f",
+   "mutated_sha256": "70d1d79a43eff2180570fd3511374d2544b739f354d2dd0cde82e6ca9152eab8"
+  },
+  {
+   "id": "M080",
+   "index": 80,
+   "file": "factory/dispatch.py",
+   "line": 3019,
+   "start_pos": [
+    3019,
+    24
+   ],
+   "end_pos": [
+    3019,
+    26
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_Lt",
+   "operator_args": {},
+   "occurrence": 149,
+   "hot": true,
+   "describe": "`proof = policy_tier == \"High\" and _mutation_proof_opted()` -> `proof = policy_tier < \"High\" and _mutation_proof_opted()`",
+   "diff_sha256": "0f8b5e4a9d78311832310bd994f4ae316014d2837100b39fd009fc5f1ec1e2cd",
+   "mutated_sha256": "408992cb3adba1453863ec86affc4d146cb64c8138591a25b7ddc7a3a9962b51"
+  },
+  {
+   "id": "M081",
+   "index": 81,
+   "file": "factory/dispatch.py",
+   "line": 2924,
+   "start_pos": [
+    2924,
+    22
+   ],
+   "end_pos": [
+    2924,
+    24
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_Lt",
+   "operator_args": {},
+   "occurrence": 140,
+   "hot": true,
+   "describe": "`return any(c.when == \"pr\" and c.proof == config.MUTATION_PROOF for c in checks)` -> `return any(c.when < \"pr\" and c.proof == config.MUTATION_PROOF for c in checks)`",
+   "diff_sha256": "5c5f60a5fc2dc4355e532ae8a95e79ccb4e6724f123b1cd4cd1e5ab6b0258641",
+   "mutated_sha256": "1f8771dea8d865ccaf09c7bff9c37017b9aeadb85dfc5a483563a44474045e1e"
+  },
+  {
+   "id": "M082",
+   "index": 82,
+   "file": "factory/runner.py",
+   "line": 79,
+   "start_pos": [
+    79,
+    43
+   ],
+   "end_pos": [
+    79,
+    44
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Mul",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`path.chmod(path.stat().st_mode | 0o700)` -> `path.chmod(path.stat().st_mode * 0o700)`",
+   "diff_sha256": "d0d5d5710056c4a3abf2bc5821ad6f8900548fc588a63d6f25b064e62b9ce738",
+   "mutated_sha256": "42cb23643b21f55d7038627d529009eac203e3ab3b54c971e0dd9d18de309d08"
+  },
+  {
+   "id": "M083",
+   "index": 83,
+   "file": "factory/gate.py",
+   "line": 412,
+   "start_pos": [
+    412,
+    16
+   ],
+   "end_pos": [
+    412,
+    18
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 14,
+   "hot": true,
+   "describe": "`if (not sep or not colon or path != CONFIG_NAME or pre == post` -> `if (not sep and not colon or path != CONFIG_NAME or pre == post`",
+   "diff_sha256": "033ba6ddae1c217ddd1c3d8dde2c2ba9f3ef8822c95f5f5037a356745177c716",
+   "mutated_sha256": "9bc698b4e252dcc7253379b419fe092897ad81632c9c078659088370359b6dec"
+  },
+  {
+   "id": "M084",
+   "index": 84,
+   "file": "factory/gate.py",
+   "line": 441,
+   "start_pos": [
+    441,
+    23
+   ],
+   "end_pos": [
+    441,
+    24
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_Sub",
+   "operator_args": {},
+   "occurrence": 8,
+   "hot": true,
+   "describe": "`return refused + f\"committed {blobs[0] or '-'} -> {blobs[1] or '-'}\"` -> `return refused - f\"committed {blobs[0] or '-'} -> {blobs[1] or '-'}\"`",
+   "diff_sha256": "96a1e0bf779d8a0c3a809579ab19b3c723a0eb2fcb40cc4ead1de89490456d52",
+   "mutated_sha256": "36402bb8405a34bffecbf0e7a51e5f6d2c5716ec11b8a76ccedcea1a00e45b04"
+  },
+  {
+   "id": "M085",
+   "index": 85,
+   "file": "factory/mutation_scope.py",
+   "line": 148,
+   "start_pos": [
+    148,
+    39
+   ],
+   "end_pos": [
+    148,
+    40
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_FloorDiv",
+   "operator_args": {},
+   "occurrence": 6,
+   "hot": true,
+   "describe": "`def tracked_paths(head: str, cwd: Path | None = None) -> frozenset[str]:` -> `def tracked_paths(head: str, cwd: Path // None = None) -> frozenset[str]:`",
+   "diff_sha256": "bf9aadf747bf9ea4bd7af68216a3faf63c71f268bde09fc4cab87d6b7cc89c29",
+   "mutated_sha256": "b1762028422aece673fa9451cf253fad008c9a773194265042d1e0980dcfdae1"
+  },
+  {
+   "id": "M086",
+   "index": 86,
+   "file": "factory/gate.py",
+   "line": 484,
+   "start_pos": [
+    484,
+    73
+   ],
+   "end_pos": [
+    484,
+    74
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Mod",
+   "operator_args": {},
+   "occurrence": 17,
+   "hot": true,
+   "describe": "`transition: tuple[str, str, str] | None = None, transition_base: str | None = No` -> `transition: tuple[str, str, str] | None = None, transition_base: str % None = No`",
+   "diff_sha256": "cb86bab5e984a5391d787746349d031e2d4f845f3582ace4aa9bbf89b360e898",
+   "mutated_sha256": "29960de107a38a683be2843e02a1f8f85a3ae7e911f11f4371e9ae7ac77e6f04"
+  },
+  {
+   "id": "M087",
+   "index": 87,
+   "file": "factory/decisions.py",
+   "line": 901,
+   "start_pos": [
+    901,
+    47
+   ],
+   "end_pos": [
+    901,
+    48
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_FloorDiv",
+   "operator_args": {},
+   "occurrence": 22,
+   "hot": true,
+   "describe": "`fd = os.open(name, _LOCK_FLAGS | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory` -> `fd = os.open(name, _LOCK_FLAGS // os.O_CREAT | os.O_EXCL, 0o600, dir_fd=director`",
+   "diff_sha256": "4229651c1f8bf5a8b3e4538471d9a75d5b5ed5e86ce2f1d3c1aa878078ee7a2e",
+   "mutated_sha256": "eb146c02a98900a99454d97a4f9a52c09a558603f364ef8282e2fb7cc80fd615"
+  },
+  {
+   "id": "M088",
+   "index": 88,
+   "file": "factory/gate.py",
+   "line": 117,
+   "start_pos": [
+    117,
+    17
+   ],
+   "end_pos": [
+    117,
+    20
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 12,
+   "hot": true,
+   "describe": "`cmd, 124, f\"{out}\\ncheck timed out after {limit}s\", \"\"` -> `cmd, 125, f\"{out}\\ncheck timed out after {limit}s\", \"\"`",
+   "diff_sha256": "b425480389197e2bfb160477f630878a5a04b2801f6a0f14337dc79139b0ded0",
+   "mutated_sha256": "4c7b298a342f76ef80418c23ce6e1d1fc2381397e12e31db10c8c313654860a9"
+  },
+  {
+   "id": "M089",
+   "index": 89,
+   "file": "factory/runner.py",
+   "line": 129,
+   "start_pos": [
+    129,
+    45
+   ],
+   "end_pos": [
+    129,
+    46
+   ],
+   "operator": "core/ReplaceBinaryOperator_Mul_Sub",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`available = {\"bytes\": stats.f_bavail * stats.f_frsize, \"inodes\": stats.f_favail}` -> `available = {\"bytes\": stats.f_bavail - stats.f_frsize, \"inodes\": stats.f_favail}`",
+   "diff_sha256": "d0653f53e37c8a44737a8f8b99e7289f93091cc10ad900a303ade62b30e934da",
+   "mutated_sha256": "3173e1c0ea35b5746c7a9b45f2f714a02a1c46062b184544a3a4461b3430ed60"
+  },
+  {
+   "id": "M090",
+   "index": 90,
+   "file": "factory/gate.py",
+   "line": 36,
+   "start_pos": [
+    36,
+    30
+   ],
+   "end_pos": [
+    36,
+    31
+   ],
+   "operator": "core/ReplaceBinaryOperator_Mul_FloorDiv",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`MUTATION_PROOF_MAX_BYTES = 64 * 1024` -> `MUTATION_PROOF_MAX_BYTES = 64 // 1024`",
+   "diff_sha256": "a2c637cb7fe72d47a08a9e4b30fc47a382bb1d90407095ac314af82a220ff990",
+   "mutated_sha256": "61c0e674195cf06511e1e4f890514f1dd54be7953434977638f00269a96c5b5d"
+  },
+  {
+   "id": "M091",
+   "index": 91,
+   "file": "factory/runner.py",
+   "line": 60,
+   "start_pos": [
+    60,
+    23
+   ],
+   "end_pos": [
+    60,
+    27
+   ],
+   "operator": "core/ReplaceTrueWithFalse",
+   "operator_args": {},
+   "occurrence": 6,
+   "hot": true,
+   "describe": "`return True` -> `return False`",
+   "diff_sha256": "67ae89fa833ddf175ee0d4aa55b2a026ec9e2c3688854fc6dc706eb56657b0b5",
+   "mutated_sha256": "623a50370b12ef273b6f2b9406ff175e917aac44bcb579617bb4c70ff875c987"
+  },
+  {
+   "id": "M092",
+   "index": 92,
+   "file": "factory/gate.py",
+   "line": 68,
+   "start_pos": [
+    68,
+    30
+   ],
+   "end_pos": [
+    68,
+    31
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_RShift",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None,` -> `cmd: list[str], cwd: Path >> None = None, pythonpath: Path | None = None,`",
+   "diff_sha256": "4b66e7e19db83406994196d45b736fb3f2f45f1f772712d2eedfe869438e5fe6",
+   "mutated_sha256": "18bf7c72ed3f044a01ba8b7c60c431f39c5084984a2daec1fb1e0e595e06e4ed"
+  },
+  {
+   "id": "M093",
+   "index": 93,
+   "file": "factory/decisions.py",
+   "line": 901,
+   "start_pos": [
+    901,
+    47
+   ],
+   "end_pos": [
+    901,
+    48
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_BitAnd",
+   "operator_args": {},
+   "occurrence": 22,
+   "hot": true,
+   "describe": "`fd = os.open(name, _LOCK_FLAGS | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory` -> `fd = os.open(name, _LOCK_FLAGS & os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory`",
+   "diff_sha256": "4925517bd4c691c7d3a7c02eb46ca6a3a175cfa2934ca9db2e083a2c28e8277b",
+   "mutated_sha256": "050aec5abc9683be7fafbb16976284a4364229984661c8fe15f93af0ba2181a0"
+  },
+  {
+   "id": "M094",
+   "index": 94,
+   "file": "factory/runner.py",
+   "line": 39,
+   "start_pos": [
+    39,
+    79
+   ],
+   "end_pos": [
+    39,
+    81
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Eq",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`if (len(parts) == 2 and parts[0].isdecimal() and int(parts[0]) != os.getpid()` -> `if (len(parts) == 2 and parts[0].isdecimal() and int(parts[0]) == os.getpid()`",
+   "diff_sha256": "26f3c64aeb7ac3fe659ea6c09376c3e2bd7bd6a21096988467545f1aa35099bb",
+   "mutated_sha256": "1f553fdef1bcfb4fff6d104b0a9a2b9992cb39aa59e9b049c1c1bcdc5182c192"
+  },
+  {
+   "id": "M095",
+   "index": 95,
+   "file": "factory/onboard.py",
+   "line": 368,
+   "start_pos": [
+    368,
+    15
+   ],
+   "end_pos": [
+    368,
+    40
+   ],
+   "operator": "core/AddNot",
+   "operator_args": {},
+   "occurrence": 42,
+   "hot": true,
+   "describe": "`if family == socket.AF_INET6:` -> `if not family == socket.AF_INET6:`",
+   "diff_sha256": "01c55ba2bf314eb6d3b84d6b04bbc0c20ceb3846d3e60bb9cad5ac5b617f9ae3",
+   "mutated_sha256": "213a1a4168b96712c47d3cd23ae82b01449cda0f444f9cd5de710cc9268bef7e"
+  },
+  {
+   "id": "M096",
+   "index": 96,
+   "file": "factory/gate.py",
+   "line": 68,
+   "start_pos": [
+    68,
+    30
+   ],
+   "end_pos": [
+    68,
+    31
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Mul",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None,` -> `cmd: list[str], cwd: Path * None = None, pythonpath: Path | None = None,`",
+   "diff_sha256": "4398aeb2d88250bf847045ee93d5800d7515a3d71b3af3622eab25dc2026a346",
+   "mutated_sha256": "f6bb7de03b93b7315cb2ce1036ec321f235f049574f3ced4f4913bf1032504a2"
+  },
+  {
+   "id": "M097",
+   "index": 97,
+   "file": "factory/gate.py",
+   "line": 261,
+   "start_pos": [
+    261,
+    14
+   ],
+   "end_pos": [
+    261,
+    16
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Eq",
+   "operator_args": {},
+   "occurrence": 9,
+   "hot": true,
+   "describe": "`if status != \"FAIL\" and after != expected:` -> `if status == \"FAIL\" and after != expected:`",
+   "diff_sha256": "e25e9ce80f89b1fd16ee97f7047b862c2f0edb88945c8237ed36dc304a7c68f8",
+   "mutated_sha256": "952f3f022e00145caaa1eb147665f0a08c0fb4b775899d16e1802f0e4100e83e"
+  },
+  {
+   "id": "M098",
+   "index": 98,
+   "file": "factory/runner.py",
+   "line": 54,
+   "start_pos": [
+    54,
+    37
+   ],
+   "end_pos": [
+    54,
+    38
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_Pow",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`if stat[stat.rfind(b\")\") + 2:].split()[0] in {b\"Z\", b\"X\"}:` -> `if stat[stat.rfind(b\")\") ** 2:].split()[0] in {b\"Z\", b\"X\"}:`",
+   "diff_sha256": "336f03cc1b4d1096a837f3f828e2e23711988f5c223f601deae5b75867ea05f5",
+   "mutated_sha256": "ea4026aa719e26d71e165d5d9a25b00003f361660143b2dbf551a8b22860e6e9"
+  },
+  {
+   "id": "M099",
+   "index": 99,
+   "file": "factory/gate.py",
+   "line": 69,
+   "start_pos": [
+    69,
+    52
+   ],
+   "end_pos": [
+    69,
+    53
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Mod",
+   "operator_args": {},
+   "occurrence": 3,
+   "hot": true,
+   "describe": "`proof_path: Path | None = None, proof_base: str | None = None,` -> `proof_path: Path | None = None, proof_base: str % None = None,`",
+   "diff_sha256": "484817db2af1f97df6e9668ecde1d917437cd3cfb9e77cbd048b910d73236565",
+   "mutated_sha256": "efddeb28ef285b6830f5b21409afd0d583b98e90f803d93d4e56c5090065d6b9"
+  },
+  {
+   "id": "M100",
+   "index": 100,
+   "file": "factory/gate.py",
+   "line": 429,
+   "start_pos": [
+    429,
+    23
+   ],
+   "end_pos": [
+    429,
+    24
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_Mod",
+   "operator_args": {},
+   "occurrence": 5,
+   "hot": true,
+   "describe": "`return refused + \"not the reviewed transition\"` -> `return refused % \"not the reviewed transition\"`",
+   "diff_sha256": "8aebf40bf74d72ee5a6f5a8dc8cc98d730976672df9f32963a755acc424ae88e",
+   "mutated_sha256": "88d522dcf8c2add472b44bd37086656828daef2763c5f55783df4311cd48463e"
+  },
+  {
+   "id": "M101",
+   "index": 101,
+   "file": "factory/gate.py",
+   "line": 484,
+   "start_pos": [
+    484,
+    73
+   ],
+   "end_pos": [
+    484,
+    74
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Mul",
+   "operator_args": {},
+   "occurrence": 17,
+   "hot": true,
+   "describe": "`transition: tuple[str, str, str] | None = None, transition_base: str | None = No` -> `transition: tuple[str, str, str] | None = None, transition_base: str * None = No`",
+   "diff_sha256": "fbb6b47b02b26869ca14455765791628072bd4aee1d4f1e70d7c68a9e1975fcf",
+   "mutated_sha256": "032897ee75539c9d1c7f1c8f337fa8eeec667f2fed2717261de9f03c18381c14"
+  },
+  {
+   "id": "M102",
+   "index": 102,
+   "file": "factory/gate.py",
+   "line": 174,
+   "start_pos": [
+    174,
+    27
+   ],
+   "end_pos": [
+    174,
+    29
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Lt",
+   "operator_args": {},
+   "occurrence": 3,
+   "hot": true,
+   "describe": "`record[\"protocol\"] != \"factory-mutation-proof\"` -> `record[\"protocol\"] < \"factory-mutation-proof\"`",
+   "diff_sha256": "43ffb725fc9f745abbdec3670f767862b3219ce76efc992bce272c0ccf907c6a",
+   "mutated_sha256": "bbc12f7dfcf7d21fc89b45cc062290a521f682484b55e515fa9f2caa9982ff37"
+  },
+  {
+   "id": "M103",
+   "index": 103,
+   "file": "factory/gate.py",
+   "line": 201,
+   "start_pos": [
+    201,
+    74
+   ],
+   "end_pos": [
+    201,
+    76
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_LtE",
+   "operator_args": {},
+   "occurrence": 7,
+   "hot": true,
+   "describe": "`else \"no-mutation-candidates\" if counts[\"planned\"] == 0` -> `else \"no-mutation-candidates\" if counts[\"planned\"] <= 0`",
+   "diff_sha256": "be72b95811aa6ef5d5a9b80240dbc922ff3a3617ad35a7b3b393909e60424da6",
+   "mutated_sha256": "3119ad15e57d14e7cf66362a48410b24dc5d34231481d41241bbe7cd64e610eb"
+  },
+  {
+   "id": "M104",
+   "index": 104,
+   "file": "factory/mutation_scope.py",
+   "line": 76,
+   "start_pos": [
+    76,
+    19
+   ],
+   "end_pos": [
+    76,
+    20
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_FloorDiv",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`def _git(cwd: Path | None, *args: str) -> str:` -> `def _git(cwd: Path // None, *args: str) -> str:`",
+   "diff_sha256": "64025edbb20a4661e2b77c29d3b2c1ce9a474acd77837ca1f85d84ae4eb739b9",
+   "mutated_sha256": "b208ba2380481cac00833e2e055364198e36ada4d820ffe089006cf3bb30bf67"
+  },
+  {
+   "id": "M105",
+   "index": 105,
+   "file": "factory/runner.py",
+   "line": 64,
+   "start_pos": [
+    64,
+    19
+   ],
+   "end_pos": [
+    64,
+    93
+   ],
+   "operator": "core/AddNot",
+   "operator_args": {},
+   "occurrence": 7,
+   "hot": true,
+   "describe": "`if key in {b\"TMPDIR\", b\"GH_CONFIG_DIR\"} and _within(os.fsdecode(value), root):` -> `if not key in {b\"TMPDIR\", b\"GH_CONFIG_DIR\"} and _within(os.fsdecode(value), root`",
+   "diff_sha256": "680c660ac7212223e82dd617bbd5bed357d3ede67e9560822b8d74e51d2f43d5",
+   "mutated_sha256": "4ef6581de135ad8bcbe9a87421ec77009f0f0a86535ca0947ca7c6a2c5d76dde"
+  },
+  {
+   "id": "M106",
+   "index": 106,
+   "file": "factory/dispatch.py",
+   "line": 3105,
+   "start_pos": [
+    3105,
+    18
+   ],
+   "end_pos": [
+    3105,
+    20
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_LtE",
+   "operator_args": {},
+   "occurrence": 159,
+   "hot": true,
+   "describe": "`elif mutation == \"MISSING\" and not changed_factory_code:` -> `elif mutation <= \"MISSING\" and not changed_factory_code:`",
+   "diff_sha256": "b04c234847cdac08f20c68becfa8ffc5fb04a9550b22406a39715568cadac9f1",
+   "mutated_sha256": "3780777fa53df5befc61cc0438cb5a1f70ff2e722755392f339b63250afc8bc1"
+  },
+  {
+   "id": "M107",
+   "index": 107,
+   "file": "factory/dispatch.py",
+   "line": 2948,
+   "start_pos": [
+    2948,
+    18
+   ],
+   "end_pos": [
+    2948,
+    20
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 103,
+   "hot": true,
+   "describe": "`if not listed or listed.group(1) != status:` -> `if not listed and listed.group(1) != status:`",
+   "diff_sha256": "415e0602a1516ed829f1f3b8f2fbd5ae785e61a68a3637cf9b7b477c8700baee",
+   "mutated_sha256": "49fd684927575d8ea2c076b8f5c91bf6f1698fa212ff9ec5508fb8a4664b88de"
+  },
+  {
+   "id": "M108",
+   "index": 108,
+   "file": "factory/gate.py",
+   "line": 1059,
+   "start_pos": [
+    1059,
+    51
+   ],
+   "end_pos": [
+    1059,
+    53
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_IsNot",
+   "operator_args": {},
+   "occurrence": 33,
+   "hot": true,
+   "describe": "`return args.mutation_proof and check.proof == config.MUTATION_PROOF` -> `return args.mutation_proof and check.proof is not config.MUTATION_PROOF`",
+   "diff_sha256": "010ef86cc31c61d4f360626f289ea999d636410d4f11ed2cc90b6310f64c477e",
+   "mutated_sha256": "167b821f44545d1d0def6331b04289a66291ea8e09d086c38d11d95b7ea78cbd"
+  },
+  {
+   "id": "M109",
+   "index": 109,
+   "file": "factory/gate.py",
+   "line": 227,
+   "start_pos": [
+    227,
+    39
+   ],
+   "end_pos": [
+    227,
+    40
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Pow",
+   "operator_args": {},
+   "occurrence": 8,
+   "hot": true,
+   "describe": "`fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)` -> `fd = os.open(path, os.O_RDONLY ** os.O_NOFOLLOW)`",
+   "diff_sha256": "d22e0226dd9a19d56558c31c48289628dbe84e64cb0c243475f53b6333cfb326",
+   "mutated_sha256": "ab6453e706ccb150f9537c4eca187ff19c3e8f1701784959324932a45d86e942"
+  },
+  {
+   "id": "M110",
+   "index": 110,
+   "file": "factory/gate.py",
+   "line": 69,
+   "start_pos": [
+    69,
+    52
+   ],
+   "end_pos": [
+    69,
+    53
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Div",
+   "operator_args": {},
+   "occurrence": 3,
+   "hot": true,
+   "describe": "`proof_path: Path | None = None, proof_base: str | None = None,` -> `proof_path: Path | None = None, proof_base: str / None = None,`",
+   "diff_sha256": "d4df44b997c48fe6769c156cf3a2bc99321b63b57870b5555dfb9834b0fe7474",
+   "mutated_sha256": "864eb772859af3120d749aaca83fb9752efc6c73e7aa48d23db043e8a6c40276"
+  },
+  {
+   "id": "M111",
+   "index": 111,
+   "file": "factory/dispatch.py",
+   "line": 3039,
+   "start_pos": [
+    3039,
+    37
+   ],
+   "end_pos": [
+    3039,
+    39
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_LtE",
+   "operator_args": {},
+   "occurrence": 39,
+   "hot": true,
+   "describe": "`ok = ok and proof_status != \"FAIL\"` -> `ok = ok and proof_status <= \"FAIL\"`",
+   "diff_sha256": "e211e20942e7f3e344e88e01fbcdfb53651955b2346c403992735ea50c60f543",
+   "mutated_sha256": "d93ae5b776605657bf1b54673d00c4204927bf863d810a56374799f8195392e0"
+  },
+  {
+   "id": "M112",
+   "index": 112,
+   "file": "factory/gate.py",
+   "line": 269,
+   "start_pos": [
+    269,
+    47
+   ],
+   "end_pos": [
+    269,
+    48
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_LShift",
+   "operator_args": {},
+   "occurrence": 11,
+   "hot": true,
+   "describe": "`cmd: list[str], base: str, duration: float | None = None,` -> `cmd: list[str], base: str, duration: float << None = None,`",
+   "diff_sha256": "c09131479dcf6dc20e15b04e6a5a7ada58332fdb47d86b0800895725720d4600",
+   "mutated_sha256": "8491429779d7196e1e88a50a7b3cc16fa548ce98e1c067a70af62b0d448e903d"
+  },
+  {
+   "id": "M113",
+   "index": 113,
+   "file": "factory/gate.py",
+   "line": 282,
+   "start_pos": [
+    282,
+    25
+   ],
+   "end_pos": [
+    282,
+    28
+   ],
+   "operator": "core/ReplaceAndWithOr",
+   "operator_args": {},
+   "occurrence": 24,
+   "hot": true,
+   "describe": "`if passed and scope else \"\")` -> `if passed or scope else \"\")`",
+   "diff_sha256": "4819d370dc17c5e1cb1d01677138e256dc3d3c72694f909ca97707b7d120dac9",
+   "mutated_sha256": "1f4aacab4287eeafd99d68be6d6fcba407a8b85c19c18d98ca0968d0e2803235"
+  },
+  {
+   "id": "M114",
+   "index": 114,
+   "file": "factory/dispatch.py",
+   "line": 2959,
+   "start_pos": [
+    2959,
+    15
+   ],
+   "end_pos": [
+    2959,
+    17
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 108,
+   "hot": true,
+   "describe": "`return oid or None` -> `return oid and None`",
+   "diff_sha256": "24ea0c4b925fea71f6440477acc3ed353bf61d94b0236c0e6f26b89952bf9dc0",
+   "mutated_sha256": "4467335f7a6b91931a3549efa01bf299fe6ddd45963cec2df2645da97ac8eec0"
+  },
+  {
+   "id": "M115",
+   "index": 115,
+   "file": "factory/onboard.py",
+   "line": 402,
+   "start_pos": [
+    402,
+    11
+   ],
+   "end_pos": [
+    402,
+    55
+   ],
+   "operator": "core/AddNot",
+   "operator_args": {},
+   "occurrence": 45,
+   "hot": true,
+   "describe": "`if not collision and platform_identity.darwin():` -> `if not not collision and platform_identity.darwin():`",
+   "diff_sha256": "3a57863e58dc284507ae9b8c15ff341e2efcb4937567fec05e077d3b1cc85aba",
+   "mutated_sha256": "b8c5035372f251a529de513a3b41d81d3830ade4d9f3a1b79e88ef7d5bab3f2b"
+  },
+  {
+   "id": "M116",
+   "index": 116,
+   "file": "factory/gate.py",
+   "line": 1062,
+   "start_pos": [
+    1062,
+    58
+   ],
+   "end_pos": [
+    1062,
+    60
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_Lt",
+   "operator_args": {},
+   "occurrence": 50,
+   "hot": true,
+   "describe": "`blocking = args.blocking_mutation and (check.name == \"mutation\" or proved(check)` -> `blocking = args.blocking_mutation and (check.name < \"mutation\" or proved(check))`",
+   "diff_sha256": "ad07466f35a6e670d5553cf28372b8996c6927a4bcc7006d28d80bb17075a3ea",
+   "mutated_sha256": "4bd7f4a1242a730b11fa71760686e31522e3206bb393bbe0147c9730b0a51b63"
+  },
+  {
+   "id": "M117",
+   "index": 117,
+   "file": "factory/gate.py",
+   "line": 275,
+   "start_pos": [
+    275,
+    17
+   ],
+   "end_pos": [
+    275,
+    20
+   ],
+   "operator": "core/ReplaceAndWithOr",
+   "operator_args": {},
+   "occurrence": 21,
+   "hot": true,
+   "describe": "`if execution and execution.reason in {\"check_timeout\", \"check_terminated_by_sign` -> `if execution or execution.reason in {\"check_timeout\", \"check_terminated_by_signa`",
+   "diff_sha256": "5a748770624ee002fc0892b27cfd3c1a68df5a978e0d3780904750b5821fe00b",
+   "mutated_sha256": "6ba40a59a6282eca29870c711efccccf8ea95a0c47a985bb682f09130a7bf0e3"
+  },
+  {
+   "id": "M118",
+   "index": 118,
+   "file": "factory/gate.py",
+   "line": 433,
+   "start_pos": [
+    433,
+    15
+   ],
+   "end_pos": [
+    433,
+    17
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Eq",
+   "operator_args": {},
+   "occurrence": 16,
+   "hot": true,
+   "describe": "`if commits != [REVIEWED_TRANSITION_BASE] * 3:` -> `if commits == [REVIEWED_TRANSITION_BASE] * 3:`",
+   "diff_sha256": "4ef08e2a23115af2dcfd302994c946168193b533f384ca5cc3066cf76d01d9e4",
+   "mutated_sha256": "17380229ad4e44aebba5004d345677b4ae598afd7ebc99add62ce090710d9044"
+  },
+  {
+   "id": "M119",
+   "index": 119,
+   "file": "factory/gate.py",
+   "line": 184,
+   "start_pos": [
+    184,
+    22
+   ],
+   "end_pos": [
+    184,
+    24
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Is",
+   "operator_args": {},
+   "occurrence": 4,
+   "hot": true,
+   "describe": "`if record[\"mode\"] != \"blocking\":` -> `if record[\"mode\"] is \"blocking\":`",
+   "diff_sha256": "dd960c0f1b1b8d07c92dafa2c13e7a596112cc6a20ca1562c28f79dc931541b8",
+   "mutated_sha256": "10ee4807cf338d8a0368d52f9673afc5ec3c2de1f4f8092d01d0b367c3cfa0bc"
+  },
+  {
+   "id": "M120",
+   "index": 120,
+   "file": "factory/runner.py",
+   "line": 105,
+   "start_pos": [
+    105,
+    68
+   ],
+   "end_pos": [
+    105,
+    69
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Div",
+   "operator_args": {},
+   "occurrence": 5,
+   "hot": true,
+   "describe": "`descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)` -> `descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY / os.O_NOFOLLOW)`",
+   "diff_sha256": "90d3064dfa8416a6eb1bed19fddb4de3c963a5e2aee2aa1ca576b45f1d4e0ce1",
+   "mutated_sha256": "c8c0956dfd9c219b6f9aab47ad11e6dcc12e35156a60f2d18a533f13566ab5b1"
+  },
+  {
+   "id": "M121",
+   "index": 121,
+   "file": "factory/gate.py",
+   "line": 209,
+   "start_pos": [
+    209,
+    21
+   ],
+   "end_pos": [
+    209,
+    23
+   ],
+   "operator": "core/ReplaceComparisonOperator_LtE_GtE",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`and blocking <= counts[\"survived\"]` -> `and blocking >= counts[\"survived\"]`",
+   "diff_sha256": "cb0c080a9c4ccd849a3dad77d426d725d6088163d2853c4e8224e6d69d7b4974",
+   "mutated_sha256": "bbcaf16c10cfaa4c25f7265015c2d41f43cfb4bc2a2aa9767a555b42408d0282"
+  },
+  {
+   "id": "M122",
+   "index": 122,
+   "file": "factory/dispatch.py",
+   "line": 3039,
+   "start_pos": [
+    3039,
+    37
+   ],
+   "end_pos": [
+    3039,
+    39
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_GtE",
+   "operator_args": {},
+   "occurrence": 39,
+   "hot": true,
+   "describe": "`ok = ok and proof_status != \"FAIL\"` -> `ok = ok and proof_status >= \"FAIL\"`",
+   "diff_sha256": "88ccfb9a40fd83e36aefbc204e4e1d96af2c2c162120ae1958a60b2cd7d92b8b",
+   "mutated_sha256": "7d14ff8e2fdc087cd986b7cb4463a20532bdecdb5b7e01a6c486a03aa3b15098"
+  },
+  {
+   "id": "M123",
+   "index": 123,
+   "file": "factory/runner.py",
+   "line": 122,
+   "start_pos": [
+    122,
+    40
+   ],
+   "end_pos": [
+    122,
+    41
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_RShift",
+   "operator_args": {},
+   "occurrence": 6,
+   "hot": true,
+   "describe": "`def preflight(repository: Path) -> dict | None:` -> `def preflight(repository: Path) -> dict >> None:`",
+   "diff_sha256": "f4b3ecb1dd3939ddf242b334bff4c359696aba11f6c5991692d77dcbf5952d2f",
+   "mutated_sha256": "417014c7cd4fffc2100c68c385489d73b6105d7190655b4f3fbd3d385d55c3c8"
+  },
+  {
+   "id": "M124",
+   "index": 124,
+   "file": "factory/dispatch.py",
+   "line": 3029,
+   "start_pos": [
+    3029,
+    76
+   ],
+   "end_pos": [
+    3029,
+    78
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 113,
+   "hot": true,
+   "describe": "`proof and (_mutation_proof(pr_runs[head][1], head, base_commit) or (\"STALE\",))[0` -> `proof and (_mutation_proof(pr_runs[head][1], head, base_commit) and (\"STALE\",))[`",
+   "diff_sha256": "a6eb92b2e815934773e9d5b2166f5d53ec5d0987488f1bfc95d0a71d8c295565",
+   "mutated_sha256": "359a5d60dd09605da7061f409e2a3b7f0c15ff4d65c51ccd23aa6530f10f39ca"
+  },
+  {
+   "id": "M125",
+   "index": 125,
+   "file": "factory/runner.py",
+   "line": 131,
+   "start_pos": [
+    131,
+    24
+   ],
+   "end_pos": [
+    131,
+    26
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_Gt",
+   "operator_args": {},
+   "occurrence": 3,
+   "hot": true,
+   "describe": "`if resource == \"inodes\" and stats.f_files == 0:` -> `if resource > \"inodes\" and stats.f_files == 0:`",
+   "diff_sha256": "6e3ab496f695f53c16e6e362b4bfc266a4a03946476f7c1b85efa1ebca802e3d",
+   "mutated_sha256": "783e2284ac45996ee36978ccf70ab6d79cbde2ceec343cad393e4d5ecd0588e8"
+  },
+  {
+   "id": "M126",
+   "index": 126,
+   "file": "factory/mutation_scope.py",
+   "line": 51,
+   "start_pos": [
+    51,
+    32
+   ],
+   "end_pos": [
+    51,
+    33
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Pow",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`files: tuple[tuple[str, str | None, tuple[int, ...]], ...]  # (path, head blob, ` -> `files: tuple[tuple[str, str ** None, tuple[int, ...]], ...]  # (path, head blob,`",
+   "diff_sha256": "059040cbb8afbcc3859af8d0d3db2e19bfffcf34c642cdf209ac1b882fef12b8",
+   "mutated_sha256": "770314bb7df528f5944d848766b5108e772125c6a32ca71ed187a76ae73b908c"
+  },
+  {
+   "id": "M127",
+   "index": 127,
+   "file": "factory/runner.py",
+   "line": 40,
+   "start_pos": [
+    40,
+    57
+   ],
+   "end_pos": [
+    40,
+    58
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 19,
+   "hot": true,
+   "describe": "`and any(f\"{key}={root}\" in parts[1] for key in (\"TMPDIR\", \"GH_CONFIG_DIR\"))):` -> `and any(f\"{key}={root}\" in parts[ 0] for key in (\"TMPDIR\", \"GH_CONFIG_DIR\"))):`",
+   "diff_sha256": "d431bf92f2ad91e211fe4c9f8a3dfb33bb5cae94dcd1446fd7dc9e77458f8505",
+   "mutated_sha256": "fff84bacb569b0b2519878c6bc0977658cedfd033c273da47e03826fbae04bc8"
+  },
+  {
+   "id": "M128",
+   "index": 128,
+   "file": "factory/mutation_scope.py",
+   "line": 53,
+   "start_pos": [
+    53,
+    4
+   ],
+   "end_pos": [
+    54,
+    0
+   ],
+   "operator": "core/RemoveDecorator",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`` -> ``",
+   "diff_sha256": "995c5192e156b47f0f621bc5a003d542f7353b7a331b96017118a40ee0eb3ec1",
+   "mutated_sha256": "57b98841ab8d2934e1f3df55e5886e644abe99a4f626fce25ebd51b3a7eb5a1c"
+  },
+  {
+   "id": "M129",
+   "index": 129,
+   "file": "factory/decisions.py",
+   "line": 901,
+   "start_pos": [
+    901,
+    47
+   ],
+   "end_pos": [
+    901,
+    48
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_LShift",
+   "operator_args": {},
+   "occurrence": 22,
+   "hot": true,
+   "describe": "`fd = os.open(name, _LOCK_FLAGS | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory` -> `fd = os.open(name, _LOCK_FLAGS << os.O_CREAT | os.O_EXCL, 0o600, dir_fd=director`",
+   "diff_sha256": "03e0ecd683cb5a0544c4f1102e786d43c8681ca20d22ffb8fa38088f3ff7f761",
+   "mutated_sha256": "070634dfb66c7828960c650e593f7ba4a0f3b67a5c1310f1512ad06893e0b209"
+  },
+  {
+   "id": "M130",
+   "index": 130,
+   "file": "factory/gate.py",
+   "line": 484,
+   "start_pos": [
+    484,
+    37
+   ],
+   "end_pos": [
+    484,
+    38
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_RShift",
+   "operator_args": {},
+   "occurrence": 16,
+   "hot": true,
+   "describe": "`transition: tuple[str, str, str] | None = None, transition_base: str | None = No` -> `transition: tuple[str, str, str] >> None = None, transition_base: str | None = N`",
+   "diff_sha256": "2f225a31077c35404927badfff7bb075164e27a60ead2b183bd68c34d73a4cc3",
+   "mutated_sha256": "956e79fceb9b1765316a453669a758c6e7e350c930d4900d75093f891df1c7bb"
+  },
+  {
+   "id": "M131",
+   "index": 131,
+   "file": "factory/runner.py",
+   "line": 89,
+   "start_pos": [
+    89,
+    51
+   ],
+   "end_pos": [
+    89,
+    52
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_BitAnd",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)` -> `descriptor = os.open(root, os.O_RDONLY & os.O_DIRECTORY | os.O_NOFOLLOW)`",
+   "diff_sha256": "0e61e421457c914c71804703c73cd8e7da2c497a09125d29e56ddaae9f87ef89",
+   "mutated_sha256": "b866ed3390132897c882088b06b65d8d89218f1fc0a2a7895b438aeac79f636c"
+  },
+  {
+   "id": "M132",
+   "index": 132,
+   "file": "factory/runner.py",
+   "line": 48,
+   "start_pos": [
+    48,
+    61
+   ],
+   "end_pos": [
+    48,
+    63
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_NotEq",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`if not process.name.isdecimal() or int(process.name) == os.getpid():` -> `if not process.name.isdecimal() or int(process.name) != os.getpid():`",
+   "diff_sha256": "51a5a59025dbd1a59ff28fafc32a0b44c570fa979b29b3ecb37b1cfa31e0fe43",
+   "mutated_sha256": "15a3ab483c03851577cfd4ed0e094e711772dcc7cf97fcdc8c91bc4ee3020af4"
+  },
+  {
+   "id": "M133",
+   "index": 133,
+   "file": "factory/mutation_scope.py",
+   "line": 117,
+   "start_pos": [
+    117,
+    24
+   ],
+   "end_pos": [
+    117,
+    25
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 3,
+   "hot": true,
+   "describe": "`path = line[6:]` -> `path = line[ 5:]`",
+   "diff_sha256": "0b055dd25eb738f6a4656cd082ecfa0fdb02e69e82a320ecacfdbde21b93c492",
+   "mutated_sha256": "3c114b9966bf5067c84724dbd94cd5c1e455461be99414c65c9fde726bddfb6b"
+  },
+  {
+   "id": "M134",
+   "index": 134,
+   "file": "factory/mutation_scope.py",
+   "line": 171,
+   "start_pos": [
+    171,
+    11
+   ],
+   "end_pos": [
+    171,
+    29
+   ],
+   "operator": "core/AddNot",
+   "operator_args": {},
+   "occurrence": 8,
+   "hot": true,
+   "describe": "`if stat.S_ISLNK(mode):` -> `if not stat.S_ISLNK(mode):`",
+   "diff_sha256": "2888a24cd3b620a2d8e17e6c814e12c5e406703bdd9809161da72cb6845ee31f",
+   "mutated_sha256": "ca95ade247971cfad4e7feedcb4f661f3ba9ac16d0ec52f1485d9eca1cff921a"
+  },
+  {
+   "id": "M135",
+   "index": 135,
+   "file": "factory/runner.py",
+   "line": 87,
+   "start_pos": [
+    87,
+    54
+   ],
+   "end_pos": [
+    87,
+    56
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 3,
+   "hot": true,
+   "describe": "`if root.is_symlink() or not root.is_dir() or info.st_uid != os.geteuid():` -> `if root.is_symlink() or not root.is_dir() and info.st_uid != os.geteuid():`",
+   "diff_sha256": "84d9fe8aabb699415f2a1b64afb8af68023110c6dbbdb497a0613cfd12b40e3d",
+   "mutated_sha256": "75514c2a34e23d847e5371e9539a6eaee5dbe36322ead1b056febd93f3a8e64c"
+  },
+  {
+   "id": "M136",
+   "index": 136,
+   "file": "factory/decisions.py",
+   "line": 68,
+   "start_pos": [
+    68,
+    22
+   ],
+   "end_pos": [
+    68,
+    23
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 31,
+   "hot": true,
+   "describe": "`_LOCK_OPEN_ATTEMPTS = 3` -> `_LOCK_OPEN_ATTEMPTS = 2`",
+   "diff_sha256": "2bbe8a0d1416169f0002bc3f936349fd370430d0d6abb2ec348c16d6e31b2f80",
+   "mutated_sha256": "0f1609c91f92090b13bfc4acaa9e862710955a7c58a99e568b1b00295f43dbb8"
+  },
+  {
+   "id": "M137",
+   "index": 137,
+   "file": "factory/runner.py",
+   "line": 79,
+   "start_pos": [
+    79,
+    43
+   ],
+   "end_pos": [
+    79,
+    44
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Add",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`path.chmod(path.stat().st_mode | 0o700)` -> `path.chmod(path.stat().st_mode + 0o700)`",
+   "diff_sha256": "06188c86b1407762393688e67da52ff981c0b461c22519ab784842a1cf1fd4c9",
+   "mutated_sha256": "d8fa2745a49889d67b218864cf706740f70c9d151f65b55de01e58c2c64c7950"
+  },
+  {
+   "id": "M138",
+   "index": 138,
+   "file": "factory/runner.py",
+   "line": 48,
+   "start_pos": [
+    48,
+    61
+   ],
+   "end_pos": [
+    48,
+    63
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_Gt",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`if not process.name.isdecimal() or int(process.name) == os.getpid():` -> `if not process.name.isdecimal() or int(process.name) > os.getpid():`",
+   "diff_sha256": "39af86db63a19fb2b6bed4ef2a0ff6f879e47e13802346f45d5defe93709c87c",
+   "mutated_sha256": "42ca80f03aa70ea4cb1790ecda35c16d6e3714b933ee54ea0495c4948ccadf35"
+  },
+  {
+   "id": "M139",
+   "index": 139,
+   "file": "factory/gate.py",
+   "line": 429,
+   "start_pos": [
+    429,
+    23
+   ],
+   "end_pos": [
+    429,
+    24
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_Div",
+   "operator_args": {},
+   "occurrence": 5,
+   "hot": true,
+   "describe": "`return refused + \"not the reviewed transition\"` -> `return refused / \"not the reviewed transition\"`",
+   "diff_sha256": "5de583c3b7db42e130a4314e3a24ec7c5887d2e6b0633d79e62dd63d38a66ba5",
+   "mutated_sha256": "05a6a6bd62ee74ab74cf6b4b2835860f2ff3ff8a17a19b46017f78e10d7e0403"
+  },
+  {
+   "id": "M140",
+   "index": 140,
+   "file": "factory/config.py",
+   "line": 936,
+   "start_pos": [
+    936,
+    40
+   ],
+   "end_pos": [
+    936,
+    42
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Eq",
+   "operator_args": {},
+   "occurrence": 10,
+   "hot": true,
+   "describe": "`if proof is not None and (proof != MUTATION_PROOF or when != \"pr\"):` -> `if proof is not None and (proof == MUTATION_PROOF or when != \"pr\"):`",
+   "diff_sha256": "1fca0ac4f35084981dc52929c40af9a80b0e497afda9c536477c707a1f7e51ba",
+   "mutated_sha256": "80f73b3ba63fedad74cfd6a1121a0c6e4e465f4c36b4a339d0a7d7e4b707f7ba"
+  },
+  {
+   "id": "M141",
+   "index": 141,
+   "file": "factory/runner.py",
+   "line": 54,
+   "start_pos": [
+    54,
+    37
+   ],
+   "end_pos": [
+    54,
+    38
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_BitOr",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`if stat[stat.rfind(b\")\") + 2:].split()[0] in {b\"Z\", b\"X\"}:` -> `if stat[stat.rfind(b\")\") | 2:].split()[0] in {b\"Z\", b\"X\"}:`",
+   "diff_sha256": "74023814a52fc52adee609766495673bce4a8af636eec0596d73b8df920a6c00",
+   "mutated_sha256": "ad340ccd5a8603999f7516917972d73c2c4f671140a481a5637a9c73ca46f0be"
+  },
+  {
+   "id": "M142",
+   "index": 142,
+   "file": "factory/gate.py",
+   "line": 440,
+   "start_pos": [
+    440,
+    13
+   ],
+   "end_pos": [
+    440,
+    15
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_IsNot",
+   "operator_args": {},
+   "occurrence": 15,
+   "hot": true,
+   "describe": "`if blobs != [pre, post]:` -> `if blobs is not [pre, post]:`",
+   "diff_sha256": "cba13e64ef36606f50a596015b41e49b4aa629b7ddc25f268e8de195ea844687",
+   "mutated_sha256": "b4e71ca6eed34445361f9bcf5720e4e3aac1fb8900ba3c2ec22a6d230b508cd1"
+  },
+  {
+   "id": "M143",
+   "index": 143,
+   "file": "factory/mutation_scope.py",
+   "line": 76,
+   "start_pos": [
+    76,
+    19
+   ],
+   "end_pos": [
+    76,
+    20
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_RShift",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`def _git(cwd: Path | None, *args: str) -> str:` -> `def _git(cwd: Path >> None, *args: str) -> str:`",
+   "diff_sha256": "bbcc30258e719828d332bdf26db3fa9583e7360e4b4bd6bf1eef3f81c25ed0f7",
+   "mutated_sha256": "2469fe23eb0c1c7c6f174aa3184e79c1f94436d3cab23d111647714200b0e252"
+  },
+  {
+   "id": "M144",
+   "index": 144,
+   "file": "factory/runner.py",
+   "line": 42,
+   "start_pos": [
+    42,
+    15
+   ],
+   "end_pos": [
+    42,
+    20
+   ],
+   "operator": "core/ReplaceFalseWithTrue",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`return False` -> `return True`",
+   "diff_sha256": "edcc04eb537b7eab9f6dd91b8f29917787edd64da19b2e705e2e8f38d138e306",
+   "mutated_sha256": "f8eaf291963ec9e9af40b0b07e7a4101080995fed1b9a20055c4ae1289be5c9b"
+  },
+  {
+   "id": "M145",
+   "index": 145,
+   "file": "factory/gate.py",
+   "line": 445,
+   "start_pos": [
+    445,
+    16
+   ],
+   "end_pos": [
+    445,
+    18
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_IsNot",
+   "operator_args": {},
+   "occurrence": 16,
+   "hot": true,
+   "describe": "`if worktree != post:` -> `if worktree is not post:`",
+   "diff_sha256": "10164c9e0272f3d093e810fb6b4fcdf220e66719a7573a9568386cde12713534",
+   "mutated_sha256": "f745dcb09d004ca3f8eba891cc2ad312dad97058b6472bb9b5599c7737d3d555"
+  },
+  {
+   "id": "M146",
+   "index": 146,
+   "file": "factory/gate.py",
+   "line": 69,
+   "start_pos": [
+    69,
+    21
+   ],
+   "end_pos": [
+    69,
+    22
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_LShift",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`proof_path: Path | None = None, proof_base: str | None = None,` -> `proof_path: Path << None = None, proof_base: str | None = None,`",
+   "diff_sha256": "d423a6980de0d31d69f41ac2322d432fa8bedbbfbe1694c54bbfad23cc3dc863",
+   "mutated_sha256": "0fdc6e06aa7e1e04702a300ced80edb2f92f85527c23cfa14e138969c2807fb0"
+  },
+  {
+   "id": "M147",
+   "index": 147,
+   "file": "factory/runner.py",
+   "line": 79,
+   "start_pos": [
+    79,
+    43
+   ],
+   "end_pos": [
+    79,
+    44
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Sub",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`path.chmod(path.stat().st_mode | 0o700)` -> `path.chmod(path.stat().st_mode - 0o700)`",
+   "diff_sha256": "aad35959819e2ec04bc0405cd884588f22a6e97939fd4236276f592ce026fea5",
+   "mutated_sha256": "21747bf03a4434e9cb79bf1ac1e1a102919affc8e0470c0a8b04473960908a78"
+  },
+  {
+   "id": "M148",
+   "index": 148,
+   "file": "factory/runner.py",
+   "line": 67,
+   "start_pos": [
+    67,
+    39
+   ],
+   "end_pos": [
+    67,
+    40
+   ],
+   "operator": "core/ReplaceBinaryOperator_Div_Add",
+   "operator_args": {},
+   "occurrence": 3,
+   "hot": true,
+   "describe": "`for descriptor in (process / \"fd\").iterdir():` -> `for descriptor in (process + \"fd\").iterdir():`",
+   "diff_sha256": "bb8acf0b5e19e07b8d4e6e7fa9db59503edad75c1452b458ede756ecfd06988c",
+   "mutated_sha256": "adc49522e6c795d03f26c9aa8c19f75a426ae18c6eedf5e161311049b9e01cc6"
+  },
+  {
+   "id": "M149",
+   "index": 149,
+   "file": "factory/gate.py",
+   "line": 144,
+   "start_pos": [
+    144,
+    52
+   ],
+   "end_pos": [
+    144,
+    53
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Sub",
+   "operator_args": {},
+   "occurrence": 5,
+   "hot": true,
+   "describe": "`def _proof_counts(counts: object) -> dict[str, int] | None:` -> `def _proof_counts(counts: object) -> dict[str, int] - None:`",
+   "diff_sha256": "8b1622f576e42e8e571ee48ce78e8d6544688aab36a7c78cb95d4b1b0cc81fe4",
+   "mutated_sha256": "100fb7665f6c6c571890f4f7eeb1a0ee62c0163a574628fdbede7fc49d27b68c"
+  },
+  {
+   "id": "M150",
+   "index": 150,
+   "file": "factory/dispatch.py",
+   "line": 2950,
+   "start_pos": [
+    2950,
+    14
+   ],
+   "end_pos": [
+    2950,
+    16
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Gt",
+   "operator_args": {},
+   "occurrence": 34,
+   "hot": true,
+   "describe": "`if status != \"FAIL\" and (not scope or proof_head != head or base is None or proo` -> `if status > \"FAIL\" and (not scope or proof_head != head or base is None or proof`",
+   "diff_sha256": "49ff8effabff49a7d1257275bd7cfefff1cbc5f0161580de50b689095cfc2bc1",
+   "mutated_sha256": "ec446cdfd3f9308aa2962b77423a5e3fa3cd4f83dd1b9ac3a9ebc6dcdb382a5a"
+  },
+  {
+   "id": "M151",
+   "index": 151,
+   "file": "factory/gate.py",
+   "line": 164,
+   "start_pos": [
+    164,
+    17
+   ],
+   "end_pos": [
+    164,
+    18
+   ],
+   "operator": "core/ReplaceComparisonOperator_Gt_LtE",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`if len(data) > MUTATION_PROOF_MAX_BYTES:` -> `if len(data) <= MUTATION_PROOF_MAX_BYTES:`",
+   "diff_sha256": "7ea10485324d03dcbab22c7445b9099a41a13413705afe458a37bc586b281867",
+   "mutated_sha256": "e919e1024f19e6533db9cb459f2396cdcbb1378e9a2c09c910d2e8a8ac276aea"
+  },
+  {
+   "id": "M152",
+   "index": 152,
+   "file": "factory/mutation_scope.py",
+   "line": 217,
+   "start_pos": [
+    217,
+    60
+   ],
+   "end_pos": [
+    217,
+    61
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 14,
+   "hot": true,
+   "describe": "`files = parse(_git(cwd, *diff_command(merge_base, head)[1:]))` -> `files = parse(_git(cwd, *diff_command(merge_base, head)[ 2:]))`",
+   "diff_sha256": "656983a16b5038bc60d36069eeeccae4056f890115b5c3a622b70e824d259e01",
+   "mutated_sha256": "a83f689a261aaf0e735805a8cc0895b44f5d8058a4742a6cc39d289ba837c162"
+  },
+  {
+   "id": "M153",
+   "index": 153,
+   "file": "factory/mutation_scope.py",
+   "line": 217,
+   "start_pos": [
+    217,
+    60
+   ],
+   "end_pos": [
+    217,
+    61
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 15,
+   "hot": true,
+   "describe": "`files = parse(_git(cwd, *diff_command(merge_base, head)[1:]))` -> `files = parse(_git(cwd, *diff_command(merge_base, head)[ 0:]))`",
+   "diff_sha256": "3d0f1220e2fb1804aa62bb4b237eb79ce3382705a0770e80727c15b487ae7b7e",
+   "mutated_sha256": "392c9b3bc624f4001ba60741b4319ec95eb14b6568f5e20b69c53b22a3b714d4"
+  },
+  {
+   "id": "M154",
+   "index": 154,
+   "file": "factory/gate.py",
+   "line": 442,
+   "start_pos": [
+    442,
+    83
+   ],
+   "end_pos": [
+    442,
+    88
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 77,
+   "hot": true,
+   "describe": "`if os.path.islink(path) or not os.path.isfile(path) or os.stat(path).st_mode & 0` -> `if os.path.islink(path) or not os.path.isfile(path) or os.stat(path).st_mode & 7`",
+   "diff_sha256": "cd58bf63322ac22e8fb8c8958268fbc081a2267d3b0317cc87c9b3ef3ef8000f",
+   "mutated_sha256": "b4e30ca4ecb0662dd8eb73f7fa549e3d8883b5d2bce04bd7340c5030dc91bf07"
+  },
+  {
+   "id": "M155",
+   "index": 155,
+   "file": "factory/gate.py",
+   "line": 442,
+   "start_pos": [
+    442,
+    83
+   ],
+   "end_pos": [
+    442,
+    88
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 76,
+   "hot": true,
+   "describe": "`if os.path.islink(path) or not os.path.isfile(path) or os.stat(path).st_mode & 0` -> `if os.path.islink(path) or not os.path.isfile(path) or os.stat(path).st_mode & 7`",
+   "diff_sha256": "1c556fa8632221504b37a8deaa429b1ff1dee1159fa2abca6cbe7b5dddea8147",
+   "mutated_sha256": "1a24eb27d8ab7f629025d925f425e1dc4227f3d9d129ceba2dc759fa06966268"
+  },
+  {
+   "id": "M156",
+   "index": 156,
+   "file": "factory/mutation_scope.py",
+   "line": 162,
+   "start_pos": [
+    162,
+    96
+   ],
+   "end_pos": [
+    162,
+    97
+   ],
+   "operator": "core/ReplaceBinaryOperator_Sub_Mul",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`ancestors = {parent.as_posix() for path in paths for parent in PurePosixPath(pat` -> `ancestors = {parent.as_posix() for path in paths for parent in PurePosixPath(pat`",
+   "diff_sha256": "1f48cc941e53b537c3fe0ba6d159327c8a2724da962595bad8eabd865ba44c71",
+   "mutated_sha256": "b967a2a92c77b64158611fefe2c2da7e1589de5a15ee6aeeada8f7cca54509cb"
+  },
+  {
+   "id": "M157",
+   "index": 157,
+   "file": "factory/gate.py",
+   "line": 178,
+   "start_pos": [
+    178,
+    18
+   ],
+   "end_pos": [
+    178,
+    20
+   ],
+   "operator": "core/ReplaceComparisonOperator_Is_IsNot",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`or counts is None` -> `or counts is not None`",
+   "diff_sha256": "4cc06f8cad8579724bd5c3c95129db77c768cb3c4d79d664e8c465a033ff09ec",
+   "mutated_sha256": "1788eab8da2e7f92ac04d7bfe3fe82f9420c05ade60abe10c1bb82e8e1b97cd2"
+  },
+  {
+   "id": "M158",
+   "index": 158,
+   "file": "factory/gate.py",
+   "line": 193,
+   "start_pos": [
+    193,
+    23
+   ],
+   "end_pos": [
+    193,
+    25
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_Gt",
+   "operator_args": {},
+   "occurrence": 4,
+   "hot": true,
+   "describe": "`if (applicable == 0 and reason == \"no-applicable-files\" and not files` -> `if (applicable > 0 and reason == \"no-applicable-files\" and not files`",
+   "diff_sha256": "42b28bb50c54adc2e94beebe77b8fcc9f94f34885e54d59ccb0726439b7069b6",
+   "mutated_sha256": "a5c770e6ae38b87d3cba94ca4e296b51a1e25601b5bebd51925b3cb6b00acec2"
+  },
+  {
+   "id": "M159",
+   "index": 159,
+   "file": "factory/gate.py",
+   "line": 440,
+   "start_pos": [
+    440,
+    13
+   ],
+   "end_pos": [
+    440,
+    15
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Gt",
+   "operator_args": {},
+   "occurrence": 18,
+   "hot": true,
+   "describe": "`if blobs != [pre, post]:` -> `if blobs > [pre, post]:`",
+   "diff_sha256": "cec37d22473a6def4436db1caa2ac9d4e1a8fe856bffc6ac1d72993e668f01f5",
+   "mutated_sha256": "f6f131455ccc7b5bf01c4e9eb2db5f09f84013bef2270d35057c4d810d75325a"
+  },
+  {
+   "id": "M160",
+   "index": 160,
+   "file": "factory/dispatch.py",
+   "line": 2947,
+   "start_pos": [
+    2947,
+    91
+   ],
+   "end_pos": [
+    2947,
+    92
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 308,
+   "hot": true,
+   "describe": "`listed = re.search(rf\"(?m)^- {re.escape(name)}: (PASS|FAIL|SKIP)\", report.split(` -> `listed = re.search(rf\"(?m)^- {re.escape(name)}: (PASS|FAIL|SKIP)\", report.split(`",
+   "diff_sha256": "372db03da2f54262596f3ac3e011d7c5cc399b2467f48a5c6ffb7a6d838724df",
+   "mutated_sha256": "db1fe39775b98538ac69e2bff9bbfecde75fb01456b542deec93a59779aceea4"
+  },
+  {
+   "id": "M161",
+   "index": 161,
+   "file": "factory/gate.py",
+   "line": 168,
+   "start_pos": [
+    168,
+    11
+   ],
+   "end_pos": [
+    168,
+    21
+   ],
+   "operator": "core/ExceptionReplacer",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`except ValueError:` -> `except CosmicRayTestingException:`",
+   "diff_sha256": "c6806575c2ab28e48617631f6b24a3244aa616c6f2b6ffaaa8f572b9b64b11fc",
+   "mutated_sha256": "6d2cfb05e8af9651e6aed089e40b359162393b3f0e2b1a4c3cf2d5bda52be8a7"
+  },
+  {
+   "id": "M162",
+   "index": 162,
+   "file": "factory/gate.py",
+   "line": 211,
+   "start_pos": [
+    211,
+    8
+   ],
+   "end_pos": [
+    211,
+    11
+   ],
+   "operator": "core/ReplaceAndWithOr",
+   "operator_args": {},
+   "occurrence": 18,
+   "hot": true,
+   "describe": "`and returncode == (1 if blocking else 0)` -> `or returncode == (1 if blocking else 0)`",
+   "diff_sha256": "70d4c4620db68648e346379aac90dc039ea2cde85e9ff04aeec92ec7727c383a",
+   "mutated_sha256": "a02b130f73842bc4b91fe62c05caf34466715a06822bd3f1c37af02c5b2c28e8"
+  },
+  {
+   "id": "M163",
+   "index": 163,
+   "file": "factory/gate.py",
+   "line": 210,
+   "start_pos": [
+    210,
+    19
+   ],
+   "end_pos": [
+    210,
+    21
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_IsNot",
+   "operator_args": {},
+   "occurrence": 8,
+   "hot": true,
+   "describe": "`and reason == expected_reason` -> `and reason is not expected_reason`",
+   "diff_sha256": "bd228d3fcb9956b516d85cc1cac94c99f9d701a1273bd9249d5b143e5d155147",
+   "mutated_sha256": "fbe833d0fb148ebc0e69af5300c54375b9643504f7661d9292910ed0c10fc16f"
+  },
+  {
+   "id": "M164",
+   "index": 164,
+   "file": "factory/gate.py",
+   "line": 442,
+   "start_pos": [
+    442,
+    81
+   ],
+   "end_pos": [
+    442,
+    82
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitAnd_Mul",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`if os.path.islink(path) or not os.path.isfile(path) or os.stat(path).st_mode & 0` -> `if os.path.islink(path) or not os.path.isfile(path) or os.stat(path).st_mode * 0`",
+   "diff_sha256": "5a5cda919e292f331987590488e222185318e7cb5589ceb78bf65922f97391ee",
+   "mutated_sha256": "55f02853265ec2e8d8446b9490e43eed99045b93ee0f71b1c2fd44e60ec7c09c"
+  },
+  {
+   "id": "M165",
+   "index": 165,
+   "file": "factory/runner.py",
+   "line": 122,
+   "start_pos": [
+    122,
+    40
+   ],
+   "end_pos": [
+    122,
+    41
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_FloorDiv",
+   "operator_args": {},
+   "occurrence": 6,
+   "hot": true,
+   "describe": "`def preflight(repository: Path) -> dict | None:` -> `def preflight(repository: Path) -> dict // None:`",
+   "diff_sha256": "079bb5064b3e46a36bee10856b22676f88b6df5bdad322c4a9bd09cec3050f08",
+   "mutated_sha256": "9c9ef531e6fa62de1370be9822ae153a6e33c8ed0aa73f0f2302f901969db890"
+  },
+  {
+   "id": "M166",
+   "index": 166,
+   "file": "factory/gate.py",
+   "line": 36,
+   "start_pos": [
+    36,
+    32
+   ],
+   "end_pos": [
+    36,
+    36
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 7,
+   "hot": true,
+   "describe": "`MUTATION_PROOF_MAX_BYTES = 64 * 1024` -> `MUTATION_PROOF_MAX_BYTES = 64 * 1023`",
+   "diff_sha256": "bf1547a229c4d0236f7c691dfdff25396a2c32d83acacb87cc9f1e85d407ffff",
+   "mutated_sha256": "1e10b824d81d1b7e789f1b8ac2feac0079ba0a23fabfbd002f817260c363c670"
+  },
+  {
+   "id": "M167",
+   "index": 167,
+   "file": "factory/dispatch.py",
+   "line": 3038,
+   "start_pos": [
+    3038,
+    45
+   ],
+   "end_pos": [
+    3038,
+    47
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_Gt",
+   "operator_args": {},
+   "occurrence": 153,
+   "hot": true,
+   "describe": "`proof_status = \"FAIL\" if verdict == \"STALE\" else verdict` -> `proof_status = \"FAIL\" if verdict > \"STALE\" else verdict`",
+   "diff_sha256": "8e818612e32ec58075a2f1f9b5ac6d9853e1ca9ddf3c3d3103c0a75074e2f25f",
+   "mutated_sha256": "7dcbacc6c4e0e9f7cdb9c7ab2df0846ae7a0ae7b313a279939d71bb484864f37"
+  },
+  {
+   "id": "M168",
+   "index": 168,
+   "file": "factory/gate.py",
+   "line": 269,
+   "start_pos": [
+    269,
+    47
+   ],
+   "end_pos": [
+    269,
+    48
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Mod",
+   "operator_args": {},
+   "occurrence": 11,
+   "hot": true,
+   "describe": "`cmd: list[str], base: str, duration: float | None = None,` -> `cmd: list[str], base: str, duration: float % None = None,`",
+   "diff_sha256": "7350e18b063e860d55e483fa2f3c79ad815311743b2553e707a10ea982ffe7dc",
+   "mutated_sha256": "a7a7cf7304dc4b7c120f472ed229db2c5a66e67bac7ca134d89928ac02ba68d1"
+  },
+  {
+   "id": "M169",
+   "index": 169,
+   "file": "factory/runner.py",
+   "line": 45,
+   "start_pos": [
+    45,
+    11
+   ],
+   "end_pos": [
+    45,
+    18
+   ],
+   "operator": "core/ExceptionReplacer",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`except OSError:` -> `except CosmicRayTestingException:`",
+   "diff_sha256": "8942d3f2e6e15260bc9d2f4de41aa942e55bb796cc68619e1677f1213f887919",
+   "mutated_sha256": "de7647eab0684310ff0c5c7dafdf405e9b6d2293751ca5a951086d14fe8ba169"
+  },
+  {
+   "id": "M170",
+   "index": 170,
+   "file": "factory/gate.py",
+   "line": 184,
+   "start_pos": [
+    184,
+    22
+   ],
+   "end_pos": [
+    184,
+    24
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Eq",
+   "operator_args": {},
+   "occurrence": 6,
+   "hot": true,
+   "describe": "`if record[\"mode\"] != \"blocking\":` -> `if record[\"mode\"] == \"blocking\":`",
+   "diff_sha256": "5ecb874846de554ee50b0b59d1b4c64b0d95dea294e303d332af9af967d777f9",
+   "mutated_sha256": "ec007faa140972ef97de1bda2af0dbd9cdddaaad4bc85887f5ed90714d25acb6"
+  },
+  {
+   "id": "M171",
+   "index": 171,
+   "file": "factory/runner.py",
+   "line": 56,
+   "start_pos": [
+    56,
+    16
+   ],
+   "end_pos": [
+    56,
+    23
+   ],
+   "operator": "core/ExceptionReplacer",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`except (OSError, IndexError):` -> `except (CosmicRayTestingException, IndexError):`",
+   "diff_sha256": "7129f2eeae13a6446ed8b2610d1795ed8f3d3da1289985891438f310fa268664",
+   "mutated_sha256": "a6ccb833c18a8bac4c0721c2876f8a5698a8f38aff0e17f39b9437e4bdd5349e"
+  },
+  {
+   "id": "M172",
+   "index": 172,
+   "file": "factory/gate.py",
+   "line": 205,
+   "start_pos": [
+    205,
+    26
+   ],
+   "end_pos": [
+    205,
+    28
+   ],
+   "operator": "core/ReplaceComparisonOperator_Eq_LtE",
+   "operator_args": {},
+   "occurrence": 8,
+   "hot": true,
+   "describe": "`and counts[\"ran\"] == counts[\"planned\"]` -> `and counts[\"ran\"] <= counts[\"planned\"]`",
+   "diff_sha256": "e7cccc297d90f5305e69096161cab71056300e6e16d8201f5abc337f2ae3acf8",
+   "mutated_sha256": "7c6ac00576e0a239dec8aa7dba6f8258840755e92dc6bd0d223d4850b3ce7c46"
+  },
+  {
+   "id": "M173",
+   "index": 173,
+   "file": "factory/dispatch.py",
+   "line": 2160,
+   "start_pos": [
+    2160,
+    59
+   ],
+   "end_pos": [
+    2160,
+    60
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_FloorDiv",
+   "operator_args": {},
+   "occurrence": 79,
+   "hot": true,
+   "describe": "`mutation_proof: bool = False, mutation_duration: float | None = None,` -> `mutation_proof: bool = False, mutation_duration: float // None = None,`",
+   "diff_sha256": "e9e0172831907ae3c55fbdce862a87404ceb93a20b0311ad1b7437be56f0e4e5",
+   "mutated_sha256": "3fbceba57c89a485904505042f4716c982a8dc7fdb939a32086df9e80987157f"
+  },
+  {
+   "id": "M174",
+   "index": 174,
+   "file": "factory/gate.py",
+   "line": 206,
+   "start_pos": [
+    206,
+    29
+   ],
+   "end_pos": [
+    206,
+    30
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_RShift",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`and counts[\"killed\"] + counts[\"survived\"] == counts[\"ran\"]` -> `and counts[\"killed\"] >> counts[\"survived\"] == counts[\"ran\"]`",
+   "diff_sha256": "0d37cbcd0a8326accba9d7ecd4d27cef9f6fb0d948883cc6defe17c778007860",
+   "mutated_sha256": "15f9144d9c4b99b785a69d00b9e02b4ffa50ba80d5a67b31c427b3a976753d2c"
+  },
+  {
+   "id": "M175",
+   "index": 175,
+   "file": "factory/runner.py",
+   "line": 39,
+   "start_pos": [
+    39,
+    75
+   ],
+   "end_pos": [
+    39,
+    76
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 16,
+   "hot": true,
+   "describe": "`if (len(parts) == 2 and parts[0].isdecimal() and int(parts[0]) != os.getpid()` -> `if (len(parts) == 2 and parts[0].isdecimal() and int(parts[ 1]) != os.getpid()`",
+   "diff_sha256": "42b67d31b4d7d83bf7f34c46f956ede1f8f563d8d18a2b3d70e2e212dbe0a049",
+   "mutated_sha256": "43ff941cd4a3548a18b0d07669057497b513941a84fca8376e595c83d1e9a125"
+  },
+  {
+   "id": "M176",
+   "index": 176,
+   "file": "factory/mutation_scope.py",
+   "line": 76,
+   "start_pos": [
+    76,
+    19
+   ],
+   "end_pos": [
+    76,
+    20
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_BitAnd",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`def _git(cwd: Path | None, *args: str) -> str:` -> `def _git(cwd: Path & None, *args: str) -> str:`",
+   "diff_sha256": "2c9c44239fc1297baec8e2d1d5f4e2920b2d71f1f34708f83738369c9cf7a5f6",
+   "mutated_sha256": "66dfce3b761cd943c67ecf928b2897f507d3296640738506453c5cd63a85ab97"
+  },
+  {
+   "id": "M177",
+   "index": 177,
+   "file": "factory/decisions.py",
+   "line": 901,
+   "start_pos": [
+    901,
+    47
+   ],
+   "end_pos": [
+    901,
+    48
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_RShift",
+   "operator_args": {},
+   "occurrence": 22,
+   "hot": true,
+   "describe": "`fd = os.open(name, _LOCK_FLAGS | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory` -> `fd = os.open(name, _LOCK_FLAGS >> os.O_CREAT | os.O_EXCL, 0o600, dir_fd=director`",
+   "diff_sha256": "6a0bf688fca59bae780eef5d00424cfc1b39e922a1839bc3829854fcd9ef9cea",
+   "mutated_sha256": "d34d9d881d30ceb75cf2efe8feacc8454c9516d2f2a93ce898320536beb2630d"
+  },
+  {
+   "id": "M178",
+   "index": 178,
+   "file": "factory/runner.py",
+   "line": 105,
+   "start_pos": [
+    105,
+    68
+   ],
+   "end_pos": [
+    105,
+    69
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Pow",
+   "operator_args": {},
+   "occurrence": 5,
+   "hot": true,
+   "describe": "`descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)` -> `descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY ** os.O_NOFOLLOW)`",
+   "diff_sha256": "546685dcc96ae52e08bba8e048821796135889e37c40be5089da42c5dc1ffc7f",
+   "mutated_sha256": "8d84dc28b71a1d28d176b9ace4843a8c6bdf2992988ba35e9b62305eab74659c"
+  },
+  {
+   "id": "M179",
+   "index": 179,
+   "file": "factory/gate.py",
+   "line": 251,
+   "start_pos": [
+    251,
+    31
+   ],
+   "end_pos": [
+    251,
+    32
+   ],
+   "operator": "core/ReplaceBinaryOperator_Div_Pow",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`path = Path(directory) / \"proof.json\"` -> `path = Path(directory) ** \"proof.json\"`",
+   "diff_sha256": "95764a62547135595f6de5b7a515179856e000d50ffc968a05e9415852eb8a1f",
+   "mutated_sha256": "da8f7e08b767ec9af5e526471e4edaf7073f548186806a5a09cb620f8d38787e"
+  },
+  {
+   "id": "M180",
+   "index": 180,
+   "file": "factory/gate.py",
+   "line": 68,
+   "start_pos": [
+    68,
+    30
+   ],
+   "end_pos": [
+    68,
+    31
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_BitAnd",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None,` -> `cmd: list[str], cwd: Path & None = None, pythonpath: Path | None = None,`",
+   "diff_sha256": "ceaea754ce10a56595a43b7e89d9a533fd4d7996387ba7a1585f3d34f3989725",
+   "mutated_sha256": "409e74ff963779d32dda67f40c672d185535e45b20709994f4139fffd6c99834"
+  },
+  {
+   "id": "M181",
+   "index": 181,
+   "file": "factory/dispatch.py",
+   "line": 2933,
+   "start_pos": [
+    2933,
+    88
+   ],
+   "end_pos": [
+    2933,
+    89
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_FloorDiv",
+   "operator_args": {},
+   "occurrence": 96,
+   "hot": true,
+   "describe": "`def _mutation_proof(report: str, head: str, base: str | None) -> tuple[str, str ` -> `def _mutation_proof(report: str, head: str, base: str | None) -> tuple[str, str `",
+   "diff_sha256": "a30ed52bb8b62c68274cd59bb0a13cd88011bd7d9ae56f35901664171bd45256",
+   "mutated_sha256": "b9807a8de53c78ee0b0a70511ea3c576a2ab23dde63fb5f5a12a98a1af5587fd"
+  },
+  {
+   "id": "M182",
+   "index": 182,
+   "file": "factory/dispatch.py",
+   "line": 3029,
+   "start_pos": [
+    3029,
+    91
+   ],
+   "end_pos": [
+    3029,
+    92
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 317,
+   "hot": true,
+   "describe": "`proof and (_mutation_proof(pr_runs[head][1], head, base_commit) or (\"STALE\",))[0` -> `proof and (_mutation_proof(pr_runs[head][1], head, base_commit) or (\"STALE\",))[ `",
+   "diff_sha256": "9498c0e8508f2dbac59b61d2b65b307210e90ea8f9a29b5bb2dc709c446ecd5c",
+   "mutated_sha256": "b9ef5edd48ef414dc502bd213ec0061037a8e0f98acfa5b005a25ed4e564c550"
+  },
+  {
+   "id": "M183",
+   "index": 183,
+   "file": "factory/gate.py",
+   "line": 428,
+   "start_pos": [
+    428,
+    25
+   ],
+   "end_pos": [
+    428,
+    27
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Lt",
+   "operator_args": {},
+   "occurrence": 15,
+   "hot": true,
+   "describe": "`if tuple(transition) != REVIEWED_TRANSITION:` -> `if tuple(transition) < REVIEWED_TRANSITION:`",
+   "diff_sha256": "54151cce1c04a8036215bdb42794fd44fc8b38ce12a81cd788a19e70ed495d9e",
+   "mutated_sha256": "5f5cb78af89da934c69a846acf1a7fef2ec45298814804f3f063095740c5944f"
+  },
+  {
+   "id": "M184",
+   "index": 184,
+   "file": "factory/mutation_scope.py",
+   "line": 123,
+   "start_pos": [
+    123,
+    64
+   ],
+   "end_pos": [
+    123,
+    65
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 7,
+   "hot": true,
+   "describe": "`start, count = int(match.group(1)), int(match.group(2) or 1)` -> `start, count = int(match.group(1)), int(match.group( 1) or 1)`",
+   "diff_sha256": "390805a3728e1e1e5e53334bbcfc5b26b32d978608a5ce281c7482df9bb8b946",
+   "mutated_sha256": "8d1f28f3ca06603487a3ec034d2880a6fcd595c48bc8fbdd1dd87c3c9c9d2cf4"
+  },
+  {
+   "id": "M185",
+   "index": 185,
+   "file": "factory/dispatch.py",
+   "line": 2933,
+   "start_pos": [
+    2933,
+    80
+   ],
+   "end_pos": [
+    2933,
+    81
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Add",
+   "operator_args": {},
+   "occurrence": 95,
+   "hot": true,
+   "describe": "`def _mutation_proof(report: str, head: str, base: str | None) -> tuple[str, str ` -> `def _mutation_proof(report: str, head: str, base: str | None) -> tuple[str, str `",
+   "diff_sha256": "90eee50568f8a3e8186d207259abce6d7571840ff843d062c229749bb9674e4f",
+   "mutated_sha256": "3a10613ebc084a56f6f9e3537847b9ddb01d612de8f87b7b0a17ef5d3b8c92a3"
+  },
+  {
+   "id": "M186",
+   "index": 186,
+   "file": "factory/mutation_scope.py",
+   "line": 91,
+   "start_pos": [
+    91,
+    7
+   ],
+   "end_pos": [
+    91,
+    10
+   ],
+   "operator": "core/ReplaceUnaryOperator_Delete_Not",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`if not _OID.fullmatch(oid):` -> `if  _OID.fullmatch(oid):`",
+   "diff_sha256": "acb3079fe034f33e678184f480f96a70f47ad9070580c4f1e52087ce3c912d2c",
+   "mutated_sha256": "36fd0b8366bb57424c517a19372bef7a0cb07d14dc8bb3356b52dd9df5fede2c"
+  },
+  {
+   "id": "M187",
+   "index": 187,
+   "file": "factory/mutation_scope.py",
+   "line": 131,
+   "start_pos": [
+    131,
+    43
+   ],
+   "end_pos": [
+    131,
+    44
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_Div",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`return digest(b\"blob %d\\0\" % len(data) + data).hexdigest()` -> `return digest(b\"blob %d\\0\" % len(data) / data).hexdigest()`",
+   "diff_sha256": "538a4f8d799117bada326e108d2abbc535304ee6ebb65e2c01e56a5e82328dc4",
+   "mutated_sha256": "645d2c94cb8f6a2d4eff0350674a94c7afb476e557258aa4c20fdf467df3e160"
+  },
+  {
+   "id": "M188",
+   "index": 188,
+   "file": "factory/gate.py",
+   "line": 206,
+   "start_pos": [
+    206,
+    29
+   ],
+   "end_pos": [
+    206,
+    30
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_BitOr",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`and counts[\"killed\"] + counts[\"survived\"] == counts[\"ran\"]` -> `and counts[\"killed\"] | counts[\"survived\"] == counts[\"ran\"]`",
+   "diff_sha256": "a0ca953826228096de223bc656afc16384045d0ff6140079dd73cacc69297682",
+   "mutated_sha256": "a7f816be86491eef972c618cb82a0c17ce325cc05ec5781ef77350833acf6cff"
+  },
+  {
+   "id": "M189",
+   "index": 189,
+   "file": "factory/mutation_scope.py",
+   "line": 107,
+   "start_pos": [
+    107,
+    31
+   ],
+   "end_pos": [
+    107,
+    32
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_BitAnd",
+   "operator_args": {},
+   "occurrence": 4,
+   "hot": true,
+   "describe": "`files: dict[str, tuple[str | None, set[int]]] = {}` -> `files: dict[str, tuple[str & None, set[int]]] = {}`",
+   "diff_sha256": "683665843bee81cffc53757f6479695d188dbc2a4370a740166a65e629183db0",
+   "mutated_sha256": "2bd718fb340c81c4e416bccd995c370ec09fcd28b752a104fe22684a925a81c4"
+  },
+  {
+   "id": "M190",
+   "index": 190,
+   "file": "factory/mutation_scope.py",
+   "line": 131,
+   "start_pos": [
+    131,
+    43
+   ],
+   "end_pos": [
+    131,
+    44
+   ],
+   "operator": "core/ReplaceBinaryOperator_Add_BitOr",
+   "operator_args": {},
+   "occurrence": 1,
+   "hot": true,
+   "describe": "`return digest(b\"blob %d\\0\" % len(data) + data).hexdigest()` -> `return digest(b\"blob %d\\0\" % len(data) | data).hexdigest()`",
+   "diff_sha256": "63ad5291b7f27f1304e8640bccff0a2f7802cc754a0a277ef6944dfa5454069e",
+   "mutated_sha256": "07059c137015efab7c7bb386f25cef94368c43e5c141f90650d28be3d7b4935e"
+  },
+  {
+   "id": "M191",
+   "index": 191,
+   "file": "factory/gate.py",
+   "line": 170,
+   "start_pos": [
+    170,
+    53
+   ],
+   "end_pos": [
+    170,
+    55
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Eq",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`if not isinstance(record, dict) or record.keys() != MUTATION_PROOF_KEYS:` -> `if not isinstance(record, dict) or record.keys() == MUTATION_PROOF_KEYS:`",
+   "diff_sha256": "ac9b4bc91bfa3030235570b5fbba80f38398d6a442e3041a3ede360b3175e5f8",
+   "mutated_sha256": "86c9036ac57d468717fc2f01d25fb096046f4e9467fc109e854561b4294caf5f"
+  },
+  {
+   "id": "M192",
+   "index": 192,
+   "file": "factory/dispatch.py",
+   "line": 2933,
+   "start_pos": [
+    2933,
+    88
+   ],
+   "end_pos": [
+    2933,
+    89
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_BitAnd",
+   "operator_args": {},
+   "occurrence": 96,
+   "hot": true,
+   "describe": "`def _mutation_proof(report: str, head: str, base: str | None) -> tuple[str, str ` -> `def _mutation_proof(report: str, head: str, base: str | None) -> tuple[str, str `",
+   "diff_sha256": "42eacb18bd151dda53a9e31031cb4e7d421cf2e8299432106fcc5684ef26f1aa",
+   "mutated_sha256": "deaab59168cfbf4214873a352a8ff0b7b2e515e35373b327094003ab295c01c8"
+  },
+  {
+   "id": "M193",
+   "index": 193,
+   "file": "factory/gate.py",
+   "line": 184,
+   "start_pos": [
+    184,
+    22
+   ],
+   "end_pos": [
+    184,
+    24
+   ],
+   "operator": "core/ReplaceComparisonOperator_NotEq_Lt",
+   "operator_args": {},
+   "occurrence": 6,
+   "hot": true,
+   "describe": "`if record[\"mode\"] != \"blocking\":` -> `if record[\"mode\"] < \"blocking\":`",
+   "diff_sha256": "a50f546367f9ea21163ea63c68e18aed27fe8bc4e5603fd962510c4017e5c6c8",
+   "mutated_sha256": "d807dd55cc6009382d669a9124cf51909f635070cdd17efdfbb3221f3a459e9a"
+  },
+  {
+   "id": "M194",
+   "index": 194,
+   "file": "factory/runner.py",
+   "line": 18,
+   "start_pos": [
+    18,
+    30
+   ],
+   "end_pos": [
+    18,
+    32
+   ],
+   "operator": "core/ReplaceOrWithAnd",
+   "operator_args": {},
+   "occurrence": 0,
+   "hot": true,
+   "describe": "`return value == str(root) or value.startswith(str(root) + os.sep)` -> `return value == str(root) and value.startswith(str(root) + os.sep)`",
+   "diff_sha256": "9e27356731800d3f67877b6aee612a4bfb1bcc66ddb165ba9cd967a8324cb300",
+   "mutated_sha256": "69f5b4dca8db035dcb79567c3912be8cc0ab4d85caa453ae047ba86c19eaa8bd"
+  },
+  {
+   "id": "M195",
+   "index": 195,
+   "file": "factory/gate.py",
+   "line": 194,
+   "start_pos": [
+    194,
+    63
+   ],
+   "end_pos": [
+    194,
+    64
+   ],
+   "operator": "core/NumberReplacer",
+   "operator_args": {},
+   "occurrence": 25,
+   "hot": true,
+   "describe": "`and not any(counts.values()) and returncode == 0):` -> `and not any(counts.values()) and returncode == -1):`",
+   "diff_sha256": "4437bc7cb59a9803181dff0717df7eae318a6480c8017750946bbfc549c65e5d",
+   "mutated_sha256": "dfd97c1568e81cf383549c63069dba549785c3a047e43a23512484723da8b386"
+  },
+  {
+   "id": "M196",
+   "index": 196,
+   "file": "factory/runner.py",
+   "line": 89,
+   "start_pos": [
+    89,
+    68
+   ],
+   "end_pos": [
+    89,
+    69
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_Mul",
+   "operator_args": {},
+   "occurrence": 2,
+   "hot": true,
+   "describe": "`descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)` -> `descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY * os.O_NOFOLLOW)`",
+   "diff_sha256": "e840bc28a00e1aef98187826b99455025886f5732c0334eebedc83ac7263e693",
+   "mutated_sha256": "be57c63a67181a907db607e5435ddbdd962c88babbaee65c5f14167c439f350b"
+  },
+  {
+   "id": "M197",
+   "index": 197,
+   "file": "factory/dispatch.py",
+   "line": 2933,
+   "start_pos": [
+    2933,
+    54
+   ],
+   "end_pos": [
+    2933,
+    55
+   ],
+   "operator": "core/ReplaceBinaryOperator_BitOr_FloorDiv",
+   "operator_args": {},
+   "occurrence": 94,
+   "hot": true,
+   "describe": "`def _mutation_proof(report: str, head: str, base: str | None) -> tuple[str, str ` -> `def _mutation_proof(report: str, head: str, base: str // None) -> tuple[str, str`",
+   "diff_sha256": "b817abbe6c22e72501b8548ccc21fcc713895a42bf399ac454611053787ba8b9",
+   "mutated_sha256": "6b2f167ca3dd8c87bc6a84771597b36f348b5be494b47f984e06b2a82e8a5232"
+  },
+  {
+   "id": "M198",
+   "index": 198,
+   "file": "factory/dispatch.py",
+   "line": 3021,
+   "start_pos": [
+    3021,
+    55
+   ],
+   "end_pos": [
+    3021,
+    60
+   ],
+   "operator": "core/AddNot",
+   "operator_args": {},
+   "occurrence": 375,
+   "hot": true,
+   "describe": "`base_commit = _resolved_commit(wt, caller_base) if proof else None` -> `base_commit = _resolved_commit(wt, caller_base) if not proof else None`",
+   "diff_sha256": "0b602f691ce88fe5c445214d632ea29af18b25199ab1452b46d1900ef119ae16",
+   "mutated_sha256": "32ffe9b3fcf677a19a459d30d3370f76713ae33f6eb9d7f197abdc9d5421e8b9"
+  },
+  {
+   "id": "M199",
+   "index": 199,
+   "file": "factory/gate.py",
+   "line": 193,
+   "start_pos": [
+    193,
+    68
+   ],
+   "end_pos": [
+    193,
+    71
+   ],
+   "operator": "core/ReplaceUnaryOperator_Delete_Not",
+   "operator_args": {},
+   "occurrence": 6,
+   "hot": true,
+   "describe": "`if (applicable == 0 and reason == \"no-applicable-files\" and not files` -> `if (applicable == 0 and reason == \"no-applicable-files\" and  files`",
+   "diff_sha256": "2fc1fc48879f1175f4f8e52f75c7166d8309a4e99704033c1d3209e5062b9dc0",
+   "mutated_sha256": "156d970b11860b2c84f824d2864726cd8cc27e90ccd8e8f709d8b150a2ccfbc9"
+  }
+ ]
+}

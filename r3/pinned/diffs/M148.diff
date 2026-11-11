@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -65,5 +65,5 @@
+                     return True
+         with suppress(OSError):
+-            for descriptor in (process / "fd").iterdir():
++            for descriptor in (process + "fd").iterdir():
+                 with suppress(OSError):
+                     if _within(os.readlink(descriptor), root):

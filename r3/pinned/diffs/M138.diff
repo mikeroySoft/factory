@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -46,5 +46,5 @@
+         return False
+     for process in processes:
+-        if not process.name.isdecimal() or int(process.name) == os.getpid():
++        if not process.name.isdecimal() or int(process.name) > os.getpid():
+             continue
+         try:

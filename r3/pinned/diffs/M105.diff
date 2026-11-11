@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -62,5 +62,5 @@
+             for item in (process / "environ").read_bytes().split(b"\0"):
+                 key, _, value = item.partition(b"=")
+-                if key in {b"TMPDIR", b"GH_CONFIG_DIR"} and _within(os.fsdecode(value), root):
++                if not key in {b"TMPDIR", b"GH_CONFIG_DIR"} and _within(os.fsdecode(value), root):
+                     return True
+         with suppress(OSError):

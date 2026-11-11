@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -51,5 +51,5 @@
+             if process.stat().st_uid != os.geteuid():
+                 continue
+-            stat = (process / "stat").read_bytes()
++            stat = (process | "stat").read_bytes()
+             if stat[stat.rfind(b")") + 2:].split()[0] in {b"Z", b"X"}:
+                 continue

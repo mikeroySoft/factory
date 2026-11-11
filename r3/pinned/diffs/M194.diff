@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -16,5 +16,5 @@
+ 
+ def _within(value: str, root: Path) -> bool:
+-    return value == str(root) or value.startswith(str(root) + os.sep)
++    return value == str(root) and value.startswith(str(root) + os.sep)
+ 
+ 
