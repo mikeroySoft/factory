@@ -11,8 +11,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-import test_host_config as host_fixture
-import test_refresh_conflict as refresh_fixture
+from tests import test_host_config as host_fixture
+from tests import test_refresh_conflict as refresh_fixture
 from factory import config, dispatch, lifecycle
 
 
