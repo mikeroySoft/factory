@@ -3,7 +3,7 @@
 usage:
   rerun-r3-wrapper.py verify ID [ID ...]
       Dry. Runs NO tests. Enumerates the selection exactly as scripts/mutation.py does (seed 197, cap 200,
-      scope 1f9d2810, head 17797266), checks the stamp, and for every ID checks that the mutation it would
+      scope 1f9d2810, head 99542e6c), checks the stamp, and for every ID checks that the mutation it would
       apply byte-matches runs/final-mutation-proof/timeouts/diffs/<ID>.diff and <ID>.mutated.py.
       Writes r3-exec/wrapper-verify.json. Exit 0 only if everything matches.
   rerun-r3-wrapper.py run --go RULING OUTDIR ID [ID ...]
@@ -12,7 +12,7 @@ usage:
       the selection limited to the IDs, at most 6 workers, per-mutant timeout 8106s. Re-checks every mutation
       up front and again just before each one; any mismatch stops the run before a test starts.
 
-Environment contract (checked, refused otherwise): cwd/checkout final-proof-r3 at head 17797266, SIGINT at
+Environment contract (checked, refused otherwise): cwd/checkout final-proof-r3 at head 99542e6c, SIGINT at
 Python's default handler, TMPDIR under the base dir, no UV_NO_SYNC / VIRTUAL_ENV / UV_NO_INSTALL* /
 ANTHROPIC_API_KEY / FACTORY_MUTATION_PROOF*.
 """
@@ -34,7 +34,7 @@ import time
 D = pathlib.Path(os.environ.get("R3_BASE", "/Users/mike/factory-survivors-20261109"))
 CHECKOUT = pathlib.Path(os.environ.get("R3_CHECKOUT", str(D / "final-proof-r3")))
 EXPECT = pathlib.Path(os.environ.get("R3_EXPECT", str(D / "runs/final-mutation-proof/timeouts")))
-HEAD = "17797266029cf78b035e60252b98f2010237eb0f"
+HEAD = "99542e6ca43d6177381c51199735830cf3f6d477"
 BASE = "19457e840460e0163e1172f08580538c4dcae767"
 FINGERPRINT = "1f9d2810b1744c69a690f2dbf837c3554d9dcd622ae58f0529f1f31274f23784"
 SELECTED_SHA = "3dd1d72ed28e7da89781b5c47c1f2a4ee8db0c5e4aa77bfc60ab4baafed6a847"

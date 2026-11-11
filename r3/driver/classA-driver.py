@@ -5,10 +5,10 @@ No credentials: it imports nothing but the standard library and reads no token, 
 
 usage: classA-driver.py ID | CONTROL
   ID       one of the 12 class (a) mutant IDs: the pinned <ID>.mutated.py is written over the target file in a scratch
-           clone of the checkout at 17797266, after checking the tree sha, the pinned bytes, and that the regenerated
+           clone of the checkout at 99542e6c, after checking the tree sha, the pinned bytes, and that the regenerated
            diff equals the pinned <ID>.diff byte for byte.
   CONTROL  the same run with NO mutation (the unmutated baseline).
-Runs `python -B -m unittest discover -s tests` (the full suite, no --tests, no --failfast so every failing test is
+Runs `python -B -m unittest discover -s tests` through a bootstrap that first puts cosmic_ray.exceptions.CosmicRayTestingException in builtins (the full suite, no --tests, no --failfast so every failing test is
 named) with stdout and stderr in ONE log, no timeout enforced (a run over 8106s is only flagged), never edits the
 checkout, never kills a child. Writes result.json (+ output.log) under $R3_DRIVER_OUT/<ID>/.
 Exit 0 whenever a result was recorded (the verdict is in result.json); nonzero only on a STOP before any test ran.
@@ -31,8 +31,8 @@ BASE_DIR = pathlib.Path(os.environ["R3_BASE"])
 CHECKOUT = pathlib.Path(os.environ["R3_CHECKOUT"])
 EXPECT = pathlib.Path(os.environ["R3_EXPECT"])
 OUT = pathlib.Path(os.environ.get("R3_DRIVER_OUT", str(BASE_DIR / "driver-out")))
-HEAD = "17797266029cf78b035e60252b98f2010237eb0f"
-TREE = "c83b0d23d3305345719e674ecdfed3d1179419fd"
+HEAD = "99542e6ca43d6177381c51199735830cf3f6d477"
+TREE = "310c27b1e89e0fbc4b4b508a58ce41d0fa924613"
 SELECTED_SHA = "3dd1d72ed28e7da89781b5c47c1f2a4ee8db0c5e4aa77bfc60ab4baafed6a847"
 FORBIDDEN = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY", "UV_NO_SYNC", "VIRTUAL_ENV",
              "FACTORY_MUTATION_PROOF", "FACTORY_MUTATION_PROOF_BASE", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN")
@@ -94,7 +94,15 @@ def replay(mid, by):
         raise SystemExit(f"STOP: copy tree status {status!r} != {expect_status!r} for {mid}")
     env = {k: v for k, v in os.environ.items() if k not in FORBIDDEN}
     env.update({"TMPDIR": str(tmp), "PYTHONPATH": str(copy), "PYTHONDONTWRITEBYTECODE": "1"})
-    cmd = ["env", "-C", str(copy), f"PYTHONPATH={copy}", sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests"]
+    # r3-2240: the same entry point as `python -m unittest discover -s tests`, started with CosmicRayTestingException
+    # in builtins (cosmic-ray's own class, 8.7.0), so a mutant that names it in an `except` runs as a real mutant
+    # instead of dying with a NameError (the M171 artifact). CONTROL uses the identical command.
+    bootstrap = ("import builtins, sys, unittest\n"
+                 "from cosmic_ray.exceptions import CosmicRayTestingException\n"
+                 "builtins.CosmicRayTestingException = CosmicRayTestingException\n"
+                 "sys.argv = ['python -m unittest', 'discover', '-s', 'tests']\n"
+                 "unittest.main(module=None)\n")
+    cmd = ["env", "-C", str(copy), f"PYTHONPATH={copy}", sys.executable, "-B", "-c", bootstrap]
     log = work / "output.log"
     started, t0 = now(), time.monotonic()
     with log.open("wb") as fh:

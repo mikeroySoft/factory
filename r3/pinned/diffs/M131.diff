@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -87,5 +87,5 @@
+             if root.is_symlink() or not root.is_dir() or info.st_uid != os.geteuid():
+                 continue
+-            descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
++            descriptor = os.open(root, os.O_RDONLY & os.O_DIRECTORY | os.O_NOFOLLOW)
+             try:
+                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
