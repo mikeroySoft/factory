@@ -59,6 +59,20 @@ class MaliciousHeaderIntegrityTest(RunnerHarness):
                     gate.read_mutation_proof(self.proof.read_bytes(), code, expected)[0], "PASS",
                 )
 
+    def test_git_decoding_preserves_carriage_returns_inside_source(self) -> None:
+        git(self.root, "checkout", "-q", "--detach", self.base)
+        self.base = commit(self.root, {"factory/example.py": ATTACK_BASE}, "raw base")
+        source = ATTACK_HEAD.replace('payload = """', 'payload = """a\r+b\r+c')
+        compile(source, "factory/example.py", "exec")
+        self.head = commit(self.root, {"factory/example.py": source}, "raw head")
+
+        expected = mutation_scope.compute(self.base)
+        code, output, _ = self.runner(["--blocking"], sampled=([], 0))
+
+        self.assertEqual(expected.lines, ATTACK_LINES)
+        self.assertNotIn("no mutable files", output)
+        self.assertEqual(gate.read_mutation_proof(self.proof.read_bytes(), code, expected)[0], "PASS")
+
 
 class RawDiffIntegrityTest(Fixture):
     def test_diff_attribute_cannot_hide_python_change(self) -> None:
