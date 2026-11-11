@@ -4,6 +4,8 @@ name: r3-classA
 on:
   push:
     branches: [r3-classA-ci]
+    # r3-2110: later pushes to this branch (driver workflow) must not start a duplicate run of this workflow.
+    paths: ['r3/wrapper/**']
   workflow_dispatch:
 permissions:
   contents: read

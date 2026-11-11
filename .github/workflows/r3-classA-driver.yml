@@ -1,4 +1,5 @@
 # Second throwaway workflow on r3-classA-ci (ruling r3-2110): the "driver approach" for the 12 class (a) mutants
+# (first push carried [skip ci]; this workflow is started by the second push, which changes this file.)
 # plus one unmutated CONTROL job. Same hermetic env as r3-classA.yml. Never merged; no PR.
 name: r3-classA-driver
 on:
