@@ -189,6 +189,99 @@ class RunnerRuntimeTest(unittest.TestCase):
                 events.append(events[-1] | {"outcome": "completed", "reason": None})
                 self.assertEqual(watch.signals(cfg, events), [])
 
+    # _users() scan of the Linux /proc (#694, r3-2215). These call _users directly against a fake
+    # /proc tree, never through reap(), whose `except OSError` would hide a raising _users.
+    def users(self, root, processes, *, listing_error=None):
+        """Run runner._users(root) against a fake /proc holding `processes`.
+
+        `processes` maps a pid string to the files of that process: "stat" (bytes), "cwd" (symlink
+        target) and "environ" (bytes), each optional. The fake /proc is listed in sorted order so
+        the scan order is deterministic. `listing_error` makes listing /proc itself fail.
+        """
+        from factory import runner
+
+        proc = Path(tempfile.mkdtemp(prefix="proc-", dir=self.base))
+        for pid, files in processes.items():
+            process = proc / pid
+            process.mkdir()
+            if "stat" in files:
+                (process / "stat").write_bytes(files["stat"])
+            if "cwd" in files:
+                (process / "cwd").symlink_to(files["cwd"])
+            if "environ" in files:
+                (process / "environ").write_bytes(files["environ"])
+        real_path = Path
+
+        def path(value):
+            if str(value) != "/proc":
+                return real_path(value)
+            if listing_error is not None:
+                return SimpleNamespace(iterdir=mock.Mock(side_effect=listing_error))
+            return SimpleNamespace(iterdir=lambda: iter(sorted(proc.iterdir())))
+
+        with mock.patch.object(runner, "Path", path), mock.patch.object(runner.sys, "platform", "linux"):
+            return runner._users(root)
+
+    def scratch_root(self):
+        root = (self.base / "scratch-root").resolve()
+        root.mkdir(exist_ok=True)
+        return root
+
+    @staticmethod
+    def proc_stat(pid, comm, state):
+        return f"{pid} ({comm}) {state} 1 {pid} {pid} 0 -1 4194560 0 0 0 0".encode()
+
+    def test_users_ignores_an_env_var_that_is_not_a_scratch_variable(self):
+        root = self.scratch_root()
+        elsewhere = str(self.base.resolve() / "elsewhere")
+        stat = self.proc_stat("7001", "worker", "S")
+        cases = {
+            "unrelated variable inside root": (f"FOO={root}\0PATH=/usr/bin\0", False),
+            "unrelated variable beside TMPDIR elsewhere": (f"FOO={root}\0TMPDIR={elsewhere}\0", False),
+            "TMPDIR outside root": (f"TMPDIR={elsewhere}\0", False),
+            "TMPDIR inside root": (f"TMPDIR={root}\0", True),
+            "GH_CONFIG_DIR inside root": (f"PATH=/usr/bin\0GH_CONFIG_DIR={root}/gh\0", True),
+        }
+        for label, (environ, expected) in cases.items():
+            with self.subTest(label):
+                found = self.users(root, {"7001": {
+                    "stat": stat, "cwd": elsewhere, "environ": environ.encode()}})
+                self.assertIs(found, expected)
+
+    def test_users_skips_zombie_and_dead_processes_whatever_their_name_length(self):
+        root = self.scratch_root()
+        cwd_in_root = str(root / "work")
+        indexes = []
+        for length in range(1, 9):
+            comm = "c" * length
+            # The state letter follows ") ", so the ")" index shifts with the name length and
+            # is even or odd in its second bit across these lengths.
+            indexes.append(self.proc_stat("7001", comm, "Z").rfind(b")"))
+            for state, expected in (("Z", False), ("X", False), ("S", True)):
+                with self.subTest(length=length, state=state):
+                    found = self.users(root, {"7001": {
+                        "stat": self.proc_stat("7001", comm, state), "cwd": cwd_in_root}})
+                    self.assertIs(found, expected)
+        self.assertEqual({bool(index & 2) for index in indexes}, {False, True})
+
+    def test_users_is_false_not_an_error_when_proc_cannot_be_listed(self):
+        root = self.scratch_root()
+        for label, error in (("missing", FileNotFoundError("/proc")), ("denied", PermissionError("/proc"))):
+            with self.subTest(label):
+                self.assertIs(self.users(root, {}, listing_error=error), False)
+
+    def test_users_skips_a_process_whose_stat_vanished_or_is_malformed(self):
+        root = self.scratch_root()
+        live = {"stat": self.proc_stat("7003", "live", "S"), "cwd": str(root / "work")}
+        broken = {
+            "stat vanished": {"cwd": str(root / "work")},
+            "stat malformed": {"stat": b"7001 (short)", "cwd": str(root / "work")},
+        }
+        for label, files in broken.items():
+            with self.subTest(label):
+                self.assertIs(self.users(root, {"7001": files}), False)
+                self.assertIs(self.users(root, {"7001": files, "7003": live}), True)
+
     @unittest.skipUnless(sys.platform == "linux", "Linux /proc process-name encoding")
     def test_non_utf8_process_name_preserves_only_confirmed_live_review_users(self):
         from factory import runner
@@ -224,6 +317,44 @@ class RunnerRuntimeTest(unittest.TestCase):
                         child.stderr.close()
                 runner.preflight(self.base)
                 self.assertFalse(root.exists(), f"preflight leaked an abandoned review root: {root}")
+
+    def test_reap_open_refuses_a_regular_file_or_symlink_swapped_in_after_the_checks(self):
+        # reap() lstat()s a root, then re-opens it with O_DIRECTORY | O_NOFOLLOW. If the path
+        # becomes a regular file or a symlink between those steps, the open itself must refuse
+        # it before the flock, _users or removal run (#694 survivor M131 dropped O_DIRECTORY).
+        from factory import runner
+
+        regular = self.base / "factory-runner-regular-file"
+        regular.write_text("not a directory")
+        target = self.base / "real-directory"
+        target.mkdir()
+        link = self.base / "factory-runner-symlink"
+        link.symlink_to(target, target_is_directory=True)
+        real_open = os.open
+        for path in (regular, link):
+            with self.subTest(path=path.name):
+                refused = []
+
+                def recording_open(file, *args, _real=real_open, _path=path, _refused=refused, **kwargs):
+                    try:
+                        return _real(file, *args, **kwargs)
+                    except OSError as error:
+                        if Path(file) == _path:
+                            _refused.append(error)
+                        raise
+
+                # Pretend the is_symlink/is_dir checks ran before the swap, so the open decides.
+                with mock.patch.object(Path, "is_symlink", lambda self: False), \
+                        mock.patch.object(Path, "is_dir", lambda self: True), \
+                        mock.patch.object(os, "open", recording_open), \
+                        mock.patch.object(runner.fcntl, "flock") as flock, \
+                        mock.patch.object(runner, "_users") as users:
+                    runner.reap()
+                self.assertEqual(len(refused), 1, f"os.open did not refuse {path.name}")
+                flock.assert_not_called()
+                users.assert_not_called()
+                self.assertTrue(os.path.lexists(path), f"{path.name} must be left untouched")
+                self.assertTrue(target.is_dir())
 
     def tearDown(self):
         # A red crash-recovery assertion must not itself leak a temp root.
