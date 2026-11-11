@@ -477,6 +477,8 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         dispatch.push_agent(wt, n, lease)
         dispatch.record_risk(wt, n, gate_head)
         verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
+        if cfg.fixups:
+            gate_head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         dispatch.pr_comment(n, findings)
         if pr_failed:
             reason = "pr checks failed"
@@ -962,7 +964,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                     dispatch.log(f"PR #{number}: not factory-owned ({observation['owner']['relation']}); not in frontier")
                     continue
                 head = pr["headRefOid"]
-                checks = dispatch.pr_checks(number)
+                checks = dispatch.pr_checks(number, head)
                 red = [c for c in checks if c["bucket"] in ("fail", "cancel")]
                 late = undelivered(observation, events, n)
                 if ticket_generation.awaiting_attempt:

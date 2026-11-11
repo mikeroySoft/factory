@@ -1078,7 +1078,7 @@ def refresh(cfg: config.Config, n: int, branch: str, head: str) -> None:
     dispatch.run(["git", "fetch", "origin", cfg.main, branch], cwd=cfg.root)
     dispatch.run(["git", "worktree", "add", "--force", "-B", branch, str(wt), head], cwd=cfg.root)
     try:
-        dispatch.run(["git", "merge", "--no-edit", f"origin/{cfg.main}"], cwd=wt)
+        dispatch.run(["git", "merge", "--no-edit", *(["--signoff"] if cfg.signoff else []), f"origin/{cfg.main}"], cwd=wt)
         new = gate_head(wt, branch, protected_override=True)  # the diff `chore_pr` gated, now on main
         push = ["git", "push", "origin", f"HEAD:{branch}"]
         remote = dispatch.run(["git", "ls-remote", "origin", f"refs/heads/{branch}"], cwd=wt)
@@ -1678,7 +1678,7 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         dispatch.log(f"PR #{n}: {branch} gate failed at {head[:12]}")
         _promotion_blocked(events, n, branch, head, "gate failed", dry_run)
         return
-    buckets = {check["bucket"] for check in dispatch.pr_checks(n)}
+    buckets = {check["bucket"] for check in dispatch.pr_checks(n, head)}
     if "pass" not in buckets or buckets - {"pass", "skipping"}:
         reason = f"CI {','.join(sorted(buckets)) or 'missing'}"
         dispatch.log(f"PR #{n}: {branch} {reason}; not merging")

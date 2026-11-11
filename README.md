@@ -417,6 +417,29 @@ Blocked outcomes and approvals are journaled once per head; `merged` is written
 only after a successful merge. A human-merged lessons PR is reconciled on the
 next pass with `by: human` and opens the same promotion measurement.
 
+Merge CI and advisory review readiness verify each active base-branch ruleset's
+required context against check runs on the caller's captured PR head, including
+its source GitHub App (`integration_id`). A push before the first provenance read
+keeps that head pending rather than borrowing the new head's green checks.
+A same-name success from another app or SHA is
+not evidence. App-unpinned contexts may use legacy statuses fetched by exact head
+SHA (individual status objects have no SHA field); a pinned app requires check-run
+provenance even when other requirements are unpinned.
+Reads are paginated; a head/base change, unreadable evidence, or GitHub's
+blocked/unknown merge state keeps CI pending. Already pending or failed CI
+returns without fetching additional provenance.
+Behind-main and conflicting (`dirty`) heads remain eligible only for the existing
+merge callers' refresh path, not merge; advisory readiness still reports them pending.
+
+PR [#573](https://github.com/mikeroySoft/factory/pull/573)'s successful `gate`
+runs [125588773738](https://github.com/mikeroySoft/factory/actions/runs/41536267505/job/125588773738)
+and [125588741702](https://github.com/mikeroySoft/factory/actions/runs/41536258131/job/125588741702)
+both have app ID 15368 and head `7a05cbf46ff7c00f66a36c1d01a951bc92c2e464`,
+matching [protect-main](https://github.com/mikeroySoft/factory/rules/22827438).
+The refusal was strict-base freshness, not a source-app/head mismatch:
+[#587](https://github.com/mikeroySoft/factory/issues/587) records `behind_by: 4`
+and `BEHIND` at diagnosis, with strict required checks enabled.
+
 When Git uses SSH commit signing, `factory doctor` checks the configured signing
 key against the dispatcher GitHub account and warns with `unknown_key` when the
 key is unreadable or unregistered.
@@ -647,11 +670,13 @@ The dispatcher supplies the issue title, body, and every comment inline as untru
 data: the worker's accepted snapshot for plan-bound tickets, otherwise its own
 `gh issue view --json title,body,comments` read. Reviewers use that supplied issue
 section, not GitHub or the worker's transcript. Learning-proposal reviews are unchanged.
-Ticket review retries snapshot, diff, launch, nonzero-exit, and unparseable-output failures up
+Ticket review retries snapshot, diff, launch, and unparseable-output failures up
 to three times, using exponential backoff unless the provider reports
-`retry-after` or `retry-after-ms`. Persistent failure records
-`reviewer_unavailable`, preserves stderr or a structured error event in the
-review findings and escalation packet, and consumes no `review_rounds` slot.
+`retry-after` or `retry-after-ms`. A nonzero exit with a validated verdict is
+handled as that verdict; without one, it is a tooling failure, not worker feedback.
+Persistent failure records `reviewer_unavailable`, preserves stderr or a structured
+error event in the review diagnostics and escalation packet, and consumes no
+`review_rounds` slot or change-request feedback event.
 
 Keep `{cwd}` in worker and manager commands, and configure the manager CLI in
 read-only/no-tools mode: the prompt prohibits file edits, but an arbitrary
@@ -983,6 +1008,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    selects, so a shell or unit without the dispatcher's `GH_CONFIG_DIR` cannot
    triage under the owner's account. The dashboard's "Run LLM triage" decision
    runs its triage step with `dispatch_env` applied, so it posts as the dispatcher.
+   A failed GitHub login lookup instead refuses with outcome `mechanism_failure`
+   and reason `github_command_failed`; connection failures are not identity mismatches.
 2. **Schedule and claim.** Eligibility first: open `ready-for-agent` issues that
    are not initiatives, not assigned and have no open `Blocked by` edge; then
    capacity (`max_active` minus held ticket locks) and the experiment slot (at
@@ -1045,6 +1072,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    retried). One that committed or wrote its handoff, then stayed quiet for
    `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
    The attempt journal row and escalation packet name the timeout that fired.
+   If a budget-killed worker never reaches its next gate and the ticket's last
+   gate in the current generation passed, escalation uses `budget`, not
+   `gate_failed`; the comment and packet name `budget_min` / `budget_exceeded`
+   so the budget cut is identifiable for a not-a-strike owner requeue.
+   An actual failing gate retains its existing classification.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
@@ -1109,6 +1141,25 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    runs only pr checks (release ones SKIP) and `--tier release` only release
    checks, with no built-ins. This attempt gate is what the worker and the
    dispatcher run after each attempt, and what the merge-stage refresh re-runs.
+   Repositories may opt into mechanical repairs with `[gate].fixups`, an array of
+   argv arrays (for example `fixups = [["cargo", "xtask", "manifest"]]`). Factory
+   never infers commands. Before escalating the last failed worker gate (including
+   manager FIX and review-bounce workers), it runs these commands once, in order,
+   in the clean ticket worktree, stopping on the first failure and using the gate
+   check timeout. If all succeed and change files, Factory commits those changes
+   and re-runs the gate with the same flags at the new SHA. No changes, a command
+   failure, or another failed gate leaves the normal escalation in place; the
+   report and escalation comment state that fixups ran. An empty/absent list
+   leaves behavior unchanged. Refresh failures get the same repair pass after
+   their existing same-head retry; PR-tier failures get one pass per uncached
+   head, then recheck the attempt gate before publishing and reviewing a new
+   head. Protected-path checks still apply to every repair commit.
+   A PR repair's `gate-fixup` receipt binds acceptance and handoff retention to
+   the repaired head and carries forward the previous head's recorded worker
+   completion, so a late actionable review can still defer rework to the next pass.
+   With `[dispatch].signoff = true` (the default), Factory signs off merge commits
+   at creation, including upstream sync and refresh merges. It never retrofits
+   trailers by amending or rewriting human or other pre-existing commits.
 5. **Review.** After the attempt gate passes, the dispatcher runs the
    `when = "pr"` checks once for the head about to be reviewed (same timeout and
    `exclusive` lock; a head is never re-run) and appends their report to the gate
@@ -1147,10 +1198,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    excuse a defect it did not detect. Net-new abstractions beyond the brief,
    whether the diff introduced them or the review asks for them, need that same
    justification, but a missing justification alone does not block. Reviews must
-   exit zero and end with exactly one final `VERDICT: APPROVE` or
-   `VERDICT: REVISE` line. Malformed, multiple, non-final, nonzero-exit, and
-   launch failures are reviewer tooling failures: Factory retries them, then
-   escalates persistent failure as `reviewer_unavailable` without sending work
+   end with exactly one final `VERDICT: APPROVE` or `VERDICT: REVISE` line and
+   a valid structured findings block. A validated verdict is handled even on a
+   nonzero exit. Malformed, multiple, non-final, and launch failures are reviewer
+   tooling failures: Factory retries them, then escalates persistent failure as
+   `reviewer_unavailable` without recording change-request feedback or sending work
    back to the worker. Each accepted `REVISE` sends the findings back to the
    worker, flagged so only the required fixes are binding (re-gate, push,
    re-review), up to `review_rounds` times; then it escalates. A manager `FIX`
@@ -1424,6 +1476,7 @@ timeout = 1200
 lock = "/tmp/factory.lock"
 protected_paths = [".factory.toml", "REVIEW.md", "TRACKING*"]
 add_only_paths = ["tests/**"]     # new files and appended lines pass; edits escalate
+# fixups = [["cargo", "xtask", "manifest"]]  # optional mechanical repair; no defaults
 
 [[gate.check]]
 name = "lint"

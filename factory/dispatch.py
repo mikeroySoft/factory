@@ -37,6 +37,7 @@ from contextlib import contextmanager, nullcontext, suppress
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
+from urllib.parse import quote
 
 from factory import __version__, brief, config, generation, lifecycle, risk, runner
 from factory.config import (
@@ -164,6 +165,8 @@ STANDING_INSTRUCTIONS = """
 - Commit incrementally with `git commit{commit_flag}`. Stage only files you created or
   edited for the ticket; never `git add -A`, and never commit
   `.factory-prompt.md` or gate reports.
+- When commit sign-off is enabled, use `git merge --signoff` for merge commits
+  you create. Never rewrite, amend or sign commits authored by anyone else.
 - NEVER use `git stash` — the stash is shared with the user's other worktrees.
 - Commit only; do not push. The dispatcher pushes `agent/{n}`, opens the PR, and
   the merge stage lands it after review and CI. NEVER merge into or fast-forward
@@ -966,7 +969,9 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
         elif confirmed and valid and checks.returncode == 0 and all(
             row["bucket"] == "pass" for row in rows
         ):
-            state = "ready"
+            rows += _required_ci(n, head)
+            if all(row["bucket"] == "pass" for row in rows):
+                state = "ready"
     record("review-readiness", pr=n, head=head, state=state,
            review_head=review.get("head"), checks=rows if valid else [])
 
@@ -1484,7 +1489,7 @@ def _record_review_decision(
         {"kind": "review_comment",
          "ref": review_ref,
          "summary": "published review comment" if comment_url else "review comment target"},
-        *_required_fixes(findings, review_ref),
+        *(_required_fixes(findings, review_ref) if verdict is not None else []),
     ]
     payload = trace.decision(
         ticket=n,
@@ -1508,11 +1513,12 @@ def _record_review_decision(
         actor=_decision_actor("model", f"dispatch.review.{role}", model=model),
     )
     record("decision", **payload)
-    record(
-        "review-result", ticket=n, head=head, role=role, model=model,
-        verdict="APPROVE" if verdict == "APPROVE" else "REQUEST_CHANGES",
-        findings=findings, counts=counts, reason=rejection_reason,
-    )
+    if verdict is not None:
+        record(
+            "review-result", ticket=n, head=head, role=role, model=model,
+            verdict="APPROVE" if verdict == "APPROVE" else "REQUEST_CHANGES",
+            findings=findings, counts=counts, reason=rejection_reason,
+        )
     return payload["decision_id"]
 
 
@@ -2225,6 +2231,58 @@ def run_gate(
     return ok, text
 
 
+def retry_gate_fixups(
+    wt: Path, n: int | str, report: str, head: str, **flags,
+) -> tuple[bool, str, str]:
+    """One configured repair pass; only a new, clean, re-gated commit can pass."""
+    if not cfg.fixups or "Gate evidence rejected:" in report:
+        return False, report, head
+    status = [
+        "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+        ":(exclude).factory-prompt.md", ":(exclude).factory",
+    ]
+    notes = ["## Mechanical fixups"]
+
+    def finish(ok: bool, text: str, candidate: str) -> tuple[bool, str, str]:
+        text += "\n\n" + "\n".join(notes) + "\n"
+        (wt / ".factory" / f"gate-report-{n}.md").write_text(text)
+        return ok, text, candidate
+
+    if run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip() != head or run(status, cwd=wt).stdout.strip():
+        notes.append("Mechanical fixups not run: HEAD changed or worktree is not clean.")
+        return finish(False, report, head)
+    for argv in cfg.fixups:
+        try:
+            proc = run(argv, cwd=wt, check=False, timeout=cfg.check_timeout)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            notes.append(f"- `{shlex.join(argv)}` ran: {stderr_tail(str(exc))}")
+            return finish(False, report, head)
+        notes.append(f"- `{shlex.join(argv)}` ran: exit {proc.returncode}")
+        if proc.returncode:
+            notes.append(stderr_tail(proc.stdout + proc.stderr))
+            return finish(False, report, head)
+    actual = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    if actual != head:
+        notes.append("Mechanical fixups rejected: command changed HEAD instead of files.")
+        return finish(False, report, head)
+    if not run(status, cwd=wt).stdout.strip():
+        notes.append("Mechanical fixups made no changes.")
+        return finish(False, report, head)
+    try:
+        commit_leftovers(wt, n, "mechanical gate fixups")
+    except subprocess.CalledProcessError as exc:
+        notes.append(f"Mechanical fixup commit failed: {stderr_tail(exc.stderr)}")
+        return finish(False, report, head)
+    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    ok, rerun = run_gate(wt, n, **flags)
+    actual = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    if actual != head or run(status, cwd=wt).stdout.strip():
+        ok = False
+        rerun += "\n\nGate evidence rejected: fixup gate changed HEAD or the worktree."
+    notes.append(f"Re-ran gate at `{head}`: {'PASS' if ok else 'FAIL'}.")
+    return finish(ok, rerun, head)
+
+
 def escalation_packet(
     n: int,
     reason: str,
@@ -2300,8 +2358,28 @@ def escalate(
 ) -> None:
     assert code in ESCALATION_CODES, code
     assert (refreshed_head is None) == (evidence_ref is None)
-    log(f"#{n}: escalating to human ({code}: {reason})")
     wt = FACTORY / f"wt-{n}"
+    if code == "gate_failed" and log_path is not None:
+        # A budget cut skips the gate; do not turn a passing ticket into a code failure.
+        rows = generation.current(lifecycle.read_events(EVENTS), n).rows
+        attempt = next((row for row in reversed(rows) if row.get("event") == "attempt"), {})
+        last_gate = next((
+            row for row in reversed(rows)
+            if row.get("gate") in {"PASS", "FAIL"}
+            or (row.get("event") == "decision" and row.get("stage") == "gate")
+        ), {})
+        if (
+            attempt.get("log") == str(log_path) and attempt.get("gate") is None
+            and (attempt.get("timeout") in {"budget_min", "budget_exceeded"}
+                 or attempt.get("reason") == "budget_exceeded")
+            and (last_gate.get("gate") == "PASS" or last_gate.get("chosen") == "pass")
+        ):
+            code = "budget"
+            reason = (
+                f"worker killed by {attempt.get('timeout') or 'budget_exceeded'} "
+                f"(budget_exceeded) before gate; last gate passed; worktree kept at {wt}"
+            )
+    log(f"#{n}: escalating to human ({code}: {reason})")
     if refreshed_head is not None:
         extra = (
             (f"{extra.rstrip()}\n\n" if extra.strip() else "")
@@ -2352,6 +2430,10 @@ def escalate(
     handoff = wt / ".factory" / f"handoff-{n}.md"
     if handoff.exists():
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
+    for suffix in ("", "-pr"):
+        gate = wt / ".factory" / f"gate-report-{n}{suffix}.md"
+        if cfg.fixups and gate.exists() and "\n## Mechanical fixups" in (text := gate.read_text()):
+            body += "\n\n" + text[text.index("## Mechanical fixups"):][-2000:]
     posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
     comment_receipt(n, "escalation", posted.stdout if posted.returncode == 0 else "", round=round_number)
 
@@ -2764,7 +2846,6 @@ def run_reviewer(
                 actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt, env=clean).stdout.strip()
             accepted = (
                 proc is not None
-                and proc.returncode == 0
                 and parsed
                 and parser_reason is None
                 and actual_head == expected_head
@@ -2787,7 +2868,7 @@ def run_reviewer(
             if actual_head != expected_head:
                 failure_reason = "state_changed"
                 break
-            if proc is not None and proc.returncode == 0 and parsed and parser_reason:
+            if proc is not None and parsed and parser_reason:
                 findings += f"\n\nFactory rejected reviewer evidence: {parser_reason}."
                 return {
                     "verdict": "REVISE",
@@ -2972,6 +3053,15 @@ def _worker_model_for_head(n: int, head: str) -> str | None:
     ), None)
 
 
+def _worker_finished_for_head(n: int, head: str) -> bool:
+    return next((
+        event.get("finished", False)
+        for event in reversed(lifecycle.read_events(EVENTS))
+        if event.get("ticket") == n and event.get("head") == head
+        and event.get("event") in {"attempt", "gate-fixup"}
+    ), False)
+
+
 def risk_disagreement_packet(
     head: str, rules: list[str], primary: str, primary_findings: str,
     second: str, second_findings: str, mutation: str, mutation_findings: str,
@@ -3006,6 +3096,7 @@ def risk_disagreement_transition(
 def pr_gate_and_review(
     wt: Path, n: int, report: str, head: str, pr_runs: dict[str, tuple[bool, str]],
     mutation_duration: float | None = None,
+    *, fixups: bool = True,
 ) -> tuple[str | None, str, bool]:
     """Apply the per-head Low, Medium, or High gate and review policy.
 
@@ -3032,6 +3123,45 @@ def pr_gate_and_review(
                 wt, f"{n}-pr", tier="pr", blocking_mutation=policy_tier == "High",
                 base=caller_base, mutation_proof=proof, mutation_duration=duration,
             )
+            ok, pr_report = pr_runs[head]
+            if not ok and fixups and cfg.fixups:
+                ok, pr_report, candidate = retry_gate_fixups(
+                    wt, f"{n}-pr", pr_report, head, tier="pr",
+                    blocking_mutation=policy_tier == "High",
+                )
+                pr_runs[head] = False, pr_report
+                if candidate != head:
+                    issue = gh_json(
+                        ["issue", "view", str(n), "--repo", REPO, "--json", "labels,body,comments"],
+                    )
+                    handoff = wt / ".factory" / f"handoff-{n}.md"
+                    attempt_ok, attempt_report = run_gate(
+                        wt, n, **gate_flags(
+                            sync_event(n), {label["name"] for label in issue.get("labels", [])},
+                            issue.get("body") or "", handoff.read_text() if handoff.exists() else "",
+                            comments=issue.get("comments"),
+                        ),
+                    )
+                    status = run([
+                        "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+                        ":(exclude).factory-prompt.md", ":(exclude).factory",
+                    ], cwd=wt).stdout.strip()
+                    actual = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+                    if not attempt_ok or actual != candidate or status:
+                        return "REVISE", f"{attempt_report}\n{pr_report}", True
+                    record(
+                        "gate-fixup", ticket=n, head=candidate, previous_head=head,
+                        gate="PASS", actual_head=actual, clean=True,
+                        finished=_worker_finished_for_head(n, head),
+                    )
+                    push_agent(wt, n, head)
+                    record_risk(wt, n, candidate)
+                    new_tier, _ = risk_for_head(n, candidate)
+                    if new_tier == tier:
+                        pr_runs[candidate] = ok, pr_report
+                    return pr_gate_and_review(
+                        wt, n, attempt_report, candidate, pr_runs, fixups=False,
+                    )
         ok, pr_report = pr_runs[head]
         if proof:
             verdict, proof_scope = _mutation_proof(pr_report, head, base_commit) or ("FAIL", None)
@@ -3379,7 +3509,13 @@ def gate_flags(
                 text = comment.get("body") or ""
                 author = (comment.get("author") or {}).get("login") or ""
                 reason = _ticket_line(text, "No repro test") if text.startswith("Triage: ") else None
-                if reason and author and author.casefold() == triage.login().casefold():
+                if not reason or not author:
+                    continue
+                try:
+                    login = triage.login()
+                except subprocess.CalledProcessError:
+                    break  # No authenticated author: require the ordinary reproduction gate.
+                if author.casefold() == login.casefold():
                     no_repro = reason
                     break
         repro = _ticket_line(handoff, "Repro test")
@@ -3596,6 +3732,7 @@ def _head_evidence_matches(
         if (
             event.get("event") == "attempt" and event.get("head") == head
             or event.get("event") == "refreshed" and event.get("gate_head") == head
+            or event.get("event") == "gate-fixup" and event.get("head") == head
         ):
             gate = event.get("gate") == "PASS" and event.get("actual_head") == head
             worker_model = event.get("worker_model") or worker_model
@@ -3746,21 +3883,89 @@ def signoff() -> str:
     return f"Signed-off-by: {name} <{email}>"
 
 
-def pr_checks(pr: int) -> list[dict]:
-    """gh check rows [{name, bucket, link, completedAt}]; bucket: pass/fail/pending/skipping/cancel.
+def _required_ci(pr: int, expected: str | None = None, *, allow_behind: bool = False) -> list[dict]:
+    """Supplement display rows with exact-head ruleset evidence and GitHub's policy veto."""
+    pending = [{"name": "required CI evidence unavailable", "bucket": "pending", "link": ""}]
 
-    `gh pr checks` exits nonzero for failing or pending checks; that is data
-    here, not an error. Unparseable output returns [] which the caller treats
-    as "no passing CI" and refuses to merge — fail closed.
+    def api(endpoint: str, *, pages: bool = False):
+        proc = run(["gh", "api", f"repos/{REPO}/{endpoint}",
+                    *(["--paginate", "--slurp"] if pages else [])], check=False)
+        if proc.returncode:
+            raise ValueError("GitHub evidence unavailable")
+        return json.loads(proc.stdout)
+
+    try:
+        current = api(f"pulls/{pr}")
+        head, base = current["head"]["sha"], current["base"]["ref"]
+        if not head or not base or (expected is not None and head != expected):
+            return pending
+        states = {"clean", "unstable"} | ({"behind", "dirty"} if allow_behind else set())
+        rules = [rule for page in api(
+            f"rules/branches/{quote(base, safe='')}?per_page=100", pages=True,
+        ) for rule in page]
+        required = [check for rule in rules if rule["type"] == "required_status_checks"
+                    for check in rule["parameters"]["required_status_checks"]]
+        rows = []
+        if required:
+            runs = [check for page in api(
+                f"commits/{head}/check-runs?per_page=100", pages=True,
+            ) for check in page["check_runs"]]
+            statuses = [status for page in api(
+                f"commits/{head}/statuses?per_page=100", pages=True,
+            ) for status in page] if any(not check.get("integration_id") for check in required) else []
+            for check in required:
+                context, app = check["context"], check.get("integration_id")
+                matches = [run for run in runs
+                           if run["name"] == context and run["head_sha"] == head
+                           and (not app or run["app"]["id"] == app)]
+                passed = bool(matches) and all(
+                    run["status"] == "completed"
+                    and run["conclusion"] in ("success", "neutral", "skipped") for run in matches
+                )
+                # Legacy statuses have no SHA field; the request is bound to this head.
+                legacy = [status for status in statuses if status["context"] == context]
+                # A legacy context cannot establish the identity of a pinned GitHub App.
+                if not app and legacy:
+                    passed = (passed or not matches) and max(
+                        legacy, key=lambda status: status["id"],
+                    )["state"] == "success"
+                rows.append({"name": context, "bucket": "pass" if passed else "pending",
+                             "link": "", "head": head, "app": app})
+        fresh = api(f"pulls/{pr}")
+        if fresh["head"]["sha"] != head or fresh["base"]["ref"] != base:
+            return pending
+        if any(snapshot.get("mergeable_state") not in states for snapshot in (current, fresh)):
+            rows.append({"name": "GitHub merge policy", "bucket": "pending", "link": "",
+                         "head": head})
+        return rows
+    except (OSError, ValueError, TypeError, KeyError):
+        return pending
+
+
+def pr_checks(pr: int, head: str) -> list[dict]:
+    """Display CI plus ruleset checks bound to the caller's head; missing evidence blocks merging.
+
+    Behind-main and conflicting heads remain eligible for the callers' existing
+    refresh path, never a merge; other policy vetoes and unknown states fail closed.
     """
     proc = run(
         ["gh", "pr", "checks", str(pr), "--repo", REPO, "--json", "name,bucket,link,completedAt"],
         check=False,
     )
     try:
-        return json.loads(proc.stdout)
-    except ValueError:
+        rows = json.loads(proc.stdout)
+        if not isinstance(rows, list) or not all(
+            isinstance(row, dict) and row.get("bucket") in
+            ("pass", "fail", "pending", "skipping", "cancel") for row in rows
+        ):
+            return []
+    except (ValueError, TypeError):
         return []
+    if not any(row["bucket"] == "pass" for row in rows) or any(
+        row["bucket"] not in ("pass", "skipping") for row in rows
+    ):
+        return rows
+    return rows + _required_ci(pr, expected=head, allow_behind=True)
 
 
 def _infra_cancel(check: dict) -> dict | None:
@@ -4083,7 +4288,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         withdraw(f"kept worktree head {local_head} differs from remote head {remote_head}", "refresh_head")
         return False
     verb, cmd = (
-        ("merge", ["git", "merge", f"origin/{cfg.main}", "--no-edit"])
+        ("merge", ["git", "merge", f"origin/{cfg.main}", "--no-edit", *(["--signoff"] if cfg.signoff else [])])
         if carries_upstream
         else ("rebase", ["git", "rebase", f"origin/{cfg.main}"])
     )
@@ -4159,18 +4364,21 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         ok = False
         report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
     if not ok and evidence_clean and "- protected-paths: FAIL" in report:
-        _changed_files, unrelated = _refresh_failure_scope(wt, n, reports)
-        assessment = (
-            "\n\n**Assessment:** failure appears unrelated to this PR's changes."
-            if unrelated else ""
-        )
-        withdraw(
-            f"gate failed after {verb} onto moved main (protected or add-only paths without authority)",
-            "protected_paths",
-            extra=f"## First refresh gate report\n\n{report}{assessment}",
-            refreshed_head=head,
-        )
-        return False
+        ok, report, head = retry_gate_fixups(wt, n, report, head, **flags)
+        reports = [report]
+        if not ok:
+            _changed_files, unrelated = _refresh_failure_scope(wt, n, reports)
+            assessment = (
+                "\n\n**Assessment:** failure appears unrelated to this PR's changes."
+                if unrelated else ""
+            )
+            withdraw(
+                f"gate failed after {verb} onto moved main (protected or add-only paths without authority)",
+                "protected_paths",
+                extra=f"## First refresh gate report\n\n{report}{assessment}",
+                refreshed_head=head,
+            )
+            return False
     if not ok and evidence_clean:
         first_report = report
         ok, report = run_gate(wt, n, **flags)
@@ -4184,6 +4392,11 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         if after_status:
             ok = False
             report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
+        if not ok and rerun_clean and cfg.fixups:
+            ok, report, head = retry_gate_fixups(wt, n, report, head, **flags)
+            actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+            after_status = run(status_cmd, cwd=wt).stdout.strip()
+            rerun_clean = actual_head == head and not after_status
         reports = [first_report, report]
         changed_files, unrelated = _refresh_failure_scope(wt, n, reports)
         record(
@@ -4264,6 +4477,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     tier, _ = risk_for_head(n, head)
     if tier == "High":
         verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, head, {})
+        if cfg.fixups:
+            head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     else:
         verdict, findings = review(wt, n, report, head)
         pr_failed = False
@@ -4420,7 +4635,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "initiative"
                 continue
-            checks = triage_cancelled(pr_num, pr_checks(pr_num), dry_run, n, listed_head)
+            checks = triage_cancelled(pr_num, pr_checks(pr_num, listed_head), dry_run, n, listed_head)
             buckets: dict[str, int] = {}
             for c in checks:
                 buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
@@ -4617,7 +4832,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 execution.outcome, execution.reason = "project_escalation", "state_changed"
                 continue
-            latest_checks = triage_cancelled(pr_num, pr_checks(pr_num), False, n, head)
+            latest_checks = triage_cancelled(pr_num, pr_checks(pr_num, head), False, n, head)
             latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
             latest_starved = [c for c in latest_checks if c["bucket"] == "infra"]
             if latest_failed:
@@ -4746,6 +4961,7 @@ def worker_round(
     body: str = "",
     selected_worker: str | None = None,
     comments: list[dict] | None = None,
+    fixups: bool = True,
 ) -> tuple[bool, str, Path, str]:
     """One worker + gate cycle, bound to one immutable head."""
     from factory import results
@@ -4854,12 +5070,11 @@ def worker_round(
             **identity, **timeout,
         )
         return False, "budget exceeded before gate", logfile, head
-    ok, report = run_gate(
-        wt, n, **gate_flags(
-            sync, labels, body, handoff_path.read_text() if handoff_path.exists() else "",
-            comments=comments,
-        )
+    flags = gate_flags(
+        sync, labels, body, handoff_path.read_text() if handoff_path.exists() else "",
+        comments=comments,
     )
+    ok, report = run_gate(wt, n, **flags)
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:
@@ -4868,6 +5083,10 @@ def worker_round(
     if before_status or after_status:
         ok = False
         report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
+    if not ok and cfg.fixups and (fixups or _protected_gate_guidance(report, labels)):
+        ok, report, head = retry_gate_fixups(wt, n, report, head, **flags)
+        actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        after_status = run(status_cmd, cwd=wt).stdout.strip()
     if ok and tip and run(["git", "merge-base", "--is-ancestor", tip, head], cwd=wt, check=False).returncode:
         ok = False
         report += f"\n\nGate evidence rejected: HEAD {head} does not contain upstream tip {tip}."
@@ -5188,6 +5407,7 @@ def process_ticket(
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, attempt, deadline, body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
+                    fixups=attempt == MAX_ATTEMPTS,
                 )
                 if ok:
                     break
@@ -5239,6 +5459,10 @@ def process_ticket(
             pr_runs: dict[str, tuple[bool, str]] = {}
             record_risk(wt, n, gate_head)
             verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
+            if cfg.fixups:
+                gate_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+                if _remote_agent_head(wt, n) == gate_head:
+                    lease = gate_head
             pr_comment(n, findings)
             current_risk = _PENDING_RISK.get(n) or {}
             risk_disagreement_head, repeated_disagreement = risk_disagreement_transition(
@@ -5273,12 +5497,7 @@ def process_ticket(
                 ):
                     break
                 if time.monotonic() > deadline:
-                    finished = next((
-                        row.get("finished", False)
-                        for row in reversed(lifecycle.read_events(EVENTS))
-                        if row.get("event") == "attempt" and row.get("ticket") == n
-                        and row.get("head") == gate_head
-                    ), False)
+                    finished = _worker_finished_for_head(n, gate_head)
                     if actionable and finished:
                         _record_rework(n, gate_head, findings, deferred=True)
                         execution.wait("review_rework", mode="retry_next_pass", head=gate_head)
@@ -5331,6 +5550,10 @@ def process_ticket(
                 lease = push_agent(wt, n, lease)
                 record_risk(wt, n, gate_head)
                 verdict, findings, pr_failed = pr_gate_and_review(wt, n, report, gate_head, pr_runs)
+                if cfg.fixups:
+                    gate_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+                    if _remote_agent_head(wt, n) == gate_head:
+                        lease = gate_head
                 pr_comment(n, findings)
                 current_risk = _PENDING_RISK.get(n) or {}
                 current_disagreement_head, repeated_disagreement = risk_disagreement_transition(
