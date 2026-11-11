@@ -33,6 +33,32 @@ class MaliciousHeaderIntegrityTest(RunnerHarness):
         )
         self.assertEqual(verdict[0], "PASS")
 
+    def test_non_lf_separators_cannot_erase_last_hunk_scope(self) -> None:
+        for payload, lines in (
+            ('payload = """a\f+b\f+c\n++ b/factory/example.py\n"""\n', {1, 2, 7, 8, 9}),
+            ('payload = """\u2028+++ b/factory/example.py\u2028"""\n', {1, 2, 7}),
+        ):
+            with self.subTest(payload=payload):
+                git(self.root, "checkout", "-q", "--detach", self.base)
+                self.base = commit(self.root, {"factory/example.py": ATTACK_BASE}, "separator base")
+                source = ATTACK_HEAD[:ATTACK_HEAD.index("payload")] + payload
+                compile(source, "factory/example.py", "exec")
+                self.head = commit(self.root, {"factory/example.py": source}, "separator head")
+
+                expected = mutation_scope.compute(self.base)
+                code, output, _ = self.runner(["--blocking"], sampled=([], 0))
+                record = self.record()
+
+                self.assertEqual(expected.lines, {"factory/example.py": lines})
+                self.assertNotIn("no mutable files", output)
+                self.assertEqual(
+                    (code, record["status"], record["reason"], record["scope"]["lines"]),
+                    (0, "complete", "no-mutation-candidates", len(lines)),
+                )
+                self.assertEqual(
+                    gate.read_mutation_proof(self.proof.read_bytes(), code, expected)[0], "PASS",
+                )
+
 
 class RawDiffIntegrityTest(Fixture):
     def test_diff_attribute_cannot_hide_python_change(self) -> None:
