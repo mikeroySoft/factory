@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `exit_grace` no longer terminates a worker that committed or wrote its handoff and is still waiting on a live child process (its gate run or a commit). The quiet clock holds while any descendant or member of the worker's process group is alive, read with one `ps` call when the grace would fire, and restarts when the last child ends; a worker with no live children is still terminated after `exit_grace` seconds (#761).
+
 ## 0.4.9 — 2026-11-09
 
 - `factory install` and `doctor` reject a service interpreter that imports Factory from the repository checkout even when the import path spells the checkout through a directory alias (a symlinked checkout on `PYTHONPATH`, a `__path__` entry, or macOS `/var`) and the checkout file is a symlink.

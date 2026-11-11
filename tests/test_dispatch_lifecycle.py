@@ -2114,3 +2114,132 @@ class WorkerCompletionBoundaryLifecycleTest(unittest.TestCase):
             "```text\n- protected-paths: FAIL (add-only existing file modified)\n```"
         )
         self.assertIsNone(dispatch._protected_gate_guidance(report, set()))
+
+
+class ExitGraceLiveChildren(unittest.TestCase):
+    """#761: exit_grace must not kill a done worker that is still waiting on its own child."""
+
+    GRACE = 300.0
+
+    def watch(self, children, exits_at=None, current=("log", "new-head", "", None)):
+        """Run `_watch` on a fake clock that advances WATCH_POLL per poll; nothing ever changes
+        after the first poll. Returns (fired, clock at return, clock at each `_live_children` call)."""
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from factory import dispatch
+
+        clock, calls = [0.0], []
+
+        class Proc:
+            pid = 4242
+
+            def wait(self, timeout):
+                clock[0] += timeout
+                if exits_at is not None and clock[0] >= exits_at:
+                    return 0
+                raise subprocess.TimeoutExpired("worker", timeout)
+
+        def live(pid):
+            self.assertEqual(pid, Proc.pid)
+            calls.append(clock[0])
+            return children(clock[0])
+
+        with mock.patch.object(dispatch.time, "monotonic", lambda: clock[0]), \
+                mock.patch.object(dispatch, "_activity", return_value=current), \
+                mock.patch.object(dispatch, "raise_if_interrupted"), \
+                mock.patch.object(dispatch, "cfg", SimpleNamespace(exit_grace=self.GRACE, idle_timeout=1),
+                                  create=True), \
+                mock.patch.object(dispatch, "_live_children", side_effect=live):
+            fired = dispatch._watch(Proc(), Path("wt"), Path("log"), Path("handoff"), float("inf"),
+                                    ("log", "base-head", "", None))
+        return fired, clock[0], calls
+
+    def test_live_gate_child_after_commit_holds_exit_grace(self):
+        fired, now, calls = self.watch(lambda t: [4243], exits_at=3 * self.GRACE)
+        self.assertIsNone(fired)
+        self.assertEqual(now, 3 * self.GRACE)
+        self.assertGreaterEqual(min(calls), self.GRACE)  # no ps before the grace would fire
+
+    def test_exit_grace_restarts_when_the_last_child_ends(self):
+        from factory import dispatch
+
+        gone = 600.0
+        fired, now, calls = self.watch(lambda t: [4243] if t < gone else [])
+        self.assertEqual(fired, "exit_grace")
+        self.assertGreaterEqual(now, gone + self.GRACE)
+        self.assertLessEqual(now, gone + self.GRACE + 2 * dispatch.WATCH_POLL)
+        self.assertEqual([t for t in calls if t >= gone], [gone, now])
+
+    def test_idle_worker_after_commit_is_still_terminated(self):
+        from factory import dispatch
+
+        fired, now, calls = self.watch(lambda t: [])
+        self.assertEqual(fired, "exit_grace")
+        self.assertEqual(now, dispatch.WATCH_POLL + self.GRACE)  # first poll with quiet >= grace
+        self.assertEqual(calls, [now])
+
+    def test_handoff_only_done_without_children_is_still_terminated(self):
+        from factory import dispatch
+
+        fired, now, _ = self.watch(lambda t: [], current=("log", "base-head", "", (4, 1)))
+        self.assertEqual(fired, "exit_grace")
+        self.assertEqual(now, dispatch.WATCH_POLL + self.GRACE)
+
+    def test_live_children_parses_ps(self):
+        from unittest import mock
+
+        from factory import dispatch
+
+        ps = (
+            "    1     0     1 Ss\n"
+            "  100     1   100 Ss\n"   # root (the worker)
+            "  101   100   100 S\n"    # child
+            "  102   101   100 R+\n"   # grandchild
+            "  103     1   100 S\n"    # orphaned job still in the worker's group
+            "  104   100   100 Z\n"    # zombie
+            "  105   101   105 S\n"    # descendant in its own group
+            "  200     1   200 S\n"    # unrelated
+            "garbage\n\n"
+        )
+        done = subprocess.CompletedProcess([], 0, stdout=ps)
+        with mock.patch.object(dispatch.subprocess, "run", return_value=done) as run:
+            self.assertEqual(dispatch._live_children(100), [101, 102, 103, 105])
+        self.assertEqual(run.call_args.args[0], ["ps", "-A", "-o", "pid=,ppid=,pgid=,stat="])
+        for failure in (OSError("no ps"), subprocess.TimeoutExpired("ps", 5)):
+            with self.subTest(failure=failure), mock.patch.object(dispatch.subprocess, "run", side_effect=failure):
+                self.assertEqual(dispatch._live_children(100), [])
+        with mock.patch.object(dispatch.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, stdout="")):
+            self.assertEqual(dispatch._live_children(100), [])
+
+    def test_live_children_sees_a_real_worker_child(self):
+        import signal
+        import time
+
+        from factory import dispatch
+
+        script = (
+            "import subprocess, sys\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'])\n"
+            "print(child.pid, flush=True)\n"
+            "sys.stdin.read()\n"
+            "child.wait()\n"
+        )
+        worker = subprocess.Popen([sys.executable, "-c", script], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            child = int(worker.stdout.readline())
+            deadline = time.monotonic() + 5
+            while child not in dispatch._live_children(worker.pid) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(dispatch._live_children(worker.pid), [child])
+            worker.stdin.close()
+            self.assertEqual(worker.wait(timeout=10), 0)
+            self.assertEqual(dispatch._live_children(worker.pid), [])
+        finally:
+            if worker.poll() is None:
+                os.killpg(worker.pid, signal.SIGKILL)
+                worker.wait()
+            worker.stdout.close()
+            if not worker.stdin.closed:
+                worker.stdin.close()

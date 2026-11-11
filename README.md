@@ -1070,7 +1070,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    A worker with no log output and no worktree change for
    `[dispatch].idle_timeout` minutes is killed as `stuck` (a failed attempt,
    retried). One that committed or wrote its handoff, then stayed quiet for
-   `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
+   `[dispatch].exit_grace` seconds without exiting, is terminated and gated;
+   that clock waits while the worker still has a live child process (a gate
+   or commit it is waiting on) and restarts when the last one ends.
    The attempt journal row and escalation packet name the timeout that fired.
    If a budget-killed worker never reaches its next gate and the ticket's last
    gate in the current generation passed, escalation uses `budget`, not
