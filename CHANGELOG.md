@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `factory doctor` reports systemd timer and configured triage liveness probes as informational `n/a (launchd)` rows when `systemctl` is missing or cannot execute, instead of losing the report to an `OSError`. Existing systemd probe output is unchanged (#754).
 - Host-only `land_host` selects the host allowed to run upstream sync, merge and behind-main refresh; other hosts skip landing before git/gh calls or journal writes. Ticket merges also skip foreign elected claims before CI or approval mutations, preventing cross-host `approval_missing` and refresh collisions. Unconfigured single-host behavior is unchanged (#731).
 
 ## 0.4.9 — 2026-11-09
