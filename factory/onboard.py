@@ -685,16 +685,30 @@ def doctor(argv: list[str]) -> int:
         f"{cfg.llm_url} ({detail})" if alive else f"{cfg.llm_url} ({detail}); `factory triage` will not run",
     )
 
-    timer = sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).stdout.strip()
-    report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
+    def timer_state(unit: str) -> str | None:
+        if shutil.which("systemctl") is None:
+            return None
+        try:
+            return sh(["systemctl", "--user", "is-active", unit]).stdout.strip()
+        except OSError:
+            return None
+
+    timer = timer_state(f"{cfg.unit}.timer")
+    if timer is None:
+        report(None, f"systemd timer {cfg.unit}.timer", "n/a (launchd)", info=True)
+    else:
+        report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
     if cfg.triage_service:
         probe_timer = f"{cfg.unit}-triage-probe.timer"
-        active = sh(["systemctl", "--user", "is-active", probe_timer]).stdout.strip()
-        report(
-            True if active == "active" else None,
-            "triage liveness probe",
-            f"{probe_timer} {active}" if active else "not installed (factory install)",
-        )
+        active = timer_state(probe_timer)
+        if active is None:
+            report(None, "triage liveness probe", "n/a (launchd)", info=True)
+        else:
+            report(
+                True if active == "active" else None,
+                "triage liveness probe",
+                f"{probe_timer} {active}" if active else "not installed (factory install)",
+            )
     else:
         report(
             None,
