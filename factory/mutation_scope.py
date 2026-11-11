@@ -108,7 +108,7 @@ def parse(diff: str) -> tuple[tuple[str, str | None, tuple[int, ...]], ...]:
     files: dict[str, tuple[str | None, set[int]]] = {}
     path = blob = None
     old_remaining = new_remaining = 0
-    for line in diff.splitlines():
+    for line in diff.split("\n"):
         if old_remaining or new_remaining:
             if line.startswith("+"):
                 new_remaining -= 1
