@@ -26,6 +26,7 @@ otherwise re-run its 19 tests); reusable helpers are bound from it narrowly.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -47,12 +48,25 @@ PREFIX = f"repos/{REPO}/"
 # (evidence.py RESPONSE_CAP) plus one trailing newline on stdout.
 RESPONSE_TOTAL = 500001
 
-from factory import lifecycle
+from factory import lifecycle, platform_identity
 
 try:
     import test_evidence as _base
 except ImportError:  # full-suite discovery imports tests as a package
     from tests import test_evidence as _base
+try:
+    from interrupts import LAUNCHER_MODES, deliverable_sigint, detached_launcher_sigint
+except ImportError:  # full-suite discovery imports tests as a package
+    from tests.interrupts import LAUNCHER_MODES, deliverable_sigint, detached_launcher_sigint
+
+# The interrupted CLI must exit within this bound; a raw (helper-less) CLI under a
+# hostile launcher must still be running after it.
+UNDELIVERED_WINDOW = 15
+
+
+def runner_sigint() -> tuple[object, bool]:
+    return (signal.getsignal(signal.SIGINT),
+            signal.SIGINT in signal.pthread_sigmask(signal.SIG_BLOCK, set()))
 
 # Contract label shape: the ready-for-human marker plus 19 label slots, each
 # exactly 50 chars ("中" * 48 + two-digit slot position). CJK labels carry the
@@ -94,6 +108,17 @@ else:
 raise SystemExit(response.get("exit", 0))
 '''
 
+# A marked process and its exec'd marked descendant: proves the portable
+# marker enumeration sees real descendants and that the kill reaches them.
+FORK = '''
+import os, sys, time
+child = os.fork()
+if child == 0:
+    os.execv(sys.executable, [sys.executable, "-c", "import time; time.sleep(120)", sys.argv[1]])
+print(child, flush=True)
+time.sleep(120)
+'''
+
 
 def expected_labels(number: int) -> list[str]:
     return ["ready-for-human"] + ["中" * 48 + f"{p:02d}" for p in range(1, 20)]
@@ -119,7 +144,7 @@ class EvidenceTransportTest(unittest.TestCase):
         self.addCleanup(context.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.directory = Path(self.temp.name)
+        self.directory = Path(self.temp.name).resolve()
         self.root = self.directory / "repo"
         self.root.mkdir()
         self.tools = self.directory / "bin"
@@ -146,7 +171,7 @@ class EvidenceTransportTest(unittest.TestCase):
             "nodes": [], "pageInfo": {"hasNextPage": False},
         }}}}}}
         # Narrow bindings of reusable fixture helpers from the shared suite.
-        for name in ("executable", "state", "error_codes"):
+        for name in ("executable", "state", "error_codes", "assert_darwin_lock_gap_only"):
             setattr(self, name, getattr(_base.EvidenceCliTest, name).__get__(self, type(self)))
         self.executable("gh", GH)
         self.executable("systemctl", 'print("ActiveState=inactive\\nNextElapseUSecRealtime=0")\n')
@@ -175,18 +200,21 @@ class EvidenceTransportTest(unittest.TestCase):
         return data
 
     def marker_pids(self) -> list[int]:
-        """Live PIDs whose cmdline carries this run's unique marker (ours only)."""
-        found = []
-        for entry in os.listdir("/proc"):
-            if not entry.isdigit():
-                continue
-            try:
-                with open(f"/proc/{entry}/cmdline", "rb") as stream:
-                    command = stream.read(8192)
-            except OSError:
-                continue
-            if self.marker.encode() in command:
-                found.append(int(entry))
+        """Live PIDs whose argv carries this run's unique marker (ours only).
+
+        POSIX `ps -A`, not Linux-only /proc. The listing must include this test
+        process, so a failed or empty enumeration never reads as "none left"."""
+        ps = shutil.which("ps")
+        self.assertIsNotNone(ps, "process enumeration (ps) is unavailable")
+        listing = subprocess.run([ps, "-A", "-ww", "-o", "pid=", "-o", "args="],
+                                 capture_output=True, check=True, timeout=10)
+        listed, found = set(), []
+        for line in listing.stdout.decode(errors="replace").splitlines():
+            pid, _, command = line.strip().partition(" ")
+            listed.add(int(pid))
+            if self.marker in command:
+                found.append(int(pid))
+        self.assertIn(os.getpid(), listed, "process enumeration did not list this test process")
         return found
 
     def kill_marker_pids(self) -> None:
@@ -211,8 +239,10 @@ class EvidenceTransportTest(unittest.TestCase):
         (self.root / ".factory" / "locks").mkdir()
         (self.root / ".factory" / "locks" / "merge.lock").touch()
         (self.root / "gpu.lock").touch()
-        data = self.invoke("observe")
-        self.assertEqual(data["coverage"]["status"], "bounded")
+        # Linux reads /proc/locks passively; on Darwin lock attribution is the only gap.
+        code = 1 if platform_identity.darwin() else 0
+        data = self.invoke("observe", code=code)
+        self.assertEqual(data["coverage"]["status"], "partial" if code else "bounded")
         self.assertEqual(len(data["cases"]), 8)
         self.assertEqual(data["attention_count"], 8, "complete page must keep the grounded count")
         self.assertTrue(any(row["label"].startswith("Local runtime") for row in data["sources"]))
@@ -223,6 +253,33 @@ class EvidenceTransportTest(unittest.TestCase):
         self.assertIn(expected_labels(8)[8], first["labels"])
         self.assertEqual(first["labels"], sorted(expected_labels(8)),
                          "labels must round-trip the full Unicode text unchanged")
+        if code:
+            self.assert_darwin_lock_gap_only(data)
+
+    def test_marker_enumeration_sees_and_kills_a_real_process_and_descendant(self):
+        proc = subprocess.Popen([sys.executable, "-c", FORK, self.marker], stdout=subprocess.PIPE,
+                                text=True, start_new_session=True)
+        self.addCleanup(self.reap_process, proc)
+        self.addCleanup(proc.stdout.close)
+        child = int(proc.stdout.readline())
+        expected = sorted((proc.pid, child))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and sorted(self.marker_pids()) != expected:
+            time.sleep(0.05)
+        self.assertEqual(sorted(self.marker_pids()), expected, "process and descendant must both be visible")
+        self.kill_marker_pids()
+        self.assertEqual(proc.wait(timeout=10), -signal.SIGKILL)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and self.marker_pids():
+            time.sleep(0.05)
+        self.assertEqual(self.marker_pids(), [], "the killed descendant is still live")
+
+    def test_marker_enumeration_fails_instead_of_reporting_no_processes(self):
+        empty = subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
+        with patch.object(subprocess, "run", return_value=empty), self.assertRaises(AssertionError):
+            self.marker_pids()
+        with patch.object(shutil, "which", return_value=None), self.assertRaises(AssertionError):
+            self.marker_pids()
 
     def test_hung_read_kills_every_descendant_without_false_success(self):
         self.responses[PREFIX + "issues"] = {"json": [], "sleep": 60, "fork": True}
@@ -269,18 +326,21 @@ class EvidenceTransportTest(unittest.TestCase):
         if data["cases"]:
             self.assertEqual(data["cases"][0]["number"], 100, "trimming keeps the newest cases")
 
-    def test_direct_cli_sigint_unwounds_without_orphans(self):
-        """Ctrl+C during a hung read: the producer already unwinds through its
-        per-read finally block on the baseline; this guards that path for no
-        published envelope, prompt signal exit (-2 unhandled, 130 handled), and
-        no orphaned marker descendant in the gh descent."""
+    def spawn_hung_cli(self, *, deliverable: bool = True) -> subprocess.Popen:
+        """Start the evidence CLI on a hung, forking issues read and wait until
+        both the read and its marker descendant are live (pre-interrupt controls).
+
+        The CLI inherits SIGINT from this runner: a blocked or ignored SIGINT here
+        would stay so in the CLI and its read loop, so only the spawn is made
+        deliverable. ``deliverable=False`` is the raw negative control."""
         self.responses[PREFIX + "issues"] = {"json": [], "sleep": 60, "fork": True}
         self.responses_path.write_text(json.dumps(self.responses))
         payload = json.dumps({"schema_version": 1, "repository": REPO, "op": "observe"}).encode()
-        proc = subprocess.Popen(
-            [sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(self.root)],
-            cwd=self.root, env=self.env, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        with deliverable_sigint() if deliverable else contextlib.nullcontext():
+            proc = subprocess.Popen(
+                [sys.executable, "-B", "-m", "factory.cli", "evidence", "--root", str(self.root)],
+                cwd=self.root, env=self.env, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.addCleanup(self.reap_process, proc)
         proc.stdin.write(payload)  # far under the pipe buffer; the child closes on EOF
         proc.stdin.close()
@@ -299,11 +359,19 @@ class EvidenceTransportTest(unittest.TestCase):
             if not descended:
                 time.sleep(0.05)
         self.assertTrue(descended, "marker descendant was not visible before interrupt; coverage gap")
+        return proc
+
+    def test_direct_cli_sigint_unwounds_without_orphans(self):
+        """Ctrl+C during a hung read: the producer already unwinds through its
+        per-read finally block on the baseline; this guards that path for no
+        published envelope, prompt signal exit (-2 unhandled, 130 handled), and
+        no orphaned marker descendant in the gh descent."""
+        proc = self.spawn_hung_cli()
         proc.send_signal(signal.SIGINT)
         try:
-            proc.wait(timeout=15)
+            proc.wait(timeout=UNDELIVERED_WINDOW)
         except subprocess.TimeoutExpired:
-            self.fail("the CLI did not exit within 15s after SIGINT")
+            self.fail(f"the CLI did not exit within {UNDELIVERED_WINDOW}s after SIGINT")
         self.assertEqual(proc.stdout.read(), b"", "a cancelled read must not publish an envelope")
         proc.stdout.close()
         proc.stderr.close()
@@ -312,5 +380,66 @@ class EvidenceTransportTest(unittest.TestCase):
         while time.monotonic() < deadline and self.marker_pids():
             time.sleep(0.2)
         self.assertEqual(self.marker_pids(), [], "direct SIGINT left live descendant processes")
+
+    def test_direct_cli_sigint_exits_under_detached_launcher_sigint(self):
+        # A detached launcher can hand the suite SIGINT ignored and blocked; the
+        # CLI must still receive the test's SIGINT instead of waiting out its read.
+        self.enterContext(detached_launcher_sigint())
+        self.test_direct_cli_sigint_unwounds_without_orphans()
+
+    def test_direct_cli_sigint_exits_under_blocked_only_launcher_sigint(self):
+        self.enterContext(detached_launcher_sigint("blocked"))
+        self.test_direct_cli_sigint_unwounds_without_orphans()
+
+    def test_direct_cli_sigint_exits_under_ignored_only_launcher_sigint(self):
+        self.enterContext(detached_launcher_sigint("ignored"))
+        self.test_direct_cli_sigint_unwounds_without_orphans()
+
+    def test_deliverable_sigint_covers_only_the_cli_spawn(self):
+        for mode in LAUNCHER_MODES:
+            with self.subTest(mode), detached_launcher_sigint(mode):
+                hostile = runner_sigint()
+                with patch.object(subprocess, "Popen", side_effect=OSError("spawn refused")), \
+                        self.assertRaisesRegex(OSError, "spawn refused"):
+                    self.spawn_hung_cli()
+                self.assertEqual(runner_sigint(), hostile)
+
+    def assert_raw_interrupt_is_not_delivered(self, mode: str) -> None:
+        # Negative control: the same hung CLI, spawned without the helper under
+        # the hostile launcher, never sees the real SIGINT and keeps reading.
+        with detached_launcher_sigint(mode):
+            raw = self.spawn_hung_cli(deliverable=False)
+        raw.send_signal(signal.SIGINT)
+        with self.assertRaises(subprocess.TimeoutExpired,
+                               msg=f"raw CLI exited after SIGINT under {mode} launcher; control is void"):
+            raw.wait(timeout=UNDELIVERED_WINDOW)
+        self.assertIsNone(raw.poll(), "raw CLI must still be alive after the undelivered SIGINT")
+        self.assertIsNone(raw.returncode)
+        self.assertTrue(self.marker_pids(), "the raw CLI's hung read must still be live")
+
+    def test_raw_interrupt_is_not_delivered_under_detached_launcher_sigint(self):
+        self.assert_raw_interrupt_is_not_delivered("both")
+
+    def test_raw_interrupt_is_not_delivered_under_blocked_only_launcher_sigint(self):
+        self.assert_raw_interrupt_is_not_delivered("blocked")
+
+    def test_raw_cli_overrides_an_inherited_ignored_sigint(self):
+        # No ignored-only negative control exists for this CLI: evidence.main()
+        # installs its own SIGINT handler, which replaces an inherited SIG_IGN
+        # (only a blocked mask survives that). Pin that fact, so the blocked and
+        # both controls above stay the ones that prove the helper is needed here.
+        with detached_launcher_sigint("ignored"):
+            raw = self.spawn_hung_cli(deliverable=False)
+        raw.send_signal(signal.SIGINT)
+        try:
+            raw.wait(timeout=UNDELIVERED_WINDOW)
+        except subprocess.TimeoutExpired:
+            self.fail(f"the raw CLI did not exit within {UNDELIVERED_WINDOW}s after SIGINT")
+        self.assertEqual(raw.stdout.read(), b"", "a cancelled read must not publish an envelope")
+        raw.stdout.close()
+        raw.stderr.close()
+        self.assertEqual(raw.returncode, 130, "the CLI's own handler, not SIG_IGN, met the SIGINT")
+
+
 if __name__ == "__main__":
     unittest.main()

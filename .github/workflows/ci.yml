@@ -8,8 +8,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v6
       - name: Ruff
         run: uvx ruff@0.16.10 check .
       - run: python -m pip install '.[atlas]'
+      # test_real_cli runs uv run --frozen --group mutation with UV_OFFLINE=1 so the wheels
+      # of the mutation group must already be in the uv cache. Sync into a throwaway environment
+      # with the interpreter the suite runs under to warm the cache without touching the checkout.
+      - name: Warm uv cache for the mutation group
+        run: |
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/uv-warm-env" uv sync --frozen --no-managed-python --python "$(python -c 'import sys; print(sys.executable)')" --group mutation
       - run: python -m unittest discover -s tests

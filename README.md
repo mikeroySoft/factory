@@ -1107,6 +1107,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    bypasses only function protection on bug tickets. An `upstream sync:`
    ticket's worker otherwise gets no override; only upstream-authored content
    is exempt (`--upstream`, above).
+   Local gate runs only (the dispatcher does not pass it): `factory gate
+   --add-only-allow <path>=<blob> --add-only-allow-base <commit>` exempts exactly
+   the named add-only files from both checks when a human supplies the reviewed
+   blob ids. Each path must be canonical, inside `add_only_paths` and outside
+   `protected_paths`, an in-place regular-file text edit, and both its committed
+   blob and its working-tree bytes (`git hash-object --no-filters`) must equal the
+   approved blob; `<commit>` must be the merge-base. Any refusal fails
+   `protected-paths`; every other add-only file and test stays protected.
    A bug worker must add the reproducing test in its own commit before the fix
    and put `Repro test: <test ID>` in its handoff. The test may be added during
    a later retry, review bounce, or manager FIX, not just the first branch commit.
@@ -2083,7 +2091,7 @@ applicable or not known; it is not a fabricated ticket, run, round, or result.
 | `at` | string | UTC source timestamp, ISO 8601 with microseconds and `Z`. A reconciled exit uses the time of observation, not an estimated crash time. |
 | `outcome` | string or null | Terminal classification on `exit`; null on other kinds. |
 | `reason` | string or null | Supported terminal reason or diagnostic text, not a closed enumeration; null when no reason is known. |
-| `process` | object or null | Owner identity sampled on entry: `pid` (integer), `boot_id` (string or null), `start_ticks` (integer or null), `pid_namespace` (string or null), `uid` (integer or null), `state` (Linux process-state string or null), `ppid` (integer or null). Factory emits an object; the reader also accepts null as unavailable authority. This cached identity is not a live heartbeat. |
+| `process` | object or null | Owner identity sampled on entry: `pid` (integer), `boot_id` (string or null), `start_ticks` (integer or null), `pid_namespace` (string or null), `uid` (integer or null), `state` (process-state string or null), `ppid` (integer or null). Factory emits an object; the reader also accepts null as unavailable authority. This cached identity is not a live heartbeat. |
 | `locks` | array of objects | Recorded exclusion evidence, possibly empty. Each object has `path` (absolute-path string), `device` (integer or null), and `inode` (integer or null). Null identity fields mean unavailable evidence. |
 
 IDs and sequence numbers survive repeated reads. Sort a single execution by
@@ -2094,6 +2102,43 @@ terminal `exit`; an abrupt death can leave the exit absent until observation
 has enough evidence to reconcile it. Extra keys and evidence kinds may be
 added; consumers should ignore those they do not understand. Unsupported schema
 versions are not interpreted as version 1 by the existing observer.
+
+Linux identity fields retain their procfs values: boot UUID, field-22 start ticks,
+and PID namespace link. On macOS, lifecycle and passive runtime observation share
+one private backend, and only the verified receipt is read: macOS 27.2, arm64,
+64-bit pointers, little-endian. Any other combination is unknown and does not
+guess offsets. `kern.bootsessionuuid` identifies the boot. Process identity
+comes from `proc_pidinfo(PROC_PIDTBSDINFO)` on the verified 136-byte layout;
+journal `start_ticks` stays that start time in integer Unix seconds, and the
+microsecond field is used only to compare two reads of the same process. A
+runnable-to-sleeping transition does not make that identity new. A changed
+parent or uid does. Context tags come from `KERN_PROCARGS2` into one
+`KERN_ARGMAX`-sized buffer (1 MiB on the verified host). A full buffer is
+truncated and unknown. `proc_listallpids` uses byte sizes and returns a pid
+count; a buffer that comes back full is retried, then incomplete. Identity
+reads follow kernel order up to 4096 pids. Context reads stay capped at 256.
+Processes that started after their own uid's known process-start second are
+read newest first. The same second and any earlier start stay deferred, and
+an unknown origin keeps that uid deferred. Another uid's start is not a
+cutoff. Membership is a context tag or a start-validated ancestor. The
+continuation hand is that process's pid and start. It stays eligible when the
+same process is also newer than the previous read, and a deadline does not
+skip it. Past either cap, or while any deferred process is unread, the scan
+is incomplete. `pid_namespace` is `"darwin"`.
+Host IDs hash the IOKit `IOPlatformUUID` with the same UUIDv5 scheme as Linux
+machine-id. The guarded observer never runs `ps`, `lsof`, `sysctl`, or
+`ioreg`. Denied, malformed, empty, or truncated reads are unknown, not absence.
+A missing recorded PID or a changed start time proves the original process dead
+only when this observer can see itself. Descendant membership is a context tag
+or a start-validated ancestor, not a uid and not a parent pid alone. The existing
+handoff safeguard still prevents interruption when a launched descendant cannot
+be ruled out. There is no non-spawning flock-owner source: attribution stays
+unavailable, the owner stays null, and an open file is not ownership. The same
+limit covers passive resource state and observed admission capacity. State stays
+`unknown`, not `free`. With any numeric ticket lock, `capacity.active` is null
+and `capacity.complete` is false, never zero. A lock directory that was listed
+and contains no numeric ticket lock is zero. A retained observation is not a
+fresh reading of the current lock.
 
 | Stage | Boundary |
 |---|---|
@@ -2306,7 +2351,7 @@ holder identity. `wait_end.wait_event_id` names the ended wait's event UUID.
 | `state`, `ownership` | Independent string enums described above. `none` is supported only by observed free state. |
 | `owner` | Null or object with all common execution identity fields, recorded `process`, `acquisition_id`, and source `acquired_at` timestamp. |
 | `requests` | Array of currently live, unterminated requesters not yet acquired/released: common execution identity fields, `process`, source `event_id`, `requested_at`, and `blocking`. A pending request is not ownership. |
-| `evidence` | Object: `lock_state` (`held`/`free`/`unknown`), `attribution` (`proc_locks`/`unavailable`), `holder_pids` (integer array or null). Kernel PIDs alone are not confirmed execution identity. |
+| `evidence` | Object: `lock_state` (`held`/`free`/`unknown`), `attribution` (`proc_locks`/`lsof`/`unavailable`), `holder_pids` (integer array or null). Linux uses kernel FLOCK owners; macOS uses flock try-lock for availability and lsof's whole-file lock fields for owners, not merely open descriptors. Kernel PIDs alone are not confirmed execution identity. |
 | `event_id`, `at` | Stable identity and source time of the last distinct local resource observation. |
 | `observed_at` | UTC time of this local evidence collection, distinct from transition time. |
 
@@ -2539,16 +2584,21 @@ is forced to a local Unix socket, never an inherited TCP address. Missing tools,
 unavailable units, invalid output, overflow and timeouts yield partial errors.
 Only explicit `ActiveState=active` is true; transitional states remain unknown.
 `next_at` requires an active timer and an explicitly returned future timestamp.
-Admission scans at most 1024 directory entries and a 256 KiB kernel lock window;
-unreadable/incomplete evidence returns null capacity, not a false zero.
+Admission scans at most 1024 directory entries and a 256 KiB kernel lock window.
+The count is Linux `/proc/locks` only. Unreadable, incomplete, or Darwin evidence
+with a numeric ticket lock returns null capacity, not a false zero. An empty
+numeric listing stays zero because the directory itself was read.
 
 System query errors use source `systemctl`, scope `service`, `timer`, or
 `schedule`, and codes `invalid_unit`, `timeout`, `output_limit`, `command_failed`,
 `command_unavailable`, `unit_unavailable`, `transitioning`, `unit_failed`,
 `invalid_state`, or `invalid_schedule`. Admission errors use source `admission`,
 scope `repository`, with `missing`, `unreadable`, `unsupported_file`, `byte_limit`,
-`entry_limit`, `changed`, or `invalid_kernel_locks`. Errors contain fixed codes
-only; raw stderr and arbitrary stored diagnostic text are never returned.
+`entry_limit`, `changed`, `invalid_kernel_locks`, or `locks_unavailable`.
+`locks_unavailable` is the Darwin numeric-ticket-lock result: no passive flock
+table, so the count is null rather than zero or a foreign kernel table. Errors
+contain fixed codes only; raw stderr and arbitrary stored diagnostic text are
+never returned.
 
 The journal reader performs one `pread` of at most **1,048,576 bytes** at the
 end of the regular file, with no journal lock. It drops the first clipped line,
@@ -2631,13 +2681,20 @@ missing entry, conflicting identity/sequence, ambiguous suffix or unavailable
 live evidence still makes that record partial/unknown; history gaps remain
 reported even when independent current observations are fresh.
 
-Direct identity checks are cached for at most 128 PIDs, with 4096-byte `/proc`
-stat reads, a 64 KiB mounts read, 128-byte boot/machine identity reads, and at
-most 512 cached lock stats. Resource attribution reads `/proc/locks` once, under
-1 MiB; at most 128 current holder PIDs are returned per resource. Hitting these
-bounds yields unknown/partial evidence. The separate admission query has its
-own smaller kernel bound above. No flock is acquired, no ownership file is
-rewritten, no lock/state directory is created, and no reconciliation is persisted.
+Direct identity checks are cached for at most 128 PIDs, with at most 512 cached
+lock stats and 128 current holder PIDs returned per resource. On Linux, probes
+use 4096-byte `/proc` stat reads, a 64 KiB mounts read, 128-byte boot/machine
+identity reads, and one `/proc/locks` read under 1 MiB. On Darwin, `sysctl`
+supplies the boot-session UUID, `ioreg` supplies the hashed machine UUID, and
+`ps` supplies PID/start-time identity. An absent PID is dead only after a
+successful current-process visibility probe on the same boot. Resource
+attribution uses `lsof` lock fields per resource; missing lock fields remain
+unknown, never proof that a lock is free. Each Darwin command has a two-second
+timeout; its captured output has no byte cap. Hitting identity/lock/holder
+bounds or unavailable probes yields unknown/partial evidence. The separate
+admission query has its own smaller kernel bound above. No flock is acquired,
+no ownership file is rewritten, no lock/state directory is created, and no
+reconciliation is persisted.
 Without host identity, configured descriptors are omitted with an error rather
 than assigning unrelated hosts a fabricated shared identity.
 
@@ -2654,12 +2711,16 @@ unsupported for lifecycle coverage, not an empty valid lifecycle history.
 Known legacy rows cannot hide a lifecycle exit, so they do not independently
 invalidate supported open scopes.
 
-Other source/scope pairs are `proc`/`identity` (`boot_unavailable`,
+Linux source/scope pairs are `proc`/`identity` (`boot_unavailable`,
 `namespace_unavailable`, `process_limit`, `process_unavailable`,
-`absence_unavailable`), `proc`/`executions` (`descendants_not_scanned`),
-`proc/locks`/`resources` (`locks_unavailable`, `holder_limit`),
+`absence_unavailable`) and
+`proc/locks`/`resources` (`locks_unavailable`, `holder_limit`).
+Darwin uses `process`/`identity` (`boot_unavailable`, `process_limit`,
+`process_unavailable`) and `lsof`/`resources` (`locks_unavailable`, `holder_limit`)
+instead of the Linux identity and lock sources. Shared pairs are
+`proc`/`executions` (`descendants_not_scanned`),
 `filesystem`/`resources` (`lock_limit`, `not_regular`, `lock_unavailable`,
-`canonical_path_unavailable`), and `configuration`/`resources`
+`canonical_path_unavailable`) and `configuration`/`resources`
 (`lock_limit`, `invalid_scope`, `host_identity_unavailable`). A lock file that
 does not exist (not yet created, or unlinked by ticket cleanup) is not an error:
 its resource reports state `unknown` with no `lock_unavailable`.

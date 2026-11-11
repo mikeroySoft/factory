@@ -8,24 +8,44 @@ after a complete trial even when mutants survive. ``--blocking`` exits nonzero f
 completed survivors on changed lines, except exact reviewed ``--equivalents`` matches.
 Invalid or stale equivalent entries, tool and baseline failures always exit nonzero.
 Mutants are sampled deterministically (sorted, then shuffled with a fixed
-seed, capped at CAP). One absolute deadline, `[gate].timeout` - 60,
-covers preparation, the baseline and every mutant: each run is bounded by the time
+seed, capped at CAP). One absolute deadline, `[gate].timeout` - 60 (or, with an
+explicit ``--duration SECONDS``, exactly SECONDS - 60, unclamped), covers preparation, the baseline and every mutant: each run is bounded by the time
 left, and mutants not started or cut short are reported as incomplete.
 
 Each worker runs in its own copy of the tree because cosmic-ray mutates files on disk;
 the worktree itself is never touched.
+
+When the gate sets ``FACTORY_MUTATION_PROOF`` (repositories that opted in with
+``proof = "mutation-v1"``), the runner writes one JSON completion record there just
+before exiting: mode, status, reason, counts, the exit code it returns and the scope
+(resolved base, merge-base, head, fingerprint) of the lines it mutated. The gate also sets
+``FACTORY_MUTATION_PROOF_BASE`` to its caller's resolved base commit, which then replaces
+``origin/main``. Both variables are removed from this process's environment first, so
+test descendants cannot see them. Applicability is factory.mutation_scope, shared with the
+gate. A proof run also requires every tracked file to hold the pinned head's bytes: in the
+checkout before and after enumeration, in each prepared copy before use, and in the
+checkout and every copy again after the baseline and before any mutation (with base, head
+and scope re-resolved). Any difference is an error record; nothing is mutated. Each
+prepared copy also keeps only the paths the pinned head lists: right after it is copied,
+and again (every copy) after the baseline and before any mutation, any other path
+(untracked, ignored or staged-new in the checkout, or baseline output) is deleted from the
+copy, never from the checkout, and the run continues. Runs
+without a record path keep the historical changed_lines() and never import the helper.
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
+import errno
 import json
+import math
 import os
 import random
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -33,12 +53,42 @@ import time
 import tomllib
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 CAP = 200
+BASE = "origin/main"  # without a gate-named base (report-only and unopted runs)
 SEED = 197
+RESERVE = 60  # seconds kept for cleanup after the one deadline
 WORKERS = min(16, os.cpu_count() or 1)
 COPY_IGNORE = shutil.ignore_patterns(".git", ".venv", ".factory", "__pycache__", ".ruff_cache")
+PROOF_ENV = "FACTORY_MUTATION_PROOF"
+PROOF_BASE_ENV = "FACTORY_MUTATION_PROOF_BASE"  # the gate's resolved caller base commit
+PROOF_PROTOCOL = "factory-mutation-proof"
+PROOF_VERSION = 1
+PROOF_COUNTS = ("planned", "ran", "killed", "survived", "timeouts", "blocking_survivors",
+                "not_started", "cut_short", "broken")
+
+
+def proof_record(*, mode: str, status: str, reason: str, exit_code: int,
+                 files: list[str] | tuple[str, ...] = (), scope: dict | None = None,
+                 **counts: int) -> dict:
+    """The runner's completion record; the gate re-checks every field against its exit
+    and `scope` against its own factory.mutation_scope computation."""
+    unknown = counts.keys() - set(PROOF_COUNTS)
+    if unknown:
+        raise TypeError(f"unknown proof counts: {sorted(unknown)}")
+    return {
+        "protocol": PROOF_PROTOCOL, "version": PROOF_VERSION, "mode": mode, "status": status,
+        "reason": reason, "exit": exit_code, "files": sorted(files), "scope": scope,
+        "counts": {name: int(counts.get(name, 0)) for name in PROOF_COUNTS},
+    }
+
+
+def write_proof(path: str, record: dict) -> None:
+    target = Path(path)
+    partial = target.with_name(target.name + ".partial")
+    partial.write_text(json.dumps(record, sort_keys=True))
+    os.replace(partial, target)  # never a half-written record at `path`
 
 
 def changed_lines() -> dict[str, set[int]]:
@@ -58,10 +108,120 @@ def changed_lines() -> dict[str, set[int]]:
     return {path: changed for path, changed in lines.items() if changed}
 
 
+def scope_lines(base: str, computed: list) -> dict[str, set[int]]:
+    """Proof runs only: changed_lines' rule as the shared, commit-resolved
+    factory.mutation_scope Scope (also the gate's), appended to `computed` so the record
+    describes exactly what was mutated. Imported here: unopted runs never need it."""
+    from factory import mutation_scope
+
+    scope = mutation_scope.compute(base)
+    computed.append(scope)
+    return {path: set(lines) for path, _, lines in scope.files}
+
+
+def pinned_drift(scope, *directories: Path) -> list[str]:
+    """Proof runs only: `<directory>: <path>` for each path tracked in the pinned head
+    whose bytes under a directory differ from that commit's; [] when all match."""
+    from factory import mutation_scope
+
+    return [f"{directory}: {path}" for directory in directories
+            for path in mutation_scope.tracked_mismatches(scope.head, directory)]
+
+
+def exclude_non_head(scope, *copies: Path) -> list[str]:
+    """Proof runs only: delete from each disposable prepared copy every path the pinned
+    head's tree does not list (the copy's own top-level .git excepted); returns
+    `<copy>: <path>` for each removed path. The checkout is never touched.
+
+    Read-only modes inside a copy do not stop it: a removed directory gets owner rwx before
+    its entries go; a retained directory gets owner rwx only while its entries go, then its
+    own mode back. Symlinks are unlinked, never followed or chmodded. A removal that still
+    fails raises (no completion record: the gate fails closed).
+
+    Before anything is deleted or chmodded, every copy must be a real directory (lstat: not
+    a symlink) owned by this process's effective uid, and no parent directory of a head
+    path inside it may be a symlink (mutation_scope.linked_ancestors: lstat, shallow-first,
+    the shallowest link is named and left untouched); otherwise an OSError is raised. Any
+    directory the walk cannot list (the copy itself or a retained one) raises that error,
+    and so does a walk that does not start at the copy itself. This is a type/owner check
+    of the starting path only, not a guarantee against concurrent replacement."""
+    from factory import mutation_scope
+
+    def check_copy(copy: Path) -> None:
+        info = os.lstat(copy)  # a missing copy raises FileNotFoundError here
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise NotADirectoryError(errno.ENOTDIR, "prepared copy is not a real directory", os.fspath(copy))
+        if info.st_uid != os.geteuid():
+            raise PermissionError(errno.EPERM, "prepared copy is not owned by this process", os.fspath(copy))
+
+    def unlistable(error: OSError) -> None:
+        raise error  # never skip a directory the walk could not list
+
+    def remove(path: str) -> None:
+        if not stat.S_ISDIR(os.lstat(path).st_mode):  # a file or a symlink (not followed)
+            os.unlink(path)
+            return
+        os.chmod(path, stat.S_IRWXU)  # removed next: its mode needs no restoring
+        with os.scandir(path) as entries:
+            children = [entry.path for entry in entries]
+        for child in children:
+            remove(child)
+        os.rmdir(path)
+
+    tracked = mutation_scope.tracked_paths(scope.head)
+    keep = tracked | {parent.as_posix() for path in tracked for parent in PurePosixPath(path).parents}
+    removed = []
+    for copy in copies:
+        check_copy(copy)
+        linked = mutation_scope.linked_ancestors(tracked, copy)  # lstat only, shallow-first
+        if linked:
+            raise NotADirectoryError(errno.ENOTDIR, "retained head ancestor directory is a symlink",
+                                     os.fspath(Path(copy) / linked[0]))
+    for copy in copies:
+        top = os.fspath(copy)
+        visited = False
+        for current, dirs, files in os.walk(copy, onerror=unlistable):
+            if not visited:
+                if current != top:
+                    raise NotADirectoryError(errno.ENOTDIR, "traversal did not start at the prepared copy", top)
+                visited = True
+            here = Path(current).relative_to(copy)
+            mode = None  # `current`'s own mode, set once it is made owner-writable
+            try:
+                for name in [*dirs, *files]:
+                    rel = (here / name).as_posix()
+                    if rel in keep or (rel == ".git" and here == Path(".")):
+                        continue
+                    if mode is None:
+                        mode = stat.S_IMODE(os.lstat(current).st_mode)
+                        os.chmod(current, mode | stat.S_IRWXU)
+                    remove(os.path.join(current, name))
+                    removed.append(f"{copy}: {rel}")
+            finally:
+                if mode is not None:
+                    os.chmod(current, mode)  # a retained directory keeps its own mode
+            dirs[:] = [d for d in dirs if (here / d).as_posix() in keep]  # never into .git
+        if not visited:
+            raise NotADirectoryError(errno.ENOTDIR, "traversal never visited the prepared copy", top)
+    return removed
+
+
 def on_changed_line(mutation, lines: dict[str, set[int]]) -> bool:
     return not lines[str(mutation.module_path)].isdisjoint(
         range(mutation.start_pos[0], mutation.end_pos[0] + 1),
     )
+
+
+def total_duration(value: str) -> float:
+    """`--duration SECONDS`: an explicit total, finite and longer than the cleanup RESERVE."""
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {value!r}") from None
+    if not math.isfinite(seconds) or seconds <= RESERVE:
+        raise argparse.ArgumentTypeError(
+            f"must be finite and greater than the {RESERVE}s cleanup reserve: {value!r}")
+    return seconds
 
 
 def gate_timeout() -> int:
@@ -210,33 +370,103 @@ def stale_equivalents(reviewed: dict[tuple, dict], disproven: set[tuple]) -> boo
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Popped before any work: baseline, mutant and --test-module children inherit
+    # os.environ, and must never learn where the completion record goes or its base.
+    proof_path = os.environ.pop(PROOF_ENV, None)
+    proof_base = os.environ.pop(PROOF_BASE_ENV, None)
+    outcome: dict = {}
+    code = _main(argv, outcome, proof_base if proof_path else BASE, proof=bool(proof_path))
+    if proof_path and "status" in outcome:
+        write_proof(proof_path, proof_record(exit_code=code, **outcome))
+    return code
+
+
+def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: bool = False) -> int:
+    """Baseline `main`; `outcome` receives the completion status of each return path.
+
+    A path that raises or returns without a status writes no record (the gate fails closed).
+    `base` is origin/main without a record path; with one, only the gate's resolved caller
+    base commit, and None (not named) is an error record."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--blocking", action="store_true")
     parser.add_argument("--equivalents", metavar="FILE", help="reviewed equivalent-mutants JSON file")
     parser.add_argument("--test-module", default=None)
+    parser.add_argument("--duration", type=total_duration, default=None, metavar="SECONDS",
+                        help="explicit total: the deadline is SECONDS - RESERVE after the anchor, "
+                        "instead of max(1, [gate].timeout - RESERVE)")
     args = parser.parse_args(argv)
     if args.test_module is not None:
         return run_tests(args.test_module)
+    outcome["mode"] = "blocking" if args.blocking else "report-only"
+    if base is None:
+        print("mutation proof requested without a base commit")
+        outcome.update(status="error", reason="missing-base")
+        return 1
     try:
         reviewed = load_equivalents(args.equivalents)
     except (OSError, ValueError, TypeError) as exc:
         print(f"invalid equivalents: {exc}")
+        outcome.update(status="error", reason="invalid-equivalents")
         return 1
     if stale_equivalents(reviewed, set()):
+        outcome.update(status="error", reason="stale-equivalents")
         return 1
-    lines = changed_lines()
+    computed: list = []
+    lines = scope_lines(base, computed) if proof else changed_lines()
+    # The exact scope the lines below came from (absent only when scope_lines is replaced).
+    scope = computed[0] if computed else None
+    outcome["scope"] = scope.receipt() if scope else None
     if not lines:
         print("no mutable files")
+        # The shared rule found no added/modified factory/*.py destination lines.
+        outcome.update(status="skip", reason="no-applicable-files")
         return 0
+    outcome["files"] = sorted(lines)
+
+    def drifted(reason: str, *directories: Path, rescope: bool = False) -> bool:
+        """Proof runs: True (an error outcome) unless every tracked execution input under
+        `directories` is the pinned head's bytes and, with `rescope`, base/head/scope
+        still resolve to the recorded Scope."""
+        if not proof:
+            return False
+        drift = pinned_drift(scope, *directories)
+        if rescope and not drift:
+            again: list = []
+            scope_lines(base, again)
+            if again[0] != scope:
+                drift = [f"scope changed: {again[0].receipt()}"]
+        if drift:
+            print(f"tracked inputs differ from HEAD {scope.head} ({reason}): {', '.join(drift[:20])}")
+            outcome.update(status="error", reason=reason)
+        return bool(drift)
+
+    def exclude(*copies: Path) -> None:
+        """Proof runs: each prepared copy keeps only paths the pinned head lists; anything
+        else (untracked, ignored or staged-new in the checkout, or written by the baseline)
+        is removed from the copy, never from the checkout, and disclosed."""
+        if not proof:
+            return
+        removed = exclude_non_head(scope, *copies)
+        if removed:
+            print(f"{len(removed)} paths excluded from prepared copies (absent from HEAD "
+                  f"{scope.head}): {', '.join(removed[:20])}")
+
     from attrs import evolve
     from cosmic_ray.mutating import mutate_and_test
     from cosmic_ray.work_item import TestOutcome
-    deadline = time.monotonic() + max(1, gate_timeout() - 60)
+    window = max(1, gate_timeout() - RESERVE) if args.duration is None else args.duration - RESERVE
+    deadline = time.monotonic() + window
     root = Path.cwd()
     started = time.monotonic()
+    # Enumeration reads the checkout: its tracked bytes must be the pinned head's, before
+    # and after (the fingerprint names committed blobs, never worktree bytes).
+    if drifted("dirty-tracked-inputs", root):
+        return 1
     with tempfile.TemporaryDirectory(prefix="factory-mutation-") as tmp:
         scratch = Path(tmp)
         mutations, hot = sample(lines, scratch)
+        if drifted("dirty-tracked-inputs", root):
+            return 1
         if args.blocking:
             mutations = mutations[:hot]
 
@@ -244,13 +474,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"baseline suite did not finish before the {deadline - started:.0f}s deadline")
             print(f"incomplete: {len(mutations)} mutants not started and 0 cut short by the "
                   f"{deadline - started:.0f}s deadline")
+            outcome.update(status="incomplete", reason="baseline-deadline",
+                           planned=len(mutations), not_started=len(mutations))
             return 1
 
         workers = max(1, min(WORKERS, len(mutations)))
         copies = [scratch / f"copy{i}" for i in range(workers)]
         for copy in copies:
             # Isolate Git metadata, but overlay current files rather than checking out HEAD:
-            # baselines must include uncommitted edits/deletions and untracked files too.
+            # unopted baselines include uncommitted edits/deletions and untracked files too
+            # (proof runs then keep only the pinned head's paths, below).
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return baseline_timed_out()
@@ -259,6 +492,11 @@ def main(argv: list[str] | None = None) -> int:
                 check=True, timeout=remaining,
             )
             shutil.copytree(root, copy, ignore=COPY_IGNORE, dirs_exist_ok=True)
+            # Each prepared child, before any use: only the pinned head's paths, holding
+            # exactly its tracked bytes.
+            exclude(copy)
+            if drifted("prepared-copy-mismatch", copy):
+                return 1
         print(f"files: {', '.join(lines)}")
         print(f"mutants: {len(mutations)} sampled (seed {SEED}, cap {CAP}), "
               f"{min(hot, len(mutations))} on changed lines first, {workers} workers")
@@ -282,6 +520,13 @@ def main(argv: list[str] | None = None) -> int:
         baseline = baseline_finished - baseline_started
         if proc.returncode:
             print(f"baseline suite failed:\n{proc.stdout[-3000:]}")
+            outcome.update(status="error", reason="baseline-failed", planned=len(mutations))
+            return 1
+        # Again after the baseline and before any mutation: every copy back to the pinned
+        # head's paths, no tracked input of the checkout or of any copy changed, and
+        # base/head/scope still resolve the same.
+        exclude(*copies)
+        if drifted("baseline-changed-inputs", root, *copies, rescope=True):
             return 1
         remaining = deadline - baseline_finished
         timeout = min(max(60.0, 3 * baseline), remaining / 4)
@@ -351,6 +596,24 @@ def main(argv: list[str] | None = None) -> int:
             if key[1] in lines.get(key[0], ()) and key not in accepted
         )
     stale = stale_equivalents(reviewed, disproven)
+    killed = sum(r.test_outcome == TestOutcome.KILLED for _, r in results)
+    tally = {
+        "planned": len(mutations), "ran": len(results), "killed": killed,
+        "survived": len(survivors), "timeouts": timeouts,
+        "blocking_survivors": len(hot_survivors), "not_started": len(queue),
+        "cut_short": len(cut), "broken": len(results) - killed - len(survivors),
+    }
+    # Timeout-scored mutants stay "killed" here exactly as in the summary line above.
+    status, reason = (
+        ("error", "tool-broken") if tally["broken"]
+        else ("incomplete", "deadline") if queue or cut
+        else ("error", "stale-equivalents") if stale
+        else ("complete", "blocking-survivors" if args.blocking and hot_survivors
+              # Applicable lines exist but enumerated no candidate: complete, never a skip.
+              else "no-mutation-candidates" if not mutations
+              else "no-blocking-survivors")
+    )
+    outcome.update(status=status, reason=reason, **tally)
     # cosmic-ray swallows its own failures (a mutation it could not write, a test command it
     # could not launch) into INCOMPETENT results. NO_TEST also leaves the sampled
     # mutation untested; neither is evidence of a killed or surviving mutant.

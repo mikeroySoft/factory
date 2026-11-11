@@ -3,7 +3,8 @@
 At most five local commands (two git, three systemctl), each limited to 0.5s
 and 64 KiB of stdout. Configuration reads are limited to 256 KiB per file;
 admission observation examines at most 1024 directory entries and 256 KiB of
-kernel locks. No probes acquire locks, create paths, or read logs.
+kernel locks. Darwin has no passive flock table, so a numeric ticket lock is
+not a count. No probes acquire locks, create paths, or read logs.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
-from . import config
+from . import config, platform_identity
 from .config import Config, ConfigError
 
 COMMAND_TIMEOUT = 0.5
@@ -170,7 +171,12 @@ def load(start: Path | None = None) -> Config:
 
 
 def _capacity(cfg: Config) -> int:
-    """Count actual numeric ticket FLOCKs, never lifecycle stage counts."""
+    """Count numeric ticket FLOCKs from the Linux kernel table.
+
+    A completed directory listing with no numeric lock file is zero. Darwin has
+    no passive table, so any numeric ticket lock is unavailable, never a count
+    and never zero. The journal's older reading is not consulted.
+    """
     inodes = set()
     try:
         with os.scandir(cfg.factory / "locks") as entries:
@@ -198,6 +204,8 @@ def _capacity(cfg: Config) -> int:
         raise _Unavailable("unreadable") from None
     if not inodes:
         return 0
+    if platform_identity.darwin():
+        raise _Unavailable("locks_unavailable")
 
     held = set()
     try:
@@ -220,7 +228,7 @@ def _capacity(cfg: Config) -> int:
 
 
 def dispatcher(cfg: Config, executions: list[dict], history: dict) -> tuple[dict, list[dict]]:
-    """Observe units and admission slots without running the legacy dashboard."""
+    """Observe units and admission slots. ``history`` is not a capacity source."""
     errors = []
 
     def error(source: str, scope: str, code: str) -> None:

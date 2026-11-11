@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import urlencode
 
-from factory import briefing, config, evidence, lifecycle
+from factory import briefing, config, evidence, lifecycle, platform_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = "example/evidence"
@@ -90,7 +90,7 @@ class EvidenceCliTest(unittest.TestCase):
         self.addCleanup(context.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.directory = Path(self.temp.name)
+        self.directory = Path(self.temp.name).resolve()
         self.root = self.directory / "repo"
         self.root.mkdir()
         self.tools = self.directory / "bin"
@@ -261,6 +261,19 @@ class EvidenceCliTest(unittest.TestCase):
 
     def error_codes(self, data):
         return {row["code"] for row in data["errors"]} | ({data["error"]["code"]} if "error" in data else set())
+
+    def assert_darwin_lock_gap_only(self, data):
+        """Darwin has no non-spawning lock-holder source (platform_identity.lock_holders), so
+        complete local state is partial with exactly that gap; locks stay unknown, never free."""
+        gap = [{"source": "lsof", "scope": "resources", "code": "locks_unavailable"}]
+        self.assertEqual(data["errors"], gap)
+        self.assertEqual(data["error"]["code"], "partial_collection")
+        self.assertEqual(data["coverage"]["status"], "partial")
+        runtime = next(json.loads(row["text"]) for row in data["sources"]
+                       if row["label"] == "Local runtime observation")
+        self.assertEqual(runtime["errors"], gap)
+        self.assertEqual([row["evidence"] for row in runtime["resources"]],
+                         [{"lock_state": "unknown", "attribution": "unavailable", "holder_pids": None}] * 2)
 
     def count_diagnostic(self, data, *codes):
         errors = [error for error in data["errors"] if error["scope"] == "attention_count"]
@@ -707,12 +720,17 @@ class EvidenceCliTest(unittest.TestCase):
         self.journal.touch()
         (self.journal.parent / "locks/merge.lock").touch()
         (self.root / "gpu.lock").touch()
-        observed = self.invoke("observe")
+        # Linux reads /proc/locks passively; on Darwin lock attribution is the only gap.
+        code = 1 if platform_identity.darwin() else 0
+        observed = self.invoke("observe", code=code)
         self.assertEqual(observed["attention_count"], 1)
         self.assertEqual(observed["cases"][0]["updated_at"], AT)
-        inspected = self.invoke("inspect", number=7)
+        inspected = self.invoke("inspect", code=code, number=7)
         self.assertEqual(inspected["case"], observed["cases"][0])
         self.assertIn(self.issue["body"], [row["text"] for row in inspected["sources"]])
+        if code:
+            self.assert_darwin_lock_gap_only(observed)
+            self.assert_darwin_lock_gap_only(inspected)
 
     def test_unavailable_github_is_unknown_attention_not_empty_success(self):
         self.responses[PREFIX + "issues"] = {"exit": 1, "stderr": "PRIVATE_TOKEN denied"}

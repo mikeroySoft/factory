@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, config, lifecycle
+from factory import __version__, config, lifecycle, platform_identity
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -360,6 +360,22 @@ def _listener_conflicts(local: str, target: str) -> bool:
     return listener.is_unspecified or requested.is_unspecified or listener == requested
 
 
+def _wildcard_held(port: int) -> bool:
+    """Whether a wildcard listener covers `port`; raises OSError when it cannot tell."""
+    for family, address in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6:
+                probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            try:
+                probe.bind((address, port))
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE:
+                    raise
+                return True
+    return False
+
+
 def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[bool, str]:
     unit = f"{cfg.unit}-dashboard.service"
     try:
@@ -372,11 +388,19 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
         try:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(target)
-            collision = False
+            # BSD SO_REUSEADDR lets this specific bind succeed beside a listening
+            # wildcard (`0.0.0.0`, dual-stack `::`) that still serves the address.
+            collision = platform_identity.darwin() and _wildcard_held(port)
         except OSError as exc:
             if exc.errno != errno.EADDRINUSE:
                 return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
             collision = True
+
+        # Darwin has no `ss`. There, the target bind plus both wildcard probes
+        # succeeding is the positive evidence that nothing serves host:port.
+        # (A `0.0.0.0` host collides with its own held probe and stays closed.)
+        if not collision and platform_identity.darwin():
+            return True, f"available on {host}"
 
         # Keep a free probe held through `ss`; the later install-to-service bind
         # remains inherently racy. A collision that vanishes here fails closed.
@@ -842,10 +866,16 @@ def interpreter_probe(cfg: config.Config) -> tuple[bool, str]:
         if not origin:
             continue
         # Check both spellings: resolving alone hides lexical checkout imports,
-        # while lexical checks alone miss symlinks back into the checkout.
-        for resolve in (False, True):
+        # while lexical checks alone miss symlinks back into the checkout. A
+        # directory alias in the origin's spelling (PYTHONPATH, __path__, /var on
+        # Darwin) must not hide a symlinked checkout file, so also resolve each
+        # directory prefix while keeping the rest of the origin lexical.
+        lexical = Path(os.path.abspath(origin))
+        spellings = [(lexical, False), (Path(origin).resolve(), True)] + [
+            (parent.resolve() / lexical.relative_to(parent), True) for parent in lexical.parents
+        ]
+        for loaded, resolve in spellings:
             root = cfg.root.resolve() if resolve else Path(os.path.abspath(cfg.root))
-            loaded = Path(origin).resolve() if resolve else Path(os.path.abspath(origin))
             package_roots = [
                 path.resolve() if resolve else Path(os.path.abspath(path)) for path in installed
             ]
