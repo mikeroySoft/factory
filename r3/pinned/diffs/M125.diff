@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -129,5 +129,5 @@
+         available = {"bytes": stats.f_bavail * stats.f_frsize, "inodes": stats.f_favail}
+         for resource, minimum in (("bytes", MIN_FREE_BYTES), ("inodes", MIN_FREE_INODES)):
+-            if resource == "inodes" and stats.f_files == 0:
++            if resource > "inodes" and stats.f_files == 0:
+                 continue  # Filesystems without an inode limit report zero total inodes.
+             if available[resource] < minimum:

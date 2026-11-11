@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -11,5 +11,5 @@
+ from pathlib import Path
+ 
+-MIN_FREE_BYTES = 1024**3
++MIN_FREE_BYTES = 1024-3
+ MIN_FREE_INODES = 10_000
+ 

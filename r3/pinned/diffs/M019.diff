@@ -1,0 +1,9 @@
+--- a/factory/runner.py
++++ b/factory/runner.py
+@@ -95,5 +95,5 @@
+                 os.close(descriptor)
+         except OSError:
+-            continue  # Held owner, concurrent reap, or unavailable directory.
++            break  # Held owner, concurrent reap, or unavailable directory.
+ 
+ 

@@ -17,12 +17,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        id: [M105, M141, M169, M171, M131]
+        id: [M026, M019, M053, M125, M135]
     env:
       MUTANT_ID: ${{ matrix.id }}
-      HEAD_SHA: 99542e6ca43d6177381c51199735830cf3f6d477
+      HEAD_SHA: 133a496b9623ea47fb0a3b34d8a5354c860b26ec
       BASE_SHA: 19457e840460e0163e1172f08580538c4dcae767
-      WRAPPER_SHA256: 96ac40203d764075e77e52cb792117c3a6c2c682114acc5421a8a59f761e3c61
+      WRAPPER_SHA256: 916eb2e1d845675bb1d6f887d2d13bb75f0c4e0b53569d982943a6c209eb9999
       SELECTION_STAMP: 3dd1d72ed28e7da89781b5c47c1f2a4ee8db0c5e4aa77bfc60ab4baafed6a847
     steps:
       - name: Checkout pinned proof inputs (this branch)
@@ -33,7 +33,7 @@ jobs:
       - name: Checkout factory at the pinned head
         uses: actions/checkout@v4
         with:
-          ref: 99542e6ca43d6177381c51199735830cf3f6d477
+          ref: 133a496b9623ea47fb0a3b34d8a5354c860b26ec
           fetch-depth: 0
           path: clone
           persist-credentials: false

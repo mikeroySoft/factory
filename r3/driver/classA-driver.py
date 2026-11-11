@@ -5,7 +5,7 @@ No credentials: it imports nothing but the standard library and reads no token, 
 
 usage: classA-driver.py ID | CONTROL
   ID       one of the 12 class (a) mutant IDs: the pinned <ID>.mutated.py is written over the target file in a scratch
-           clone of the checkout at 99542e6c, after checking the tree sha, the pinned bytes, and that the regenerated
+           clone of the checkout at 133a496b, after checking the tree sha, the pinned bytes, and that the regenerated
            diff equals the pinned <ID>.diff byte for byte.
   CONTROL  the same run with NO mutation (the unmutated baseline).
 Runs `python -B -m unittest discover -s tests` through a bootstrap that first puts cosmic_ray.exceptions.CosmicRayTestingException in builtins (the full suite, no --tests, no --failfast so every failing test is
@@ -31,8 +31,8 @@ BASE_DIR = pathlib.Path(os.environ["R3_BASE"])
 CHECKOUT = pathlib.Path(os.environ["R3_CHECKOUT"])
 EXPECT = pathlib.Path(os.environ["R3_EXPECT"])
 OUT = pathlib.Path(os.environ.get("R3_DRIVER_OUT", str(BASE_DIR / "driver-out")))
-HEAD = "99542e6ca43d6177381c51199735830cf3f6d477"
-TREE = "310c27b1e89e0fbc4b4b508a58ce41d0fa924613"
+HEAD = "133a496b9623ea47fb0a3b34d8a5354c860b26ec"
+TREE = "d15b4a81e67a3ce540d3b03b3ed2cc274bdb2707"
 SELECTED_SHA = "3dd1d72ed28e7da89781b5c47c1f2a4ee8db0c5e4aa77bfc60ab4baafed6a847"
 FORBIDDEN = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY", "UV_NO_SYNC", "VIRTUAL_ENV",
              "FACTORY_MUTATION_PROOF", "FACTORY_MUTATION_PROOF_BASE", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN")
