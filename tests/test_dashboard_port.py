@@ -33,10 +33,18 @@ class DashboardPortTest(unittest.TestCase):
         self.host_path = self.root / "config.toml"
 
     def listener(self, host: str = "127.0.0.1") -> socket.socket:
-        listener = socket.socket()
-        listener.bind((host, 0))
-        listener.listen()
-        self.addCleanup(listener.close)
+        ipv6 = host == "::1"
+        try:
+            listener = socket.socket(socket.AF_INET6 if ipv6 else socket.AF_INET, socket.SOCK_STREAM)
+            self.addCleanup(listener.close)
+            if ipv6:
+                listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            listener.bind((host, 0))
+            listener.listen()
+        except OSError as exc:
+            if ipv6:
+                self.fail(f"IPv6 loopback ::1 unavailable: {exc}")
+            raise
         return listener
 
     def loopback_kernel(self, held: set[tuple[str, int]]) -> list[tuple[str, int]]:
@@ -216,17 +224,9 @@ class DashboardPortTest(unittest.TestCase):
         self.assertIn("ss", row["detail"])
 
     def test_doctor_ignores_a_listener_on_an_unrelated_address(self) -> None:
-        if platform_identity.darwin():
-            self.assert_foreign_loopback_unavailable()
-            # SIMULATION: no 127.0.0.2 alias exists here, so the port is free and the
-            # scripted `ss` row below is never consulted (native binds decide on Darwin).
-            probe = self.listener()
-            self.cfg.dashboard_port = probe.getsockname()[1]
-            probe.close()
-        else:
-            listener = self.listener("127.0.0.2")
-            self.cfg.dashboard_port = listener.getsockname()[1]
-        ss = subprocess.CompletedProcess([], 0, self.ss_line("127.0.0.2", self.cfg.dashboard_port, "foreign", 4321), "")
+        listener = self.listener("::1")
+        self.cfg.dashboard_port = listener.getsockname()[1]
+        ss = subprocess.CompletedProcess([], 0, self.ss_line("::1", self.cfg.dashboard_port, "foreign", 4321), "")
         code, output, _ = self.doctor(ss)
         row = next(row for row in json.loads(output)["rows"] if row["label"] == f"dashboard port {self.cfg.dashboard_port}")
         self.assertEqual((code, row["status"]), (0, "PASS"))
@@ -271,27 +271,19 @@ class DashboardPortTest(unittest.TestCase):
         self.assertIn("foreign", row["detail"])
 
     def test_install_refuses_foreign_holder_before_writing_or_mutating_systemd(self) -> None:
-        if platform_identity.darwin():
-            self.assert_foreign_loopback_unavailable()
-            probe = self.listener()
-            self.cfg.dashboard_port = probe.getsockname()[1]
-            probe.close()
-            reason = f"cannot be bound: {os.strerror(errno.EADDRNOTAVAIL)}"
-        else:
-            listener = self.listener("127.0.0.2")
-            self.cfg.dashboard_port = listener.getsockname()[1]
-            reason = "is in use by foreign-server"
+        listener = self.listener("127.0.0.1")
+        self.cfg.dashboard_port = listener.getsockname()[1]
         units = self.root / "units"
         units.mkdir()
         sentinel = units / "factory-widgets.service"
         sentinel.write_text("unchanged\n")
         before = {path.name: path.read_text() for path in units.iterdir()}
-        ss = subprocess.CompletedProcess([], 0, self.ss_line("127.0.0.2", self.cfg.dashboard_port, "foreign-server", 4321), "")
-        code, _, stderr, calls, _ = self.install(["--dashboard", "--host", "127.0.0.2"], ss)
+        ss = subprocess.CompletedProcess([], 0, self.ss_line("127.0.0.1", self.cfg.dashboard_port, "foreign-server", 4321), "")
+        code, _, stderr, calls, _ = self.install(["--dashboard", "--host", "127.0.0.1"], ss)
         self.assertEqual(code, 1)
         self.assertEqual(
             stderr,
-            f"factory dashboard: port {self.cfg.dashboard_port} on 127.0.0.2 {reason}; "
+            f"factory dashboard: port {self.cfg.dashboard_port} on 127.0.0.1 is in use by foreign-server; "
             f'set [repo."acme/widgets".dashboard] port in {self.host_path} '
             "(each factory needs its own port)\n",
         )
