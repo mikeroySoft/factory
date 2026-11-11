@@ -36,7 +36,7 @@ PATHSPEC = "factory/*.py"
 DEFAULT_BASE = "origin/main"
 _OID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _INDEX = re.compile(r"index [0-9a-f]+\.\.([0-9a-f]+)(?: \d+)?")
-_HUNK = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 class ScopeError(Exception):
@@ -96,7 +96,8 @@ def resolve(ref: str, cwd: Path | None = None) -> str:
 def diff_command(*revs: str) -> list[str]:
     """The rule's one `git diff` invocation over `revs` (`A...B`, or `<merge-base> <head>`)."""
     return ["git", "diff", "--unified=0", "--no-renames", "--diff-filter=AM", "--full-index",
-            "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", *revs, "--", PATHSPEC]
+            "--no-color", "--text", "--no-textconv", "--no-ext-diff",
+            "--src-prefix=a/", "--dst-prefix=b/", *revs, "--", PATHSPEC]
 
 
 def parse(diff: str) -> tuple[tuple[str, str | None, tuple[int, ...]], ...]:
@@ -106,7 +107,23 @@ def parse(diff: str) -> tuple[tuple[str, str | None, tuple[int, ...]], ...]:
     it is None only for input without one (never from `compute`, whose git output has it)."""
     files: dict[str, tuple[str | None, set[int]]] = {}
     path = blob = None
+    old_remaining = new_remaining = 0
     for line in diff.splitlines():
+        if old_remaining or new_remaining:
+            if line.startswith("+"):
+                new_remaining -= 1
+            elif line.startswith("-"):
+                old_remaining -= 1
+            elif line.startswith(" "):
+                old_remaining -= 1
+                new_remaining -= 1
+            elif line.startswith("\\"):
+                continue
+            else:
+                raise ScopeError(f"unparseable hunk line: {line!r}")
+            if old_remaining < 0 or new_remaining < 0:
+                raise ScopeError(f"unparseable hunk line: {line!r}")
+            continue
         if line.startswith("diff --git "):
             path = blob = None
         elif match := _INDEX.fullmatch(line):
@@ -120,8 +137,9 @@ def parse(diff: str) -> tuple[tuple[str, str | None, tuple[int, ...]], ...]:
             match = _HUNK.match(line)
             if path is None or match is None:
                 raise ScopeError(f"unparseable hunk: {line!r}")
-            start, count = int(match.group(1)), int(match.group(2) or 1)
-            files[path][1].update(range(start, start + count))
+            old_remaining = int(match.group(1) or 1)
+            start, new_remaining = int(match.group(2)), int(match.group(3) or 1)
+            files[path][1].update(range(start, start + new_remaining))
     return tuple((p, b, tuple(sorted(lines))) for p, (b, lines) in sorted(files.items()) if lines)
 
 

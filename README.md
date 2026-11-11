@@ -1274,6 +1274,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    current working files overlaid, so Git-dependent tests run without skips.
    Baseline and mutant subprocesses disable bytecode writes, preventing cached
    baseline code from masking same-size mutations in reused scratch copies.
+   On `proof = "mutation-v1"` checks, the gate recomputes committed scope from raw
+   textual diffs (no text conversion or external diff driver); source inside a hunk
+   cannot become a file header. A `scripts/mutation.py` producer and its local
+   `factory` imports execute from the resolved trusted base in gate-owned scratch,
+   under isolated Python, while mutation targets remain the reviewed working tree.
+   Missing trusted producer code fails closed. Completion records must be bounded
+   regular files: symlinks, FIFOs and devices are invalid proof, never blocking reads.
+   A proof bound to a different base/head is deferred and rerun, not worker rework
+   or a failed PR gate.
    This repository's mutation command loads `mutation-equivalents.json` through
    `--equivalents FILE`. It is a JSON array; each reviewed entry has this shape:
 

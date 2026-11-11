@@ -15,6 +15,7 @@ import math
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -224,13 +225,40 @@ def read_mutation_proof(
 
 def _read_proof_file(path: Path) -> bytes | None:
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return None
     except OSError as exc:
         return f"unreadable: {exc}".encode()  # parsed as malformed: fails closed
-    with os.fdopen(fd, "rb") as handle:
-        return handle.read(MUTATION_PROOF_MAX_BYTES + 1)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return b"unreadable: completion record is not a regular file"
+        return os.read(fd, MUTATION_PROOF_MAX_BYTES + 1)
+    except OSError as exc:
+        return f"unreadable: {exc}".encode()
+    finally:
+        os.close(fd)
+
+
+def _trusted_mutation_command(cmd: list[str], base: str, directory: Path) -> list[str]:
+    """Run the repository's proof producer and local imports from the trusted base.
+
+    Keep cwd at the reviewed head: it supplies mutation targets, never producer code.
+    Isolated Python excludes the checkout and inherited PYTHONPATH from imports."""
+    if "scripts/mutation.py" not in cmd:
+        return cmd
+    for name in ("scripts/mutation.py", "factory/__init__.py", "factory/mutation_scope.py"):
+        target = directory / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(mutation_scope._git(None, "show", f"{base}:{name}"))
+    launcher = directory / "launch.py"
+    launcher.write_text(
+        "import runpy, sys\n"
+        f"sys.path.insert(0, {str(directory)!r})\n"
+        f"runpy.run_path({str(directory / 'scripts/mutation.py')!r}, run_name='__main__')\n"
+    )
+    index = cmd.index("scripts/mutation.py")
+    return [*cmd[:index], "-I", str(launcher), *cmd[index + 1:]]
 
 
 def _proof_run(
@@ -249,6 +277,10 @@ def _proof_run(
                             f"{', '.join(dirty[:20])}"), None
     with tempfile.TemporaryDirectory(prefix="factory-mutation-proof-") as directory:
         path = Path(directory) / "proof.json"
+        try:
+            cmd = _trusted_mutation_command(cmd, expected.base, Path(directory))
+        except mutation_scope.ScopeError as exc:
+            return "", "FAIL", f"trusted mutation producer unavailable: {exc}", expected
         limit = {} if duration is None else {"timeout": duration}
         proc = timed(cmd, proof_path=path, proof_base=expected.base, **limit)
         data = _read_proof_file(path)

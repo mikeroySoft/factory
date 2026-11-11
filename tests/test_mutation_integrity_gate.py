@@ -69,6 +69,35 @@ class GateIntegrityTest(unittest.TestCase):
                 self.assertEqual((passed, status), (False, "FAIL"), output)
                 self.assertIn("trusted base runner", output)
 
+    def test_trusted_complete_producer_keeps_passing_for_plain_source_change(self) -> None:
+        base, _ = build_repo(self.root, {
+            "factory/example.py": "value = 0\n",
+            "factory/__init__.py": "",
+            "factory/mutation_scope.py": Path(mutation_scope.__file__).read_text(),
+            "scripts/mutation.py": FORGED_RUNNER,
+        }, {"factory/example.py": "value = 1\n"})
+        with contextlib.chdir(self.root), \
+                mock.patch.object(gate.lifecycle, "current", return_value=None):
+            passed, output, status, binding = gate.run_mutation_proof(
+                [sys.executable, "scripts/mutation.py", "--blocking"], base,
+            )
+        self.assertEqual((passed, status), (True, "PASS"), output)
+        self.assertIn(f"base={base}", binding)
+
+    def test_missing_base_producer_fails_closed_before_head_runner_executes(self) -> None:
+        base, _ = build_repo(self.root, {"factory/example.py": "value = 0\n"}, {
+            "factory/example.py": "value = 1\n",
+            "scripts/mutation.py": "print('untrusted runner executed')\n",
+        })
+        with contextlib.chdir(self.root), \
+                mock.patch.object(gate.lifecycle, "current", return_value=None):
+            passed, output, status, _ = gate.run_mutation_proof(
+                [sys.executable, "scripts/mutation.py"], base,
+            )
+        self.assertEqual((passed, status), (False, "FAIL"), output)
+        self.assertIn("trusted mutation producer unavailable", output)
+        self.assertNotIn("untrusted runner executed", output)
+
     def test_fifo_completion_fails_under_independent_watchdog(self) -> None:
         base, _ = build_repo(self.root, {"factory/example.py": "value = 0\n"},
                              {"factory/example.py": "value = 1\n"})

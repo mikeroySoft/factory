@@ -123,6 +123,32 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
                 "PASS",
             )
 
+    def test_repeatedly_stale_proof_defers_without_worker_rework(self) -> None:
+        runs: dict[str, tuple[bool, str]] = {}
+
+        def stale_gate(*_args, **_kwargs):
+            git(self.repo, "update-ref", "refs/remotes/origin/main", self.new_base)
+            return True, proof("PASS", "f" * 40, self.head)
+
+        with mock.patch.object(dispatch, "run_gate", side_effect=stale_gate) as runner:
+            verdict, _, pr_failed = dispatch.pr_gate_and_review(
+                self.repo, 7, "attempt report", self.head, runs,
+            )
+        self.assertEqual((verdict, pr_failed), (None, False))
+        self.assertEqual(runner.call_count, 2)
+        self.assertNotIn(self.head, runs)
+        self.assertEqual(self.risk_failures(), [])
+        self.assertEqual(self.review_roles, [])
+
+        with mock.patch.object(dispatch, "run_gate", return_value=(
+            True, proof("PASS", self.new_base, self.head),
+        )):
+            recovered, _, failed = dispatch.pr_gate_and_review(
+                self.repo, 7, "attempt report", self.head, runs,
+            )
+        self.assertEqual((recovered, failed), ("APPROVE", False))
+        self.assertEqual(self.review_roles, ["primary", "second"])
+
     def test_stale_cached_proof_recovers_for_same_head_and_keeps_both_reviews(self) -> None:
         git(self.repo, "update-ref", "refs/remotes/origin/main", self.new_base)
         runs = {self.head: (True, proof("PASS", self.old_base, self.head))}
