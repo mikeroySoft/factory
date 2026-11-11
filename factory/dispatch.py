@@ -3847,9 +3847,39 @@ def observe_owner_requeue(n: int, issue: dict) -> None:
         issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "assignees"])
     if issue.get("assignees") and not cfg.host_name:
         return
-    record("generation", ticket=n, cause="owner_requeue", **opened)
+    record("generation", kind="generation", ticket=n, cause="owner_requeue", **opened)
     log(f"#{n}: owner requeue opened generation {opened['generation']} ({opened['intent']}); "
         "round budgets restart")
+
+
+def _observe_owner_requeues_before_land() -> None:
+    """Refresh only unresolved escalation candidates, under their ticket locks."""
+    events = lifecycle.read_events(EVENTS)
+    tickets = dict.fromkeys(row["ticket"] for row in events
+                            if row.get("event") == "escalate" and row.get("ticket") is not None)
+    for n in tickets:
+        if generation.owner_requeue(events, n) is None:
+            continue
+        with ticket_lock(n).open("w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                continue  # another dispatcher owns the ticket; retry next pass
+            try:
+                issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels,assignees"])
+            except subprocess.CalledProcessError as exc:
+                log(f"#{n}: owner requeue refresh failed; skipping ({exc})")
+                continue
+            labels = {label["name"] for label in issue["labels"]}
+            if (issue["state"].upper() != "OPEN" or LABEL_AGENT not in labels
+                    or LABEL_HUMAN in labels or config.LABEL_INITIATIVE in labels):
+                continue
+            claims = host_claims(n) if cfg.host_name else []
+            if cfg.host_name and host_claim_hold(n, issue, claims):
+                continue
+            if issue["assignees"] and not (cfg.host_name and claims):
+                continue
+            observe_owner_requeue(n, issue)
 
 
 def _record_rework(n: int, head: str, findings: str, deferred: bool) -> None:
@@ -5527,6 +5557,8 @@ def main(argv: list[str]) -> int:
         # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
         # which GitHub cannot union-merge), and a new one opens only after landing.
         release_step(open_pr=False)
+        if not args.dry_run:
+            _observe_owner_requeues_before_land()
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)
         if yield_for_update:

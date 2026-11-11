@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, generation, lifecycle, manage
@@ -301,6 +303,10 @@ class RefreshGenerationTest(unittest.TestCase):
             return record(kind, **fields)
 
         with mock.patch.object(dispatch, "record", side_effect=push_once_claimed):
+            # Keep the claim hook; other receipts can now carry their own `kind` field.
+            dispatch.record.side_effect = lambda event, **fields: (
+                push_once_claimed(event, **fields) if event == "claimed" else record(event, **fields)
+            )
             self.process()
         self.assertEqual(self.github.head(), pushed[0])
         self.assertEqual([e["code"] for e in self.events("escalate")][1:], ["lease_refused"])
@@ -425,6 +431,260 @@ class RequeueIntentActionTest(unittest.TestCase):
         self.assertEqual(self.apply_mcp(preview)["status"], "success")
         opened = generation.owner_requeue(lifecycle.read_events(journal), 7)
         self.assertEqual((opened["intent"], opened["source"], opened["actor"]), ("fresh", "requeue_agent", "alice"))
+
+
+class RequeueReceiptContractTest(unittest.TestCase):
+    """#671: literal receipt and pre-land ordering contracts, not just fresh round counts."""
+
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.enterContext(mock.patch.dict(dispatch.__dict__))
+        self.enterContext(mock.patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        self.cfg = config.Config(Path(temp.name), "acme/widgets")
+        dispatch.configure(self.cfg)
+        self.issue = {"number": 7, "state": "OPEN", "labels": [{"name": config.LABEL_AGENT}],
+                      "assignees": []}
+        self.escalation_at = "2026-11-05T00:00:00Z"
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "at": self.escalation_at})
+
+    def test_generation_receipt_has_one_kind_and_complete_shape(self) -> None:
+        for intent in ("resume", "fresh"):
+            with self.subTest(intent=intent):
+                if intent == "fresh":
+                    lifecycle.append(dispatch.EVENTS, {**ESCALATED, "at": self.escalation_at})
+                    dispatch.record(
+                        "human-decision", ticket=7, status="success", actor="alice", proposal_id="p1",
+                        action={"name": "requeue_agent", "args": {"number": 7, "intent": intent}},
+                    )
+                with lifecycle.scope(dispatch.EVENTS, "dispatcher", dispatcher=True) as execution:
+                    dispatch.observe_owner_requeue(7, self.issue)
+                    receipt = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                               if row.get("event") == "generation"][-1]
+                    self.assertEqual(receipt, {
+                        "at": receipt["at"], "event": "generation", "kind": "generation", "ticket": 7,
+                        "cause": "owner_requeue", "generation": 1 if intent == "resume" else 2,
+                        "intent": intent, "source": "label" if intent == "resume" else "requeue_agent",
+                        "actor": None if intent == "resume" else "alice",
+                        "decision": None if intent == "resume" else "p1",
+                        "escalation_at": self.escalation_at, "execution_id": execution.execution_id,
+                        "dispatcher_run_id": execution.dispatcher_run_id,
+                    })
+                    self.assertRegex(receipt["at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+    def test_owner_reset_is_persisted_before_land_pass_entry(self) -> None:
+        # Exhaust the old generation; a reset inside landing is too late for this contract.
+        for round_number in range(1, self.cfg.review_rounds + 1):
+            dispatch.record("conflict-requeue", ticket=7, round=round_number)
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "at": self.escalation_at})
+
+        def land(dry_run: bool) -> None:
+            self.assertFalse(dry_run)
+            opened = generation.current(lifecycle.read_events(dispatch.EVENTS), 7)
+            self.assertEqual(opened.number, 1, "owner reset must be journaled before land_pass starts")
+            self.assertEqual([row["event"] for row in opened.rows], ["generation"])
+
+        with mock.patch.object(dispatch, "pin_root", return_value=[]), \
+                mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.object(config, "engine_commit", return_value="same"), \
+                mock.patch.object(config, "engine_target", return_value="same"), \
+                mock.patch.object(dispatch, "_sweep_stale_factory_tempdirs"), \
+                mock.patch.object(dispatch, "worker_health_pass"), \
+                mock.patch.object(dispatch, "gh_json", return_value=[self.issue]), \
+                mock.patch.object(dispatch, "land_pass", side_effect=land) as landing, \
+                mock.patch.object(dispatch, "review_intake_pass"), \
+                mock.patch("factory.manage.manage_pass"), \
+                mock.patch.object(dispatch, "ticket_pass"), \
+                mock.patch("factory.learn.learn_pass"):
+            dispatch.gh_json.side_effect = lambda argv: self.issue if argv[:2] == ["issue", "view"] else [self.issue]
+            self.assertEqual(dispatch.main([]), 0)
+        landing.assert_called_once_with(False)
+
+
+class PreLandRequeueTest(unittest.TestCase):
+    """#671: only locked, direct issue state can authorize a pre-land reset."""
+
+    setUp = RequeueReceiptContractTest.setUp
+
+    def scheduled_pass(self, fresh: dict, *, dry_run: bool = False) -> tuple[list[int], list[dict]]:
+        reads, at_land = [], []
+
+        def github(argv: list[str]) -> dict | list[dict]:
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue]  # stale search data: ready and unassigned
+            self.assertEqual(argv[:3], ["issue", "view", "7"])
+            self.assertEqual(set(argv[-1].split(",")), {"state", "labels", "assignees"})
+            self.assertTrue(dispatch.lock_held(dispatch.ticket_lock(7)), "refresh must hold the ticket lock")
+            reads.append(7)
+            return fresh
+
+        def land(_dry_run: bool) -> None:
+            at_land.extend(row for row in lifecycle.read_events(dispatch.EVENTS)
+                           if row.get("event") == "generation")
+
+        with mock.patch.object(dispatch, "pin_root", return_value=[]), \
+                mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.object(config, "engine_commit", return_value="same"), \
+                mock.patch.object(config, "engine_target", return_value="same"), \
+                mock.patch.object(dispatch, "_sweep_stale_factory_tempdirs"), \
+                mock.patch.object(dispatch, "worker_health_pass"), \
+                mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "land_pass", side_effect=land), \
+                mock.patch.object(dispatch, "review_intake_pass"), \
+                mock.patch("factory.manage.manage_pass"), \
+                mock.patch.object(dispatch, "ticket_pass"), \
+                mock.patch("factory.learn.learn_pass"):
+            self.assertEqual(dispatch.main(["--dry-run"] if dry_run else []), 0)
+        return reads, at_land
+
+    def test_locked_refresh_opens_once_before_landing_and_excludes_spent_rounds(self) -> None:
+        dispatch.record("conflict-requeue", ticket=7, round=self.cfg.review_rounds)
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "at": self.escalation_at})
+        reads, opened = self.scheduled_pass(self.issue)
+        self.assertEqual(reads, [7])
+        self.assertEqual([(row["generation"], row["intent"]) for row in opened], [(1, "resume")])
+        self.assertEqual(dispatch._generation_rows(7), opened)
+        self.assertEqual(dispatch.escalation_packet(7, "another failure", None, self.cfg.factory / "wt-7")[1], 1)
+        self.assertEqual(self.scheduled_pass(self.issue), ([], opened))
+
+    def test_stale_ready_listing_cannot_release_another_dispatchers_escalation(self) -> None:
+        fresh = {**self.issue, "labels": [{"name": config.LABEL_HUMAN}]}
+        reads, opened = self.scheduled_pass(fresh)
+        self.assertEqual(reads, [7])  # direct refresh, not the process-local escalation set
+        self.assertEqual(opened, [])
+        self.assertEqual(generation.current(lifecycle.read_events(dispatch.EVENTS), 7).number, 0)
+
+    def test_closed_assigned_and_initiative_tickets_do_not_open_generations(self) -> None:
+        for change in ({"state": "CLOSED"}, {"assignees": [{"login": "alice"}]},
+                       {"labels": [{"name": config.LABEL_AGENT}, {"name": config.LABEL_INITIATIVE}]}):
+            with self.subTest(change=change):
+                self.assertEqual(self.scheduled_pass({**self.issue, **change}), ([7], []))
+
+    def test_dry_run_and_held_lock_leave_the_journal_unchanged(self) -> None:
+        import fcntl
+
+        before = dispatch.EVENTS.read_bytes()
+        self.assertEqual(self.scheduled_pass(self.issue, dry_run=True), ([], []))
+        self.assertEqual(dispatch.EVENTS.read_bytes(), before)
+        with dispatch.ticket_lock(7).open("w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self.scheduled_pass(self.issue), ([], []))
+        self.assertEqual(dispatch.EVENTS.read_bytes(), before)
+        self.assertEqual(self.scheduled_pass(self.issue)[0], [7])  # next pass can retry
+
+    def test_only_unresolved_owner_escalations_are_refreshed(self) -> None:
+        dispatch.record("claimed", ticket=8)
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "ticket": 9})
+        dispatch.record("manage", ticket=9, decision="RETRY")
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "ticket": 10, "reason": "manager_failed"})
+        self.assertEqual(self.scheduled_pass(self.issue)[0], [7])
+
+    def test_terminal_histories_stop_refreshing_until_a_new_escalation(self) -> None:
+        closed = {**self.issue, "state": "CLOSED"}
+        for terminal in ("merged", "CLOSE", "RESOLVE"):
+            with self.subTest(terminal=terminal):
+                lifecycle.append(dispatch.EVENTS, ESCALATED)
+                if terminal == "merged":
+                    dispatch.record("merged", ticket=7, pr=17, head=H)
+                else:
+                    manage._record_wontfix(7, terminal, "Already finished")
+                for _ in range(2):
+                    self.assertEqual(self.scheduled_pass(closed), ([], []))
+                self.assertFalse(dispatch.ticket_lock(7).exists(), "terminal tickets must not recreate locks")
+                dispatch.observe_owner_requeue(7, self.issue)
+                self.assertEqual(generation.current(lifecycle.read_events(dispatch.EVENTS), 7).number, 0)
+
+        # A later escalation makes a reopened ticket relevant again.
+        lifecycle.append(dispatch.EVENTS, ESCALATED)
+        reads, opened = self.scheduled_pass(self.issue)
+        self.assertEqual(reads, [7])
+        self.assertEqual([row["generation"] for row in opened], [1])
+
+    def test_host_claim_holds_and_unclaimed_assignments_cannot_open_generations(self) -> None:
+        self.cfg.host_name = "local"
+        assigned = {**self.issue, "assignees": [{"login": "alice"}]}
+        with mock.patch.object(dispatch, "host_claims", return_value=[]):
+            self.assertEqual(self.scheduled_pass(assigned), ([7], []))
+        with mock.patch.object(dispatch, "host_claims", return_value=[]), \
+                mock.patch.object(dispatch, "host_claim_hold", return_value="host label (other)"):
+            self.assertEqual(self.scheduled_pass(self.issue), ([7], []))
+
+    def test_expired_requeued_host_claim_preserves_shared_bot_assignment_eligibility(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        self.cfg.host_name = "local"
+        stale = {"host": "old", "id": 1, "created": datetime.now(UTC) - timedelta(days=1),
+                 "heartbeat": datetime.now(UTC) - timedelta(days=1), "requeue": "factory release"}
+        assigned = {**self.issue, "assignees": [{"login": "factory"}]}
+        with mock.patch.object(dispatch, "host_claims", return_value=[stale]), \
+                mock.patch.object(dispatch, "host_claim_login", return_value="factory"):
+            reads, opened = self.scheduled_pass(assigned)
+        self.assertEqual(reads, [7])
+        self.assertEqual([row["generation"] for row in opened], [1])
+
+    def test_receipt_context_presence_and_legacy_nulls(self) -> None:
+        for scoped in (False, True):
+            with self.subTest(scoped=scoped):
+                lifecycle.append(dispatch.EVENTS, ESCALATED)
+                if scoped:
+                    with lifecycle.scope(dispatch.EVENTS, "manage") as execution:
+                        dispatch.observe_owner_requeue(7, self.issue)
+                else:
+                    dispatch.observe_owner_requeue(7, self.issue)
+                receipt = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                           if row.get("event") == "generation"][-1]
+                expected = {
+                    "at": receipt["at"], "event": "generation", "kind": "generation", "ticket": 7,
+                    "cause": "owner_requeue", "generation": 2 if scoped else 1, "intent": "resume",
+                    "source": "label", "actor": None, "decision": None, "escalation_at": None,
+                }
+                if scoped:
+                    expected.update(execution_id=execution.execution_id, dispatcher_run_id=None)
+                self.assertEqual(receipt, expected)
+
+    def test_unreadable_history_does_not_block_other_resets_or_later_stages(self) -> None:
+        import subprocess
+
+        lifecycle.append(dispatch.EVENTS, {**ESCALATED, "ticket": 8})
+        reads, landed = [], []
+
+        def github(argv: list[str]) -> dict | list[dict]:
+            if argv[:2] == ["issue", "list"]:
+                return [self.issue]  # stale listing still advertises the unreadable ticket
+            self.assertEqual(argv[:2], ["issue", "view"])
+            n = int(argv[2])
+            self.assertTrue(dispatch.lock_held(dispatch.ticket_lock(n)))
+            reads.append(n)
+            if n == 7:
+                raise subprocess.CalledProcessError(1, ["gh", *argv], stderr="Could not resolve issue #7")
+            self.assertEqual(n, 8)
+            return {**self.issue, "number": 8}
+
+        def land(_dry_run: bool) -> None:
+            events = lifecycle.read_events(dispatch.EVENTS)
+            landed.append((generation.current(events, 7).number, generation.current(events, 8).number))
+
+        with mock.patch.object(dispatch, "pin_root", return_value=[]), \
+                mock.patch.object(config, "load", return_value=self.cfg), \
+                mock.patch.object(config, "engine_commit", return_value="same"), \
+                mock.patch.object(config, "engine_target", return_value="same"), \
+                mock.patch.object(dispatch, "_sweep_stale_factory_tempdirs"), \
+                mock.patch.object(dispatch, "worker_health_pass"), \
+                mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                mock.patch.object(dispatch, "land_pass", side_effect=land), \
+                mock.patch.object(dispatch, "review_intake_pass") as intake, \
+                mock.patch("factory.manage.manage_pass") as manager, \
+                mock.patch.object(dispatch, "ticket_pass") as tickets, \
+                mock.patch("factory.learn.learn_pass"):
+            for _ in range(2):
+                self.assertEqual(dispatch.main([]), 0)
+                self.assertFalse(dispatch.lock_held(dispatch.ticket_lock(7)))
+                self.assertFalse(dispatch.lock_held(dispatch.ticket_lock(8)))
+        self.assertEqual(reads, [7, 8, 7])
+        self.assertEqual(landed, [(0, 1), (0, 1)])
+        self.assertEqual((intake.call_count, manager.call_count, tickets.call_count), (2, 2, 2))
+        receipts = [row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("event") == "generation"]
+        self.assertEqual([(row["ticket"], row["generation"]) for row in receipts], [(8, 1)])
 
 
 if __name__ == "__main__":

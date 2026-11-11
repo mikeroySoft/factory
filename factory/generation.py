@@ -81,8 +81,9 @@ def owner_requeue(events: list[dict], n: int) -> dict | None:
     """Fields of the `generation` row a human release of the latest escalation opens, else None.
 
     The caller has observed the ticket back in `ready-for-agent`. The last release after the
-    escalation decides: a factory release or an already-open generation means none is due. A
-    guarded `requeue_agent` decision supplies its actor and intent; a plain relabel resumes.
+    escalation decides: a factory release or an already-open generation means none is due.
+    A terminal result resolves the earlier escalation. A guarded `requeue_agent` decision
+    supplies its actor and intent; a plain relabel resumes.
     """
     now = current(events, n)
     rows = [row for row in events if row.get("ticket") == n]
@@ -95,6 +96,9 @@ def owner_requeue(events: list[dict], n: int) -> dict | None:
         return None
     release = None
     for row in rows[escalation + 1:]:
+        if (row.get("event") == "merged"
+                or (row.get("event") == "decision" and row.get("stage") == "wontfix")):
+            return None
         if row.get("event") == "generation" or _factory_release(row) or _owner_decision(row):
             release = row
     if release is not None and not _owner_decision(release):
