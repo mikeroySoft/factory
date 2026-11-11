@@ -1199,8 +1199,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Non-mutation PR-check failures use the ordinary gate-failure loop, not the
    disagreement path. Mutation runs related tests first and stops after the first
    failure; a surviving mutant still has to pass every discovered test. The
-   deterministic 200-mutant sample uses the gate timeout minus 60 seconds for
-   preparation, baseline, and mutants together. After baseline completes, each
+   deterministic sample (up to 200 mutants, changed lines first) uses the gate
+   timeout minus 60 seconds for preparation, baseline, and mutants together.
+   Workers keep consuming the hot-first queue until it empties or time runs out;
+   the baseline does not truncate the sample. The report states the baseline,
+   workers, deadline, completed verdicts and not-run count. Unreached mutants
+   alone do not fail blocking mode; completed changed-line survivors still do.
+   After baseline completes, each
    mutant gets `min(max(60, 3 * baseline), remaining / 4)` seconds, with `remaining`
    fixed at baseline completion. Per-mutant timeouts count as killed, with their
    timeout count shown separately in summaries and gate reports, unless the cap
@@ -2091,6 +2096,17 @@ and `no_passing_ci`; exceptions may instead provide diagnostic text. Reasons
 are evidence, not a replacement for `outcome`. Existing gate exit codes,
 review retry behavior, claim locks, concurrency limits, and merge prerequisites
 are unchanged.
+
+Gate-check result rows include `elapsed_seconds` and `budget_seconds`. A check
+that reaches its timeout records `status: budget_limited`; mutation also emits
+this status when its queue leaves candidates not run. Its
+`mutation-budget:` JSON summary on stdout supplies `baseline_seconds`, `workers`,
+`mutants_run` (completed verdicts), and `mutants_not_run` (unstarted
+or cut short) to the same journal row. A passing budget-limited check exits with
+reason `budget_limited`, which remains visible in runtime projections. Outer
+check timeouts retain outcome `unknown` and reason `check_timeout` so `factory watch`
+still detects them; real survivor/tool failures retain their failure reason even
+when coverage was budget-limited.
 
 ### Observation, interrupted writes, and CLI semantics
 

@@ -8,9 +8,10 @@ after a complete trial even when mutants survive. ``--blocking`` exits nonzero f
 completed survivors on changed lines, except exact reviewed ``--equivalents`` matches.
 Invalid or stale equivalent entries, tool and baseline failures always exit nonzero.
 Mutants are sampled deterministically (sorted, then shuffled with a fixed
-seed, capped at CAP). One absolute deadline, `[gate].timeout` - 60,
-covers preparation, the baseline and every mutant: each run is bounded by the time
-left, and mutants not started or cut short are reported as incomplete.
+seed, capped at CAP). After the baseline, shrink the hot-first sample to full
+worker waves that fit the remaining budget. One absolute deadline,
+`[gate].timeout` - 60, covers preparation, the baseline and every mutant.
+Sized-out and unreached mutants are not-run; cut-short trials remain incomplete.
 
 Each worker runs in its own copy of the tree because cosmic-ray mutates files on disk;
 the worktree itself is never touched.
@@ -244,6 +245,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"baseline suite did not finish before the {deadline - started:.0f}s deadline")
             print(f"incomplete: {len(mutations)} mutants not started and 0 cut short by the "
                   f"{deadline - started:.0f}s deadline")
+            print("mutation-budget: " + json.dumps({
+                "status": "budget_limited", "budget_seconds": deadline - started,
+                "workers": workers, "mutants_run": 0, "mutants_not_run": len(mutations),
+            }))
             return 1
 
         workers = max(1, min(WORKERS, len(mutations)))
@@ -287,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
         timeout = min(max(60.0, 3 * baseline), remaining / 4)
         print(f"baseline: {baseline:.0f}s, per-mutant timeout {timeout:.0f}s, "
               f"{remaining:.0f}s left before the deadline")
+
+        sampled = len(mutations)
 
         queue = collections.deque(mutations)  # popleft is atomic under the GIL
         results = []
@@ -332,9 +339,20 @@ def main(argv: list[str] | None = None) -> int:
         name = (result.test_outcome or result.worker_outcome).value
         counts[name] = counts.get(name, 0) + 1
     summary = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"
+    elapsed = time.monotonic() - started
     timeouts = sum(result.output == "timeout" for _, result in results)
-    print(f"ran {len(results)} of {len(mutations)} mutants in {time.monotonic() - started:.0f}s: "
+    print(f"ran {len(results)} of {sampled} mutants in {elapsed:.0f}s: "
           f"{timeouts} timeouts (included in killed); {summary}; {len(survivors)} survived")
+    not_run = len(queue) + len(cut)
+    if not_run:
+        print(f"budget-limited: {not_run} of {sampled} not run "
+              f"(baseline {baseline:.0f}s, {workers} workers, {deadline - started:.0f}s)")
+    print("mutation-budget: " + json.dumps({
+        "status": "budget_limited" if not_run else "completed",
+        "baseline_seconds": baseline, "workers": workers,
+        "budget_seconds": deadline - started,
+        "mutants_run": len(results), "mutants_not_run": not_run,
+    }))
     if queue or cut:
         print(f"incomplete: {len(queue)} mutants not started and {len(cut)} cut short by the "
               f"{deadline - started:.0f}s deadline")
