@@ -144,5 +144,27 @@ class RealConfigCallerTest(RealConfigHarness):
         self.assertNotIn("mutation_proof", row)
         self.assertEqual(result["risk"], [("PASS", "PASS")])
 
+    def test_other_pr_checks_are_auto_succeeded_and_steps_must_reach_a_mutation_child(self) -> None:
+        self.build(main_config=CANDIDATE, worktree_config=CANDIDATE)
+        self.configure()
+        others = [check.run for check in self.cfg.checks if check.when == "pr" and check.name != "mutation"]
+        self.assertTrue(others)  # e.g. test-pr-tier, spawned before the mutation check
+
+        result = self.invoke([real_runner()])
+        self.assertEqual([child.args for child in self.unscripted_children], others)
+        self.assertEqual([child.args for child in self.children], [[*witness.REPO_MUTATION_RUN, "--blocking"]])
+        self.assertEqual(self.summary(result)["gate_exit"], 0)
+
+        def without_mutation(*args, **kwargs):  # the gate loads a config with no mutation check
+            loaded = REAL_LOAD(*args, **kwargs)
+            loaded.checks = [check for check in loaded.checks if check.name != "mutation"]
+            return loaded
+
+        with mock.patch.object(gate.config, "load", without_mutation), \
+                self.assertRaisesRegex(AssertionError, "scripted steps never reached a scripted child"):
+            self.invoke([real_runner()])
+        self.assertEqual([child.args for child in self.unscripted_children], others * 2)
+        self.assertEqual(len(self.children), 1)
+
 
 del RealConfigHarness

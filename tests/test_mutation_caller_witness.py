@@ -9,8 +9,10 @@ Faked boundaries only (see WITNESS-NOTES.md):
   gate` child, which is run in-process via factory.cli.main instead of a subprocess.
 - gate.subprocess: the mutation check child (fake Popen with scripted output/returncode,
   TimeoutExpired) and the toolchain probes; os.killpg is a recorder. No real child
-  process is created or signalled. Proof-draft fixture change: the complete/survivor
-  positives write their completion record with the real scripts.mutation producer
+  process is created or signalled. A child running one of the repository `.factory.toml`'s
+  non-mutation checks (e.g. `test-pr-tier`, which the real config spawns before `mutation`)
+  exits 0 with no output and consumes no scripted step. Proof-draft fixture change: the
+  complete/survivor positives write their completion record with the real scripts.mutation producer
   (proof_record/write_proof) at the path the gate handed the child, and the no-change
   skip runs the real scripts.mutation.main in-process against a fake empty `git diff`
   (no mutation trial is ever run). Every other step still writes no record.
@@ -53,10 +55,10 @@ from tests.test_mutation_scope import REAL_RUN, build_repo
 N = 7
 FAKE_PID = 999_999  # above the Darwin pid limit; never signalled (killpg is a recorder)
 CHECKOUT = Path(__file__).resolve().parents[1]
-REPO_MUTATION_RUN = next(
-    check["run"] for check in tomllib.loads((CHECKOUT / ".factory.toml").read_text())["gate"]["check"]
-    if check["name"] == "mutation"
-)
+REPO_CHECKS = tomllib.loads((CHECKOUT / ".factory.toml").read_text())["gate"]["check"]
+REPO_MUTATION_RUN = next(check["run"] for check in REPO_CHECKS if check["name"] == "mutation")
+# Real-config children that are not the mutation runner: auto-succeeded, never scripted.
+REPO_UNSCRIPTED_RUNS = [check["run"] for check in REPO_CHECKS if "scripts/mutation.py" not in check["run"]]
 GATE_ARGV = [sys.executable, "-P", "-E", "-m", "factory", "gate"]
 
 # Output shapes copied from scripts/mutation.py print statements (lines 262-264, 288-289,
@@ -167,7 +169,8 @@ class MutationCallerWitness(unittest.TestCase):
         self.addCleanup(os.chdir, cwd)
         os.chdir(self.root)
         self.scripts: collections.deque = collections.deque()
-        self.children: list[FakeChild] = []
+        self.children: list[FakeChild] = []  # children that consumed a scripted step
+        self.unscripted_children: list[FakeChild] = []  # REPO_UNSCRIPTED_RUNS children
         self.gate_exits: list[int] = []
         self.killpg_calls: list[tuple] = []
         self.review_reports: list[str] = []
@@ -256,9 +259,22 @@ class MutationCallerWitness(unittest.TestCase):
         raise AssertionError(f"unexpected dispatcher process: {cmd}")
 
     def _popen(self, argv, **kwargs) -> FakeChild:
+        if argv in REPO_UNSCRIPTED_RUNS:
+            child = FakeChild([("", 0)], argv, kwargs)
+            self.unscripted_children.append(child)
+            return child
+        if not self.scripts:
+            raise AssertionError(f"no scripted step left for child {argv!r}")
         child = FakeChild(self.scripts.popleft(), argv, kwargs)
         self.children.append(child)
         return child
+
+    def assert_steps_consumed(self, spawned: int) -> None:
+        """Every scripted step must reach a scripted child. Exempt only a run that spawned no
+        child at all (the gate refused before any check; those cases assert children == [])."""
+        if len(self.children) + len(self.unscripted_children) > spawned:
+            self.assertFalse(self.scripts, "scripted steps never reached a scripted child; "
+                             f"unscripted children: {[c.args for c in self.unscripted_children]}")
 
     @staticmethod
     def _toolchain_probe(command, **_kwargs):
@@ -278,9 +294,11 @@ class MutationCallerWitness(unittest.TestCase):
     # -- invocation ------------------------------------------------------------------
     def invoke(self, *steps, pr_runs: dict | None = None) -> dict:
         self.scripts.extend(steps)
+        spawned = len(self.children) + len(self.unscripted_children)
         pr_runs = {} if pr_runs is None else pr_runs
         head = self.head
         verdict, findings, _ = dispatch.pr_gate_and_review(self.root, N, "attempt report", head, pr_runs)
+        self.assert_steps_consumed(spawned)
         events = lifecycle.read_events(dispatch.EVENTS)
         risk = [e for e in events if e.get("event") == "risk-check" and e.get("head") == head]
         paths = [line.split("\t")[-1] for line in self.changed.splitlines()]
