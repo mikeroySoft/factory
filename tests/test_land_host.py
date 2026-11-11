@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,10 +10,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
+from factory import config, dispatch, lifecycle
 from tests import test_host_config as host_fixture
 from tests import test_refresh_conflict as refresh_fixture
-from factory import config, dispatch, lifecycle
-
 
 git = refresh_fixture.git
 
@@ -31,9 +29,9 @@ class LandHostConfigTest(unittest.TestCase):
 
     def test_invalid_land_host_is_rejected(self):
         for value in ("", "tank two", "-tank", "a" * 46, 1, False):
-            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
-                with self.assertRaisesRegex(config.ConfigError, "land_host"):
-                    host_fixture.HostConfigTest.load(self, Path(directory), {"defaults": {"land_host": value}})
+            with (self.subTest(value=value), tempfile.TemporaryDirectory() as directory,
+                  self.assertRaisesRegex(config.ConfigError, "land_host")):
+                host_fixture.HostConfigTest.load(self, Path(directory), {"defaults": {"land_host": value}})
 
     def test_land_host_is_host_only(self):
         with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(config.ConfigError, "host-only"):
