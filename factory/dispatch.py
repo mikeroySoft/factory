@@ -76,6 +76,8 @@ UNAVAILABLE_WORKERS: dict[str, str] = {}
 VERIFIED_WORKERS: set[str] = set()
 # Tickets this pass escalated: no owner can have released them yet (see `observe_owner_requeue`).
 _ESCALATED: set[int] = set()
+PR_GATE_WAIT = "WAIT"
+
 
 
 def configure(c: Config) -> None:
@@ -3177,9 +3179,15 @@ def pr_gate_and_review(
                     verdict, proof_scope = (
                         _mutation_proof(pr_report, head, base_commit) or ("FAIL", None)
                     )
+                    if (
+                        verdict == "STALE"
+                        and ok
+                        and _resolved_commit(wt, caller_base) != base_commit
+                    ):
+                        pr_runs.pop(head, None)
+                        return PR_GATE_WAIT, pr_report, False
                 if verdict == "STALE":
-                    pr_runs.pop(head, None)
-                    return None, pr_report, False
+                    verdict, proof_scope = "FAIL", None
             proof_status = verdict
             ok = ok and proof_status != "FAIL"
             if proof_scope:
@@ -3548,15 +3556,40 @@ def gate_flags(
 
 
 def sync_staged(n: int, wt: Path) -> tuple[str, str] | None:
-    """(gate report, head) when the dispatcher's own staged candidate passed the gate and
-    is still this worktree's exact head: nothing for a worker to fix."""
+    """Return a passed report for an unchanged dispatcher or proof-deferred head."""
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-    staged = next((e for e in reversed(lifecycle.read_events(EVENTS))
-                   if e.get("event") == "attempt" and e.get("ticket") == n and e.get("attempt") == 0), None)
+    rows = generation.current(lifecycle.read_events(EVENTS), n).rows
+    deferred = next((
+        row for row in reversed(rows)
+        if row.get("event") == "mutation-proof-wait" and row.get("head") == head
+    ), None)
+    if deferred:
+        staged = next((
+            row for row in reversed(rows)
+            if row.get("head") == head and row.get("gate") == "PASS" and (
+                (row.get("event") in {"attempt", "gate-fixup"} and row.get("finished") is True)
+                or row.get("event") == "refreshed"
+            )
+        ), None)
+    else:
+        staged = next((
+            row for row in reversed(rows)
+            if row.get("event") == "attempt" and row.get("attempt") == 0
+        ), None)
     report = wt / ".factory" / f"gate-report-{n}.md"
     if not staged or staged.get("gate") != "PASS" or staged.get("head") != head or not report.exists():
         return None
     return report.read_text(), head
+
+
+def defer_mutation_proof(n: int, head: str, source: str) -> None:
+    """Requeue a raced base proof without charging worker or review budgets."""
+    record("mutation-proof-wait", ticket=n, head=head, source=source)
+    unclaim(
+        n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+        assignee_last=True, check=True,
+    )
+    log(f"#{n}: mutation proof base moved during {source}; retrying next pass")
 
 
 def sync_issue(tip: str, count: str, staged: str, evidence: str) -> int:
@@ -4497,6 +4530,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     else:
         verdict, findings = review(wt, n, report, head)
         pr_failed = False
+    if verdict == PR_GATE_WAIT:
+        defer_mutation_proof(n, head, "refresh")
+        return False
     pending = _PENDING_REVIEWS.get(n)
     unavailable = pending is not None and pending.get("verdict") is None
     pr_comment(n, findings)
@@ -5486,6 +5522,12 @@ def process_ticket(
                 gate_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
                 if _remote_agent_head(wt, n) == gate_head:
                     lease = gate_head
+            if verdict == PR_GATE_WAIT:
+                defer_mutation_proof(n, gate_head, "ticket review")
+                execution.wait(
+                    "mutation_proof_stale", mode="retry_next_pass", head=gate_head,
+                )
+                return
             pr_comment(n, findings)
             current_risk = _PENDING_RISK.get(n) or {}
             risk_disagreement_head, repeated_disagreement = risk_disagreement_transition(
@@ -5577,6 +5619,12 @@ def process_ticket(
                     gate_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
                     if _remote_agent_head(wt, n) == gate_head:
                         lease = gate_head
+                if verdict == PR_GATE_WAIT:
+                    defer_mutation_proof(n, gate_head, "ticket re-review")
+                    execution.wait(
+                        "mutation_proof_stale", mode="retry_next_pass", head=gate_head,
+                    )
+                    return
                 pr_comment(n, findings)
                 current_risk = _PENDING_RISK.get(n) or {}
                 current_disagreement_head, repeated_disagreement = risk_disagreement_transition(
