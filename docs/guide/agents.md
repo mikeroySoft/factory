@@ -6,7 +6,7 @@ Four roles exist in the current code. They do not share a process. Each is an ar
 
 `ensure_worktree` (`factory/dispatch.py`) uses `.factory/wt-<n>` and branch `agent/<n>`.
 
-- Reuse the directory if it exists.
+- Fetch before reusing an existing directory. If `origin/agent/<n>` is a journaled dispatcher push, fast-forward a behind worktree with `git merge --ff-only`; resume equal or ahead history unchanged. Truly diverged history escalates before a worker starts, preserving both heads and listing local-only commits. Unrecognized remote pushes and fresh-restart receipts keep their existing behavior.
 - If the local branch exists, add a worktree on it.
 - Otherwise start from `origin/agent/<n>` if that ref exists.
 - Otherwise start from `origin/<main>` and create `agent/<n>`.

@@ -335,6 +335,19 @@ class RefreshGenerationTest(unittest.TestCase):
         self.assertTrue(self.evidence(old_head))
         self.assertEqual([claim["base"] for claim in self.events("claimed")], [main, main])
 
+    def test_journaled_prior_push_does_not_restore_superseded_work_on_a_fresh_retry(self) -> None:
+        old_head = self.fresh_requeue([sys.executable, "-c", "print('Authentication failed'); raise SystemExit(1)"])
+        dispatch.record("agent-pushed", ticket=9, head=old_head)
+        self.assertIs(self.process(), False)
+        dispatch.configure(self.cfg)
+        self.cfg.workers["default"] = self.committing_worker()
+        self.process()
+        main = refresh_suite.git(self.origin, "rev-parse", "main")
+        self.assertEqual(refresh_suite.git(self.origin, "rev-parse", f"{self.github.head()}^"), main)
+        self.assertEqual(self.events("escalate")[1:], [])
+        self.assertEqual(self.events("worktree-fast-forward"), [])
+        self.assertTrue(self.evidence(old_head))
+
     def test_a_remote_commit_pushed_between_an_infra_only_claim_and_its_retry_is_never_overwritten(self) -> None:
         self.fresh_requeue([sys.executable, "-c", "print('Authentication failed'); raise SystemExit(1)"])
         self.assertIs(self.process(), False)

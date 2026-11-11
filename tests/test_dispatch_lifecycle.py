@@ -148,6 +148,107 @@ class LocalCLI(unittest.TestCase):
     def rows(self):
         return [r for r in lifecycle.read_events(self.events) if r.get("event") == "lifecycle"]
 
+    def test_dispatcher_journals_initial_and_review_bounce_pushes(self):
+        self.cli("dispatch", "--ticket", "7")
+        events = list(lifecycle.read_events(self.events))
+        attempts = [e["head"] for e in events if e.get("event") == "attempt"]
+        pushed = [e for e in events if e.get("event") == "agent-pushed"]
+        self.assertEqual([(e["ticket"], e["head"], e["lease"]) for e in pushed], [
+            (7, attempts[0], ""), (7, attempts[1], attempts[0]),
+        ])
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], attempts[1])
+
+    def kept_remote_head(self, *, journaled=True, diverged=False):
+        wt = self.repo / ".factory" / "wt-7"
+        wt.parent.mkdir(exist_ok=True)
+        self.git("worktree", "add", str(wt), "-b", "agent/7")
+        base = self.git("rev-parse", "HEAD").stdout.strip()
+        # A remote descendant without moving the kept branch, like an earlier dispatcher push.
+        tree = self.git("rev-parse", "HEAD^{tree}").stdout.strip()
+        remote = self.git("commit-tree", tree, "-p", base, "-m", "dispatcher remote work").stdout.strip()
+        self.git("push", "origin", f"{remote}:refs/heads/agent/7")
+        if journaled:
+            lifecycle.append(self.events, {
+                "at": "2026-11-07T00:00:00Z", "event": "agent-pushed", "ticket": 7, "head": remote,
+            })
+        if diverged:
+            self.git("-C", str(wt), "commit", "--allow-empty", "-qm", "local-only kept work")
+        local = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+        started = self.base / "worker-start"
+        self.worker.write_text(
+            "import subprocess\nfrom pathlib import Path\n"
+            f"Path({str(started)!r}).write_text(subprocess.run("
+            "['git', 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip())\n"
+            + WORKER
+        )
+        self.state.write_text('{"reviews": 1}')
+        return wt, local, remote, started
+
+    def test_kept_worktree_dispatcher_descendant(self):
+        wt, local, remote, started = self.kept_remote_head()
+        self.cli("dispatch", "--ticket", "7")
+        self.assertEqual(started.read_text(), remote)
+        events = list(lifecycle.read_events(self.events))
+        [ff] = [e for e in events if e.get("event") == "worktree-fast-forward"]
+        self.assertEqual((ff["ticket"], ff["before"], ff["head"]), (7, local, remote))
+        head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], head)
+        pushed = [e for e in events if e.get("event") == "agent-pushed" and e["head"] == head]
+        self.assertEqual([(e["ticket"], e["lease"]) for e in pushed], [(7, remote)])
+        self.git("-C", str(wt), "merge-base", "--is-ancestor", remote, head)
+        self.assertTrue(any(e.get("event") == "approved" for e in events))
+        self.assertFalse(any(e.get("event") == "escalate" for e in events))
+
+    def test_kept_worktree_ahead_of_dispatcher_push(self):
+        wt, _, remote, started = self.kept_remote_head()
+        self.git("-C", str(wt), "merge", "--ff-only", remote)
+        self.git("-C", str(wt), "commit", "--allow-empty", "-qm", "kept rework after push")
+        local = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+
+        self.cli("dispatch", "--ticket", "7")
+
+        self.assertEqual(started.read_text(), local)
+        head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+        self.git("-C", str(wt), "merge-base", "--is-ancestor", local, head)
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], head)
+        events = list(lifecycle.read_events(self.events))
+        self.assertEqual(
+            [(e["head"], e["lease"]) for e in events if e.get("event") == "agent-pushed" and e["head"] != remote],
+            [(head, remote)],
+        )
+        self.assertTrue(any(e.get("event") == "approved" for e in events))
+        self.assertFalse(any(e.get("event") in {"escalate", "worktree-fast-forward"} for e in events))
+
+    def test_kept_worktree_dispatcher_divergence(self):
+        wt, local, remote, started = self.kept_remote_head(diverged=True)
+        self.cli("dispatch", "--ticket", "7")
+        self.assertFalse(started.exists(), "diverged kept work must escalate before a worker starts")
+        self.assertEqual(self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip(), local)
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], remote)
+        events = list(lifecycle.read_events(self.events))
+        [escalation] = [e for e in events if e.get("event") == "escalate"]
+        for evidence in (local, remote, "local-only kept work"):
+            self.assertIn(evidence, escalation["reason"])
+        self.assertFalse(any(e.get("event") in {"attempt", "worktree-fast-forward"} for e in events))
+        self.assertEqual([e["head"] for e in events if e.get("event") == "agent-pushed"], [remote])
+        self.assertFalse(json.loads(self.state.read_text()).get("pr"))
+
+    def test_kept_worktree_external_push(self):
+        wt, local, remote, started = self.kept_remote_head(journaled=False)
+        # The same SHA journaled for another ticket is not this ticket's dispatcher push.
+        lifecycle.append(self.events, {
+            "at": "2026-11-07T00:00:00Z", "event": "agent-pushed", "ticket": 8, "head": remote,
+        })
+        self.cli("dispatch", "--ticket", "7")
+        self.assertEqual(started.read_text(), local)
+        events = list(lifecycle.read_events(self.events))
+        [escalation] = [e for e in events if e.get("event") == "escalate"]
+        self.assertEqual(escalation["code"], "lease_refused")
+        self.assertTrue(any(e.get("event") == "attempt" for e in events))
+        self.assertFalse(any(e.get("event") == "worktree-fast-forward" for e in events))
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], remote)
+        self.git("-C", str(wt), "merge-base", "--is-ancestor", local, "HEAD")
+
     def test_run_gate_uses_installed_runner_and_discards_stale_report(self):
         import shutil
         import venv

@@ -1027,6 +1027,18 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    its lock is released, then the pass exits. Ticket `git fetch` and `git push`
    commands run one at a time, and every dispatcher log line from a ticket is
    tagged `#<n>` after the `[dispatch]` prefix.
+   Before reusing a kept worktree, the dispatcher fetches `origin/agent/<n>`.
+   Successful dispatcher pushes journal an `agent-pushed` row with the ticket
+   and exact SHA. If that SHA is the remote head and descends from the kept
+   HEAD, `git merge --ff-only` advances the worktree and journals
+   `worktree-fast-forward` (`before`, `head`). Truly diverged histories instead
+   escalate as `lease_refused` before any worker attempt, naming both heads
+   and listing local-only commits; nothing is reset or pushed. Equal heads,
+   kept heads ahead of the remote, and remote heads not journaled as this
+   ticket's dispatcher push keep their existing behavior. An owner-requested
+   fresh restart still honors its preserved remote-head receipt rather than
+   restoring superseded work.
+   The push-lease safeguard is unchanged.
 3. **Work.** The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the

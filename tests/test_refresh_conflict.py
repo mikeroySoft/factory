@@ -240,6 +240,87 @@ class RefreshConflictTest(unittest.TestCase):
         self.assertNotIn(config.LABEL_HUMAN, self.github.issue_labels)
         self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
 
+    def test_journaled_divergence_withdraws_approval_before_escalating(self) -> None:
+        wt = dispatch.ensure_worktree(9)
+        git(wt, "commit", "--allow-empty", "-qm", "kept local rework")
+        local = git(wt, "rev-parse", "HEAD")
+        git(self.origin, "checkout", "-q", "agent/9")
+        git(self.origin, "commit", "--allow-empty", "-qm", "dispatcher remote rework")
+        remote = self.github.head()
+        git(self.origin, "checkout", "-q", "main")
+        dispatch.record("agent-pushed", ticket=9, head=remote)
+
+        with self.patched(), mock.patch.object(dispatch, "run_gate") as gate:
+            dispatch.merge_pass_locked(False)
+            self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+            [escalation] = self.events("escalate")
+            self.assertEqual(escalation["code"], "lease_refused")
+            for evidence in (local, remote, "kept local rework"):
+                self.assertIn(evidence, escalation["reason"])
+            dispatch.merge_pass_locked(False)
+            self.assertEqual(self.events("escalate"), [escalation])
+            gate.assert_not_called()
+
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), local)
+        self.assertEqual(self.github.head(), remote)
+        self.assertFalse(self.prompt_seen.exists())
+        self.assertEqual(self.events("attempt"), [])
+        self.assertEqual(self.events("review"), [])
+        self.assertEqual([e["head"] for e in self.events("agent-pushed")], [remote])
+
+    def assert_blocked_fast_forward_escalates(self, *, tracked: bool, refresh: bool) -> None:
+        wt = dispatch.ensure_worktree(9)
+        local = git(wt, "rev-parse", "HEAD")
+        path = "shared.txt" if tracked else "untracked.txt"
+        git(self.origin, "checkout", "-q", "agent/9")
+        (self.origin / path).write_text("dispatcher remote changes\n")
+        git(self.origin, "add", path)
+        git(self.origin, "commit", "-qm", "dispatcher descendant")
+        remote = self.github.head()
+        git(self.origin, "checkout", "-q", "main")
+        dispatch.record("agent-pushed", ticket=9, head=remote)
+        (wt / path).write_text("uncommitted local work\n")
+        status = git(wt, "status", "--porcelain")
+
+        with self.patched(), mock.patch.object(dispatch, "run_gate") as gate, \
+                mock.patch.object(dispatch, "worker_round") as worker:
+            if refresh:
+                dispatch.merge_pass_locked(False)
+            else:
+                self.github.assignees = []
+                dispatch.process_ticket(self.github.issue(), 30, False)
+            [escalation] = self.events("escalate")
+            self.assertEqual(escalation["code"], "lease_refused")
+            for evidence in (local, remote, path):
+                self.assertIn(evidence, escalation["reason"])
+            self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
+            self.assertNotIn(config.LABEL_AGENT, self.github.issue_labels)
+            self.assertEqual(self.github.assignees, [])
+            if refresh:
+                self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+                dispatch.merge_pass_locked(False)
+                self.assertEqual(self.events("escalate"), [escalation])
+            gate.assert_not_called()
+            worker.assert_not_called()
+
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), local)
+        self.assertEqual(self.github.head(), remote)
+        self.assertEqual((wt / path).read_text(), "uncommitted local work\n")
+        self.assertEqual(git(wt, "status", "--porcelain"), status)
+        self.assertEqual(self.events("worktree-fast-forward"), [])
+        self.assertEqual(self.events("attempt"), [])
+        self.assertEqual(self.events("review"), [])
+        self.assertEqual([e["head"] for e in self.events("agent-pushed")], [remote])
+
+    def test_refresh_fast_forward_blocked_by_tracked_changes_escalates(self) -> None:
+        self.assert_blocked_fast_forward_escalates(tracked=True, refresh=True)
+
+    def test_refresh_fast_forward_blocked_by_untracked_file_escalates(self) -> None:
+        self.assert_blocked_fast_forward_escalates(tracked=False, refresh=True)
+
+    def test_dispatch_fast_forward_blocked_by_local_changes_escalates_before_worker(self) -> None:
+        self.assert_blocked_fast_forward_escalates(tracked=True, refresh=False)
+
     def test_closed_ticket_conflict_still_escalates_without_requeue(self) -> None:
         closed_issue = {**self.github.issue(), "state": "CLOSED"}
         with self.patched(), mock.patch.object(self.github, "issue", return_value=closed_issue):
