@@ -68,7 +68,7 @@ def mutation_duration(value: str) -> float:
 def timed(
     cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None,
     proof_path: Path | None = None, proof_base: str | None = None,
-    timeout: float | None = None,
+    timeout: float | None = None, uv_environment: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a command with the per-check timeout (`timeout`, when given, for this call only).
 
@@ -91,6 +91,11 @@ def timed(
             env[MUTATION_PROOF_BASE_ENV] = proof_base
     if pythonpath is not None:
         env["PYTHONPATH"] = str(pythonpath)
+    if uv_environment is not None:
+        env["UV_PROJECT_ENVIRONMENT"] = str(uv_environment)
+        for name in ("UV_NO_SYNC", "VIRTUAL_ENV", "UV_CONFIG_FILE", "UV_PROJECT",
+                     "UV_WORKING_DIR", "UV_PYTHON"):
+            env.pop(name, None)
     proc = subprocess.Popen(
         cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         encoding="utf-8", errors="replace", start_new_session=True, env=env,
@@ -240,25 +245,49 @@ def _read_proof_file(path: Path) -> bytes | None:
         os.close(fd)
 
 
-def _trusted_mutation_command(cmd: list[str], base: str, directory: Path) -> list[str]:
-    """Run the repository's proof producer and local imports from the trusted base.
+def _trusted_mutation_command(
+    cmd: list[str], base: str, directory: Path,
+) -> list[str]:
+    """Run the proof producer, interpreter environment and imports from trusted inputs.
 
     Keep cwd at the reviewed head: it supplies mutation targets, never producer code.
-    Isolated Python excludes the checkout and inherited PYTHONPATH from imports."""
+    Python starts without site processing; the launcher explicitly adds only the isolated
+    environment provisioned from the base commit's frozen dependency configuration."""
     if "scripts/mutation.py" not in cmd:
         return cmd
     for name in ("scripts/mutation.py", "factory/__init__.py", "factory/mutation_scope.py"):
         target = directory / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(mutation_scope._git(None, "show", f"{base}:{name}"))
+    index = cmd.index("scripts/mutation.py")
+    uv = len(cmd) > 2 and Path(cmd[0]).name == "uv" and cmd[1] == "run"
+    if uv:
+        if cmd[index - 1] != "python":
+            raise mutation_scope.ScopeError("trusted mutation command has no Python entry point")
+        for name in ("pyproject.toml", "uv.lock"):
+            (directory / name).write_text(mutation_scope._git(None, "show", f"{base}:{name}"))
+        environment = directory / "environment"
+    elif index == 1 and Path(cmd[0]).resolve() == Path(sys.executable).resolve():
+        environment = Path(sys.executable).parent.parent
+    else:
+        raise mutation_scope.ScopeError("unsupported trusted mutation command")
     launcher = directory / "launch.py"
     launcher.write_text(
-        "import runpy, sys\n"
-        f"sys.path.insert(0, {str(directory)!r})\n"
+        "import runpy, sys, sysconfig\n"
+        f"environment = {str(environment)!r}\n"
+        "paths = [sysconfig.get_path(name, vars={'base': environment, 'platbase': environment}) "
+        "for name in ('purelib', 'platlib')]\n"
+        f"sys.path[:0] = [{str(directory)!r}, *dict.fromkeys(paths)]\n"
         f"runpy.run_path({str(directory / 'scripts/mutation.py')!r}, run_name='__main__')\n"
     )
-    index = cmd.index("scripts/mutation.py")
-    return [*cmd[:index], "-I", str(launcher), *cmd[index + 1:]]
+    arguments = cmd[index + 1:]
+    if not uv:
+        return [sys.executable, "-I", "-S", str(launcher), *arguments]
+    return [
+        cmd[0], "--no-config", *cmd[2:index - 1], "--project", str(directory),
+        "--no-install-project", "--python", sys.executable, "python",
+        "-I", "-S", str(launcher), *arguments,
+    ]
 
 
 def _proof_run(
@@ -279,10 +308,15 @@ def _proof_run(
         path = Path(directory) / "proof.json"
         try:
             cmd = _trusted_mutation_command(cmd, expected.base, Path(directory))
+            uv_environment = (Path(directory) / "environment"
+                              if "--no-install-project" in cmd else None)
         except mutation_scope.ScopeError as exc:
             return "", "FAIL", f"trusted mutation producer unavailable: {exc}", expected
         limit = {} if duration is None else {"timeout": duration}
-        proc = timed(cmd, proof_path=path, proof_base=expected.base, **limit)
+        environment = {} if uv_environment is None else {"uv_environment": uv_environment}
+        proc = timed(
+            cmd, proof_path=path, proof_base=expected.base, **environment, **limit,
+        )
         data = _read_proof_file(path)
     status, why = read_mutation_proof(data, proc.returncode, expected)
     try:

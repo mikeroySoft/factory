@@ -48,6 +48,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 import tomllib
@@ -265,9 +266,22 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
 
 
 def test_command(copy: Path, module: str | None = None) -> str:
+    """Run the trusted producer's test-only entry point against a prepared head copy."""
+    environment = Path(sys.executable).parent.parent
+    paths = [
+        sysconfig.get_path(name, vars={"base": str(environment), "platbase": str(environment)})
+        for name in ("purelib", "platlib")
+    ]
+    launcher = (
+        "import runpy,sys;"
+        "sys.path[:0]=sys.argv[1:3];"
+        "script=sys.argv[3];"
+        "sys.argv=sys.argv[3:];"
+        "runpy.run_path(script,run_name='__main__')"
+    )
     command = [
-        "env", "-C", str(copy), f"PYTHONPATH={copy}", sys.executable,
-        "-B", "-m", "scripts.mutation", "--test-module", module or "",
+        "env", "-C", str(copy), sys.executable, "-I", "-S", "-B", "-c", launcher,
+        *paths, str(Path(__file__).resolve()), "--test-module", module or "",
     ]
     return shlex.join(command)
 

@@ -56,13 +56,13 @@ class MutationRunnerTrustRevisionTest(unittest.TestCase):
 
     @contextlib.contextmanager
     def uv_environment(self):
-        environment = str(self.root / ".venv")
         with mock.patch.dict(os.environ, {
-            "UV_PROJECT_ENVIRONMENT": environment,
+            "UV_PROJECT_ENVIRONMENT": str(self.root / ".venv"),
             "UV_OFFLINE": "1",
-            "UV_NO_SYNC": "",
-            "VIRTUAL_ENV": "",
         }):
+            for name in ("UV_NO_SYNC", "VIRTUAL_ENV", "UV_CONFIG_FILE", "UV_PROJECT",
+                         "UV_WORKING_DIR", "UV_PYTHON"):
+                os.environ.pop(name, None)
             yield
 
     def run_proof(self, base: str) -> tuple[bool, str, str, str]:
@@ -128,7 +128,7 @@ raise SystemExit(1 if module else 0)
 
         self.assertEqual((passed, status), (True, "PASS"), output)
         self.assertIn(f"base={base}", binding)
-        self.assertIn("no blocking survivors", output)
+        self.assertIn("mutation proof: PASS (complete:", output)
 
 
 if __name__ == "__main__":
