@@ -555,6 +555,8 @@ def doctor(argv: list[str]) -> int:
         report(True, "host_name", cfg.host_name, info=True)
     if cfg.triage_host is not None:
         report(True, "triage_host", cfg.triage_host, info=True)
+    if cfg.land_host is not None:
+        report(True, "land_host", cfg.land_host, info=True)
     if cfg.host_name is not None or any(
         isinstance(section, dict) and "claim_ttl" in section
         for section in effective_host_sections

@@ -1573,6 +1573,7 @@ Opt in on each machine through the shared host file. Values directly in
 [defaults]
 host_name = "tank"
 triage_host = "tank"
+land_host = "tank"
 claim_ttl = "2h"
 
 [repo."owner/name"]
@@ -1586,6 +1587,18 @@ hosts to avoid duplicate triage; other hosts exit 0 with
 Unset `triage_host` keeps triage enabled everywhere. `claim_ttl` defaults to
 `"2h"` and accepts positive `s`, `m`, `h`, or `d` durations, including `"1h30m"`.
 `factory doctor` reports the effective host settings.
+
+Set the same `land_host = "tank"` on both Tank and Ultron before enabling
+Ultron's Factory timer. Only the matching `host_name` runs landing: upstream
+sync, merge and behind-main refresh. Other hosts skip before any landing git/gh
+calls or journal writes, including dry runs. Unset `land_host` keeps landing
+enabled everywhere. Like `triage_host`, it is host-only and uses the same host
+name syntax and per-repository override.
+
+Independently, the ticket merge stage skips PRs whose elected claim belongs to
+another host, even after that claim expires. It neither refreshes those branches
+nor consumes local approval evidence, removes `factory-approved`, or escalates
+them. PRs without a claim retain ordinary eligibility checks.
 
 Inside the existing per-ticket lock, dispatch adds `host:<name>` and a comment
 whose first line is `Factory claim: host=<name> nonce=<uuid> at=<iso8601>`.
@@ -1641,8 +1654,8 @@ same-host contender keeps its label. If comment deletion fails with the comment
 still present, cleanup restores the label and surfaces the error.
 Hosts need synchronized clocks and current GitHub reads. This comment-based
 lease is not a fencing token for a disconnected worker that outlives its TTL.
-With `host_name` unset, dispatch makes no host-label/comment calls and triage
-always runs, even when `triage_host` is configured.
+With `host_name` unset, dispatch makes no host-label/comment calls; triage and
+landing always run, even when `triage_host` or `land_host` is configured.
 
 
 `[worker_wrap]` is host-only: set `command` under `[defaults.worker_wrap]` or
