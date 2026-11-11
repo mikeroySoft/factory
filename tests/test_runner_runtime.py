@@ -1,6 +1,7 @@
 """Runner storage admission and temp-root crash recovery (#610)."""
 from __future__ import annotations
 
+import fcntl
 import os
 import shutil
 import subprocess
@@ -188,6 +189,125 @@ class RunnerRuntimeTest(unittest.TestCase):
                 self.assertEqual(signals[0]["rows"], events)
                 events.append(events[-1] | {"outcome": "completed", "reason": None})
                 self.assertEqual(watch.signals(cfg, events), [])
+
+    # reap(), temp_root() and preflight() edges (#694, r3-0250).
+    def test_preflight_refuses_one_byte_below_the_free_space_minimum_and_admits_the_minimum(self):
+        from factory import runner
+
+        repository = self.base / "repo"
+        repository.mkdir()
+        minimum = 1024**3
+        self.assertEqual(runner.MIN_FREE_BYTES, minimum)
+        for available, admitted in ((minimum - 1, False), (minimum, True)):
+            with self.subTest(available=available):
+                stats = SimpleNamespace(f_bavail=available, f_frsize=1,
+                                        f_favail=runner.MIN_FREE_INODES, f_files=10**7)
+                with mock.patch.object(os, "statvfs", return_value=stats):
+                    failure = runner.preflight(repository)
+                if admitted:
+                    self.assertIsNone(failure)
+                else:
+                    self.assertEqual(failure, {
+                        "reason": "runner_storage_low", "path": str(repository), "resource": "bytes",
+                        "available": minimum - 1, "minimum": minimum})
+
+    def test_preflight_ignores_the_inode_count_on_a_filesystem_without_an_inode_limit(self):
+        from factory import runner
+
+        repository = self.base / "repo"
+        repository.mkdir()
+        unlimited = SimpleNamespace(f_bavail=10**9, f_frsize=4096, f_favail=0, f_files=0)
+        with mock.patch.object(os, "statvfs", return_value=unlimited):
+            self.assertIsNone(runner.preflight(repository))
+        limited = SimpleNamespace(**(vars(unlimited) | {"f_files": 10**7}))
+        with mock.patch.object(os, "statvfs", return_value=limited):
+            failure = runner.preflight(repository)
+        self.assertEqual((failure["reason"], failure["resource"], failure["available"]),
+                         ("runner_storage_low", "inodes", 0))
+
+    def test_reap_keeps_scanning_after_a_root_it_cannot_take(self):
+        from factory import runner
+
+        held = self.base / "factory-runner-a-held"
+        stale = self.base / "factory-runner-b-stale"
+        for root in (held, stale):
+            root.mkdir()
+        (stale / "leftover").write_text("crashed reviewer scratch")
+        real_glob = Path.glob
+
+        def sorted_glob(path, pattern, **kwargs):
+            return iter(sorted(real_glob(path, pattern, **kwargs)))
+
+        owner = os.open(held, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, owner)
+        fcntl.flock(owner, fcntl.LOCK_EX)
+        with mock.patch.object(Path, "glob", sorted_glob):
+            runner.reap()
+        self.assertTrue(held.exists(), "a root with a live lock owner must be left alone")
+        self.assertFalse(stale.exists(), "the root after an unavailable one must still be reaped")
+
+    def test_temp_root_publishes_a_fresh_locked_root_after_losing_the_create_race(self):
+        from factory import runner
+
+        real_open = os.open
+        lost = []
+
+        def lose_first_race(file, *args, **kwargs):
+            if not lost and Path(file).name.startswith("factory-runner-review-"):
+                lost.append(Path(file))
+                raise FileNotFoundError(file)
+            return real_open(file, *args, **kwargs)
+
+        with mock.patch.object(os, "open", lose_first_race), runner.temp_root("review") as name:
+            root = Path(name)
+            self.assertEqual(len(lost), 1)
+            self.assertNotEqual(root, lost[0].resolve())
+            self.assertTrue(root.is_dir())
+            self.assertTrue(root.name.startswith("factory-runner-review-"))
+            probe = real_open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(probe)
+        self.assertFalse(root.exists())
+
+    def test_reap_skips_a_regular_file_and_a_foreign_directory_without_opening_them(self):
+        from factory import runner
+
+        real_open = os.open
+        real_lstat = Path.lstat
+        opened = []
+
+        def recording_open(file, *args, **kwargs):
+            opened.append(Path(file).name)
+            return real_open(file, *args, **kwargs)
+
+        regular = self.base / "factory-runner-regular-file"
+        regular.write_text("ours, but not a directory")
+        foreign = self.base / "factory-runner-foreign-dir"
+        foreign.mkdir()
+        (foreign / "leftover").write_text("someone else's scratch")
+
+        def lstat_as_other_user(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if path.name == foreign.name:
+                return SimpleNamespace(st_uid=os.geteuid() + 1, st_mode=info.st_mode)
+            return info
+
+        for label, path in (("regular file", regular), ("foreign uid directory", foreign)):
+            with self.subTest(label):
+                opened.clear()
+                with mock.patch.object(os, "open", recording_open), \
+                        mock.patch.object(Path, "lstat", lstat_as_other_user), \
+                        mock.patch.object(runner.fcntl, "flock") as flock, \
+                        mock.patch.object(runner, "_users") as users:
+                    runner.reap()
+                self.assertNotIn(path.name, opened)
+                flock.assert_not_called()
+                users.assert_not_called()
+                self.assertTrue(path.exists(), f"{label} must be left untouched")
+        self.assertEqual((foreign / "leftover").read_text(), "someone else's scratch")
 
     # _users() scan of the Linux /proc (#694, r3-2215). These call _users directly against a fake
     # /proc tree, never through reap(), whose `except OSError` would hide a raising _users.
