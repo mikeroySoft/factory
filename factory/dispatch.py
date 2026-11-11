@@ -3306,7 +3306,13 @@ def gate_flags(
                 text = comment.get("body") or ""
                 author = (comment.get("author") or {}).get("login") or ""
                 reason = _ticket_line(text, "No repro test") if text.startswith("Triage: ") else None
-                if reason and author and author.casefold() == triage.login().casefold():
+                if not reason or not author:
+                    continue
+                try:
+                    login = triage.login()
+                except subprocess.CalledProcessError:
+                    break  # No authenticated author: require the ordinary reproduction gate.
+                if author.casefold() == login.casefold():
                     no_repro = reason
                     break
         repro = _ticket_line(handoff, "Repro test")
