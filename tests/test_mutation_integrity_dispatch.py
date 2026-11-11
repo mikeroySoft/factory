@@ -113,7 +113,7 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
         self.assertEqual(self.risk_failures(), [])
         self.assertLessEqual(calls, 2, "base movement may cause at most one bounded rerun")
         if calls == 1:
-            self.assertIsNone(verdict)
+            self.assertEqual(verdict, "WAIT")
             self.assertNotIn(self.head, runs, "a wait outcome must invalidate the raced proof")
         else:
             self.assertEqual(verdict, "APPROVE")
