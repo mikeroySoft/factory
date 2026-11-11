@@ -176,6 +176,7 @@ class _DurationHarness(witness.MutationCallerWitness):
     def invoke_with(self, *steps, pr_runs: dict | None = None, **kwargs) -> dict:
         """witness.invoke, except the real PR caller receives `kwargs`."""
         self.scripts.extend(steps)
+        spawned = len(self.children) + len(self.unscripted_children)
         pr_runs = {} if pr_runs is None else pr_runs
         head = self.head
         try:
@@ -183,6 +184,7 @@ class _DurationHarness(witness.MutationCallerWitness):
                 self.root, N, "attempt report", head, pr_runs, **kwargs)
         except TypeError as exc:
             self.trap(exc, "dispatch.pr_gate_and_review")
+        self.assert_steps_consumed(spawned)
         self.assertEqual((type(returned), len(returned)), (tuple, 3))  # existing contract
         verdict, findings, _ = returned
         events = lifecycle.read_events(dispatch.EVENTS)
