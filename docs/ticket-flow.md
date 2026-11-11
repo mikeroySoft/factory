@@ -154,6 +154,9 @@ assignee/host-claim rules can open a generation. Listing snapshots and the proce
 escalation set are not sufficient evidence. Held locks skip until the next pass.
 A failed direct refresh is logged and skipped without a generation receipt; other tickets
 and the remaining pass stages continue. Unresolved tickets are retried on later passes.
+A `merged` receipt or a `decision` at stage `wontfix` after the escalation resolves that
+history, so subsequent passes neither recreate its ticket lock nor refresh it. A later
+escalation makes a reopened ticket eligible for observation again.
 Land, manager and ticket stages also check before reading a round budget. Dry runs
 do not open generations. Factory `RFA` edges journal their release first and never open one. See
 [Owner requeues and ticket generations](../README.md#owner-requeues-and-ticket-generations).

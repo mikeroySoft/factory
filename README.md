@@ -788,6 +788,9 @@ closed, initiative, still-escalated, assigned or host-claim-held tickets are ski
 the existing claim eligibility rules. Failed direct refreshes are logged and skipped
 without opening a generation or blocking unrelated tickets and later stages; unresolved
 tickets are retried next pass. Held locks retry next pass; dry runs never open generations.
+A later `merged` receipt or `decision` at stage `wontfix` resolves earlier escalation
+history: those tickets are not re-locked or refreshed on subsequent passes. A new
+escalation makes a reopened ticket relevant again.
 Land, manager and ticket stages also observe releases before reading budgets.
 One receipt retains `event="generation"` and adds `kind="generation"`, with `generation`,
 `intent`, `source` (`label` or `requeue_agent`), `actor`, `decision` and `escalation_at`.
