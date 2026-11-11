@@ -4563,6 +4563,9 @@ def land_pass(dry_run: bool) -> None:
     merge queue: landing one PR makes the others stale, and the refresh path
     re-earns gate and fresh review evidence before they land.
     """
+    if cfg.host_name is not None and cfg.land_host is not None and cfg.host_name != cfg.land_host:
+        log(f"land: skipped, land host is {cfg.land_host}")
+        return
     # Serialize against concurrent dispatcher runs (timer + manual): two merge
     # stages rebasing the same worktree would corrupt it. Skip, don't wait —
     # the next timer pass retries.
@@ -4627,6 +4630,11 @@ def merge_pass_locked(dry_run: bool) -> None:
             continue
         candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
     for pr_num, n, listed_head in sorted(candidates):
+        if cfg.host_name is not None:
+            elected = elected_host_claim(host_claims(n))
+            if elected is not None and elected["host"] != cfg.host_name:
+                log(f"PR #{pr_num}: skipped, elected claim belongs to host {elected['host']}")
+                continue
         with nullcontext() if dry_run else lifecycle.scope(
             EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
         ) as execution:

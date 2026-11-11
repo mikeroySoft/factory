@@ -43,5 +43,14 @@
   "mutated": "    if counts[\"planned\"] <= 0:",
   "argument": "counts comes from _proof_counts (gate.py:147), which returns None for any value < 0, and read_mutation_proof FAILs that record as malformed (gate.py:178) before line 216, so planned is a non-negative exact int there and planned <= 0 iff planned == 0. The earlier planned == 0 check at gate.py:201 is unaffected.",
   "reviewer": "Independent Opus review: EQUIVALENT-ACCEPT; Factory PM accepted Nov 9 2026"
+ },
+ {
+  "file": "factory/onboard.py",
+  "line": 559,
+  "operator": "core/ReplaceTrueWithFalse",
+  "original": "        report(True, \"land_host\", cfg.land_host, info=True)",
+  "mutated": "        report(False, \"land_host\", cfg.land_host, info=True)",
+  "argument": "The mutated call passes info=True, and the nested report() at onboard.py:497-499 computes `tag = \"INFO\" if info else \"PASS\" if status else (\"WARN\" if status is None else \"FAIL\")` (onboard.py:498): when info is True the first branch is taken and `status` is never read. The row appended is {\"status\": tag, \"label\", \"detail\"} (onboard.py:499) and `status` is not stored anywhere else, so report(True, ...) and report(False, ..., info=True) produce the identical INFO row with the same label and detail; no input (cfg.land_host value, host config) can make the two differ. The sibling calls on onboard.py:555 and 557 (host_name, triage_host) have the same form.",
+  "reviewer": "Factory PM ruling r3-1155 accepted Nov 11 2026 (equivalent by the info=True branch at onboard.py:498)"
  }
 ]

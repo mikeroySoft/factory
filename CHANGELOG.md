@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Host-only `land_host` selects the host allowed to run upstream sync, merge and behind-main refresh; other hosts skip landing before git/gh calls or journal writes. Ticket merges also skip foreign elected claims before CI or approval mutations, preventing cross-host `approval_missing` and refresh collisions. Unconfigured single-host behavior is unchanged (#731).
+
 ## 0.4.9 — 2026-11-09
 
 - `factory install` and `doctor` reject a service interpreter that imports Factory from the repository checkout even when the import path spells the checkout through a directory alias (a symlinked checkout on `PYTHONPATH`, a `__path__` entry, or macOS `/var`) and the checkout file is a symlink.
