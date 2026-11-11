@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `exit_grace` no longer terminates a worker that committed or wrote its handoff while its child processes are still using CPU (its gate run or a commit it waits on). Once the worker is done, each poll reads its descendants and process-group members with one `ps` call; a child appearing, using CPU or ending counts as activity, so the clock runs a full `exit_grace` from when they stop. An idle helper child (an eval kernel, an MCP server) does not hold it, and a worker with no busy children is still terminated after `exit_grace` seconds (#761).
+
 ## 0.4.9 — 2026-11-09
 
 - `factory install` and `doctor` reject a service interpreter that imports Factory from the repository checkout even when the import path spells the checkout through a directory alias (a symlinked checkout on `PYTHONPATH`, a `__path__` entry, or macOS `/var`) and the checkout file is a symlink.
