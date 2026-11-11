@@ -579,6 +579,27 @@ class PreLandRequeueTest(unittest.TestCase):
         lifecycle.append(dispatch.EVENTS, {**ESCALATED, "ticket": 10, "reason": "manager_failed"})
         self.assertEqual(self.scheduled_pass(self.issue)[0], [7])
 
+    def test_terminal_histories_stop_refreshing_until_a_new_escalation(self) -> None:
+        closed = {**self.issue, "state": "CLOSED"}
+        for terminal in ("merged", "CLOSE", "RESOLVE"):
+            with self.subTest(terminal=terminal):
+                lifecycle.append(dispatch.EVENTS, ESCALATED)
+                if terminal == "merged":
+                    dispatch.record("merged", ticket=7, pr=17, head=H)
+                else:
+                    manage._record_wontfix(7, terminal, "Already finished")
+                for _ in range(2):
+                    self.assertEqual(self.scheduled_pass(closed), ([], []))
+                self.assertFalse(dispatch.ticket_lock(7).exists(), "terminal tickets must not recreate locks")
+                dispatch.observe_owner_requeue(7, self.issue)
+                self.assertEqual(generation.current(lifecycle.read_events(dispatch.EVENTS), 7).number, 0)
+
+        # A later escalation makes a reopened ticket relevant again.
+        lifecycle.append(dispatch.EVENTS, ESCALATED)
+        reads, opened = self.scheduled_pass(self.issue)
+        self.assertEqual(reads, [7])
+        self.assertEqual([row["generation"] for row in opened], [1])
+
     def test_host_claim_holds_and_unclaimed_assignments_cannot_open_generations(self) -> None:
         self.cfg.host_name = "local"
         assigned = {**self.issue, "assignees": [{"login": "alice"}]}
