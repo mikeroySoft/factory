@@ -21,7 +21,7 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from factory import config, lifecycle, onboard
+from factory import config, github, lifecycle, onboard
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -654,18 +654,20 @@ def apply_decision(
 
 
 def list_needs_triage(execution=None) -> list[int]:
-    raw = gh(
+    args = (
         "issue",
         "list",
         "--label",
         LABEL_TRIAGE,
         "--state",
         "open",
+        "--limit",
+        "1000",
         "--json",
         "number",
-        execution=execution,
     )
-    return [item["number"] for item in json.loads(raw)]
+    raw = gh(*args, execution=execution)
+    return [item["number"] for item in github.json_output(args, raw)]
 
 
 def timeouts_last(numbers: list[int]) -> list[int]:
