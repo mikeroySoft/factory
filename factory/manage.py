@@ -964,7 +964,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                     dispatch.log(f"PR #{number}: not factory-owned ({observation['owner']['relation']}); not in frontier")
                     continue
                 head = pr["headRefOid"]
-                checks = dispatch.pr_checks(number)
+                checks = dispatch.pr_checks(number, head)
                 red = [c for c in checks if c["bucket"] in ("fail", "cancel")]
                 late = undelivered(observation, events, n)
                 if ticket_generation.awaiting_attempt:

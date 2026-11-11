@@ -250,6 +250,7 @@ class PromotionTest(unittest.TestCase):
         AutoLearnTest.setUp(self)
         self.checks = [{"name": "gate", "bucket": "pass"}]
         self.enterContext(mock.patch.object(dispatch, "pr_checks", side_effect=lambda _: self.checks))
+        dispatch.pr_checks.side_effect = lambda _pr, _head: self.checks
         self.run = self.enterContext(mock.patch.object(dispatch, "run"))
         self.open_prs = [{"number": 42, "headRefName": self.BRANCH, "headRefOid": self.HEAD, "baseRefName": "main",
                           "isDraft": False, "reviewDecision": ""}]
