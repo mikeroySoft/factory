@@ -3169,7 +3169,8 @@ def pr_gate_and_review(
             verdict, proof_scope = _mutation_proof(pr_report, head, base_commit) or ("FAIL", None)
             if verdict == "STALE":
                 current_base = _resolved_commit(wt, caller_base)
-                if current_base != base_commit:
+                moved_proof = _mutation_proof(pr_report, head, current_base) or ("FAIL", None)
+                if current_base != base_commit and moved_proof[0] in {"PASS", "SKIP"}:
                     base_commit = current_base
                     pr_runs[head] = run_gate(
                         wt, f"{n}-pr", tier="pr", blocking_mutation=True,
@@ -3179,10 +3180,11 @@ def pr_gate_and_review(
                     verdict, proof_scope = (
                         _mutation_proof(pr_report, head, base_commit) or ("FAIL", None)
                     )
+                    current_base = _resolved_commit(wt, caller_base)
+                    moved_proof = _mutation_proof(pr_report, head, current_base) or ("FAIL", None)
                     if (
-                        verdict == "STALE"
-                        and ok
-                        and _resolved_commit(wt, caller_base) != base_commit
+                        verdict == "STALE" and ok and current_base != base_commit
+                        and moved_proof[0] in {"PASS", "SKIP"}
                     ):
                         pr_runs.pop(head, None)
                         return PR_GATE_WAIT, pr_report, False
