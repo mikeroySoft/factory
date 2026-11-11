@@ -1105,6 +1105,25 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    runs only pr checks (release ones SKIP) and `--tier release` only release
    checks, with no built-ins. This attempt gate is what the worker and the
    dispatcher run after each attempt, and what the merge-stage refresh re-runs.
+   Repositories may opt into mechanical repairs with `[gate].fixups`, an array of
+   argv arrays (for example `fixups = [["cargo", "xtask", "manifest"]]`). Factory
+   never infers commands. Before escalating the last failed worker gate (including
+   manager FIX and review-bounce workers), it runs these commands once, in order,
+   in the clean ticket worktree, stopping on the first failure and using the gate
+   check timeout. If all succeed and change files, Factory commits those changes
+   and re-runs the gate with the same flags at the new SHA. No changes, a command
+   failure, or another failed gate leaves the normal escalation in place; the
+   report and escalation comment state that fixups ran. An empty/absent list
+   leaves behavior unchanged. Refresh failures get the same repair pass after
+   their existing same-head retry; PR-tier failures get one pass per uncached
+   head, then recheck the attempt gate before publishing and reviewing a new
+   head. Protected-path checks still apply to every repair commit.
+   A PR repair's `gate-fixup` receipt binds acceptance and handoff retention to
+   the repaired head and carries forward the previous head's recorded worker
+   completion, so a late actionable review can still defer rework to the next pass.
+   With `[dispatch].signoff = true` (the default), Factory signs off merge commits
+   at creation, including upstream sync and refresh merges. It never retrofits
+   trailers by amending or rewriting human or other pre-existing commits.
 5. **Review.** After the attempt gate passes, the dispatcher runs the
    `when = "pr"` checks once for the head about to be reviewed (same timeout and
    `exclusive` lock; a head is never re-run) and appends their report to the gate
@@ -1421,6 +1440,7 @@ timeout = 1200
 lock = "/tmp/factory.lock"
 protected_paths = [".factory.toml", "REVIEW.md", "TRACKING*"]
 add_only_paths = ["tests/**"]     # new files and appended lines pass; edits escalate
+# fixups = [["cargo", "xtask", "manifest"]]  # optional mechanical repair; no defaults
 
 [[gate.check]]
 name = "lint"
