@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 import tempfile
 import unittest
@@ -209,6 +210,77 @@ class InstallStateTest(unittest.TestCase):
                 self.assertEqual(list(self.udir.iterdir()), [])
                 self.assertFalse(any(call[2] in ("enable", "restart", "daemon-reload") for call in self.calls))
 
+
+
+class DoctorTimerTest(unittest.TestCase):
+    def doctor(self, systemctl_path, *, service="", error=None, failed_timer=None):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / config.CONFIG_NAME).touch()
+            cfg = config.Config(root, "acme/widgets", signoff=False)
+            cfg.install = {"host": "127.0.0.1", "env": {}}
+            cfg.triage_service = service
+
+            def command(argv, **kwargs):
+                stdout = ""
+                if argv[0] == "systemctl":
+                    if systemctl_path is None:
+                        raise FileNotFoundError("systemctl")
+                    if error is not None and argv[-1] == failed_timer:
+                        raise error("systemctl")
+                    stdout = "active\n"
+                elif argv[:3] == ["gh", "repo", "view"]:
+                    stdout = "WRITE\n"
+                elif argv[:3] == ["gh", "label", "list"]:
+                    stdout = json.dumps(list(config.LABELS))
+                return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+            output = io.StringIO()
+            with patch.object(onboard.config, "load", return_value=cfg), \
+                    patch.object(onboard.config, "host_config", return_value={}), \
+                    patch.object(onboard.config, "engine_drift", return_value=None), \
+                    patch.object(onboard, "unit_dir", return_value=root / "units"), \
+                    patch.object(onboard.subprocess, "run", side_effect=command) as run, \
+                    patch.object(onboard.shutil, "which", side_effect=lambda exe, **kw: (
+                        systemctl_path if exe == "systemctl" else "/bin/tool"
+                    )), \
+                    patch.object(onboard, "_dashboard_port_check", return_value=(True, "available")), \
+                    patch("factory.triage.probe_endpoint", return_value=(True, "alive")), \
+                    redirect_stdout(output):
+                self.assertEqual(onboard.doctor([]), 0)
+            return output.getvalue(), [call.args[0] for call in run.call_args_list]
+
+    def test_doctor_without_systemctl_reports_info(self) -> None:
+        for service in ("", "model.service"):
+            with self.subTest(service=service):
+                output, calls = self.doctor(None, service=service)
+                self.assertIn("  INFO  systemd timer factory-widgets.timer: n/a (launchd)\n", output)
+                self.assertIn(
+                    "  INFO  triage liveness probe: " + (
+                        "n/a (launchd)" if service else
+                        "disabled; set [triage].service to a systemd user service unit"
+                    ) + "\n",
+                    output,
+                )
+                self.assertFalse(any(argv[0] == "systemctl" for argv in calls))
+                self.assertIn("OK: 0 blocking problem(s)", output)
+
+    def test_doctor_systemctl_oserror_reports_info(self) -> None:
+        timers = {
+            "factory-widgets.timer": "systemd timer factory-widgets.timer",
+            "factory-widgets-triage-probe.timer": "triage liveness probe",
+        }
+        for error in (FileNotFoundError, PermissionError):
+            for timer, label in timers.items():
+                with self.subTest(error=error, timer=timer):
+                    output, _ = self.doctor(
+                        "/bin/systemctl", service="model.service", error=error, failed_timer=timer,
+                    )
+                    self.assertIn(f"  INFO  {label}: n/a (launchd)\n", output)
+                    other = next(name for name in timers if name != timer)
+                    detail = "active" if other == "factory-widgets.timer" else f"{other} active"
+                    self.assertIn(f"  PASS  {timers[other]}: {detail}\n", output)
+                    self.assertIn("OK: 0 blocking problem(s)", output)
 
 
 if __name__ == "__main__":
