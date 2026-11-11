@@ -196,6 +196,27 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
         self.assertEqual(len(self.risk_failures()), 1)
         self.assertEqual(self.review_roles, [])
 
+    def test_base_movement_does_not_defer_a_head_mismatched_proof(self) -> None:
+        third_base = git(
+            self.repo, "commit-tree", f"{self.new_base}^{{tree}}",
+            "-p", self.new_base, "-m", "move main again",
+        )
+        moved_bases = iter((self.new_base, third_base))
+
+        def wrong_head_gate(*_args, **_kwargs):
+            moved = next(moved_bases)
+            git(self.repo, "update-ref", "refs/remotes/origin/main", moved)
+            proof_head = self.head if moved == self.new_base else "f" * 40
+            return True, proof("PASS", moved, proof_head)
+
+        with mock.patch.object(dispatch, "run_gate", side_effect=wrong_head_gate):
+            verdict, _, pr_failed = dispatch.pr_gate_and_review(
+                self.repo, 7, "attempt report", self.head, {},
+            )
+        self.assertEqual((verdict, pr_failed), ("REVISE", True))
+        self.assertEqual(len(self.risk_failures()), 1)
+        self.assertEqual(self.review_roles, [])
+
     def test_real_pr_gate_failure_still_returns_revise_and_records_failure(self) -> None:
         report = proof("PASS", self.old_base, self.head) + "- protected-paths: FAIL\n"
         with mock.patch.object(dispatch, "run_gate", return_value=(False, report)):
