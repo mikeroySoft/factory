@@ -56,7 +56,7 @@ class GithubLists(unittest.TestCase):
                     result = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
                     with mock.patch.object(dispatch, "run", return_value=result), \
                             mock.patch.object(stats.subprocess, "run", return_value=result):
-                        for read in (lambda: dispatch.gh_json(args), lambda: stats.gh(*args)):
+                        for read in (lambda args=args: dispatch.gh_json(args), lambda args=args: stats.gh(*args)):
                             if count < 2:
                                 self.assertEqual(read(), rows)
                             else:
@@ -68,7 +68,7 @@ class GithubLists(unittest.TestCase):
 
         for count in (42, 1000):
             with self.subTest(count=count):
-                def transport(command, **kwargs):
+                def transport(command, count=count, **kwargs):
                     limit = int(command[command.index("--limit") + 1]) if "--limit" in command else 30
                     rows = [{"number": n} for n in range(count)][:limit]
                     return subprocess.CompletedProcess(command, 0, json.dumps(rows), "")
@@ -89,17 +89,16 @@ class GithubLists(unittest.TestCase):
 
         rows = [{"number": n, "updatedAt": "2026-01-01T00:00:00Z"} for n in range(1000)]
         result = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
-        with mock.patch.object(stats.subprocess, "run", return_value=result):
-            with self.assertRaisesRegex(RuntimeError, "possible truncation"):
-                stats.stuck_over_days(datetime(2026, 11, 10, tzinfo=UTC))
+        with mock.patch.object(stats.subprocess, "run", return_value=result), \
+                self.assertRaisesRegex(RuntimeError, "possible truncation"):
+            stats.stuck_over_days(datetime(2026, 11, 10, tzinfo=UTC))
 
     def test_labels_and_searches_reject_saturation(self):
         from factory import github
 
         for command in (["label", "list"], ["search", "prs"], ["search", "issues"]):
-            with self.subTest(command=command):
-                with self.assertRaisesRegex(RuntimeError, "possible truncation"):
-                    github.json_output([*command, "--limit", "2"], '[{"number": 1}, {"number": 2}]')
+            with self.subTest(command=command), self.assertRaisesRegex(RuntimeError, "possible truncation"):
+                github.json_output([*command, "--limit", "2"], '[{"number": 1}, {"number": 2}]')
 
     def test_unbounded_or_projected_lists_cannot_claim_completeness(self):
         from factory import github
