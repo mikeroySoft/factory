@@ -75,12 +75,12 @@ class Scope:
 
 def _git(cwd: Path | None, *args: str) -> str:
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=False)
     except OSError as exc:
         raise ScopeError(f"git unavailable: {exc}") from exc
     if proc.returncode:
-        raise ScopeError(f"`git {' '.join(args)}` failed: {proc.stderr.strip()}")
-    return proc.stdout
+        raise ScopeError(f"`git {' '.join(args)}` failed: {proc.stderr.decode(errors='replace').strip()}")
+    return proc.stdout.decode("utf-8")  # Git counts LF only; universal-newline decoding loses CR bytes.
 
 
 def resolve(ref: str, cwd: Path | None = None) -> str:
@@ -108,7 +108,7 @@ def parse(diff: str) -> tuple[tuple[str, str | None, tuple[int, ...]], ...]:
     files: dict[str, tuple[str | None, set[int]]] = {}
     path = blob = None
     old_remaining = new_remaining = 0
-    for line in diff.split("\n"):
+    for line in diff.removesuffix("\n").split("\n"):
         if old_remaining or new_remaining:
             if line.startswith("+"):
                 new_remaining -= 1
