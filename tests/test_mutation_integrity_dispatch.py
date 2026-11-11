@@ -9,7 +9,6 @@ from unittest import mock
 
 from factory import config, dispatch
 
-
 SCOPE = "a" * 64
 
 
