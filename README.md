@@ -1639,8 +1639,10 @@ account's budget after the check.
 
 Dispatch and doctor inspect all paginated repository labels and issue comments
 (including closed issues). Any `host:*` label or valid claim comment requires
-`host_name`; valid claim authors must all match the dispatcher GitHub login,
-case-insensitively. Doctor checks the effective dispatcher environment, including
+`host_name`; claim authors must match the dispatcher GitHub login when authored
+by that login or a repository owner, member, or collaborator. Outsider comments
+cannot establish host identity or block dispatch. Login comparison is
+case-insensitive. Doctor checks the effective dispatcher environment, including
 `install.dispatch_env`, and reports a blocking `host claims` FAIL on mismatch,
 missing identity, or unreadable evidence. Dispatch refuses those passes (exit 1),
 including `--ticket` and dry runs. It rechecks claim authors at admission and
