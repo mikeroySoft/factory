@@ -2865,6 +2865,7 @@ class DispatchTest(unittest.TestCase):
             dispatch.configure(cfg)
             with mock.patch.object(config, "load", return_value=cfg), \
                     mock.patch.object(dispatch, "pin_root", return_value=[]), \
+                    mock.patch.object(dispatch, "github_preflight", return_value=None), \
                     mock.patch.object(dispatch, "gh_json", side_effect=github), \
                     mock.patch.object(dispatch, "land_pass"), \
                     mock.patch.object(dispatch, "review_external_pr"), \
@@ -5143,6 +5144,10 @@ class TriageProbeOnboardingTest(unittest.TestCase):
             cfg.raw_repo = {}
 
             def command(argv, cwd=None):
+                if argv[:3] == ["gh", "api", "--paginate"]:
+                    return subprocess.CompletedProcess(argv, 0, "[]", "")
+                if argv == ["gh", "api", "user"]:
+                    return subprocess.CompletedProcess(argv, 0, json.dumps({"login": "factory"}), "")
                 if argv[:3] == ["gh", "repo", "view"]:
                     return subprocess.CompletedProcess(argv, 0, "WRITE\n", "")
                 if argv[:3] == ["gh", "label", "list"]:
@@ -5158,6 +5163,7 @@ class TriageProbeOnboardingTest(unittest.TestCase):
                     mock.patch.object(onboard.config, "host_config", return_value={}), \
                     mock.patch.object(onboard.config, "engine_drift", return_value=None), \
                     mock.patch.object(onboard, "sh", side_effect=command), \
+                    mock.patch.object(onboard, "sh", side_effect=lambda cmd, env=None, **kwargs: command(cmd, **kwargs)), \
                     mock.patch.object(onboard, "unit_dir", return_value=root / "units"), \
                     mock.patch.object(onboard.shutil, "which", return_value="/bin/tool"), \
                     mock.patch.object(onboard, "_dashboard_port_check", return_value=(True, "available")), \

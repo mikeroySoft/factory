@@ -646,6 +646,10 @@ class DoctorSigningKeyTest(unittest.TestCase):
             commands: list[list[str]] = []
 
             def command(argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None):
+                if argv[:3] == ["gh", "api", "--paginate"]:
+                    return subprocess.CompletedProcess(argv, 0, "[]", "")
+                if argv == ["gh", "api", "user"]:
+                    return subprocess.CompletedProcess(argv, 0, json.dumps({"login": "factory"}), "")
                 commands.append(argv)
                 if argv == ["gh", "api", "user", "--jq", ".login"]:
                     return subprocess.CompletedProcess(argv, 0, "mikeroysoft-agent\n", "")

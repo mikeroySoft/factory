@@ -209,6 +209,7 @@ class AutoLearnTest(unittest.TestCase):
         self.propose.side_effect = ValueError("model returned unparseable JSON twice")
         with mock.patch.object(dispatch.config, "load", return_value=self.cfg), \
                 mock.patch.object(dispatch, "pin_root", return_value=[]), \
+                mock.patch.object(dispatch, "github_preflight", return_value=None), \
                 mock.patch.object(dispatch, "land_pass"), \
                 mock.patch.object(dispatch, "review_intake_pass"), \
                 mock.patch("factory.manage.manage_pass"), \

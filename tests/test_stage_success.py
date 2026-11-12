@@ -76,6 +76,7 @@ class StageSuccessTest(unittest.TestCase):
         issue = {"number": 7, "title": "ticket", "body": "", "labels": [], "assignees": []}
         with mock.patch.object(dispatch, "pin_root", return_value=[]), \
                 mock.patch.object(dispatch.config, "load", return_value=self.cfg), \
+                mock.patch.object(dispatch, "github_preflight", return_value=None), \
                 mock.patch.object(dispatch, "issue_is_open", return_value=True), \
                 mock.patch.object(dispatch, "gh_json", return_value=issue), \
                 mock.patch.object(dispatch, "process_ticket", return_value=None):

@@ -29,6 +29,7 @@ class EngineYieldTest(unittest.TestCase):
         self.enterContext(patch.dict(dispatch.__dict__))
         self.enterContext(patch.object(config, "repo_root", side_effect=lambda *_: self.root))
         self.enterContext(patch.object(dispatch, "pin_root", return_value=[]))
+        self.enterContext(patch.object(dispatch, "github_preflight", return_value=None))
         self.stages = []
         self.enterContext(patch.object(dispatch, "land_pass", side_effect=lambda _: self.stages.append("land")))
         self.enterContext(patch.object(dispatch, "review_intake_pass", side_effect=lambda _: self.stages.append("review")))

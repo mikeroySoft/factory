@@ -103,18 +103,20 @@ class RepositoryHostProblemTest(unittest.TestCase):
 
 
 class DoctorHostClaimsTest(unittest.TestCase):
-    def doctor(self, *, author: str = "human", read_error: bool = False) -> tuple[int, dict, list[str | None]]:
+    def doctor(
+        self, *, author: str = "human", host: str | None = "tank", read_error: bool = False,
+    ) -> tuple[int, dict, list[str | None]]:
         seen_config_dirs: list[str | None] = []
 
-        def command(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+        def command(cmd: list[str], cwd: Path | None = None, env=None) -> subprocess.CompletedProcess:
             if cmd[:3] == ["gh", "api", "--paginate"]:
-                seen_config_dirs.append(os.environ.get("GH_CONFIG_DIR"))
+                seen_config_dirs.append(env.get("GH_CONFIG_DIR"))
                 if read_error and "issues/comments" in cmd[-1]:
                     raise OSError("offline")
                 value = [[{"name": "host:tank"}]] if "labels" in cmd[-1] else [[comment(author)]]
                 return subprocess.CompletedProcess(cmd, 0, json.dumps(value), "")
             if cmd[:3] == ["gh", "api", "user"]:
-                seen_config_dirs.append(os.environ.get("GH_CONFIG_DIR"))
+                seen_config_dirs.append(env.get("GH_CONFIG_DIR"))
                 return subprocess.CompletedProcess(cmd, 0, json.dumps({"login": "factory-bot"}), "")
             if cmd[:3] == ["gh", "repo", "view"]:
                 return subprocess.CompletedProcess(cmd, 0, "ADMIN\n", "")
@@ -127,7 +129,7 @@ class DoctorHostClaimsTest(unittest.TestCase):
             root = Path(directory)
             (root / config.CONFIG_NAME).write_text('[repo]\nslug = "acme/widgets"\n')
             cfg = config.Config(root, "acme/widgets", signoff=False)
-            cfg.host_name = "tank"
+            cfg.host_name = host
             cfg.install = config.merge(config.DEFAULT_INSTALL, {
                 "env": {"FACTORY_BASE_ENV": "yes"},
                 "dispatch_env": {"GH_CONFIG_DIR": "/service/gh"},
@@ -142,7 +144,7 @@ class DoctorHostClaimsTest(unittest.TestCase):
                     mock.patch.object(onboard, "gh_login", side_effect=login), \
                     mock.patch.object(onboard, "_dashboard_port_check", return_value=(True, "")), \
                     mock.patch.object(onboard.shutil, "which", return_value="/bin/tool"), \
-                    mock.patch.object(onboard.urllib.request, "urlopen", return_value=mock.MagicMock()), \
+                    mock.patch("factory.triage.probe_endpoint", return_value=(True, "ok")), \
                     mock.patch.dict(os.environ, {}, clear=True), redirect_stdout(output):
                 code = onboard.doctor(["--json"])
 
@@ -155,6 +157,15 @@ class DoctorHostClaimsTest(unittest.TestCase):
         self.assertIn("human", row["detail"])
         self.assertIn("factory-bot", row["detail"])
         self.assertEqual(config_dirs, ["/service/gh", "/service/gh", "/service/gh"])
+
+    def test_unset_host_name_is_a_doctor_fail(self) -> None:
+        code, row, _ = self.doctor(author="factory-bot", host=None)
+        self.assertEqual((code, row["status"]), (1, "FAIL"))
+        self.assertIn("host_name", row["detail"])
+
+    def test_matching_dispatcher_login_passes(self) -> None:
+        code, row, _ = self.doctor(author="FACTORY-BOT")
+        self.assertEqual((code, row["status"]), (0, "PASS"))
 
     def test_read_failure_is_a_host_claims_fail(self) -> None:
         code, row, _ = self.doctor(read_error=True)

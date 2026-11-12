@@ -93,6 +93,7 @@ class IdlePasses(unittest.TestCase):
         with patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}"}), \
                 patch.dict(triage.__dict__), patch.object(config, "load", return_value=self.cfg), \
                 patch.object(dispatch, "pin_root", return_value=[]), \
+                patch.object(dispatch, "github_preflight", return_value=None), \
                 patch.object(dispatch, "frontier", wraps=dispatch.frontier) as frontier:
             if ready is not None:
                 frontier.side_effect = lambda: ready

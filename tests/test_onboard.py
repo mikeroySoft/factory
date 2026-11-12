@@ -222,6 +222,10 @@ class DoctorTimerTest(unittest.TestCase):
             cfg.triage_service = service
 
             def command(argv, **kwargs):
+                if argv[:3] == ["gh", "api", "--paginate"]:
+                    return subprocess.CompletedProcess(argv, 0, "[]", "")
+                if argv == ["gh", "api", "user"]:
+                    return subprocess.CompletedProcess(argv, 0, json.dumps({"login": "factory"}), "")
                 stdout = ""
                 if argv[0] == "systemctl":
                     if systemctl_path is None:
