@@ -491,12 +491,19 @@ def _failure_block(lines: list[str], test_id: str) -> tuple[str, list[str]]:
 
 def _terminal_exception_block(block: list[str]) -> list[str]:
     start = 0
+    in_message = False
     for index, line in enumerate(block):
+        # Frames after an exception line are embedded in its multiline message.
+        if in_message and line.startswith('  File "'):
+            break
         if line in {
             "The above exception was the direct cause of the following exception:",
             "During handling of the above exception, another exception occurred:",
         }:
             start = index + 1
+            in_message = False
+        elif _EXCEPTION_LINE.match(line):
+            in_message = True
     return block[start:]
 
 
