@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Failed `test`/`tests`/`pytest`/`unittest` gate checks now put every failing test ID before the raw output tail. The first entry includes the full-output `path:line`, assertion or exception, and expected/actual excerpt; the lifecycle result journals the same detail. Embedded subprocess exception chains cannot replace the outer test's assertion evidence. Unparseable test output says so explicitly, while passing and non-test checks remain unchanged (#473).
 
 ## 0.4.11 — 2026-11-12
 
