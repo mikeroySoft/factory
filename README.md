@@ -1638,18 +1638,20 @@ safety margin, not a reservation: other hosts and clients can consume the shared
 account's budget after the check.
 
 Dispatch inspects paginated repository labels at pass start. Any `host:*` label
-requires `host_name`; claims create this repository label before posting their
-comment. Pass-start checks never scan repository comment history, so their cost
-does not grow with historical issue/PR conversations.
+requires `host_name`. When `host_name` is unset, dispatch also scans all paginated
+issue comments (including closed issues) and refuses valid host claims even if
+their repository labels were removed. Unreadable evidence refuses dispatch.
+Named hosts do not scan repository comment history at pass start, so their
+preflight cost does not grow with historical issue/PR conversations.
 
-Doctor additionally inspects all paginated issue comments (including closed
-issues). Valid claim comments require `host_name`; claim authors must match the
+Doctor inspects all paginated issue comments for every host.
+Valid claim comments require `host_name`; claim authors must match the
 dispatcher GitHub login when authored by that login or a repository owner,
 member, or collaborator. Outsider comments cannot establish host identity or
 block dispatch. Login comparison is case-insensitive. Doctor checks the effective
 dispatcher environment, including `install.dispatch_env`, and reports a blocking
 `host claims` FAIL on mismatch, missing identity, or unreadable evidence.
-Dispatch refuses unsafe repository-label setups (exit 1), including `--ticket`
+Dispatch refuses unsafe repository host setups (exit 1), including `--ticket`
 and dry runs. It checks the selected ticket's claim authors at admission and
 after publishing a contender, closing the different-login election window.
 Foreign comments never gain cleanup authority; inspect and resolve incompatible
