@@ -1,6 +1,7 @@
 """#723: release_host and triage_host gates for review-intake, manager and learn."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -204,6 +205,146 @@ class HostGatedLoopsTest(unittest.TestCase):
         ):
             learn.learn_pass(False)
         score.assert_called_once()
+
+    def _runtime_name(self, value: str) -> str:
+        built = json.loads(json.dumps(value))
+        self.assertEqual(built, value)
+        self.assertIsNot(built, value)
+        return built
+
+    def test_review_intake_gate_kills_value_and_identity_mutants(self) -> None:
+        below, above = self._runtime_name("tank"), self._runtime_name("ultron")
+        self.assertLess(below, above)
+        self.cfg.host_name = below
+        self.cfg.triage_host = above
+        with mock.patch.object(dispatch, "gh_json", side_effect=self._fail_github) as gh:
+            dispatch.review_intake_pass(False)
+        gh.assert_not_called()
+        self.assertEqual(self.logs, ["review-intake: skipped, triage host is ultron"])
+
+        host, triage = self._runtime_name("tank"), self._runtime_name("tank")
+        self.assertEqual(host, triage)
+        self.assertIsNot(host, triage)
+        self.cfg.host_name = host
+        self.cfg.triage_host = triage
+        self.logs.clear()
+        with mock.patch.object(dispatch, "gh_json", return_value=[]) as gh:
+            dispatch.review_intake_pass(False)
+        gh.assert_called()
+        self.assertFalse(any("review-intake: skipped" in msg for msg in self.logs))
+
+    def test_release_step_gate_kills_value_and_identity_mutants(self) -> None:
+        self.cfg.release_auto = True
+        below, above = self._runtime_name("tank"), self._runtime_name("ultron")
+        self.assertLess(below, above)
+        self.cfg.host_name = below
+        self.cfg.release_host = above
+        with (
+            mock.patch.object(config, "load", return_value=self.cfg),
+            mock.patch.object(dispatch, "pin_root", return_value=[]),
+            mock.patch.object(dispatch, "land_pass"),
+            mock.patch.object(dispatch, "review_intake_pass"),
+            mock.patch.object(dispatch, "frontier", return_value=[]),
+            mock.patch.object(manage, "manage_pass"),
+            mock.patch.object(learn, "learn_pass"),
+            mock.patch.object(dispatch, "gh_json", side_effect=self._fail_github),
+            mock.patch.object(dispatch, "run", side_effect=self._fail_github),
+            mock.patch("factory.release.run") as release_run,
+        ):
+            self.assertEqual(dispatch.main([]), 0)
+        release_run.assert_not_called()
+        self.assertTrue(any("release: skipped, release host is ultron" in msg for msg in self.logs))
+
+        host, release_host = self._runtime_name("tank"), self._runtime_name("tank")
+        self.assertEqual(host, release_host)
+        self.assertIsNot(host, release_host)
+        self.cfg.host_name = host
+        self.cfg.release_host = release_host
+        self.logs.clear()
+        with (
+            mock.patch.object(config, "load", return_value=self.cfg),
+            mock.patch.object(dispatch, "pin_root", return_value=[]),
+            mock.patch.object(dispatch, "land_pass"),
+            mock.patch.object(dispatch, "review_intake_pass"),
+            mock.patch.object(dispatch, "frontier", return_value=[]),
+            mock.patch.object(manage, "manage_pass"),
+            mock.patch.object(learn, "learn_pass"),
+            mock.patch("factory.release.run", return_value="ok") as release_run,
+        ):
+            self.assertEqual(dispatch.main([]), 0)
+        self.assertEqual(release_run.call_count, 2)
+        self.assertFalse(any("release: skipped" in msg for msg in self.logs))
+
+    def test_manage_pass_gate_kills_value_and_identity_mutants(self) -> None:
+        below, above = self._runtime_name("tank"), self._runtime_name("ultron")
+        self.assertLess(below, above)
+        self.cfg.host_name = below
+        self.cfg.triage_host = above
+        with (
+            mock.patch.object(manage, "viability_pass") as viability,
+            mock.patch.object(manage, "frontier_pass") as frontier,
+            mock.patch.object(manage, "escalation_pass") as escalation,
+            mock.patch.object(manage.handoff, "handoff_pass") as handoff_pass,
+        ):
+            manage.manage_pass(False)
+        viability.assert_not_called()
+        frontier.assert_not_called()
+        escalation.assert_not_called()
+        handoff_pass.assert_called_once_with(False)
+        self.assertEqual(self.logs, ["manage: skipped, triage host is ultron"])
+
+        host, triage = self._runtime_name("tank"), self._runtime_name("tank")
+        self.assertEqual(host, triage)
+        self.assertIsNot(host, triage)
+        self.cfg.host_name = host
+        self.cfg.triage_host = triage
+        self.logs.clear()
+        with (
+            mock.patch.object(manage, "viability_pass") as viability,
+            mock.patch.object(manage, "frontier_pass") as frontier,
+            mock.patch.object(manage, "escalation_pass") as escalation,
+            mock.patch.object(manage.handoff, "handoff_pass") as handoff_pass,
+        ):
+            manage.manage_pass(False)
+        viability.assert_called_once_with(False)
+        frontier.assert_called_once_with(False)
+        escalation.assert_called_once_with(False)
+        handoff_pass.assert_called_once_with(False)
+        self.assertFalse(any("manage: skipped" in msg for msg in self.logs))
+
+    def test_learn_pass_gate_kills_value_and_identity_mutants(self) -> None:
+        below, above = self._runtime_name("tank"), self._runtime_name("ultron")
+        self.assertLess(below, above)
+        self.cfg.host_name = below
+        self.cfg.triage_host = above
+        with (
+            mock.patch.object(learn.score, "run") as score,
+            mock.patch.object(learn, "auto_learn") as auto_learn,
+            mock.patch.object(learn, "decide_promotions") as decide,
+        ):
+            learn.learn_pass(False)
+        score.assert_not_called()
+        auto_learn.assert_not_called()
+        decide.assert_not_called()
+        self.assertEqual(self.logs, ["learn: skipped, triage host is ultron"])
+
+        host, triage = self._runtime_name("tank"), self._runtime_name("tank")
+        self.assertEqual(host, triage)
+        self.assertIsNot(host, triage)
+        self.cfg.host_name = host
+        self.cfg.triage_host = triage
+        self.logs.clear()
+        with (
+            mock.patch.object(learn.score, "run") as score,
+            mock.patch.object(learn, "auto_learn") as auto_learn,
+            mock.patch.object(learn, "decide_promotions") as decide,
+        ):
+            learn.learn_pass(False)
+        score.assert_called_once()
+        auto_learn.assert_called_once()
+        decide.assert_called_once()
+        self.assertFalse(any("learn: skipped" in msg for msg in self.logs))
+
 
 
 if __name__ == "__main__":

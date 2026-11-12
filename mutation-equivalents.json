@@ -52,5 +52,14 @@
   "mutated": "        report(False, \"land_host\", cfg.land_host, info=True)",
   "argument": "The mutated call passes info=True, and the nested report() at onboard.py:497-499 computes `tag = \"INFO\" if info else \"PASS\" if status else (\"WARN\" if status is None else \"FAIL\")` (onboard.py:498): when info is True the first branch is taken and `status` is never read. The row appended is {\"status\": tag, \"label\", \"detail\"} (onboard.py:499) and `status` is not stored anywhere else, so report(True, ...) and report(False, ..., info=True) produce the identical INFO row with the same label and detail; no input (cfg.land_host value, host config) can make the two differ. The sibling calls on onboard.py:555 and 557 (host_name, triage_host) have the same form.",
   "reviewer": "Factory PM ruling r3-1155 accepted Nov 11 2026 (equivalent by the info=True branch at onboard.py:498)"
+ },
+ {
+  "file": "factory/onboard.py",
+  "line": 561,
+  "operator": "core/ReplaceTrueWithFalse",
+  "original": "        report(True, \"release_host\", cfg.release_host, info=True)",
+  "mutated": "        report(False, \"release_host\", cfg.release_host, info=True)",
+  "argument": "Same form as the accepted onboard.py:559 land_host equivalent (#731, Factory PM r3-1155): the call is report(True, \"release_host\", cfg.release_host, info=True) at onboard.py:561. The nested report() at onboard.py:497-502 computes `tag = \"INFO\" if info else \"PASS\" if status else (\"WARN\" if status is None else \"FAIL\")` (onboard.py:498) and appends {\"status\": tag, \"label\", \"detail\"} (onboard.py:499); `status` is not stored anywhere else. When info is True the first branch is taken and `status` is never read, so report(True, ..., info=True) and report(False, ..., info=True) produce the identical INFO row with the same label and detail; no input (cfg.release_host value, host config) can make the two differ. Doctor text prints only r['status'], r['label'] and r['detail'] (onboard.py:735-738). The exit code and JSON ok flag count only rows whose tag is FAIL (onboard.py:730-733, 739: fails = sum(r[\"status\"] == \"FAIL\" for r in rows); return 1 if fails else 0; JSON ok is not fails). An INFO row is not FAIL, so output, exit code and JSON are unchanged for this row. The mutant leaves info=True in place and only flips the unread status argument.",
+  "reviewer": "Factory PM ruling r3-0205 accepted Nov 12 2026 (equivalent by the info=True branch at onboard.py:498, same as onboard.py:559 in #731)"
  }
 ]
