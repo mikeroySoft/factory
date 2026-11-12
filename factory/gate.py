@@ -68,7 +68,7 @@ def mutation_duration(value: str) -> float:
 def timed(
     cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None,
     proof_path: Path | None = None, proof_base: str | None = None,
-    timeout: float | None = None, uv_environment: Path | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a command with the per-check timeout (`timeout`, when given, for this call only).
 
@@ -91,11 +91,6 @@ def timed(
             env[MUTATION_PROOF_BASE_ENV] = proof_base
     if pythonpath is not None:
         env["PYTHONPATH"] = str(pythonpath)
-    if uv_environment is not None:
-        env["UV_PROJECT_ENVIRONMENT"] = str(uv_environment)
-        for name in ("UV_NO_SYNC", "VIRTUAL_ENV", "UV_CONFIG_FILE", "UV_PROJECT",
-                     "UV_WORKING_DIR", "UV_PYTHON"):
-            env.pop(name, None)
     proc = subprocess.Popen(
         cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         encoding="utf-8", errors="replace", start_new_session=True, env=env,
@@ -263,9 +258,20 @@ def _provision_trusted_uv_environment(
     for name in ("UV_NO_SYNC", "VIRTUAL_ENV", "UV_CONFIG_FILE", "UV_PROJECT",
                  "UV_WORKING_DIR", "UV_PYTHON"):
         env.pop(name, None)
-    proc = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
+    proc = subprocess.Popen(
+        command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, start_new_session=True,
+    )
+    try:
+        out, _ = proc.communicate(timeout=CHECK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        raise mutation_scope.ScopeError(
+            "trusted mutation environment provisioning timed out"
+        ) from None
     if proc.returncode != 0:
-        detail = (proc.stdout + proc.stderr).strip() or f"exit {proc.returncode}"
+        detail = (out or "").strip() or f"exit {proc.returncode}"
         raise mutation_scope.ScopeError(
             f"trusted mutation environment could not be provisioned: {detail}"
         )

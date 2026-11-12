@@ -3042,6 +3042,36 @@ def _resolved_commit(wt: Path, ref: str) -> str | None:
     return oid or None
 
 
+def _is_ancestor(wt: Path, ancestor: str, descendant: str) -> bool:
+    return run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=wt, check=False,
+    ).returncode == 0
+
+
+def _moved_main_proof(
+    wt: Path, report: str, head: str, snapshot: str | None, current: str | None,
+) -> bool:
+    """True when a PASS/SKIP proof is bound to this head and a base on the
+    snapshot→current main ancestry, including an intermediate base.
+
+    Main moved after the dispatcher snapshot and/or after the producer bound
+    its base. A head mismatch, a FAIL proof, or a base off that ancestry is not
+    a move and stays stale.
+    """
+    if not snapshot or not current or snapshot == current:
+        return False
+    proofs = _PROOF_LINE.findall(report.split("\n## Host toolchain", 1)[0])
+    if len(proofs) != 1:
+        return False
+    _name, status, proof_base, proof_head, scope = proofs[0]
+    if status not in {"PASS", "SKIP"} or not scope or proof_head != head or not proof_base:
+        return False
+    if proof_base == current:
+        return True
+    return _is_ancestor(wt, snapshot, proof_base) and _is_ancestor(wt, proof_base, current)
+
+
 def _worker_model_for_head(n: int, head: str) -> str | None:
     events = lifecycle.read_events(EVENTS)
     exact = next((
@@ -3169,8 +3199,9 @@ def pr_gate_and_review(
             verdict, proof_scope = _mutation_proof(pr_report, head, base_commit) or ("FAIL", None)
             if verdict == "STALE":
                 current_base = _resolved_commit(wt, caller_base)
-                moved_proof = _mutation_proof(pr_report, head, current_base) or ("FAIL", None)
-                if current_base != base_commit and moved_proof[0] in {"PASS", "SKIP"}:
+                if current_base != base_commit and _moved_main_proof(
+                    wt, pr_report, head, base_commit, current_base,
+                ):
                     base_commit = current_base
                     pr_runs[head] = run_gate(
                         wt, f"{n}-pr", tier="pr", blocking_mutation=True,
@@ -3181,10 +3212,11 @@ def pr_gate_and_review(
                         _mutation_proof(pr_report, head, base_commit) or ("FAIL", None)
                     )
                     current_base = _resolved_commit(wt, caller_base)
-                    moved_proof = _mutation_proof(pr_report, head, current_base) or ("FAIL", None)
                     if (
                         verdict == "STALE" and ok and current_base != base_commit
-                        and moved_proof[0] in {"PASS", "SKIP"}
+                        and _moved_main_proof(
+                            wt, pr_report, head, base_commit, current_base,
+                        )
                     ):
                         pr_runs.pop(head, None)
                         return PR_GATE_WAIT, pr_report, False

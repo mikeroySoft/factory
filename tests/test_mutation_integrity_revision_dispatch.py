@@ -64,6 +64,7 @@ class MutationProofWaitCallerTest(unittest.TestCase):
         self.issue["labels"] = [{"name": config.LABEL_HUMAN}]
         packet = self.root / "packet.md"
         packet.write_text("fix it")
+        dispatch.record("escalate", ticket=7, code="gate_failed", reason="gate failed", round=1)
         self.patch(dispatch, "pr_gate_and_review", side_effect=[_WAIT, _APPROVE])
 
         manage.apply(
@@ -76,6 +77,7 @@ class MutationProofWaitCallerTest(unittest.TestCase):
 
     def test_high_refresh_waits_then_ticket_retry_reuses_refreshed_gate(self) -> None:
         self.issue["labels"] = [{"name": config.LABEL_HUMAN}]
+        dispatch.record("escalate", ticket=7, code="gate_failed", reason="gate failed", round=1)
         original = self.command_result
 
         def refresh_command(args, **kwargs):

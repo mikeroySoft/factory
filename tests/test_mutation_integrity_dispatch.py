@@ -154,6 +154,31 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
         self.assertEqual((recovered, failed), ("APPROVE", False))
         self.assertEqual(self.review_roles, ["primary", "second"])
 
+    def test_proof_bound_to_intermediate_base_retries_then_accepts(self) -> None:
+        """Main moved before the producer bound its base, then again during the run."""
+        third_base = git(
+            self.repo, "commit-tree", f"{self.new_base}^{{tree}}",
+            "-p", self.new_base, "-m", "move main again",
+        )
+        reports = iter((
+            proof("PASS", self.new_base, self.head),
+            proof("PASS", third_base, self.head),
+        ))
+
+        def mid_gate(*_args, **_kwargs):
+            git(self.repo, "update-ref", "refs/remotes/origin/main", third_base)
+            return True, next(reports)
+
+        with mock.patch.object(dispatch, "run_gate", side_effect=mid_gate) as runner:
+            verdict, _, pr_failed = dispatch.pr_gate_and_review(
+                self.repo, 7, "attempt report", self.head, {},
+            )
+
+        self.assertEqual((verdict, pr_failed), ("APPROVE", False))
+        self.assertEqual(runner.call_count, 2)
+        self.assertEqual(self.risk_failures(), [])
+        self.assertEqual(self.review_roles, ["primary", "second"])
+
     def test_stale_cached_proof_recovers_for_same_head_and_keeps_both_reviews(self) -> None:
         git(self.repo, "update-ref", "refs/remotes/origin/main", self.new_base)
         runs = {self.head: (True, proof("PASS", self.old_base, self.head))}
