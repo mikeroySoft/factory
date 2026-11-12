@@ -42,7 +42,7 @@ npx skills add mikeroysoft/factory
 ```sh
 uv tool install git+https://github.com/mikeroySoft/factory@stable   # stable: released channel
 uv tool install git+https://github.com/mikeroySoft/factory@main     # latest: tip of main
-uv tool install git+https://github.com/mikeroySoft/factory@v0.4.6   # a specific release
+uv tool install git+https://github.com/mikeroySoft/factory@v0.4.11   # a specific release
 ```
 
 `pipx install` and `pip install --user` take the same URLs. The repository's
@@ -61,11 +61,77 @@ factory doctor          # tools, auth, remotes, model, dashboard port and .facto
 factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
 ```
 
+`factory install` enables and starts new units. On reinstall it snapshots each
+unit's enabled/active state before rewriting files and running `daemon-reload`.
+Existing stopped or disabled timers and dashboard services stay paused, even
+when their unit files change; enabled, active units retain the usual restart
+behavior when changed. This also applies to the optional probe and eval timers.
+Install lists paused units with a `systemctl --user enable --now <unit>` resume
+command. Use `factory install --enable` (with `--dashboard` when needed) to
+explicitly enable and start all installed units.
+If `is-enabled` fails without stdout (as on older systemd versions), install
+checks `LoadState` to confirm a missing unit. An inconclusive query aborts before
+unit files are changed, rather than treating a query failure as a fresh install.
+
 `doctor` checks the configured dashboard bind address and port; `install --dashboard`
 refuses a foreign or unidentified holder before writing units. Each factory needs
 its own `[repo."owner/name".dashboard] port` in the host config. The preflight cannot
 reserve the port until systemd starts the service: a later bind failure exits 1
 with a one-line diagnostic, and the existing systemd restart policy still applies.
+
+**District drain (host-wide scheduled-pass admission).** `factory install` puts
+`ExecCondition=<python> -P -m factory drain-check` first in each pass service,
+before triage. Exit 0 admits the whole pass; exit 1 skips it without failing the
+unit. `watch` ignores the resulting `SERVICE_RESULT=exec-condition`; a skip adds
+no lifecycle failure or failure-metric sample. Dashboard, triage-probe and eval
+units are not gated. Timers fire normally: the drain feature never changes their
+state. Hand-run `triage`, `dispatch` and `gate` remain ungated.
+
+District atomically writes (same-directory temporary file + rename) and removes
+`${XDG_STATE_HOME:-$HOME/.local/state}/district/drain`, one UTF-8 JSON object per
+host user. Schema 1, with RFC 3339 UTC timestamps and unknown keys ignored:
+
+```json
+{"schema_version": 1, "requested_by": "district apply --drain", "reason": "engine 2ad8846 -> e84004a",
+ "pid": 12345, "created_at": "2026-11-02T14:30:00Z", "expires_at": "2026-11-02T20:45:00Z"}
+```
+
+`expires_at` is required. `DRAIN_MAX_TTL` is eight hours in both Factory and
+District; District caps `expires_at` at `created_at + DRAIN_MAX_TTL`. Factory
+decides once at pass start, using wall time and the file's mtime:
+
+1. No file: run. Stat failure: run, logging
+   `WARN drain flag unreadable; ignoring`.
+2. Mtime more than 60 seconds in the future: run, logging
+   `WARN drain flag mtime in the future; ignoring`.
+3. Valid JSON object and UTC `expires_at`: effective expiry is
+   `min(expires_at, mtime + DRAIN_MAX_TTL)`. Unreadable content, malformed JSON,
+   non-object, missing/invalid expiry: use `mtime + DRAIN_MAX_TTL` and log
+   `WARN drain flag malformed`.
+4. Now at or after effective expiry: run, logging
+   `drain flag expired at <effective_expiry>; ignoring`.
+5. Otherwise skip, logging
+   `skipped: district drain (<reason or "malformed flag">, until <effective_expiry>)`.
+6. Unexpected exceptions: log `ERROR` and run, never accidentally skip.
+
+A flag written after admission does nothing to that pass: no signals, shortened
+work, or flag checks between triage, dispatch and watch. District still rechecks
+busy work before swapping the engine, including hand-run work. A malformed fresh
+flag blocks only until the mtime cap; `district doctor` diagnoses stale/malformed
+flags and `district drain --clear` removes them. `FACTORY_NOW` injects RFC 3339 UTC
+wall time for deterministic `drain-check` regression tests; leave it unset in service.
+
+For hand-maintained launchd plists, begin the pass's shell script with this guard
+(Factory's installer here only renders systemd units):
+
+```sh
+factory drain-check || { echo "=== skipped: district drain"; exit 0; }
+factory triage; factory dispatch; factory watch
+```
+
+Rollout: the new condition arrives through `factory install`, which still
+re-enables an operator-stopped timer (factory#549). District deploys this through
+its normal apply path (district#149); drain itself does not operate timers.
 
 The liveness timer is opt-in. Set the systemd user service that owns the local
 model in the host config, then rerun `factory install`:
@@ -112,7 +178,7 @@ parses its assignments, applies the PATH rendered into units, then overlays
 `[install].env`. Failures stop installation before any mutation.
 The probe loads every generated service command and reports the loaded Factory version
 and location. It checks every loaded service module origin (`factory`,
-`factory.cli`, `factory.triage`, `factory.dispatch` and `factory.dashboard`), with
+`factory.cli`, `factory.drain`, `factory.triage`, `factory.dispatch` and `factory.dashboard`), with
 the selected interpreter's `purelib`/`platlib` context as appropriate, rejecting
 lexical origins under the repository root (`cfg.root`) unless within a selected
 package root.
@@ -303,9 +369,10 @@ landed on its own, and partial progress needs its own reviewed PR.
 
 | Command | What one invocation does |
 |---|---|
+| `factory claims --supported` | Prints exactly `host-claims 1` and exits 0 for District's multi-host capability check. Works offline outside a repository; bare or other arguments exit 2. |
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or `wontfix-proposal` (proposal comment and label; a human closes). An issue unchanged since its last triage comment is skipped. After two consecutive unparseable model decisions, it comments once, records `triage_stalled`, and keeps the issue for retry. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory triage-probe` | Sends `GET <triage base>/models` with a three-second timeout. A 503 `Loading model` response is alive. After three consecutive failures it restarts `[triage].service` at most once per 15 minutes; failures and restarts are lifecycle-journaled. With no service configured it reports only. |
-| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
+| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets, worked concurrently → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
 | `factory explain N [--json] [--since ISO]` | Reads the live `.factory/events.jsonl` and retained `events.jsonl.N.gz` segments without writing. JSON mode returns `{ticket,nodes,edges,loops,cost,frontier,frontier_stage,coverage}`; `cost` totals the ticket and each retry loop has its own total. `frontier_stage` distinguishes gate, review, manager, human, merge eligibility, and blocker waits; merged and wontfix tickets have a null frontier. Text mode prints a compact decision tree. Legacy `claimed`, `attempt`, `review`, `approved`, `merged`, and `escalate` rows become `synthesized: true` nodes, while `coverage` names part-1 stages with no structured record. Output is bounded to the runtime projection's 1 MiB limit. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
@@ -313,7 +380,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory stats` | Ticket table: attempts, review rounds, hours to merge, escalation count, resolver attribution, minutes in `ready-for-human`, re-queues, and triage/review/worker prompt and completion token sums (reported prefix-cache rates listed separately). Worker tokens come from the worker's `[workers.<label>.usage]` log paths or, for OMP workers, the session transcript totals; a ticket whose worker reported none reads `n/a (not reported)`, and the footer sums worker tokens over the tickets that reported them. Dollar columns appear only when some ticket has a cost; with no `[prices]` table the footer says so once. Reads GitHub plus `events.jsonl` from the dispatcher's root: the host config's `[repo."owner/name"].path` for `--repo owner/name` or the current checkout's repository, else the current checkout itself; a root without `.factory/events.jsonl` fails naming that path instead of printing empty rows (`--escapes` reads only git and GitHub). Per-ticket GitHub reads run 8 at a time with `stats: N/M tickets` progress on stderr (`--quiet` hides it). `--by-worker` reads only events and shows every configured worker label: first-attempt gate pass rate, all attempts (including review bounces), and known cost. Attribution uses claim labels with current worker precedence; unclaimed attempts are excluded, missing rates/cost are `n/a`. The dashboard Ops view shows the same worker metrics. `--escapes` lists candidate escaped defects, one row per closed `bug` issue: its fix commits (first-parent `agent/<bug>:` commits on `origin/<main>`, else the merge commit of a merged PR whose closing references include the bug), and the candidate tickets whose `agent/<m>:` commits `git blame` names for the lines the fix modified or deleted, with blamed line counts. Rows without candidates read `unlinked` (no fix commit), `no_blamed_lines` (the fix only adds lines) or `no_candidates` (blamed lines are not from agent commits). A fix commit missing from the clone is fetched with `git fetch origin <sha>`; one still missing is skipped with a stderr warning, listed in the row's `skipped`, makes the row `skipped` when every fix was, and is counted in a `Skipped fixes: N` footer. `Regressed-by: #N` lines in the bug body replace blame (`source` is `declared`, else `blame`). The footer reads `Candidate escapes: X of Y merged agent tickets (Z%)`. Blame is SZZ-style and noisy: refactors give false candidates and add-only fixes give none. Read-only. `--json`. |
 | `factory stats --week [--json]` | Reads the live and rotated journals over the trailing seven days and reports distinct merges, human touches, escalations by code, pooled rate numerators/denominators, and tokens by stage/model. Human touches match the release bar: each nonempty `human-decision` decision ID counts once across statuses and targets (including prepared-only decisions), each legacy row without an ID counts separately, and every manager `HUMAN` row counts. Legacy usage locality falls back only to the configured triage model id. One separate 10-second `gh issue list` finds `ready-for-human` tickets unchanged for seven days; failure leaves `stuck_over_days` unavailable and the command successful. |
 | `factory stats --promotions` | Lists every merged lessons/CURATE PR (`promotion-open`) with its baseline and after-window `efficiency_mean`, `compliance_mean`, `gate_first_pass_rate`, and `n`, decision (`open`, `keep`, or `revert`), and revert branch, from `events.jsonl` alone. `--json`. |
-| `factory learn` | Reads the last N finished tickets' event trail, reviewer findings, and escalation reasons, plus for each ticket an excerpt of its lowest-scored session (`factory score` rows: lowest `efficiency`, ties to the lowest `compliance`, then a gate FAIL): every call repeated back to back, the worker's final message, then every tool call whose result mentioned `error`/`Traceback`/`FAIL` (the call and the result's first 10 lines), at most 3,000 characters per ticket, so the cap only shortens the flagged-call list; a ticket with no `score` row falls back to its failing-attempt log tails. Adds the 10 most recently closed bugs with candidate escapes (`factory stats --escapes`); asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` with the repository SPDX identifier (`NOASSERTION` when unavailable; you commit it). Every worker prompt carries it. With a manager, the lessons land as an `agent/lessons-<date>-t<N>` chore PR (N: the newest included ticket), and the manager may add a CURATE diff, opened as `agent/curate-<date>-t<N>`, that turns a lesson into a gate check or regression test: `AGENTS.md`, `CONTRIBUTING.md`, `.omp/skills/`, add-only `.factory.toml` (appended `[[gate.check]]` tables and `[gate].protected_paths` entries) and files under the base ref's protected and add-only paths; never `.github/`, never a deleted or renamed protected or add-only file. New PRs run the attempt gate in their throwaway worktree before the push (journaled as `gate` bound to the head; a FAIL opens nothing); an approved legacy head with no gate row is checked once during promotion. PRs are reviewed by `review_intake_pass` like a `needs-review` PR and are merged by the merge stage (`learn.promote_pass`, on `merge_pass_locked`'s PR listing) once a `gate` PASS and a `review-result` APPROVE are bound to the PR head, CI is green and no human requested changes: add `factory-approved`, squash merge, then journal one `approved`, `merged`, and `promotion-open` `{pr, head, branch, baseline}` with the `efficiency_mean`, `compliance_mean`, `gate_first_pass_rate` and `n` of the last 10 `score` rows before the merge. A head behind main whose diff changes more than `.factory-lessons.md` (a CURATE PR or its revert) is rebased onto main before merge; a lessons-only head is refreshed after a strict base rejects the stale merge. `learn.refresh` gates the rebased head, force-pushes it with a lease on the old head, and reviews it again for a later pass. Repeated blocked passes add one `promotion-blocked` row per PR, head, and reason. A human merge is reconciled on the next pass as `merged {by: human}` and opens the same measurement. A failing PR is logged and the others still merge. Once 10 attempts journaled after the merge are scored (a pre-merge attempt scored late never counts), the end-of-pass `learn_pass` journals `promotion-keep`, or `promotion-revert` and opens `agent/revert-lessons-<pr>` (same gate/review/merge path; it opens no promotion of its own) reverting the merge commit with the before/after means in its body, when `efficiency_mean` or `gate_first_pass_rate` fell by more than the population standard deviation of the baseline window (`promotion.drift`). One decision per promotion, never replayed; `factory stats --promotions [--json]` lists them. With a manager, the dispatcher also runs `--last 10` itself after every 10 finished tickets, scoring those tickets' unscored attempts first (see *Learning loop* under Operating it). `--dry-run`, `--last N`. `--promotion claim.json` judges and records a keep/revert claim under the [eval promotion contract](docs/eval-promotion-contract.md). |
+| `factory learn` | Reads the last N finished tickets' event trail, reviewer findings, and escalation reasons, plus for each ticket an excerpt of its lowest-scored session (`factory score` rows: lowest `efficiency`, ties to the lowest `compliance`, then a gate FAIL): every call repeated back to back, the worker's final message, then every tool call whose result mentioned `error`/`Traceback`/`FAIL` (the call and the result's first 10 lines), at most 3,000 characters per ticket, so the cap only shortens the flagged-call list; a ticket with no `score` row falls back to its failing-attempt log tails. Adds the 10 most recently closed bugs with candidate escapes (`factory stats --escapes`); asks the local model for ≤10 repo-specific lessons; writes `.factory-lessons.md` with the repository SPDX identifier (`NOASSERTION` when unavailable; you commit it). Every worker prompt carries it. With a manager, the lessons land as an `agent/lessons-<date>-t<N>` chore PR (N: the newest included ticket), and the manager may add a CURATE diff, opened as `agent/curate-<date>-t<N>`, that turns a lesson into a gate check or regression test: `AGENTS.md`, `CONTRIBUTING.md`, `.omp/skills/`, add-only `.factory.toml` (appended `[[gate.check]]` tables and `[gate].protected_paths` entries) and files under the base ref's protected and add-only paths; never `.github/`, never a deleted or renamed protected or add-only file. New PRs run the attempt gate in their throwaway worktree before the push (journaled as `gate` bound to the head; a FAIL opens nothing); an approved legacy head with no gate row is checked once during promotion. PRs are reviewed by `review_intake_pass` like a `needs-review` PR and are merged by the merge stage (`learn.promote_pass`, on `merge_pass_locked`'s PR listing) once a `gate` PASS and a `review-result` APPROVE are bound to the PR head, CI is green and no human requested changes: add `factory-approved`, squash merge, then journal one `approved`, `merged`, and `promotion-open` `{pr, head, branch, baseline}` with the `efficiency_mean`, `compliance_mean`, `gate_first_pass_rate` and `n` of the last 10 `score` rows before the merge. Every behind lessons or CURATE head is refreshed before merge, including lessons-only diffs. `learn.refresh` merges `origin/main`, gates the merged head, pushes without force, and reviews it again for a later pass. Strict-base and required-check refusals also trigger refresh, including legacy same-head `merge failed:` blockers for those refusals; a failed refresh is attempted only once per head, and new heads expire old blockers. Repeated blocked passes add one `promotion-blocked` row per PR, head, and reason. A human merge is reconciled on the next pass as `merged {by: human}` and opens the same measurement. A failing PR is logged and the others still merge. Once 10 attempts journaled after the merge are scored (a pre-merge attempt scored late never counts), the end-of-pass `learn_pass` journals `promotion-keep`, or `promotion-revert` and opens `agent/revert-lessons-<pr>` (same gate/review/merge path; it opens no promotion of its own) reverting the merge commit with the before/after means in its body, when `efficiency_mean` or `gate_first_pass_rate` fell by more than the population standard deviation of the baseline window (`promotion.drift`). One decision per promotion, never replayed; `factory stats --promotions [--json]` lists them. With a manager, the dispatcher also runs `--last 10` itself after every 10 finished tickets, scoring those tickets' unscored attempts first (see *Learning loop* under Operating it). `--dry-run`, `--last N`. `--promotion claim.json` judges and records a keep/revert claim under the [eval promotion contract](docs/eval-promotion-contract.md). |
 | `factory eval --profile NAME [--dry-run]` | Replays the checked-in 20-case Factory/rocm-cli worker suite twice per case in isolated local clones with each repository's normal gate and reviewer. `--dry-run` lists every pinned repository, ticket, base, split and the `[eval]` case/token/wall budget. Real runs append one `eval` row per case/repeat and an `eval-summary` with split means/noise; an accepted-main run establishes the baseline and later runs feed a regression claim to `promotion.decide()`. Rejected and unmerged candidate runs never replace that baseline. Budget or replay failure records `not_tested` without escalation. `--scheduled` marks the weekly drift run. |
 | `factory score` | Scores every finished ticket's worker attempts from their persisted OMP transcripts (`attempt.transcript`) and journals one `score` row per attempt: `tool_calls`, `edits` (edit/write calls), `retries` (identical consecutive calls), `gate_first_pass` (attempt 1 with gate PASS), `efficiency = 1 / (1 + retries + max(0, tool_calls - 40) / 40)`, and `compliance`, a 0–1 LLM-as-judge score from the local triage model given the ticket's Scope and Exit gate sections against the worker's final message and handoff (`null`, never a guess, when the model is unreachable or answers with anything but a number; `judge_model` names the model that answered). Already-scored attempts are skipped; a transcript missing on disk journals `{"skipped": "missing"}`. At most 50 attempts per run, 2 MB read per transcript. `--last N` limits to the newest N finished tickets; `--dry-run` prints without journaling. |
 | `factory release [--dry-run]` | Converges a patch release across up to three passes: opens a `release/vX.Y.Z` PR after the ticket, quality-bar, `main` CI, and release-tier gate checks pass; squash-merges it after its CI succeeds; then annotates the merged commit, advances `stable`, and publishes the tag's GitHub Release with its `CHANGELOG.md` section as notes. This respects the required `gate` check on protected `main`; `--dry-run` reports the current state and next action without writing. |
@@ -340,11 +407,39 @@ noise.
 Lessons files generated by `factory learn` start with an SPDX header inferred from
 the repository's package metadata or conventional licence file (`NOASSERTION` when
 neither identifies one). Promotion re-gates an approved legacy PR head once when
-its journal has no gate row. A lessons-only head rejected by a strict up-to-date
-base is refreshed, re-gated, and reviewed for the next pass. Blocked outcomes and
-approvals are journaled once per head; `merged` is written only after a successful
-merge. A human-merged lessons PR is reconciled on the next pass with `by: human`
-and opens the same promotion measurement as an automatic merge.
+its journal has no gate row. Behind lessons and CURATE heads merge `origin/main`,
+re-run the gate, refuse a changed remote head, push normally (no history rewrite),
+and receive a fresh review before a later pass can merge them. Promotion also
+refreshes on strict-base or required-check merge refusals (`not up to date`,
+`is expected`, or GitHub's `BEHIND` merge state), including legacy `merge failed:`
+blockers for those refusals at an unchanged head. A failed refresh is attempted only once per head;
+a new head expires old blockers. Other merge failures still require a new head.
+Blocked outcomes and approvals are journaled once per head; `merged` is written
+only after a successful merge. A human-merged lessons PR is reconciled on the
+next pass with `by: human` and opens the same promotion measurement.
+
+Merge CI and advisory review readiness verify each active base-branch ruleset's
+required context against check runs on the caller's captured PR head, including
+its source GitHub App (`integration_id`). A push before the first provenance read
+keeps that head pending rather than borrowing the new head's green checks.
+A same-name success from another app or SHA is
+not evidence. App-unpinned contexts may use legacy statuses fetched by exact head
+SHA (individual status objects have no SHA field); a pinned app requires check-run
+provenance even when other requirements are unpinned.
+Reads are paginated; a head/base change, unreadable evidence, or GitHub's
+blocked/unknown merge state keeps CI pending. Already pending or failed CI
+returns without fetching additional provenance.
+Behind-main and conflicting (`dirty`) heads remain eligible only for the existing
+merge callers' refresh path, not merge; advisory readiness still reports them pending.
+
+PR [#573](https://github.com/mikeroySoft/factory/pull/573)'s successful `gate`
+runs [125588773738](https://github.com/mikeroySoft/factory/actions/runs/41536267505/job/125588773738)
+and [125588741702](https://github.com/mikeroySoft/factory/actions/runs/41536258131/job/125588741702)
+both have app ID 15368 and head `7a05cbf46ff7c00f66a36c1d01a951bc92c2e464`,
+matching [protect-main](https://github.com/mikeroySoft/factory/rules/22827438).
+The refusal was strict-base freshness, not a source-app/head mismatch:
+[#587](https://github.com/mikeroySoft/factory/issues/587) records `behind_by: 4`
+and `BEHIND` at diagnosis, with strict required checks enabled.
 
 When Git uses SSH commit signing, `factory doctor` checks the configured signing
 key against the dispatcher GitHub account and warns with `unknown_key` when the
@@ -354,6 +449,21 @@ key is unreadable or unregistered.
 `factory stats` exposes each structured review round as ordered
 `review_findings` counts in JSON and as `important/nit/pre-existing` triples in
 the ticket table.
+
+Ticket reviewers receive `origin/<main>...<gated head>`: only changes since the
+branch's merge base, not reverse patches for newer main-only commits.
+Risk classification, mutation selection, and the High-risk changed-file check use
+the same merge-base boundary. Explicit `base_ref` reviews keep their direct
+`base..head` boundary. `./snapshot` remains
+the exact gated head, so missing later main commits alone are not reversions;
+genuine reversals in the branch diff still receive normal blocking review.
+Review policy still comes from the supplied base ref (current main by default),
+not the candidate. External PR intake already uses GitHub's three-dot compare.
+Ticket `review` events and review lifecycle results record
+`outside_diff_findings`: citations outside the supplied diff's displayed head-side
+hunk ranges (old-side ranges for deleted files, adjacent anchor for pure deletions).
+This counts all validated findings before the nit cap, without filtering findings
+or changing verdicts; unavailable/unparsed evidence records `null`.
 
 ### Decision records and explanations
 
@@ -452,6 +562,11 @@ The daily metrics are gate failures divided by gate outcomes; failed gate-check
 and failed-test counts keyed by check or canonical test ID; escalated tickets
 divided by merged-or-escalated tickets; mean hours from the first `claimed` row
 to `merged`; and mean review rounds after the first review per terminal ticket.
+Failed check/test counts exclude worker executions whose recorded head has not
+merged. Failures are matched to their dispatcher run so reused attempt numbers
+cannot borrow a later run's merged head. Each `(ticket, attempt)` counts at most
+once per check or test metric. Rows without a complete ticket/attempt identity,
+including main and legacy rows, retain their existing per-row counting.
 Days without a denominator or completed cycle are omitted from rate, duration,
 and rework bands; only failed check/test count metrics record zero on quiet days.
 No rule runs until the journal's first row predates the full configured window;
@@ -550,14 +665,21 @@ that bare argument for manager commands, not worker commands.
 Reviewers never start in a checkout: both review lanes launch the command in a fresh
 temporary directory, so project config written by a worker or PR author (OMP
 `.omp/extensions`, Claude Code `.claude/settings.json`, `.mcp.json`) is not discovered.
-Ticket review gets `./review.diff` (base to gated head) and a read-only `git archive`
-snapshot of the gated head in `./snapshot`; PR review gets the diff inline. `GIT_*` and
-GitHub credentials are stripped from the reviewer's environment. Ticket review
-retries snapshot, diff, launch, nonzero-exit, and unparseable-output failures up
+Ticket review gets `./review.diff` (merge base to gated head, or the explicit
+re-review base) and a read-only `git archive` snapshot of the gated head in
+`./snapshot`; PR review gets the diff inline. `GIT_*` and
+GitHub credentials are stripped from the reviewer's environment.
+The dispatcher supplies the issue title, body, and every comment inline as untrusted
+data: the worker's accepted snapshot for plan-bound tickets, otherwise its own
+`gh issue view --json title,body,comments` read. Reviewers use that supplied issue
+section, not GitHub or the worker's transcript. Learning-proposal reviews are unchanged.
+Ticket review retries snapshot, diff, launch, and unparseable-output failures up
 to three times, using exponential backoff unless the provider reports
-`retry-after` or `retry-after-ms`. Persistent failure records
-`reviewer_unavailable`, preserves stderr or a structured error event in the
-review findings and escalation packet, and consumes no `review_rounds` slot.
+`retry-after` or `retry-after-ms`. A nonzero exit with a validated verdict is
+handled as that verdict; without one, it is a tooling failure, not worker feedback.
+Persistent failure records `reviewer_unavailable`, preserves stderr or a structured
+error event in the review diagnostics and escalation packet, and consumes no
+`review_rounds` slot or change-request feedback event.
 
 Keep `{cwd}` in worker and manager commands, and configure the manager CLI in
 read-only/no-tools mode: the prompt prohibits file edits, but an arbitrary
@@ -585,6 +707,56 @@ Factory restores its lifecycle context and strips GitHub credentials. A pinned
 `version = "..."` is recorded with the claim, usage, attempt, and worker
 lifecycle entry. The prompt lists routable profiles with their `when` rules;
 neither ROUTE nor FIX accepts unlisted profiles.
+
+Each launch resolves one worker spec (`Config.worker_spec`): the host wrapper,
+the profile command, its model, version, environment, transcript mode and
+provenance (`Repository`, `Host repository override`, `Host default` or
+`Built-in default`). The built-in OMP default carries its pinned `--model`.
+Dispatch, `factory learn` replays, dry runs and the settings view all use that
+same value; the model shown and recorded is read from the expanded command, and
+the provenance names the layer whose `command` is launched (a higher layer that
+adds only `probe` or `env` does not change it). Before any stage, each dispatcher
+and `factory manage` pass health-checks every configured profile. A table may set
+`probe = [...]`, a health or auth check whose argv takes `{root}`, `{repo}` and
+`{home}`; it runs once under the host wrapper and the profile's environment,
+without GitHub credentials, and exit 0 means available. Only its last 64 KiB of
+output is read, and a probe past 60 s is stopped with its process group. Before
+the probe, the host wrapper and the profile's own executable must each resolve
+on the worker's PATH; a wrapper on PATH says nothing about the worker it runs.
+The worker's PATH is the one its launch gets, including the profile's `env`,
+both in this check and when a ticket is claimed.
+The probe is the only check that proves a login, so the manager is offered only
+profiles whose probe passed this pass, and `factory doctor` warns about each
+profile without one. A profile without a probe can still launch, but its login
+is unverified, and a failure seen at launch stands across passes until its probe
+passes or a launch works (`dispatch --ticket N` after fixing the host); PATH
+alone never clears it. `dispatch --ticket` skips the pre-pass check: an
+operator's explicit ask launches and fails loudly, still classified as below. A
+failing profile is not launched that pass and is not offered to the manager. A
+ticket that profile owns runs on `default` instead, unless the profile is chosen
+by a `when = { label = ... }` selector or `default` is down too. In that case the
+ticket waits unclaimed (`worker_unavailable`). A launch that exits nonzero
+without a timeout, makes no commit and leaves a clean worktree is an
+infrastructure outcome when it logs an authentication failure (`auth_failed`)
+or exits 127, the POSIX code a wrapper or launcher returns when the worker it
+runs is missing (`executable_missing`); so is a launch whose executable vanished
+after the pre-pass check. Factory records a `worker-infra` row, not an `attempt`,
+so it is not a strike, never reaches the gate and does not count toward
+`max_attempts`. It then marks the profile unavailable and relaunches the same
+attempt on the fallback. With no fallback the claim is given back. Availability
+changes, and a launch failure on a profile already down for another reason,
+are journaled once each as `worker-health` rows with `worker`,
+`available`, `reason`, `fallback`, `source` (`probe` or `launch`) and `check`
+(`probe`, `executable` or `launch`: the evidence; `executable` never proves a
+login). The attempt that ran on a fallback records `fallback_from`. A manager FIX
+that finds no healthy worker keeps its `manage` row, records `manage-pending`
+(worker, guidance, packet) and a `worker_unavailable` wait instead of failing,
+and no human handoff is published while it waits. Once a worker can take it, a
+later pass journals `manage-resume` and runs that same FIX without another
+manager round or comment. A resume is taken up once: one that fails or is
+interrupted is handed to the human. Only the latest resume's own run counts,
+so a deciding pass that crashed after recording the pending FIX, or an earlier
+resume that re-pended, does not hand off a FIX a later resume applied.
 `[review].json_mode = true` similarly declares an OMP-compatible reviewer:
 Factory adds or replaces `--mode json` and parses its JSONL verdict and usage.
 It defaults to true only when the reviewer program is named `omp`; set it to
@@ -633,6 +805,41 @@ mutation fails, the execution records a terminal failure and the ticket remains
 with the human; other tickets can proceed. The consumed round is not replayed,
 because a partial rewrite or split may already have changed GitHub.
 
+### Owner requeues and ticket generations
+
+A human who moves an escalated ticket back to `ready-for-agent` (by relabeling or with
+the guarded `requeue_agent` action) opens a new **generation** for it. Whichever stage
+first reads the live ticket in that state (land, manager or ticket) in a pass after the
+escalation's own journals one `generation` row with `generation`, `intent`, `source` (`label` or `requeue_agent`),
+`actor`, `decision` and `escalation_at`. Every round budget counts only the rows after
+it. That covers the escalation and manager rounds, frontier manager rounds,
+review-bounce rounds and conflict, gate and risk requeue rounds, so the ticket gets its
+full budget again. A factory release never opens a generation. The dispatcher and
+manager journal each of their own releases before relabeling: `conflict-requeue`,
+`gate-requeue`, `risk-requeue`, `mutation-proof-wait`, deferred `review-rework`, and RETRY, REWRITE,
+AUTHORIZE or ROUTE `manage` rows. A ticket that is back in `ready-for-agent` and
+unassigned after its latest escalation, with none of those rows after it, was released
+by a human. A journal with no `generation` row is generation 0 and counts exactly as
+before.
+
+`requeue_agent` takes an optional `intent`. With `resume` (the default, and what a
+plain relabel means), the branch, worktree and refresh context are kept. With `fresh`,
+`agent/<n>` is recut from main at the generation's first claim, and the superseded local
+and remote heads stay under create-only
+`refs/factory-evidence/<n>-generation-<g>-{local,remote}-<sha12>` refs, so replaying an
+interrupted restart never replaces them. A `generation-restart` row (`local`, `remote`,
+`base`) is the receipt: later claims of the generation reuse the recut worktree instead
+of recutting it, and until the generation first publishes, its push may replace exactly
+the preserved `remote` sha and nothing else. A remote that moved after the restart is
+leased as usual, so the push is refused (`lease_refused`) and the newer commit stays.
+The `claimed` row records `generation` and `base`. Until the generation's first worker
+attempt, the PR frontier does not re-escalate feedback that was already undelivered when
+it first saw the requeue. That set is journaled as a `feedback-watermark` row with the
+`sources` it covered completely. A source that was unreadable then is watermarked when
+first seen complete, holding only its items no newer than the owner's release (all of
+them while the release time is unknown). Any newer or edited source after its watermark
+still escalates. Manager decisions stay bound to their exact head across generations.
+
 ### Routed human handoffs
 
 Once automatic recovery for an escalation is terminal — the manager returned `HUMAN`,
@@ -641,7 +848,8 @@ diagnosis), `manager.rounds` is exhausted, no manager is configured, or the esca
 loop can never act again (its decision could not be applied to GitHub, its packet is
 gone, or its escalation comment was never receipted so takeover detection cannot clear
 it, as for escalations recorded before this version) — `factory manage`
-publishes **one** request comment for that escalation generation (`<ticket>/<round>`):
+publishes **one** request comment for that escalation generation (`<ticket>/<round>`,
+or `<ticket>/g<generation>/<round>` after an owner requeue):
 a concrete question, bounded public links (PR, the recorded escalation and manager
 comments), a proposed next step, the routed owner or candidates, and the step-by-step
 routing rationale from `factory plan route` (reason `ci` for CI failures, otherwise
@@ -803,6 +1011,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    selects, so a shell or unit without the dispatcher's `GH_CONFIG_DIR` cannot
    triage under the owner's account. The dashboard's "Run LLM triage" decision
    runs its triage step with `dispatch_env` applied, so it posts as the dispatcher.
+   A failed GitHub login lookup instead refuses with outcome `mechanism_failure`
+   and reason `github_command_failed`; connection failures are not identity mismatches.
 2. **Schedule and claim.** Eligibility first: open `ready-for-agent` issues that
    are not initiatives, not assigned and have no open `Blocked by` edge; then
    capacity (`max_active` minus held ticket locks) and the experiment slot (at
@@ -813,25 +1023,63 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `NOW`/`NEXT`/`THEN`/`LATER` line of the ticket's own pinned Plan baseline that
    names it, tiers in that order, then unknown priority (no baseline or no tier
    line), oldest ticket first within a class. After three consecutive
-   explicit-priority claims (`claimed` rows carry `priority`) the oldest
-   eligible unknown-priority ticket is admitted instead. Triage briefs, manager
-   recommendations and experiment results never set priority. A pass with
-   eligible work and spare capacity logs one line per frontier ticket
-   (`selected`, `deferred`, `held`, each with its reason) and journals them as a
-   `scheduling` row; `--dry-run` logs the same plan and writes nothing.
+   explicit-priority claims (`claimed` rows carry `priority`), the oldest
+   eligible unknown-priority ticket is admitted instead only when no eligible,
+   unclaimed NOW ticket remains. The streak carries across ordinary passes of
+   the same active timer and engine revision, but resets after timer pause/resume
+   (a new systemd timer `InvocationID`) or an engine version/commit change.
+   Without a usable timer identity, the streak carries across passes of the same
+   engine version/commit; a transition to or from an observable timer also resets it.
+   Journals predating session tracking are not reused. Each `scheduling` row
+   records its `fairness_session`. Triage briefs, manager recommendations and
+   experiment results never set priority. A pass re-reads
+   and re-ranks the frontier before each pick, so a Plan baseline re-bound while
+   an earlier pick was claimed is honored. Each pick with eligible work and spare
+   capacity logs one line per frontier ticket (`selected`, `deferred`, `held`,
+   each with its reason) and journals them as a `scheduling` row whose
+   `capacity` is the slots left for that pick; its admission `decision` row
+   names the Plan baseline sha256 it was ranked against.
+   `--dry-run` logs the same plan and writes nothing.
    Capacity, locks and
    dependencies are never overridden. The dispatcher then re-reads the issue
    (search-backed listings lag), assigns itself, takes a per-ticket `flock`,
-   and creates the worktree `.factory/wt-<n>` on branch `agent/<n>`.
+   and creates the worktree `.factory/wt-<n>` on branch `agent/<n>`. Picks are
+   ranked and claimed one at a time, in order, so `claimed` rows follow pick
+   order; once a pick's `claimed` row is written the next pick is ranked while
+   it works. Each ticket runs its pipeline in its own thread with its own
+   worktree and lock, so up to `max_active` tickets (counting ones already in
+   flight when the pass started) work at once. The pass waits for all of them;
+   a failing ticket does not stop the others, and a ranking error for the next
+   pick does not stop tickets already claimed. Every ticket failure is logged at
+   the end; the pass then raises its own ranking error, else the first failed
+   pick's. On Ctrl-C each in-flight ticket runs nothing further: within one
+   worker poll (5 s) its worker process group gets SIGTERM (SIGKILL after 10 s),
+   its lock is released, then the pass exits. Ticket `git fetch` and `git push`
+   commands run one at a time, and every dispatcher log line from a ticket is
+   tagged `#<n>` after the `[dispatch]` prefix.
 3. **Work.** The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
-   reviewer's findings. Up to `max_attempts` rounds within `budget_min`, the
-   overall ceiling. A worker with no log output and no worktree change for
+   reviewer's findings. Up to `max_attempts` attempts within `budget_min`.
+   A fresh handoff with an empty `Still unverified` or `Unverified` section
+   (blank or `None.`) and a clean, committed worktree is the finish signal:
+   after expiry, the dispatcher still gates that head and proceeds through
+   push, PR-tier gate, review and merge normally, without charging a rework
+   round. Unfinished work and failing gate tiers still escalate.
+   Nested headings remain part of the unverified section; only a same-level
+   or higher-level heading ends it, so a subsection cannot hide blocking work.
+   A worker that exits before the deadline keeps its passing gate result even
+   when the gate itself overruns; that alone does not require the finish signal.
+   A worker with no log output and no worktree change for
    `[dispatch].idle_timeout` minutes is killed as `stuck` (a failed attempt,
    retried). One that committed or wrote its handoff, then stayed quiet for
    `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
    The attempt journal row and escalation packet name the timeout that fired.
+   If a budget-killed worker never reaches its next gate and the ticket's last
+   gate in the current generation passed, escalation uses `budget`, not
+   `gate_failed`; the comment and packet name `budget_min` / `budget_exceeded`
+   so the budget cut is identifiable for a not-a-strike owner requeue.
+   An actual failing gate retains its existing classification.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
@@ -862,6 +1110,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    bypasses only function protection on bug tickets. An `upstream sync:`
    ticket's worker otherwise gets no override; only upstream-authored content
    is exempt (`--upstream`, above).
+   Local gate runs only (the dispatcher does not pass it): `factory gate
+   --add-only-allow <path>=<blob> --add-only-allow-base <commit>` exempts exactly
+   the named add-only files from both checks when a human supplies the reviewed
+   blob ids. Each path must be canonical, inside `add_only_paths` and outside
+   `protected_paths`, an in-place regular-file text edit, and both its committed
+   blob and its working-tree bytes (`git hash-object --no-filters`) must equal the
+   approved blob; `<commit>` must be the merge-base. Any refusal fails
+   `protected-paths`; every other add-only file and test stays protected.
    A bug worker must add the reproducing test in its own commit before the fix
    and put `Repro test: <test ID>` in its handoff. The test may be added during
    a later retry, review bounce, or manager FIX, not just the first branch commit.
@@ -888,6 +1144,25 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    runs only pr checks (release ones SKIP) and `--tier release` only release
    checks, with no built-ins. This attempt gate is what the worker and the
    dispatcher run after each attempt, and what the merge-stage refresh re-runs.
+   Repositories may opt into mechanical repairs with `[gate].fixups`, an array of
+   argv arrays (for example `fixups = [["cargo", "xtask", "manifest"]]`). Factory
+   never infers commands. Before escalating the last failed worker gate (including
+   manager FIX and review-bounce workers), it runs these commands once, in order,
+   in the clean ticket worktree, stopping on the first failure and using the gate
+   check timeout. If all succeed and change files, Factory commits those changes
+   and re-runs the gate with the same flags at the new SHA. No changes, a command
+   failure, or another failed gate leaves the normal escalation in place; the
+   report and escalation comment state that fixups ran. An empty/absent list
+   leaves behavior unchanged. Refresh failures get the same repair pass after
+   their existing same-head retry; PR-tier failures get one pass per uncached
+   head, then recheck the attempt gate before publishing and reviewing a new
+   head. Protected-path checks still apply to every repair commit.
+   A PR repair's `gate-fixup` receipt binds acceptance and handoff retention to
+   the repaired head and carries forward the previous head's recorded worker
+   completion, so a late actionable review can still defer rework to the next pass.
+   With `[dispatch].signoff = true` (the default), Factory signs off merge commits
+   at creation, including upstream sync and refresh merges. It never retrofits
+   trailers by amending or rewriting human or other pre-existing commits.
 5. **Review.** After the attempt gate passes, the dispatcher runs the
    `when = "pr"` checks once for the head about to be reviewed (same timeout and
    `exclusive` lock; a head is never re-run) and appends their report to the gate
@@ -895,8 +1170,30 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    so report-only checks reach the reviewer. A pr-tier FAIL goes back to the worker like a `REVISE`, with that
    report as the findings, and uses one `review_rounds` slot; when the rounds run
    out (or the head came from a manager FIX) the ticket escalates with `pr checks failed`. Otherwise
-   the reviewer runs the diff itself, gets the gate report inline, and
-   is told to read issue #N's comments (the triage brief, approved scope changes).
+   the reviewer runs the diff itself and gets the gate report and issue snapshot
+   inline, including every comment (the triage brief, approved scope changes).
+   Native-host acceptance belongs in the worker handoff's `## Native-host proof`
+   section (`Head SHA: <tested commit>`, results and any archive/tree digest), or
+   in a worktree-relative proof file cited by that handoff (for example
+   `Proof: .factory/macos-proof.txt`, containing
+   `Verified source revision: <tested commit>`). A plain `Native-host proof:`
+   label may also introduce file citations on following lines, up to the next
+   Markdown heading. Paths containing spaces must be quoted with backticks,
+   single quotes or double quotes. Before each ticket review,
+   including manager FIX and refresh reviews, the dispatcher posts the evidence
+   to the PR and supplies the same text inline as untrusted worker evidence.
+   Recorded proof SHAs are checked against the gated head; stale/conflicting
+   proof shows both revisions, while absent/unbound/unsafe evidence is explicitly
+   not supplied as current-head proof. Re-run native proof after a refresh.
+   Reads are bounded to 256 KiB, reject symlinks, worktree escapes and NUL-containing
+   filenames (reported as unavailable evidence rather than aborting review), and use
+   existing credential redaction/withholding rules; excerpts are capped at 4,000
+   characters and comments at 20,000, with explicit truncation notices and
+   archive/tree digests retained when present. Successful publication is
+   journaled by head and content hash to avoid duplicate comments on same-head
+   retries or second reviews. Failed publication is stated in the packet and
+   retried at the next review; it introduces no human gate. A reviewer never
+   needs to open the gitignored worktree proof file.
    Every finding cites `path:line`; a required fix also cites an acceptance
    criterion, a documented rule with its source, or a concrete correctness/security
    defect with its trigger and impact — preferences and hypothetical extensibility
@@ -904,10 +1201,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    excuse a defect it did not detect. Net-new abstractions beyond the brief,
    whether the diff introduced them or the review asks for them, need that same
    justification, but a missing justification alone does not block. Reviews must
-   exit zero and end with exactly one final `VERDICT: APPROVE` or
-   `VERDICT: REVISE` line. Malformed, multiple, non-final, nonzero-exit, and
-   launch failures are reviewer tooling failures: Factory retries them, then
-   escalates persistent failure as `reviewer_unavailable` without sending work
+   end with exactly one final `VERDICT: APPROVE` or `VERDICT: REVISE` line and
+   a valid structured findings block. A validated verdict is handled even on a
+   nonzero exit. Malformed, multiple, non-final, and launch failures are reviewer
+   tooling failures: Factory retries them, then escalates persistent failure as
+   `reviewer_unavailable` without recording change-request feedback or sending work
    back to the worker. Each accepted `REVISE` sends the findings back to the
    worker, flagged so only the required fixes are binding (re-gate, push,
    re-review), up to `review_rounds` times; then it escalates. A manager `FIX`
@@ -930,7 +1228,7 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `verdict_counts_mismatch`. `review-result` records the three counts.
 
    **Risk tiers.** Before these checks, Factory classifies the exact gated
-   `base..head` diff with the installed `factory/risk.py` rules and records a
+   `origin/<main>...head` diff with the installed `factory/risk.py` rules and records a
    `risk` event plus a `risk` decision. Candidate code cannot change the rules
    classifying its own head, and a new head invalidates all tier evidence.
 
@@ -947,16 +1245,90 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    A High PR merges without human approval when the full current-head gate
    (including all PR-tier checks) passes, both reviewers approve, and mutation
    is `PASS` or `SKIP (no changed factory code)`. Both reviewers
-   revising uses the normal Medium loop. A reviewer split, or mutation failure
-   after both approvals, returns the dissenting findings for one worker round;
-   the next-head disagreement escalates as `risk_disagreement`. This
-   disagreement is the only High-tier-specific path to `ready-for-human`.
+   revising uses the normal Medium loop. Concrete required REVISE findings
+   from either reviewer, and completed surviving mutants after approval,
+   use the normal `[dispatch].review_rounds` budget, not the second-head
+   disagreement cutoff. When the wall-clock expires after a clean finish
+   recorded for the current attempt and head, Factory retains the findings in
+   a `review-rework` journal row and returns the ticket to the next pass,
+   charging one round before releasing its claim and clearing `ready-for-human`.
+   Charges survive pass boundaries; the next worker receives the full packet.
+   Rework after a merge-stage refresh uses the same mechanism and budget.
+   Protected-path blockers come from gate status rows, not quoted reviewer
+   findings or surviving-mutant source text.
+   Rejects, protected-path blockers and exhausted rounds still escalate.
+   Non-actionable High disagreements retain the bounded disagreement path.
    `[review].second_command` is a host-only override of the code default.
    Non-mutation PR-check failures use the ordinary gate-failure loop, not the
    disagreement path. Mutation runs related tests first and stops after the first
    failure; a surviving mutant still has to pass every discovered test. The
    deterministic 200-mutant sample uses the gate timeout minus 60 seconds for
-   preparation, baseline, and mutants together; incomplete blocking runs fail.
+   preparation, baseline, and mutants together. After baseline completes, each
+   mutant gets `min(max(60, 3 * baseline), remaining / 4)` seconds, with `remaining`
+   fixed at baseline completion. Per-mutant timeouts count as killed, with their
+   timeout count shown separately in summaries and gate reports, unless the cap
+   is below baseline duration: those runs stay incomplete and cannot disprove
+   reviewed equivalents. Workers continue with remaining mutants after such cuts.
+   Unstarted mutants, deadline-shortened runs and timeout results returned at or
+   after the absolute deadline are also incomplete, not survivors or blocking failures;
+   a baseline that never passes within the deadline and tool failures still fail.
+   Scratch workers use local shared clones with independent Git metadata and the
+   current working files overlaid, so Git-dependent tests run without skips.
+   Baseline and mutant subprocesses disable bytecode writes, preventing cached
+   baseline code from masking same-size mutations in reused scratch copies.
+   On `proof = "mutation-v1"` checks, the gate recomputes committed scope from raw
+   textual diffs (no text conversion or external diff driver), counting only Git's
+   LF line boundaries; source inside a hunk cannot become a file header.
+   The producer, its local `factory` imports, and its child test harness execute
+   from the resolved trusted base in gate-owned scratch. Producer startup excludes
+   the reviewed checkout's interpreter, site hooks and build hooks; mutation targets
+   and test suites remain the reviewed working tree.
+   Missing trusted producer code fails closed. Completion records must be bounded
+   regular files: symlinks, FIFOs and devices are invalid proof, never blocking reads.
+   When main moves during a proof run, the dispatcher retries once. Another move
+   defers review to a later pass without worker rework, a failed PR gate or reviewer
+   escalation. An unbound proof, head mismatch or stale proof without a base move
+   still fails closed.
+   This repository's mutation command loads `mutation-equivalents.json` through
+   `--equivalents FILE`. It is a JSON array; each reviewed entry has this shape:
+
+   ```json
+   {
+     "file": "factory/example.py",
+     "line": 1,
+     "operator": "core/NumberReplacer",
+     "original": "unused = 1",
+     "mutated": "unused = 2",
+     "argument": "Only the integer literal 1 reaches this module-level assignment; no code reads unused, so changing it to 2 cannot affect behavior.",
+     "reviewer": "Agreeing reviewer"
+   }
+   ```
+
+   `file` is repository-relative and `line` is the positive start line. Matching
+   uses the exact operator and the complete removed/added source lines from the
+   mutation diff, preserving indentation and joining multiple lines with `\n`;
+   it never uses the report's truncated display text. `argument` and `reviewer`
+   must be nonempty single lines. Each argument must name the input domain and
+   where it is filtered (or why no filtering is needed). The agreeing reviewer
+   must check that assumption against the source at the gated head. A later
+   change widening that domain reopens the mutant, even if its exact mutation
+   identity has not changed. Matching survivors remain in the report as
+   **accepted equivalent**, with the argument and reviewer, but do not block.
+   Invalid entries fail in both blocking and report-only modes. Before selecting
+   mutants, every entry's complete `original` source must still match at its
+   recorded `file:line`; rewritten, moved, deleted or unreadable source makes the
+   entry stale and fails either mode, even with no changed mutable files.
+   An exact reviewed mutant that was tested and killed also fails either mode.
+   When every changed-line candidate was sampled and completed, an entry on any
+   enumerated changed line with no matching surviving identity is also stale
+   (including lines with zero candidates, obsolete operators or replacement text).
+   With matching source, unchanged files or lines, sampled-out mutants, and
+   unstarted or deadline-cut trials provide no stale evidence.
+   The registry is in `[gate].protected_paths`: additions, updates and removals
+   require the normal human-reviewed configuration/protected-override path, not
+   an ordinary worker diff. The registry ships empty (`[]`); #541 adds its own
+   reviewed entries pinned to its gated head. No survivor is pre-approved by this
+   mechanism.
    The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
    profiles must also name a model. `factory doctor` warns when any of the
    worker, primary-reviewer, or second-reviewer models is missing or not
@@ -1027,7 +1399,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `--match-head-commit` atomically guards the head, not the target branch or a
    late human veto. Protect release branches on GitHub; the final reads alone
    cannot prevent a retarget after the last check.
-7. **Escalation.** Budget exceeded, gate failed thrice, second `REVISE`,
+7. **Escalation.** Budget exceeded with unfinished work, failing gates,
+   exhausted review rounds, genuine reviewer rejection,
    nothing to PR, refused `agent/<n>` push, a refresh conflict that is not
    routine (step 6), red CI, or any
    dispatcher crash after the claim: the issue gets `ready-for-human`,
@@ -1119,6 +1492,7 @@ timeout = 1200
 lock = "/tmp/factory.lock"
 protected_paths = [".factory.toml", "REVIEW.md", "TRACKING*"]
 add_only_paths = ["tests/**"]     # new files and appended lines pass; edits escalate
+# fixups = [["cargo", "xtask", "manifest"]]  # optional mechanical repair; no defaults
 
 [[gate.check]]
 name = "lint"
@@ -1139,18 +1513,181 @@ extra = ["\\bmyproduct\\b"]   # regexes ORed onto the pattern
 url = "http://127.0.0.1:11434/v1/chat/completions"
 model = "qwen3:30b"
 # timeout = 60                    # seconds per model request
+# max_tokens = 2048                 # positive output-token limit on every request
+# chat_template_kwargs = { enable_thinking = false }  # optional model-specific table
 
 [journal]
 max_mb = 64      # events.jsonl rolls into events.jsonl.N.gz past this size
 retention = 8    # gzip segments kept
 ```
 
+Triage sends `max_tokens` on every model completion (default 2048; must be a
+positive integer). Optional `chat_template_kwargs` is a JSON-compatible table
+passed through unchanged, including false values and an explicitly empty table;
+the key is omitted when unset. No model-specific template option is implicit.
+Completion requests to the same URL are serialized across repositories, threads,
+and processes for the same host user, using endpoint-keyed locks under
+`$XDG_STATE_HOME/factory/triage-requests` (default `~/.local/state/factory/triage-requests`).
+All processes sharing an endpoint must use the same state home.
+
+For a District-managed remote host, keep its request shape in the controller's
+shared host config so `sync_remote_config` preserves it:
+
+```toml
+[hosts.ultron.defaults.triage]
+max_tokens = 1024
+chat_template_kwargs = { enable_thinking = false }
+```
+
+District merges that host override into the remote `[defaults.triage]`; Factory
+also accepts `[repo."owner/name".triage]` overrides. Keep these settings out of
+the repository file when hosts need different request shapes.
+
 The shared host file is `$XDG_CONFIG_HOME/factory/config.toml` (default
 `~/.config/factory/config.toml`). `[defaults.engine]` belongs to District:
 `ref`, `sha`, `previous`, and `installed_at` describe its installed engine
-snapshot. Factory leaves this metadata opaque and out of pipeline configuration;
-`doctor` accepts it only under `defaults`. Unknown tables and an `engine` table
-under a per-repository section still produce host-config warnings.
+snapshot; `target`, `target_ref`, and `resolved_at` describe the target District
+resolved and CI-checked for installation. At pass start, Factory compares its
+installed commit with that recorded `target` SHA, never resolving `factory_ref`
+or checking engine CI itself. A mismatch emits one `engine-stale` event per
+non-dry pass, with `installed_commit`, `target_commit`, and `yield_for_update`.
+Missing installed identity or a missing/invalid target does not establish staleness.
+Other District metadata stays outside pipeline configuration; `doctor` accepts it
+only under `defaults`. An `engine` table under a per-repository host section
+still produces a host-config warning.
+
+`[engine] yield_for_update = true` in `.factory.toml` opts a repository into
+yielding when stale (default false). For the whole shared host, set:
+
+```toml
+[defaults.engine]
+yield_for_update = true
+```
+
+This host policy takes precedence over every repository's setting, so a repo
+opt-out cannot keep the shared engine busy. A stale pass, including `--ticket`,
+finishes land and review intake, then exits successfully without claims, manager
+work, learning, or opening a release PR. Dry runs report the yield without
+writing an event. Once District records the installed SHA equal to its target,
+normal passes resume. After a `factory_ref` switch, Factory follows District's
+next recorded target, not a separately computed branch head. District still
+owns green-CI eligibility and the install window: pausing timers, waiting for
+idle, installing, and resuming; Factory does not change services or timers.
+
+Outcome check for #539: over the first seven days after deployment, retain the
+host's engine snapshots (`sha`, `installed_at`) and compare GitHub main-merge
+timestamps with the first installed snapshot containing each merge. The median
+merge-to-install lag must be at most two hours. This post-deployment observation
+is separate from the dispatcher regression tests.
+
+**Several hosts serving one repository.**
+
+Opt in on each machine through the shared host file. Values directly in
+`[repo."owner/name"]` override `[defaults]`:
+
+```toml
+[defaults]
+host_name = "tank"
+triage_host = "tank"
+land_host = "tank"
+claim_ttl = "2h"
+
+[repo."owner/name"]
+claim_ttl = "3h"
+```
+
+Use a distinct `host_name` on every host: 1–45 ASCII letters, digits, `.`, `_`,
+or `-`, starting with a letter or digit. Set the same `triage_host` on all
+hosts to avoid duplicate triage; other hosts exit 0 with
+`triage: skipped, triage host is <name>` before reading issues or writing events.
+Unset `triage_host` keeps triage enabled everywhere. `claim_ttl` defaults to
+`"2h"` and accepts positive `s`, `m`, `h`, or `d` durations, including `"1h30m"`.
+`factory doctor` reports the effective host settings.
+
+Set the same `land_host = "tank"` on both Tank and Ultron before enabling
+Ultron's Factory timer. Only the matching `host_name` runs landing: upstream
+sync, merge and behind-main refresh. Other hosts skip before any landing git/gh
+calls or journal writes, including dry runs. Unset `land_host` keeps landing
+enabled everywhere. Like `triage_host`, it is host-only and uses the same host
+name syntax and per-repository override.
+
+`release_host` works the same way: set the same `release_host = "tank"` on every
+host and only the matching `host_name` runs the release step; other hosts log
+`release: skipped, release host is <name>` before any git or `gh` call. Unset
+`release_host` keeps releasing enabled everywhere.
+
+`triage_host` also gates every loop whose ownership is a GitHub-wide scan or
+singleton rather than a local claim: triage, review intake, manager viability
+and `learn`. Passes whose ownership comes from this host's own journal run on
+every host that has a manager, whatever `triage_host` says: the PR frontier
+(CI-failed, late-feedback and stale escalation, and the `manager.review = "all"`
+approval) and escalation rounds. Terminal handoffs run on every host, with or
+without a manager, and act only on this host's own `escalate` rows. A PR claimed
+only by the other host has no local `claimed` or `escalate` row, so those passes
+leave it alone.
+
+Independently, the ticket merge stage skips PRs whose elected claim belongs to
+another host, even after that claim expires. It neither refreshes those branches
+nor consumes local approval evidence, removes `factory-approved`, or escalates
+them. PRs without a claim retain ordinary eligibility checks.
+
+Inside the existing per-ticket lock, dispatch adds `host:<name>` and a comment
+whose first line is `Factory claim: host=<name> nonce=<uuid> at=<iso8601>`.
+Only comments authored by the authenticated dispatcher account count as claims.
+After fresh label/comment reads, the earliest live comment wins, ordered by
+GitHub creation time and then numeric comment ID. A loser records `claim_lost`
+and removes its own comment and label without assigning or launching a worker.
+The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
+pipeline runs. Unclaim always applies escalation/requeue labels; only the owning
+host can remove an existing claim's `@me`, host label and comment, even after expiry.
+An in-process claim must also match the elected nonce before cleanup. Tickets
+assigned before host claims were enabled retain the original `@me` release path.
+If the label/assignee edit fails, unclaim retains its comment and host label so
+another host can recover the assignment after TTL expiry. Successful host-label
+removals journal `claim-label-removed` receipts. The manager ignores those exact
+labels from the authenticated dispatcher only before the recorded escalation
+comment; human removals and later edits still hold automatic management.
+
+Expired claims are admitted through the frontier only when no other hold exists.
+A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
+hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
+Each heartbeat revalidates the elected host and nonce. A displaced owner stops
+renewing rather than reviving an expired claim ahead of its replacement.
+Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
+issue comment with the refresh instructions, including when the owner releases
+its claim. The next host can consume that context even after the claim is deleted.
+Deferred actionable review rework uses the same ownership-aware release and shares
+its findings, so another host can resume the existing PR after the lease expires.
+Shared instructions take precedence over this host's local requeue journal. Local
+risk-disagreement history carries forward only when its instructions match the
+selected context; an intervening foreign requeue cannot trigger early escalation.
+Escalation comments carry the same nonce marker on their second line, preserving
+the escalation prefix. A later manager/human `ready-for-agent` relabel can resume
+the expired claim's existing PR; its live heartbeat still holds admission.
+Neither transition can release a later worker's claim or its completed-PR hold.
+Expired ownership follows election order, not the newest raw comment: a contender
+created during the winner's last live lease cannot supersede its requeue marker
+just because loser cleanup failed. A claim created at or after that lease expires
+starts a new election, so an old requeue cannot release newer completed work.
+Assigned stale claims stay intact until a replacement wins and assigns, so admission
+or claim failures cannot strand the shared `@me` assignment without recovery evidence.
+Dispatch then rechecks the heartbeat, removes stale comments/labels without clearing
+the shared assignment, and records `claim-released` with the old host and last heartbeat.
+The elected owner revalidates its nonce before cleanup; a losing contender still
+deleting its live claim cannot block retirement of old stale ownership. Owner
+unclaim also retires older stale claims before deleting its own comment, so
+leftover claims cannot strand a later refresh requeue or escalation/relabel.
+Unassigned stale claims can be released before election. A foreign host label without
+a claim comment remains a hold; inspect it before removing it.
+Cleanup removes the host label before deleting its last claim comment, so a
+failed label edit retains TTL recovery evidence for the next pass. Another
+same-host contender keeps its label. If comment deletion fails with the comment
+still present, cleanup restores the label and surfaces the error.
+Hosts need synchronized clocks and current GitHub reads. This comment-based
+lease is not a fencing token for a disconnected worker that outlives its TTL.
+With `host_name` unset, dispatch makes no host-label/comment calls; triage and
+landing always run, even when `triage_host` or `land_host` is configured.
+
 
 `[worker_wrap]` is host-only: set `command` under `[defaults.worker_wrap]` or
 `[repo."owner/name".worker_wrap]` (per-repo wins). Its argv is prepended to
@@ -1343,27 +1880,39 @@ branches, or merge state.
   (a `[workers.<label>] usage` profile or `cost_pattern`).
 - **Learning loop**: after a batch of tickets, `factory learn --dry-run`,
   read the proposed lessons, then `factory learn` and commit
-  `.factory-lessons.md`. Workers see it on every ticket. With `[manager]`
-  configured the dispatcher does this itself: at the end of a pass, once 10
-  tickets have finished (latest `merged`/`escalate` row) since the last `learn`
-  event (manual or automatic; from the journal start if none), it runs
-  `factory score --last 10` (so every chosen ticket has session excerpts),
-  decides open promotions on the new scores (below), then, unless that opened a
-  revert (`learn: skipped (revert PR opened: ...)`; a lessons PR would conflict
-  with it), `factory learn --last 10` once and journals `learn` with
-  `trigger: "auto"`.
+  `.factory-lessons.md`. Workers see it on every ticket. At the end of every
+  dispatcher pass, `factory score` scores unscored finished attempts (at most 50),
+  independently of the learning threshold, manager availability, or open proposals.
+  With `[manager]` configured, once 10 tickets have finished (latest
+  `merged`/`escalate` row) since the last successful `learn` event (manual or
+  automatic; from the journal start if none), the dispatcher decides open
+  promotions on the scores (below), then, unless that opened a revert
+  (`learn: skipped (revert PR opened: ...)`; a lessons PR would conflict with it),
+  runs `factory learn --last 10` and journals `learn` with `trigger: "auto"`.
   It skips while an `agent/lessons-*`, `agent/curate-*` or
   `agent/revert-lessons-*` PR is open (`learn:
-  skipped (open lessons PR #N)`; the count is kept), and without a manager logs
-  `learn: skipped (no manager)` and records nothing. A failure is journaled as
-  `learn` with `status: "failed"` and a `reason`, never fails the pass, and
-  keeps the count, so the next pass retries. Lessons, CURATE, and their revert PRs auto-merge:
-  gate, reviewer APPROVE (posted as a GitHub `COMMENT` review, since the
-  dispatcher authored the PR and cannot approve its own; the journaled
-  `review-result` carries the verdict), CI, `factory-approved`, squash (see
-  `factory learn` in the command table). Only same-repository heads are
-  admitted by branch name; a fork PR named `agent/lessons-*` still needs
-  `needs-review`. The guard is measurement, not a person: each merge
+  skipped (open lessons PR #N)`; the count is kept). Blocker changes journal
+  `learn-wait`; the same PR blocking learn for over 24 hours journals exactly one
+  `learn-blocked` per uninterrupted wait, surfaced by `factory watch`. A different
+  PR starts a new clock; clearing the wait clears its watch signal. Without a
+  manager, learn logs `learn: skipped (no manager)`; scoring still runs.
+  A failure is journaled as `learn` with `status: "failed"` and a `reason`, never
+  fails the pass, and keeps the count, so the next pass retries.
+  Lessons and CURATE proposals require gate, reviewer APPROVE (posted as a
+  GitHub `COMMENT` review since the dispatcher cannot approve its own PR;
+  `review-result` carries the verdict), CI, `factory-approved`, and squash.
+  A recorded `promotion-revert` can instead pass on its nonempty measured
+  baseline score: the candidate's changed paths must exactly match the original
+  promotion's, and their contents/modes must equal that merge's parent versions.
+  This is checked against the exact candidate head, not a branch-name exemption.
+  Such restorations need gate and CI, not reviewer APPROVE or a new worker eval;
+  their `approved` row records `restored_score` rather than claiming a review.
+  A human GitHub `CHANGES_REQUESTED` review still blocks every proposal, including
+  measured restorations; factory reviewer findings posted as `COMMENT` are distinct.
+  An unmeasured or modified restoration still needs review and scheduled eval.
+  Only same-repository heads are admitted by branch name; a fork PR named
+  `agent/lessons-*` still needs `needs-review`.
+  The guard is measurement, not a person: each non-revert merge
   journals `promotion-open` with the score means of the 10 attempts before it,
   and once 10 attempts journaled after the merge are scored the same pass journals
   `promotion-keep` or `promotion-revert` (opening `agent/revert-lessons-<pr>`)
@@ -1429,6 +1978,23 @@ branches, or merge state.
   `keep` row at merge; a missing claim reports the exact `factory eval` command.
   The same setting installs a persistent weekly timer using `[eval] profile`;
   scheduled drops beyond noise set `flagged: true` in the journal.
+- **Runner preflight**: before assigning a ticket (including `dispatch --ticket`),
+  reap abandoned `factory-runner-*` scratch roots, then require at least 1 GiB
+  free and 10,000 free inodes on both the repository and temporary filesystems.
+  Filesystems reporting no inode limit skip the inode check. Low storage records
+  `runner-infra` with reason `runner_storage_low`, path, resource, available, and
+  minimum; an unreadable filesystem records `runner_storage_unavailable`.
+  Neither claims the ticket nor records an attempt or escalation; retry next pass.
+  Watch treats both refusal reasons as host conditions: transient refusals are
+  ignored; an uninterrupted streak spanning `[watch].host_failure_minutes`
+  files with the `host` label rather than as a Factory lifecycle defect.
+  Reviewer, gate, and isolated GitHub-config roots hold directory flocks for their
+  owner's lifetime. After normal exit or a crash, only confirmed live process use
+  (cwd, open files, or inherited scratch environment) retains an unlocked root.
+  Unknown/unreadable process visibility alone never protects it. Linux process
+  state is parsed as bytes so non-UTF-8 process names do not interrupt cleanup.
+  Read-only review snapshots are removable, and legacy one-day temp sweeping
+  remains in place.
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
   (`claimed`, `attempt`, `pr-opened`, `review`, `approved`, `refreshed`, `conflict-requeue`,
   `merged`, `escalate`, `upstream-sync`, and `human-decision`; `gate`,
@@ -1569,7 +2135,7 @@ applicable or not known; it is not a fabricated ticket, run, round, or result.
 | `at` | string | UTC source timestamp, ISO 8601 with microseconds and `Z`. A reconciled exit uses the time of observation, not an estimated crash time. |
 | `outcome` | string or null | Terminal classification on `exit`; null on other kinds. |
 | `reason` | string or null | Supported terminal reason or diagnostic text, not a closed enumeration; null when no reason is known. |
-| `process` | object or null | Owner identity sampled on entry: `pid` (integer), `boot_id` (string or null), `start_ticks` (integer or null), `pid_namespace` (string or null), `uid` (integer or null), `state` (Linux process-state string or null), `ppid` (integer or null). Factory emits an object; the reader also accepts null as unavailable authority. This cached identity is not a live heartbeat. |
+| `process` | object or null | Owner identity sampled on entry: `pid` (integer), `boot_id` (string or null), `start_ticks` (integer or null), `pid_namespace` (string or null), `uid` (integer or null), `state` (process-state string or null), `ppid` (integer or null). Factory emits an object; the reader also accepts null as unavailable authority. This cached identity is not a live heartbeat. |
 | `locks` | array of objects | Recorded exclusion evidence, possibly empty. Each object has `path` (absolute-path string), `device` (integer or null), and `inode` (integer or null). Null identity fields mean unavailable evidence. |
 
 IDs and sequence numbers survive repeated reads. Sort a single execution by
@@ -1580,6 +2146,43 @@ terminal `exit`; an abrupt death can leave the exit absent until observation
 has enough evidence to reconcile it. Extra keys and evidence kinds may be
 added; consumers should ignore those they do not understand. Unsupported schema
 versions are not interpreted as version 1 by the existing observer.
+
+Linux identity fields retain their procfs values: boot UUID, field-22 start ticks,
+and PID namespace link. On macOS, lifecycle and passive runtime observation share
+one private backend, and only the verified receipt is read: macOS 27.2, arm64,
+64-bit pointers, little-endian. Any other combination is unknown and does not
+guess offsets. `kern.bootsessionuuid` identifies the boot. Process identity
+comes from `proc_pidinfo(PROC_PIDTBSDINFO)` on the verified 136-byte layout;
+journal `start_ticks` stays that start time in integer Unix seconds, and the
+microsecond field is used only to compare two reads of the same process. A
+runnable-to-sleeping transition does not make that identity new. A changed
+parent or uid does. Context tags come from `KERN_PROCARGS2` into one
+`KERN_ARGMAX`-sized buffer (1 MiB on the verified host). A full buffer is
+truncated and unknown. `proc_listallpids` uses byte sizes and returns a pid
+count; a buffer that comes back full is retried, then incomplete. Identity
+reads follow kernel order up to 4096 pids. Context reads stay capped at 256.
+Processes that started after their own uid's known process-start second are
+read newest first. The same second and any earlier start stay deferred, and
+an unknown origin keeps that uid deferred. Another uid's start is not a
+cutoff. Membership is a context tag or a start-validated ancestor. The
+continuation hand is that process's pid and start. It stays eligible when the
+same process is also newer than the previous read, and a deadline does not
+skip it. Past either cap, or while any deferred process is unread, the scan
+is incomplete. `pid_namespace` is `"darwin"`.
+Host IDs hash the IOKit `IOPlatformUUID` with the same UUIDv5 scheme as Linux
+machine-id. The guarded observer never runs `ps`, `lsof`, `sysctl`, or
+`ioreg`. Denied, malformed, empty, or truncated reads are unknown, not absence.
+A missing recorded PID or a changed start time proves the original process dead
+only when this observer can see itself. Descendant membership is a context tag
+or a start-validated ancestor, not a uid and not a parent pid alone. The existing
+handoff safeguard still prevents interruption when a launched descendant cannot
+be ruled out. There is no non-spawning flock-owner source: attribution stays
+unavailable, the owner stays null, and an open file is not ownership. The same
+limit covers passive resource state and observed admission capacity. State stays
+`unknown`, not `free`. With any numeric ticket lock, `capacity.active` is null
+and `capacity.complete` is false, never zero. A lock directory that was listed
+and contains no numeric ticket lock is zero. A retained observation is not a
+fresh reading of the current lock.
 
 | Stage | Boundary |
 |---|---|
@@ -1792,7 +2395,7 @@ holder identity. `wait_end.wait_event_id` names the ended wait's event UUID.
 | `state`, `ownership` | Independent string enums described above. `none` is supported only by observed free state. |
 | `owner` | Null or object with all common execution identity fields, recorded `process`, `acquisition_id`, and source `acquired_at` timestamp. |
 | `requests` | Array of currently live, unterminated requesters not yet acquired/released: common execution identity fields, `process`, source `event_id`, `requested_at`, and `blocking`. A pending request is not ownership. |
-| `evidence` | Object: `lock_state` (`held`/`free`/`unknown`), `attribution` (`proc_locks`/`unavailable`), `holder_pids` (integer array or null). Kernel PIDs alone are not confirmed execution identity. |
+| `evidence` | Object: `lock_state` (`held`/`free`/`unknown`), `attribution` (`proc_locks`/`lsof`/`unavailable`), `holder_pids` (integer array or null). Linux uses kernel FLOCK owners; macOS uses flock try-lock for availability and lsof's whole-file lock fields for owners, not merely open descriptors. Kernel PIDs alone are not confirmed execution identity. |
 | `event_id`, `at` | Stable identity and source time of the last distinct local resource observation. |
 | `observed_at` | UTC time of this local evidence collection, distinct from transition time. |
 
@@ -2025,16 +2628,21 @@ is forced to a local Unix socket, never an inherited TCP address. Missing tools,
 unavailable units, invalid output, overflow and timeouts yield partial errors.
 Only explicit `ActiveState=active` is true; transitional states remain unknown.
 `next_at` requires an active timer and an explicitly returned future timestamp.
-Admission scans at most 1024 directory entries and a 256 KiB kernel lock window;
-unreadable/incomplete evidence returns null capacity, not a false zero.
+Admission scans at most 1024 directory entries and a 256 KiB kernel lock window.
+The count is Linux `/proc/locks` only. Unreadable, incomplete, or Darwin evidence
+with a numeric ticket lock returns null capacity, not a false zero. An empty
+numeric listing stays zero because the directory itself was read.
 
 System query errors use source `systemctl`, scope `service`, `timer`, or
 `schedule`, and codes `invalid_unit`, `timeout`, `output_limit`, `command_failed`,
 `command_unavailable`, `unit_unavailable`, `transitioning`, `unit_failed`,
 `invalid_state`, or `invalid_schedule`. Admission errors use source `admission`,
 scope `repository`, with `missing`, `unreadable`, `unsupported_file`, `byte_limit`,
-`entry_limit`, `changed`, or `invalid_kernel_locks`. Errors contain fixed codes
-only; raw stderr and arbitrary stored diagnostic text are never returned.
+`entry_limit`, `changed`, `invalid_kernel_locks`, or `locks_unavailable`.
+`locks_unavailable` is the Darwin numeric-ticket-lock result: no passive flock
+table, so the count is null rather than zero or a foreign kernel table. Errors
+contain fixed codes only; raw stderr and arbitrary stored diagnostic text are
+never returned.
 
 The journal reader performs one `pread` of at most **1,048,576 bytes** at the
 end of the regular file, with no journal lock. It drops the first clipped line,
@@ -2117,13 +2725,20 @@ missing entry, conflicting identity/sequence, ambiguous suffix or unavailable
 live evidence still makes that record partial/unknown; history gaps remain
 reported even when independent current observations are fresh.
 
-Direct identity checks are cached for at most 128 PIDs, with 4096-byte `/proc`
-stat reads, a 64 KiB mounts read, 128-byte boot/machine identity reads, and at
-most 512 cached lock stats. Resource attribution reads `/proc/locks` once, under
-1 MiB; at most 128 current holder PIDs are returned per resource. Hitting these
-bounds yields unknown/partial evidence. The separate admission query has its
-own smaller kernel bound above. No flock is acquired, no ownership file is
-rewritten, no lock/state directory is created, and no reconciliation is persisted.
+Direct identity checks are cached for at most 128 PIDs, with at most 512 cached
+lock stats and 128 current holder PIDs returned per resource. On Linux, probes
+use 4096-byte `/proc` stat reads, a 64 KiB mounts read, 128-byte boot/machine
+identity reads, and one `/proc/locks` read under 1 MiB. On Darwin, `sysctl`
+supplies the boot-session UUID, `ioreg` supplies the hashed machine UUID, and
+`ps` supplies PID/start-time identity. An absent PID is dead only after a
+successful current-process visibility probe on the same boot. Resource
+attribution uses `lsof` lock fields per resource; missing lock fields remain
+unknown, never proof that a lock is free. Each Darwin command has a two-second
+timeout; its captured output has no byte cap. Hitting identity/lock/holder
+bounds or unavailable probes yields unknown/partial evidence. The separate
+admission query has its own smaller kernel bound above. No flock is acquired,
+no ownership file is rewritten, no lock/state directory is created, and no
+reconciliation is persisted.
 Without host identity, configured descriptors are omitted with an error rather
 than assigning unrelated hosts a fabricated shared identity.
 
@@ -2140,12 +2755,16 @@ unsupported for lifecycle coverage, not an empty valid lifecycle history.
 Known legacy rows cannot hide a lifecycle exit, so they do not independently
 invalidate supported open scopes.
 
-Other source/scope pairs are `proc`/`identity` (`boot_unavailable`,
+Linux source/scope pairs are `proc`/`identity` (`boot_unavailable`,
 `namespace_unavailable`, `process_limit`, `process_unavailable`,
-`absence_unavailable`), `proc`/`executions` (`descendants_not_scanned`),
-`proc/locks`/`resources` (`locks_unavailable`, `holder_limit`),
+`absence_unavailable`) and
+`proc/locks`/`resources` (`locks_unavailable`, `holder_limit`).
+Darwin uses `process`/`identity` (`boot_unavailable`, `process_limit`,
+`process_unavailable`) and `lsof`/`resources` (`locks_unavailable`, `holder_limit`)
+instead of the Linux identity and lock sources. Shared pairs are
+`proc`/`executions` (`descendants_not_scanned`),
 `filesystem`/`resources` (`lock_limit`, `not_regular`, `lock_unavailable`,
-`canonical_path_unavailable`), and `configuration`/`resources`
+`canonical_path_unavailable`) and `configuration`/`resources`
 (`lock_limit`, `invalid_scope`, `host_identity_unavailable`). A lock file that
 does not exist (not yet created, or unlinked by ticket cleanup) is not an error:
 its resource reports state `unknown` with no `lock_unavailable`.
@@ -2580,7 +3199,7 @@ two MCP tools call that same function. Nothing else composes these label edits.
 
 | Action | `args` | Preconditions | Effect |
 |---|---|---|---|
-| `requeue_agent` | `number`, `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor |
+| `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
 | `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
 | `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
 

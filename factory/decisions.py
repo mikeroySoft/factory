@@ -64,11 +64,24 @@ _SECRET = re.compile(
 )
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 _FILE_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+_LOCK_FLAGS = os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+_LOCK_OPEN_ATTEMPTS = 3
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
-# Linux no-replace rename publishes one link atomically; link/unlink has a crash window.
-_RENAME_NOREPLACE = ctypes.CDLL(None, use_errno=True).renameat2
-_RENAME_NOREPLACE.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-_RENAME_NOREPLACE.restype = ctypes.c_int
+
+
+def _rename_noreplace(libc):
+    for name, flag in (("renameat2", 1), ("renameatx_np", 0x4)):
+        rename = getattr(libc, name, None)
+        if rename is not None:
+            rename.argtypes = [
+                ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+            ]
+            rename.restype = ctypes.c_int
+            return rename, flag
+    return None, None
+
+
+_RENAME_NOREPLACE, _NOREPLACE_FLAG = _rename_noreplace(ctypes.CDLL(None, use_errno=True))
 
 
 class DecisionError(ValueError):
@@ -178,10 +191,29 @@ def _read_artifact(directory: int, name: str, *, missing: bool = False) -> dict 
         if (
             not stat.S_ISREG(info.st_mode)
             or info.st_uid != os.geteuid()
-            or info.st_nlink != 1
             or info.st_mode & 0o222
             or info.st_size > READ_CAP
         ):
+            raise DecisionError("decision artifact is unsafe", "unsafe_storage")
+        if info.st_nlink == 2:
+            prefix = f".tmp-{name}-"
+            try:
+                for temporary in os.listdir(directory):
+                    if not temporary.startswith(prefix) or _ID.fullmatch(temporary[len(prefix):]) is None:
+                        continue
+                    try:
+                        sibling = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+                        if (sibling.st_dev, sibling.st_ino) == (info.st_dev, info.st_ino):
+                            os.unlink(temporary, dir_fd=directory)
+                            os.fsync(directory)
+                            break
+                    except FileNotFoundError:
+                        # The publisher or another reader may already have cleaned it.
+                        pass
+            except OSError as exc:
+                raise DecisionError("decision artifact could not be recovered", "storage_unavailable") from exc
+            info = os.fstat(fd)
+        if info.st_nlink != 1:
             raise DecisionError("decision artifact is unsafe", "unsafe_storage")
         data = bytearray()
         while len(data) <= READ_CAP:
@@ -229,14 +261,29 @@ def _store_artifact(directory: int, name: str, value: dict) -> None:
         finally:
             os.close(fd)
         try:
-            if _RENAME_NOREPLACE(directory, os.fsencode(temporary), directory, os.fsencode(name), 1):
+            if _RENAME_NOREPLACE is None:
+                # A crash can leave two links; readers recover the matching temporary.
+                os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+                try:
+                    os.unlink(temporary, dir_fd=directory)
+                except OSError:
+                    # Publication succeeded; finally retries cleanup, then readers recover.
+                    pass
+                else:
+                    temporary = ""
+            elif _RENAME_NOREPLACE(
+                directory, os.fsencode(temporary), directory, os.fsencode(name), _NOREPLACE_FLAG,
+            ):
                 error = ctypes.get_errno()
                 raise OSError(error, os.strerror(error), name)
+            else:
+                temporary = ""
         except FileExistsError as exc:
-            raise DecisionError("immutable decision artifact already exists", "conflict") from exc
+            # Only the fallback is idempotent for an identical, safely read artifact.
+            if _RENAME_NOREPLACE is not None or _json(_read_artifact(directory, name)) != payload:
+                raise DecisionError("immutable decision artifact already exists", "conflict") from exc
         except OSError as exc:
             raise DecisionError("decision artifact could not be published", "storage_unavailable") from exc
-        temporary = ""
         try:
             os.fsync(directory)
         except OSError as exc:
@@ -847,12 +894,21 @@ def _load_proposal(directory: int, proposal_id: str) -> dict:
 
 def _lock_file(directory: int, name: str) -> int:
     try:
-        fd = os.open(
-            name,
-            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-            dir_fd=directory,
-        )
+        for _ in range(_LOCK_OPEN_ATTEMPTS):
+            try:
+                # Not plain O_CREAT: on Darwin the loser of two concurrent O_CREAT opens
+                # of one new name was observed to get ENOENT; with O_EXCL it gets EEXIST.
+                fd = os.open(name, _LOCK_FLAGS | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+                break
+            except FileExistsError:
+                pass
+            try:
+                fd = os.open(name, _LOCK_FLAGS, dir_fd=directory)
+                break
+            except FileNotFoundError as exc:
+                vanished = exc  # Removed after EEXIST: create it again, a bounded number of times.
+        else:
+            raise vanished
     except OSError as exc:
         raise DecisionError("decision lock is unavailable", "storage_unavailable") from exc
     info = os.fstat(fd)

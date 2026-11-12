@@ -2,7 +2,8 @@
 
 A request is published only once automatic manager recovery is terminal for the latest
 escalation (manager `HUMAN`, transport failure, rounds exhausted, or no manager). Its
-identity is `<ticket>/<round>`; intent is journaled before the comment, the comment id
+identity is `<ticket>/<round>` (`<ticket>/g<generation>/<round>` after an owner requeue,
+since rounds restart per generation); intent is journaled before the comment, the comment id
 after. Uncertain publication is reconciled from GitHub before any retry, and a failed
 reconciliation posts nothing. Owners come from the read-only `factory plan route`
 producer; a `**Decision owner**` edit by a human wins and is never written back.
@@ -16,7 +17,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from subprocess import CalledProcessError
 
-from factory import dispatch, lifecycle
+from factory import dispatch, generation, lifecycle
 from factory.config import LABEL_AGENT, LABEL_HUMAN
 
 MARK = "factory-handoff"
@@ -61,12 +62,26 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
         return "the manager could not run, so there is no automatic diagnosis; the cause is unknown until a human looks"
     if any(e.get("decision") == "HUMAN" for e in decided):
         return "the manager asked for a human decision"
+    since = events[events.index(escalation):] if escalation in events else events
+    if pending_fix(since, round=r, pr=None) is not None:
+        return None  # a FIX waiting for a healthy worker resumes on its own (#662)
+    resumes = [e for e in since if e.get("event") == "manage-resume" and e.get("round") == r and not e.get("pr")]
+    # Once a resume took the FIX up, only the latest resume's own run decides: the deciding pass
+    # and any earlier resume that re-pended are superseded, however they ended.
+    judged = [resumes[-1]] if resumes else decided
     failed = next((e for e in events if e.get("event") == "lifecycle" and e.get("kind") == "exit"
-                   and e.get("outcome") == "mechanism_failure"
-                   and e.get("execution_id") in {d.get("execution_id") for d in decided}), None)
+                   and e.get("outcome") in ({"mechanism_failure", "interrupted", "unknown"} if resumes else {"mechanism_failure"})
+                   and e.get("execution_id") in {d.get("execution_id") for d in judged}), None)
     if failed:
         return f"the manager's {decided[-1].get('decision')} decision could not be applied to GitHub and is never replayed"
     return None  # handed back to automation; a later failure is a new escalation generation
+
+
+def pending_fix(rows: list[dict], **decided: object) -> dict | None:
+    """The `manage-pending` FIX of the decision matching `decided` that no resume took up yet."""
+    marks = [row for row in rows if row.get("event") in {"manage-pending", "manage-resume"}
+             and all(row.get(key) == value for key, value in decided.items())]
+    return marks[-1] if marks and marks[-1]["event"] == "manage-pending" else None
 
 
 def observe(cfg, n: int, escalation: dict) -> dict | None:
@@ -173,7 +188,8 @@ def handoff_pass(dry_run: bool = False) -> None:
                     continue
                 execution.resource("acquired", lock_path, scope="repository")
             try:
-                events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
+                ticket_generation = generation.current(lifecycle.read_events(dispatch.EVENTS), n)
+                events = ticket_generation.rows
                 escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
                 if not escalation or escalation.get("upstream") or not escalation.get("packet"):
@@ -187,7 +203,8 @@ def handoff_pass(dry_run: bool = False) -> None:
                     dispatch.log(f"#{n}: refused (initiative records never receive handoff requests)")
                     continue
                 r = escalation.get("round", 0)
-                request = f"{n}/{r}"
+                # Rounds restart in each owner-requeue generation; legacy generation 0 keeps `<n>/<round>`.
+                request = f"{n}/g{ticket_generation.number}/{r}" if ticket_generation.number else f"{n}/{r}"
                 receipts = [e for e in events if e.get("event") == "comment" and e.get("kind") == "handoff" and e.get("request") == request]
                 intents = [e for e in events if e.get("event") == "handoff" and e.get("request") == request]
                 pending = [i for i in intents if not any(p.get("token") == i["token"] for p in receipts)]

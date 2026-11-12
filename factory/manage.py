@@ -14,7 +14,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import binding, config, dispatch, handoff, lifecycle
+from factory import binding, config, dispatch, generation, handoff, lifecycle
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -283,6 +283,8 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
                    and item.get("id") in escalation_comments and item.get("created_at", "") >= escalation["at"]), None)
     if marker is None:
         return True
+    removed_host_labels = {e["label"] for e in events[events.index(escalation):]
+                           if e.get("event") == "claim-label-removed"}
     for index, item in enumerate(items):
         if item.get("created_at", "") < escalation["at"]:
             continue
@@ -295,6 +297,8 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
         if index < marker and (
             (kind == "labeled" and item.get("label", {}).get("name") == LABEL_HUMAN)
             or (kind == "unlabeled" and item.get("label", {}).get("name") == LABEL_AGENT)
+            or (kind == "unlabeled" and item.get("label", {}).get("name") in removed_host_labels
+                and (item.get("actor") or {}).get("login", "").casefold() == dispatch.host_claim_login())
             or kind == "unassigned"
         ):
             continue
@@ -473,6 +477,11 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         dispatch.push_agent(wt, n, lease)
         dispatch.record_risk(wt, n, gate_head)
         verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
+        if cfg.fixups:
+            gate_head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        if verdict == dispatch.PR_GATE_WAIT:
+            dispatch.defer_mutation_proof(n, gate_head, "manager FIX")
+            return
         dispatch.pr_comment(n, findings)
         if pr_failed:
             reason = "pr checks failed"
@@ -595,7 +604,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         issue_action("edit", *args)
     else:
         post_comment("issue", n, "Factory manager: " + body)
-    if decision != "HUMAN":
+    if decision in generation.RELEASING_DECISIONS:
         issue_action("edit", "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT)
 
 
@@ -755,6 +764,7 @@ def viability_pass(dry_run: bool = False) -> None:
                     if not dry_run:
                         execution.outcome = "mechanism_failure"
                         execution.reason = "github_command_failed"
+                        execution.error = dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc))
                     dispatch.log(f"{kind} #{n}: viability failed: {exc}; inspect events.jsonl before re-arming")
                 finally:
                     if not dry_run:
@@ -835,6 +845,71 @@ def feedback_packet(items: list[dict]) -> str:
 CI_KINDS = ("check_run", "commit_status")
 
 
+def apply_fix(n: int, issue: dict, data: dict, packet: Path, **decided: object) -> None:
+    """Execute a journaled FIX. One that finds no healthy worker is a host defect (#662): it
+    stays pending for `resume_fix`, never a spent or failed decision."""
+    try:
+        apply(n, issue, "FIX", "", data, packet)
+    except dispatch.WorkerUnavailable as exc:
+        dispatch.record("manage-pending", ticket=n, decision="FIX", worker=data["worker"],
+                        guidance=data["guidance"], packet=str(packet), reason=str(exc), **decided)
+        raise
+
+
+pending_fix = handoff.pending_fix
+
+
+def resume_fix(n: int, issue: dict, pending: dict, **decided: object) -> None:
+    """Run a pending FIX once a worker can take it, without another manager round or comment.
+    The resume is journaled first: an interrupted resume is a human's call, never replayed."""
+    if dispatch.fallback_worker(pending["worker"]) is None:
+        raise dispatch.WorkerUnavailable(f"worker `{pending['worker']}` is still unavailable")
+    dispatch.record("manage-resume", ticket=n, decision="FIX", **decided)
+    dispatch.log(f"#{n}: resuming the manager FIX that waited for a healthy worker")
+    apply_fix(n, issue, {"worker": pending["worker"], "guidance": pending["guidance"]},
+              Path(pending["packet"]), **decided)
+
+
+def selectable_workers(cfg: config.Config) -> dict[str, list[str]]:
+    """Profiles the manager may name: not reserved, not label-gated, and whose probe proved
+    their login this pass (#662). An executable on PATH is no evidence a worker can run."""
+    return {key: command for key, command in cfg.workers.items()
+            if key not in RESERVED_LABELS and key not in cfg.worker_select_label
+            and key not in dispatch.UNAVAILABLE_WORKERS and key in dispatch.VERIFIED_WORKERS}
+
+
+WATERMARK_SOURCES = tuple(sorted(set(ACTIONABLE_SOURCE.values())))
+
+
+def after_watermark(n: int, rows: list[dict], observation: dict, late: list[dict], head: str,
+                    dry_run: bool) -> list[dict]:
+    """Late items newer than the owner's requeue, for a generation still awaiting its first attempt.
+
+    The watermark is the set of items undelivered when the frontier first sees the generation,
+    journaled with the sources it covered completely. A source incomplete then is watermarked
+    when first seen complete, with only its items no newer than the owner's release (all of
+    them while the release time is unknown): being unreadable earlier never makes an item new.
+    Held items wait for the fresh attempt; anything newer, or edited, still escalates (#430).
+    """
+    marks = [row for row in rows if row.get("event") == "feedback-watermark"]
+    # A mark journaled without `sources` covered every source.
+    settled = {source for mark in marks for source in mark.get("sources", WATERMARK_SOURCES)}
+    complete = {source for source in WATERMARK_SOURCES
+                if observation.get("coverage", {}).get(source, {}).get("status") == "complete"}
+    opening = [item for item in late if ACTIONABLE_SOURCE[item["kind"]] in complete - settled]
+    released = released_at(n) if marks and opening else ""
+    pairs = [[item["evidence_id"], item["source_revision"]] for item in opening
+             if not released or not item["source_updated_at"] or item["source_updated_at"] <= released]
+    if (not marks or complete - settled) and not dry_run:
+        dispatch.record("feedback-watermark", ticket=n, head=head, pairs=pairs, sources=sorted(complete - settled))
+    held = {tuple(pair) for pair in [*pairs, *(pair for mark in marks for pair in mark["pairs"])]}
+    newer = [item for item in late if (item["evidence_id"], item["source_revision"]) not in held]
+    if len(newer) < len(late):
+        dispatch.log(f"#{n}: {len(late) - len(newer)} feedback item(s) predate the owner's requeue; "
+                     "waiting for the fresh attempt")
+    return newer
+
+
 def released_at(n: int) -> str:
     """When ticket `n` was last labeled ready-for-agent; "" if never."""
     return max((i.get("created_at", "") for i in handoff.timeline(n)
@@ -883,15 +958,20 @@ def frontier_pass(dry_run: bool = False) -> None:
                 if config.LABEL_INITIATIVE in labels:
                     dispatch.log(f"PR #{number}: refused (ticket #{n} is an initiative record)")
                     continue
+                if not dry_run:
+                    dispatch.observe_owner_requeue(n, issue)
                 events = lifecycle.read_events(dispatch.EVENTS)
+                ticket_generation = generation.current(events, n)
                 observation = observe_pr(pr, n, events)
                 if observation["owner"]["relation"] != "factory_issue":
                     dispatch.log(f"PR #{number}: not factory-owned ({observation['owner']['relation']}); not in frontier")
                     continue
                 head = pr["headRefOid"]
-                checks = dispatch.pr_checks(number)
+                checks = dispatch.pr_checks(number, head)
                 red = [c for c in checks if c["bucket"] in ("fail", "cancel")]
                 late = undelivered(observation, events, n)
+                if ticket_generation.awaiting_attempt:
+                    late = after_watermark(n, ticket_generation.rows, observation, late, head, dry_run)
                 # A release to ready-for-agent (owner decision or manager RETRY) answers the red CI
                 # it followed and restarts the stale clock; only CI newer than it escalates (#188).
                 updated = datetime.fromisoformat(pr["updatedAt"])
@@ -937,8 +1017,14 @@ def frontier_pass(dry_run: bool = False) -> None:
                     continue
                 decided = [e for e in events if e.get("event") == "manage" and e.get("pr") == number]
                 if any(e.get("head") == head for e in decided):
-                    continue  # one decision per head; a non-APPROVE decision already acted
-                if len(decided) >= cfg.manager_rounds:
+                    # One decision per head; a non-APPROVE decision already acted, or waits for a worker.
+                    pending = pending_fix(ticket_generation.rows, pr=number, head=head)
+                    if pending is not None and not dry_run:
+                        execution.commit()
+                        resume_fix(n, issue, pending, pr=number, head=head)
+                    continue
+                spent = [e for e in ticket_generation.rows if e.get("event") == "manage" and e.get("pr") == number]
+                if len(spent) >= cfg.manager_rounds:
                     if dry_run:
                         dispatch.log(f"PR #{number}: would escalate (manager rounds exhausted)")
                     else:
@@ -950,8 +1036,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                     continue
                 wt = cfg.factory / f"wt-{n}"
                 packet, _ = dispatch.escalation_packet(n, "Manager final review (manager.review = all)", None, wt)
-                workers = {k: v for k, v in cfg.workers.items()
-                           if k not in RESERVED_LABELS and k not in cfg.worker_select_label}
+                workers = selectable_workers(cfg)
                 parts = [APPROVAL_MENU, "Worker labels:\n" + "\n".join(
                     f"- {k}: {cfg.worker_when.get(k) or '(no when rule)'}" for k in workers),
                          f"PR #{number} head {head}\n\n{json.dumps(pr)}",
@@ -983,17 +1068,23 @@ def frontier_pass(dry_run: bool = False) -> None:
                     approval=True,
                 )
                 dispatch.record("manage", ticket=n, pr=number, head=head, decision=decision,
-                                round=len(decided) + 1, packet=str(packet))
+                                round=len(spent) + 1, packet=str(packet))
                 if decision != "CLOSE":
                     dispatch.run(["gh", "pr", "comment", str(number), "--repo", cfg.repo, "--body", "Factory manager: " + body])
                 if decision == "APPROVE":
                     if not dispatch.approve_pr(n, head):
                         dispatch.escalate(n, f"PR #{number}: approval evidence, head, or human review state changed before manager approval", None,
                                           code="approval_drift")
-                elif decision in {"FIX", "CLOSE"}:
+                elif decision == "FIX":
+                    apply_fix(n, issue, data, packet, pr=number, head=head)
+                elif decision == "CLOSE":
                     apply(n, issue, decision, body, data, packet)
                 else:
                     dispatch.escalate(n, f"PR #{number}: manager requires a human: {body}", None, code="manager_human")
+            except dispatch.WorkerUnavailable as exc:
+                if not dry_run:
+                    execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
+                dispatch.log(f"PR #{number}: manager FIX waits for a healthy worker ({exc}); no round is spent")
             except (CalledProcessError, OSError, ValueError) as exc:
                 if not dry_run:
                     execution.outcome, execution.reason = "mechanism_failure", "pr_frontier_failed"
@@ -1005,10 +1096,15 @@ def frontier_pass(dry_run: bool = False) -> None:
 
 
 def manage_pass(dry_run: bool = False) -> None:
-    """Viability, PR frontier and escalation rounds need a manager; terminal handoffs do not."""
+    """Viability (a GitHub-wide label scan) runs on the triage host; frontier and escalation rounds, owned through the local journal, run on every host with a manager; terminal handoffs need no manager."""
     try:
-        if dispatch.cfg.manager:
-            viability_pass(dry_run)
+        cfg = dispatch.cfg
+        shared = cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host
+        if shared:
+            dispatch.log(f"manage: viability skipped, triage host is {cfg.triage_host}")
+        if cfg.manager:
+            if not shared:
+                viability_pass(dry_run)
             frontier_pass(dry_run)
             escalation_pass(dry_run)
     finally:
@@ -1039,16 +1135,17 @@ def escalation_pass(dry_run: bool = False) -> None:
                     continue
                 execution.resource("acquired", lock_path, scope="repository")
             try:
-                events = [e for e in lifecycle.read_events(dispatch.EVENTS) if e.get("ticket") == n]
+                events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
                 escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
                     continue
                 round_number = escalation.get("round", 0)
+                pending = pending_fix(events[events.index(escalation):], round=round_number, pr=None)
                 # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.
-                if not 1 <= round_number <= cfg.manager_rounds or any(
+                if not 1 <= round_number <= cfg.manager_rounds or (pending is None and any(
                     e.get("event") == "manage" and e.get("round") == round_number and not e.get("pr") for e in events
-                ):
+                )):
                     continue
                 packet = Path(escalation["packet"])
                 if dispatch.initiative_kind(n):
@@ -1057,10 +1154,22 @@ def escalation_pass(dry_run: bool = False) -> None:
                 if not packet.is_file() or human_activity(n, escalation, events):
                     continue
                 if dry_run:
-                    dispatch.log(f"#{n}: would manage escalation round {round_number}")
+                    dispatch.log(f"#{n}: would " + ("resume the pending manager FIX" if pending else
+                                                     f"manage escalation round {round_number}"))
                     continue
-                workers = {k: v for k, v in cfg.workers.items()
-                           if k not in RESERVED_LABELS and k not in cfg.worker_select_label}
+                if pending is not None:
+                    execution.commit()
+                    try:
+                        resume_fix(n, issue, pending, round=round_number)
+                    except dispatch.WorkerUnavailable as exc:
+                        execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
+                        dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
+                    except (CalledProcessError, OSError, ValueError) as exc:
+                        execution.outcome, execution.reason = "mechanism_failure", "github_command_failed"
+                        execution.error = dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc))
+                        dispatch.log(f"#{n}: resumed manager FIX failed: {exc}; leaving for human")
+                    continue
+                workers = selectable_workers(cfg)
                 parts = [MENU, "Worker labels:\n" + "\n".join(
                     f"- {k}: {cfg.worker_when.get(k) or '(no when rule)'}" for k in workers),
                          f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}", packet.read_text()]
@@ -1107,11 +1216,18 @@ def escalation_pass(dry_run: bool = False) -> None:
                 dispatch.record("manage", ticket=n, decision=decision, round=round_number,
                                 packet=str(packet), notes=status, rejected=rejected)
                 try:
-                    apply(n, issue, decision, body, data, packet)
+                    if decision == "FIX":
+                        apply_fix(n, issue, data, packet, round=round_number)
+                    else:
+                        apply(n, issue, decision, body, data, packet)
+                except dispatch.WorkerUnavailable as exc:
+                    execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
+                    dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
                 except (CalledProcessError, OSError, ValueError) as exc:
                     # A partial SPLIT or REWRITE must not be replayed automatically.
                     execution.outcome = "mechanism_failure"
                     execution.reason = "github_command_failed"
+                    execution.error = dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc))
                     dispatch.log(f"#{n}: manager decision application failed: {exc}; leaving for human")
             finally:
                 if not dry_run:
@@ -1124,5 +1240,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="list eligible viability requests and escalations without running the manager")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
+    if not args.dry_run:
+        dispatch.worker_health_pass()
     manage_pass(args.dry_run)
     return 0

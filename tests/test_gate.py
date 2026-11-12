@@ -4,12 +4,15 @@ Run: python -m unittest discover -s tests
 """
 from __future__ import annotations
 
+import errno
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from factory import platform_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,6 +53,19 @@ def repo_with_test(tmp: Path, toml: str = TOML) -> Path:
 def commit(repo: Path, message: str = "worker") -> None:
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", message)
+
+
+def stage_name(repo: Path, name: bytes, content: bytes) -> None:
+    """Put ``name`` in git's index without asking the filesystem to create it."""
+    blob = subprocess.run(
+        ["git", "-C", str(repo), "hash-object", "-w", "--stdin"],
+        input=content, capture_output=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        [b"git", b"-C", os.fsencode(repo), b"update-index", b"--add", b"--cacheinfo",
+         b"100644," + blob + b"," + name],
+        check=True,
+    )
 
 
 class AddOnlyPathsTest(unittest.TestCase):
@@ -234,14 +250,35 @@ class GateOutputEncodingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             repo = repo_with_test(Path(d), TOML + '\n[leak_scan]\nextra = ["codename"]\n')
             git(repo, "config", "core.quotePath", "false")
-            descriptor = os.open(
-                os.path.join(os.fsencode(repo), b"\xff-leak.txt"),
-                os.O_WRONLY | os.O_CREAT,
-                0o600,
-            )
-            os.write(descriptor, b"codename\n")
-            os.close(descriptor)
-            commit(repo)
+            name = os.path.join(os.fsencode(repo), b"\xff-leak.txt")
+            if platform_identity.darwin():
+                # Darwin filesystems positively refuse a non-UTF-8 name; git still carries it.
+                with self.assertRaises(OSError) as refused:
+                    os.open(name, os.O_WRONLY | os.O_CREAT, 0o600)
+                self.assertEqual(refused.exception.errno, errno.EILSEQ)
+                self.assertFalse(os.path.lexists(name))
+                stage_name(repo, b"\xff-leak.txt", b"codename\n")
+                git(repo, "commit", "-q", "-m", "worker")
+            else:
+                descriptor = os.open(name, os.O_WRONLY | os.O_CREAT, 0o600)
+                os.write(descriptor, b"codename\n")
+                os.close(descriptor)
+                commit(repo)
+
+            code, out, report = gate(repo, "--skip", "conflict-markers")
+
+            self.assertEqual(code, 1, report + out)
+            self.assertIn("- leak-scan: FAIL", report)
+            self.assertIn("\ufffd-leak.txt:1: [codename] codename", report)
+
+    def test_leak_scan_finds_pattern_in_non_utf8_path_from_git_objects(self) -> None:
+        """Portable: the invalid byte reaches the diff from git objects, not the filesystem."""
+        with tempfile.TemporaryDirectory() as d:
+            repo = repo_with_test(Path(d), TOML + '\n[leak_scan]\nextra = ["codename"]\n')
+            git(repo, "config", "core.quotePath", "false")
+            stage_name(repo, b"\xff-leak.txt", b"codename\n")
+            git(repo, "commit", "-q", "-m", "worker")
+            self.assertNotIn(b"\xff-leak.txt", os.listdir(os.fsencode(repo)))
 
             code, out, report = gate(repo, "--skip", "conflict-markers")
 
@@ -780,6 +817,37 @@ FAILED tests/test_math.py::test_load - subprocess.CalledProcessError: Command fa
                 self.assertNotIn("`/usr/lib/", summary)
                 self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
                 self.assertEqual(result["failure_summary"]["message"], message)
+
+
+class GateTempdirTest(unittest.TestCase):
+    def test_configured_check_tmpdir_is_removed_after_exit_and_timeout(self) -> None:
+        import json
+
+        cases = (("pass", 0, 0, 0), ("fail", 7, 0, 1), ("timeout", 0, 5, 1))
+        for name, exit_code, delay, expected in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                marker = root / "tmpdir"
+                script = (
+                    "import os, time; from pathlib import Path; "
+                    "tmp = Path(os.environ['TMPDIR']); "
+                    f"Path({str(marker)!r}).write_text(str(tmp)); "
+                    "(tmp / 'leak').mkdir(); (tmp / 'leak' / 'file').write_text('x'); "
+                    f"time.sleep({delay}); raise SystemExit({exit_code})"
+                )
+                toml = TOML + (
+                    "\n[[gate.check]]\n"
+                    'name = "tempdir"\n'
+                    f"run = [{json.dumps(sys.executable)}, \"-c\", {json.dumps(script)}]\n"
+                )
+                repo = repo_with_test(root, toml)
+
+                code, out, report = gate(
+                    repo, "--check-timeout", "1", "--skip", "conflict-markers,leak-scan",
+                )
+
+                self.assertEqual(code, expected, report + out)
+                self.assertFalse(Path(marker.read_text()).exists())
 
 if __name__ == "__main__":
     unittest.main()

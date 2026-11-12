@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import subprocess
 import sys
@@ -227,6 +228,23 @@ with lifecycle.scope(Path('/unused/events.jsonl'), 'gate'):
         states = lifecycle.observe(self.path)
         self.assertEqual([state["state"] for state in states], ["failed", "completed", "unknown"])
         self.assertEqual([state["outcome"] for state in states], ["mechanism_failure", "check_failed", "unknown"])
+
+    def test_failure_diagnosis_belongs_only_to_exit_with_decoded_event_kinds(self) -> None:
+        execution = lifecycle.Execution(self.path, "manage")
+        execution.outcome = "mechanism_failure"
+        execution.reason = "github_command_failed"
+        execution.error = "GraphQL denied [REDACTED]"
+        # Event kinds loaded from JSON have the same contract as literal strings.
+        for kind in json.loads('["enter", "result", "exit"]'):
+            execution.emit(kind)
+
+        rows = lifecycle.read_events(self.path)
+        self.assertEqual([row["kind"] for row in rows], ["enter", "result", "exit"])
+        self.assertTrue(all("error" not in row for row in rows[:-1]))
+        self.assertEqual(rows[-1].get("error"), "GraphQL denied [REDACTED]")
+        state = lifecycle.observe(self.path)[0]
+        self.assertEqual((state["state"], state["reason"]),
+                         ("failed", "github_command_failed"))
 
     def test_live_grandchild_keeps_ancestors_observable(self) -> None:
         proc = self.spawn("""
