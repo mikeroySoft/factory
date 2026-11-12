@@ -852,11 +852,44 @@ def frontier() -> list[dict]:
     return issues
 
 
+def _pr_author_login(pr: dict) -> str:
+    author = pr.get("author")
+    if isinstance(author, dict):
+        return str(author.get("login") or "")
+    return author if isinstance(author, str) else ""
+
+
+def _reviewer_login() -> str:
+    try:
+        user = gh_json(["api", "user"])
+    except (OSError, subprocess.CalledProcessError, TypeError, ValueError):
+        return ""
+    login = user.get("login") if isinstance(user, dict) else ""
+    return login if isinstance(login, str) else ""
+
+
+def _same_github_login(left: str, right: str) -> bool:
+    return bool(left) and bool(right) and left.casefold() == right.casefold()
+
+
+def latest_head_review_verdict(events: list[dict], n: int, pr: int, head: str) -> str | None:
+    """The latest journaled review verdict bound to this ticket, PR, and head."""
+    verdict = None
+    for event in events:
+        ev = event.get("event")
+        if (
+            ev == "review-result" and event.get("pr") == pr and event.get("head") == head
+            or ev == "review" and event.get("ticket") == n and event.get("head") == head
+        ):
+            verdict = event.get("verdict")
+    return verdict if isinstance(verdict, str) and verdict else None
+
+
 def review_intake_pass(dry_run: bool) -> None:
     """Review opted-in PR revisions, and `factory learn` PRs, without running the issue/merge pipeline."""
     prs = gh_json([
         "pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
-        "--json", "number,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefOid,labels,reviewRequests",
+        "--json", "number,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefOid,labels,reviewRequests,author",
     ])
     login = None
     for pr in prs:
@@ -921,13 +954,24 @@ def review_intake_pass(dry_run: bool) -> None:
                            ticket=int(url.rstrip("/").rsplit("/", 1)[-1]),
                            code="review_intake", reason=reason, packet=str(packet), round=1)
                 continue
-            if any(e.get("event") == "review-intake" and e.get("head") == head
+            if any(e.get("event") == "review-result" and e.get("head") == head
                    for e in history):
                 continue
-            log(f"PR #{n}: {'would record' if dry_run else 'recording'} review intake at {head}")
+            already_admitted = any(
+                e.get("event") == "review-intake" and e.get("head") == head
+                for e in history
+            )
+            if already_admitted:
+                log(f"PR #{n}: {'would retry' if dry_run else 'retrying'} review at {head} after intake without a result")
+            else:
+                log(f"PR #{n}: {'would record' if dry_run else 'recording'} review intake at {head}")
             if not dry_run:
-                record("review-intake", pr=n, head=head)
-                review_external_pr(n, pr["baseRefOid"], head, pr.get("headRefName") or "")
+                if not already_admitted:
+                    record("review-intake", pr=n, head=head)
+                review_external_pr(
+                    n, pr["baseRefOid"], head, pr.get("headRefName") or "",
+                    author=_pr_author_login(pr),
+                )
                 review_readiness(n, head, lifecycle.read_events(EVENTS))
 
 
@@ -976,10 +1020,13 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
            review_head=review.get("head"), checks=rows if valid else [])
 
 
-def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
-    """Publish findings against the immutable revision admitted by intake. `factory learn` PRs are
-    the dispatcher's own, and GitHub rejects self-approval: their findings post as a COMMENT review
-    while the journal keeps the verdict `promote_pass` reads."""
+def review_external_pr(n: int, base: str, head: str, branch: str = "", author: str = "") -> None:
+    """Publish findings against the immutable revision admitted by intake.
+
+    GitHub rejects APPROVE/REQUEST_CHANGES from the PR author (HTTP 422). Lessons
+    PRs and any other PR whose author is the reviewing account therefore post as a
+    COMMENT review, while the journal keeps the verdict that merge and `promote_pass` read.
+    """
     with lifecycle.scope(EVENTS, "review") as execution:
         clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         policy, nit_cap = _review_policy(ROOT, base)
@@ -1047,16 +1094,31 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
             execution.outcome = "unknown"
             execution.reason = parser_reason
             findings += f"\n\nFactory rejected reviewer evidence: {parser_reason}."
-        run([
+        post_event = event
+        if LESSONS_BRANCH.match(branch) or (
+            author and _same_github_login(author, _reviewer_login())
+        ):
+            post_event = "COMMENT"
+        posted = run([
             "gh", "api", "--method", "POST", f"repos/{REPO}/pulls/{n}/reviews",
-            "-f", f"commit_id={head}", "-f", f"event={'COMMENT' if LESSONS_BRANCH.match(branch) else event}",
+            "-f", f"commit_id={head}", "-f", f"event={post_event}",
             "-f", f"body={findings}",
-        ])
+        ], check=False)
+        if posted.returncode:
+            execution.outcome = "unknown"
+            execution.reason = f"review_post:{posted.returncode}"
+            log(
+                f"PR #{n}: review post failed (exit {posted.returncode}) at {head}; "
+                "journaling the verdict"
+            )
+            tail = stderr_tail(posted.stderr)
+            if tail:
+                log(f"command failed (exit {posted.returncode}); stderr tail:\n{tail}")
         record(
             "review-result", pr=n, head=head, branch=branch, verdict=event, findings=findings,
             counts=counts, reason=parser_reason,
         )
-        if not parser_reason:
+        if not parser_reason and not posted.returncode:
             execution.outcome = "approved" if event == "APPROVE" else "product_feedback"
             execution.reason = "APPROVE" if event == "APPROVE" else "REVISE"
 
@@ -4642,6 +4704,40 @@ def merge_pass_locked(dry_run: bool) -> None:
                 log(f"PR #{pr_num}: refused (ticket #{n} is an initiative record); not merging")
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "initiative"
+                continue
+            verdict = latest_head_review_verdict(
+                lifecycle.read_events(EVENTS), n, pr_num, listed_head,
+            )
+            if verdict in {"REQUEST_CHANGES", "REVISE"}:
+                log(f"PR #{pr_num}: journaled {verdict} at {listed_head}; not merging")
+                if dry_run:
+                    continue
+                record_merge_decision(
+                    n, pr_num, "review_revise",
+                    f"journaled {verdict} at {listed_head}; approval is no longer eligible",
+                    listed_head, listed_head, [],
+                )
+                run(
+                    [
+                        "gh",
+                        "pr",
+                        "edit",
+                        str(pr_num),
+                        "--repo",
+                        REPO,
+                        "--remove-label",
+                        FACTORY_APPROVED,
+                    ],
+                    check=False,
+                )
+                escalate(
+                    n,
+                    f"PR #{pr_num}: journaled {verdict} at {listed_head}; "
+                    f"`{FACTORY_APPROVED}` label removed",
+                    None, code="review_revise",
+                )
+                if execution:
+                    execution.outcome, execution.reason = "project_escalation", "review_revise"
                 continue
             checks = triage_cancelled(pr_num, pr_checks(pr_num, listed_head), dry_run, n, listed_head)
             buckets: dict[str, int] = {}
