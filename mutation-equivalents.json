@@ -19,7 +19,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 149,
+  "line": 147,
   "operator": "core/ReplaceComparisonOperator_IsNot_NotEq",
   "original": "    if any(type(value) is not int or value < 0 for value in counts.values()):",
   "mutated": "    if any(type(value) != int or value < 0 for value in counts.values()):",
@@ -28,7 +28,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 209,
+  "line": 207,
   "operator": "core/ReplaceComparisonOperator_Eq_Is",
   "original": "        and counts[\"not_started\"] == counts[\"cut_short\"] == counts[\"broken\"] == 0",
   "mutated": "        and counts[\"not_started\"] == counts[\"cut_short\"] is counts[\"broken\"] == 0",
@@ -37,7 +37,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 218,
+  "line": 216,
   "operator": "core/ReplaceComparisonOperator_Eq_LtE",
   "original": "    if counts[\"planned\"] == 0:",
   "mutated": "    if counts[\"planned\"] <= 0:",

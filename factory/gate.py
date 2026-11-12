@@ -15,10 +15,8 @@ import math
 import os
 import re
 import signal
-import stat
 import subprocess
 import sys
-import sysconfig
 import tempfile
 import tomllib
 from pathlib import Path
@@ -232,6 +230,7 @@ def _read_proof_file(path: Path) -> bytes | None:
     except OSError as exc:
         return f"unreadable: {exc}".encode()  # parsed as malformed: fails closed
     try:
+        import stat
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return b"unreadable: completion record is not a regular file"
         return os.read(fd, MUTATION_PROOF_MAX_BYTES + 1)
@@ -354,6 +353,7 @@ def _trusted_mutation_command(
     elif index == 1 and Path(cmd[0]).resolve() == Path(sys.executable).resolve():
         # This interpreter's own paths, not parent.parent (which can resolve to a
         # different /usr/bin/python and a Debian dist-packages layout).
+        import sysconfig
         paths = list(dict.fromkeys(
             path for path in (sysconfig.get_path("purelib"), sysconfig.get_path("platlib"))
             if path and Path(path).is_dir()
