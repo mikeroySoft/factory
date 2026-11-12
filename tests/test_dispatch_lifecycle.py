@@ -17,6 +17,12 @@ from pathlib import Path
 p = Path(os.environ["SMOKE_STATE"])
 s = json.loads(p.read_text())
 a = sys.argv[1:]
+if a == ["api", "rate_limit"]:
+    print(json.dumps({"resources": {"core": {"remaining": 5000}, "graphql": {"remaining": 5000}}}))
+    sys.exit(0)
+if a[:3] == ["api", "--paginate", "--slurp"] and a[-1].endswith(("/labels?per_page=100", "/issues/comments?per_page=100")):
+    print("[[]]")
+    sys.exit(0)
 issue = {"number": 7, "title": "local change", "body": "Acceptance: make the local change", "comments": [], "labels": [{"name": "ready-for-agent"}], "assignees": [], "state": "OPEN"}
 if s.get("sync"):  # the dispatcher filed a sync ticket; the only open issue until its PR merges
     issue = {**issue, "title": "upstream sync: 1 commit(s) at local", "body": s["sync"], "state": "CLOSED" if s.get("merged") else "OPEN"}

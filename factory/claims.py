@@ -36,14 +36,19 @@ def host_setup_problem(
     comments: list[dict],
 ) -> str | None:
     """Return the unsafe repository host setup, if any."""
-    claims = [comment for comment in comments if _valid_claim(comment)]
+    expected = login.casefold()
+    claims = [
+        comment for comment in comments if _valid_claim(comment) and (
+            comment.get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR")
+            or (expected and (comment.get("user") or {}).get("login", "").casefold() == expected)
+        )
+    ]
     host_labels = [
         label for label in labels
         if isinstance(label.get("name"), str) and label["name"].startswith("host:")
     ]
     if host_name is None and (host_labels or claims):
         return "host_name is required because the repository contains host claims"
-    expected = login.casefold()
     for comment in claims:
         user = comment.get("user")
         author = user.get("login") if isinstance(user, dict) else None

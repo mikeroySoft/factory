@@ -76,7 +76,8 @@ class DispatchPreflightTest(unittest.TestCase):
 
     def test_unnamed_host_refuses_claim_on_another_closed_ticket(self):
         claim = {"body": f"Factory claim: host=ultron nonce=old at={datetime.now(UTC).isoformat()}",
-                 "user": {"login": "@me"}, "issue_url": "repos/local/claims/issues/99"}
+                 "user": {"login": "@me"}, "author_association": "COLLABORATOR",
+                 "issue_url": "repos/local/claims/issues/99"}
         _, result, output, _, _ = self.run_pass(comments=[claim])
         self.assert_no_claim()
         self.assertNotEqual(result, 0)
@@ -84,7 +85,7 @@ class DispatchPreflightTest(unittest.TestCase):
 
     def test_different_repository_login_refuses_before_claim(self):
         claim = {"body": f"Factory claim: host=tank nonce=old at={datetime.now(UTC).isoformat()}",
-                 "user": {"login": "different-account"}}
+                 "user": {"login": "different-account"}, "author_association": "COLLABORATOR"}
         _, result, output, _, _ = self.run_pass(host="ultron", comments=[claim])
         self.assert_no_claim()
         self.assertNotEqual(result, 0)
@@ -167,6 +168,7 @@ class DispatchPreflightTest(unittest.TestCase):
                 if "POST" in args:
                     with self.github.lock:
                         value["user"] = {"login": login}
+                        value["author_association"] = "COLLABORATOR"
                     authors_ready.wait(timeout=10)
                     stage[0] = 1
                 elif stage[0] == 1 and args[0] == "api" and "--slurp" in args:
