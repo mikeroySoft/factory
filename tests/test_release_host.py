@@ -125,7 +125,7 @@ class HostGatedLoopsTest(unittest.TestCase):
         gh.assert_called()
         self.assertFalse(any("review-intake: skipped" in msg for msg in self.logs))
 
-    def test_non_triage_host_skips_manager_rounds_but_still_runs_handoffs(self) -> None:
+    def test_non_triage_host_skips_viability_and_frontier_but_still_runs_escalations_and_handoffs(self) -> None:
         self.cfg.host_name = "ultron"
         self.cfg.triage_host = "tank"
         with (
@@ -137,9 +137,67 @@ class HostGatedLoopsTest(unittest.TestCase):
             manage.manage_pass(False)
         viability.assert_not_called()
         frontier.assert_not_called()
-        escalation.assert_not_called()
+        escalation.assert_called_once_with(False)
         handoff_pass.assert_called_once_with(False)
-        self.assertEqual(self.logs, ["manage: skipped, triage host is tank"])
+        self.assertEqual(self.logs, ["manage: viability and frontier skipped, triage host is tank"])
+
+    def _escalation(self, *, journal: bool) -> Path:
+        state = self.repo / ".factory"
+        (state / "escalations").mkdir(parents=True)
+        packet = state / "escalations/7.md"
+        packet.write_text("gate failed")
+        row = {"event": "escalate", "ticket": 7, "at": "2026-01-01T00:00:00Z", "round": 1, "packet": str(packet)}
+        receipt = {"event": "comment", "ticket": 7, "at": row["at"], "kind": "escalation", "round": 1, "comment": 100}
+        (state / "events.jsonl").write_text(
+            json.dumps(row) + "\n" + json.dumps(receipt) + "\n" if journal else ""
+        )
+        return packet
+
+    def _run_manage_pass(self, order: list[str]) -> mock.Mock:
+        self.cfg.manager = ["printf", "DECISION: HUMAN\nneeds a person"]
+        issues = [{"number": 7, "title": "Fix gate", "body": "Original body"}]
+        with (
+            mock.patch.object(dispatch, "gh_json", return_value=issues),
+            mock.patch.object(manage, "human_activity", return_value=False),
+            mock.patch.object(manage, "viability_pass", side_effect=lambda _: order.append("viability")),
+            mock.patch.object(manage, "frontier_pass", side_effect=lambda _: order.append("frontier")),
+            mock.patch.object(manage, "apply", side_effect=lambda *a: order.append("round")) as apply,
+            mock.patch.object(manage.handoff, "handoff_pass", side_effect=lambda _: order.append("handoff")),
+        ):
+            manage.manage_pass(False)
+        return apply
+
+    def test_non_triage_host_gives_its_own_escalation_a_round_then_handoff(self) -> None:
+        self.cfg.host_name = "ultron"
+        self.cfg.triage_host = "tank"
+        self._escalation(journal=True)
+        order: list[str] = []
+        apply = self._run_manage_pass(order)
+        apply.assert_called_once()
+        self.assertEqual(apply.call_args.args[2], "HUMAN")
+        self.assertEqual(order, ["round", "handoff"])
+
+    def test_non_triage_host_still_skips_viability_and_frontier(self) -> None:
+        self.cfg.host_name = "ultron"
+        self.cfg.triage_host = "tank"
+        self._escalation(journal=True)
+        order: list[str] = []
+        self._run_manage_pass(order)
+        self.assertNotIn("viability", order)
+        self.assertNotIn("frontier", order)
+        self.cfg.host_name = "tank"
+        order.clear()
+        self._run_manage_pass(order)
+        self.assertEqual(order[:2], ["viability", "frontier"])
+
+    def test_escalation_only_in_the_other_hosts_journal_gets_no_round(self) -> None:
+        self.cfg.host_name = "ultron"
+        self.cfg.triage_host = "tank"
+        self._escalation(journal=False)
+        order: list[str] = []
+        apply = self._run_manage_pass(order)
+        apply.assert_not_called()
+        self.assertEqual(order, ["handoff"])
 
     def test_triage_host_runs_manager(self) -> None:
         self.cfg.host_name = "tank"
@@ -289,9 +347,9 @@ class HostGatedLoopsTest(unittest.TestCase):
             manage.manage_pass(False)
         viability.assert_not_called()
         frontier.assert_not_called()
-        escalation.assert_not_called()
+        escalation.assert_called_once_with(False)
         handoff_pass.assert_called_once_with(False)
-        self.assertEqual(self.logs, ["manage: skipped, triage host is ultron"])
+        self.assertEqual(self.logs, ["manage: viability and frontier skipped, triage host is ultron"])
 
         host, triage = self._runtime_name("tank"), self._runtime_name("tank")
         self.assertEqual(host, triage)
@@ -310,7 +368,7 @@ class HostGatedLoopsTest(unittest.TestCase):
         frontier.assert_called_once_with(False)
         escalation.assert_called_once_with(False)
         handoff_pass.assert_called_once_with(False)
-        self.assertFalse(any("manage: skipped" in msg for msg in self.logs))
+        self.assertFalse(any("viability and frontier skipped" in msg for msg in self.logs))
 
     def test_learn_pass_gate_kills_value_and_identity_mutants(self) -> None:
         below, above = self._runtime_name("tank"), self._runtime_name("ultron")
