@@ -18,6 +18,7 @@ import signal
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import tomllib
 from pathlib import Path
@@ -347,11 +348,20 @@ def _trusted_mutation_command(
             (directory / name).write_text(mutation_scope._git(None, "show", f"{base}:{name}"))
         environment = directory / "environment"
         _provision_trusted_uv_environment(cmd[0], cmd[2:index - 1], directory, environment)
+        paths = _isolated_environment_paths(environment)
     elif index == 1 and Path(cmd[0]).resolve() == Path(sys.executable).resolve():
-        environment = Path(sys.executable).parent.parent
+        # This interpreter's own paths, not parent.parent (which can resolve to a
+        # different /usr/bin/python and a Debian dist-packages layout).
+        paths = list(dict.fromkeys(
+            path for path in (sysconfig.get_path("purelib"), sysconfig.get_path("platlib"))
+            if path and Path(path).is_dir()
+        ))
+        if not paths:
+            raise mutation_scope.ScopeError(
+                "trusted mutation environment has no site-packages"
+            )
     else:
         raise mutation_scope.ScopeError("unsupported trusted mutation command")
-    paths = _isolated_environment_paths(environment)
     launcher = directory / "launch.py"
     launcher.write_text(
         "import runpy, sys\n"

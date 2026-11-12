@@ -128,6 +128,30 @@ raise SystemExit(1 if module else 0)
         self.assertIn(f"base={base}", binding)
         self.assertIn("mutation proof: PASS (complete:", output)
 
+    def test_legitimate_real_producer_child_imports_provisioned_only_module(self) -> None:
+        original = gate._provision_trusted_uv_environment
+
+        def provision(
+            uv: str, options: list[str], project: Path, environment: Path,
+        ) -> None:
+            original(uv, options, project, environment)
+            site = next(environment.glob("lib/python*/site-packages"))
+            (site / "provisioned_only_marker.py").write_text("PRESENT = True\n")
+
+        source = (
+            "import unittest\nimport provisioned_only_marker\n"
+            "from factory.example import value\n"
+            "class ExampleTest(unittest.TestCase):\n"
+            "    def test_example(self):\n"
+            "        self.assertTrue(provisioned_only_marker.PRESENT)\n"
+            "        self.assertEqual(value, 1)\n"
+        )
+        base = self.repository(source)
+        with mock.patch.object(gate, "_provision_trusted_uv_environment", provision):
+            passed, output, status, binding = self.run_proof(base)
+        self.assertEqual((passed, status), (True, "PASS"), output)
+        self.assertIn(f"base={base}", binding)
+
 
 if __name__ == "__main__":
     unittest.main()
