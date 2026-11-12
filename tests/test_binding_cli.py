@@ -30,6 +30,15 @@ if a[:2] == ['issue', 'view']:
     print(json.dumps(s['tickets'][a[2]]))
 elif a[:2] == ['issue', 'list']:
     print(json.dumps([i for i in s['tickets'].values() if flag('--label') in [v['name'] for v in i['labels']]]))
+elif a == ['api', 'rate_limit']:
+    print(json.dumps({'resources': {
+        name: {'remaining': 5000, 'reset': 0} for name in ('graphql', 'core')
+    }}))
+elif a in (
+    ['api', '--paginate', '--slurp', 'repos/acme/widgets/labels?per_page=100'],
+    ['api', '--paginate', '--slurp', 'repos/acme/widgets/issues/comments?per_page=100'],
+):
+    print('[[]]')
 elif a[:2] == ['pr', 'list']:
     print('[]')
 elif a[:2] == ['pr', 'view']:
