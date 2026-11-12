@@ -40,6 +40,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from factory import __version__, brief, config, generation, lifecycle, risk, runner
+from factory.claims import HostSetupError, host_setup_problem, repository_host_problem
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -579,9 +580,13 @@ def host_claim_login() -> str:
     return gh_json(["api", "user"])["login"].casefold()
 
 
-def host_claim_state(n: int) -> tuple[list[dict], str]:
+def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[list[dict], str]:
     """Read authenticated claims and transition context, including released claims."""
     pages = gh_json(["api", "--paginate", "--slurp", f"repos/{REPO}/issues/{n}/comments"])
+    if require_shared_login and (problem := host_setup_problem(
+        cfg.host_name, host_claim_login(), [], [comment for page in pages for comment in page],
+    )):
+        raise HostSetupError(problem)
     claims = []
     requeues = {}
     context = ""
@@ -766,7 +771,7 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
                            "-f", f"body={claim.body()}"])
         claim.comment.update(comment)
         current = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
-        elected = live_host_claims(host_claims(n))
+        elected = live_host_claims(host_claim_state(n, require_shared_login=True)[0])
         # Labels are advisory during a race, but escalation must still stop admission.
         ready = forced or any(label["name"] == LABEL_AGENT for label in current["labels"])
         if not ready or not elected or elected[0]["id"] != claim.comment["id"]:
@@ -774,6 +779,11 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
             record("claim_lost", ticket=n, host=cfg.host_name,
                    winner=elected[0]["host"] if elected else None)
             return None
+    except HostSetupError as exc:
+        claim.release()
+        log(f"#{n}: refused ({exc})")
+        record("claim_lost", ticket=n, host=cfg.host_name, reason=str(exc))
+        return None
     except BaseException:
         claim.release()
         raise
@@ -5491,10 +5501,14 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "initiative"
                 return
+            if not cfg.host_name and (problem := host_setup_problem(
+                None, "", fresh.get("labels", []), fresh.get("comments", []),
+            )):
+                raise HostSetupError(problem)
             claims = []
             shared_context = ""
             if cfg.host_name:
-                claims, shared_context = host_claim_state(n)
+                claims, shared_context = host_claim_state(n, require_shared_login=True)
                 fresh = release_stale_claims(n, fresh, claims)
             if not forced and (
                 fresh["state"].upper() != "OPEN"
@@ -5792,6 +5806,10 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except HostSetupError as exc:
+            log(f"#{n}: refused ({exc})")
+            execution.outcome, execution.reason = "not_admitted", "host_setup"
+            return False
         except LeaseRefused as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except WorkerUnavailable as exc:
@@ -5956,6 +5974,38 @@ def pin_root() -> list[str]:
     return paths
 
 
+def github_preflight(dry_run: bool) -> int | None:
+    """No GitHub mutations until both API budgets and repository host setup are safe."""
+    detail = ""
+    try:
+        resources = gh_json(["api", "rate_limit"])["resources"]
+        for name in ("graphql", "core"):
+            budget = resources[name]
+            remaining = budget["remaining"]
+            if type(remaining) is not int or remaining < 0:
+                raise ValueError(f"invalid {name} remaining budget")
+            if remaining < 100:
+                detail = f"{name} has {remaining} remaining (floor 100), reset {budget.get('reset', 'unknown')}"
+                break
+    except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError) as exc:
+        detail = f"cannot read GitHub rate limits ({exc})"
+    if detail:
+        log(f"dispatch: skipped, GitHub rate limit: {detail}")
+        if not dry_run:
+            record("pass-skipped", reason="github_rate_limit", detail=detail)
+        return 0
+    try:
+        problem = repository_host_problem(REPO, cfg.host_name, gh_json)
+    except (HostSetupError, OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError) as exc:
+        problem = f"cannot verify repository host setup ({exc})"
+    if problem:
+        log(f"dispatch: refused, {problem}")
+        if not dry_run:
+            record("pass-skipped", reason="host_setup", detail=problem)
+        return 1
+    return None
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="AI-factory dispatcher (one pass, stateless)"
@@ -5995,6 +6045,8 @@ def main(argv: list[str]) -> int:
         EVENTS, "dispatcher", dispatcher=True, lazy=True,
         engine_version=__version__, engine_commit=installed,
     ):
+        if (preflight := github_preflight(args.dry_run)) is not None:
+            return preflight
         if stale:
             log(f"engine-stale: installed {installed}, District target {target}")
             if not args.dry_run:

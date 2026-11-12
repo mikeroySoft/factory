@@ -60,6 +60,7 @@ class HostGatedLoopsTest(unittest.TestCase):
         self.cfg = config.load(self.repo)
         self.cfg.manager = ["true"]
         dispatch.configure(self.cfg)
+        self.enterContext(mock.patch.object(dispatch, "github_preflight", return_value=None))
         self.logs: list[str] = []
         self.enterContext(
             mock.patch.object(dispatch, "log", side_effect=lambda msg: self.logs.append(msg))

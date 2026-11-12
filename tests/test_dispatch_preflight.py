@@ -20,7 +20,10 @@ class DispatchPreflightTest(unittest.TestCase):
     dispatcher = host_fixture.HostClaimRaceTest.dispatcher
     launch = host_fixture.HostClaimRaceTest.launch
 
-    def run_pass(self, *, host=None, labels=(), comments=(), rest=5000, graphql=5000, error=None, argv=None):
+    def run_pass(
+        self, *, host=None, labels=(), comments=(), rest=5000, graphql=5000,
+        error=None, repo_error=False, rates=None, argv=None,
+    ):
         module = self.dispatcher(host)
         read = module.gh_json
 
@@ -28,11 +31,15 @@ class DispatchPreflightTest(unittest.TestCase):
             if args == ["api", "rate_limit"]:
                 if error:
                     raise error
+                if rates is not None:
+                    return rates
                 return {"resources": {"core": {"remaining": rest, "reset": 1800000000},
                                       "graphql": {"remaining": graphql, "reset": 1800000000}}}
             if args[0] == "api" and any(arg.endswith("/labels?per_page=100") for arg in args):
                 return [[{"name": name} for name in labels]]
             if args[0] == "api" and any(arg.endswith("/issues/comments?per_page=100") for arg in args):
+                if repo_error:
+                    raise OSError("repository unavailable")
                 return [[], list(comments)]
             return read(args)
 
@@ -97,6 +104,30 @@ class DispatchPreflightTest(unittest.TestCase):
                                     row.get("reason") == "github_rate_limit" for row in rows), rows)
                 self.assertFalse(any(row.get("event") == "escalate" for row in rows))
 
+    def test_below_floor_skips_before_ticket_reads(self):
+        _, result, output, _, _ = self.run_pass(rest=99)
+        self.assert_no_claim()
+        self.assertEqual(result, 0)
+        self.assertIn("floor 100", output)
+        self.assertEqual(self.github.calls, [])
+
+    def test_budget_at_floor_allows_single_host_dispatch(self):
+        _, result, _, _, _ = self.run_pass(rest=100, graphql=100)
+        self.assertEqual(result, 0)
+        self.assertEqual(self.launched, [None])
+
+    def test_unreadable_repository_refuses_without_claim(self):
+        _, result, output, _, _ = self.run_pass(repo_error=True)
+        self.assert_no_claim()
+        self.assertEqual(result, 1)
+        self.assertIn("repository unavailable", output)
+
+    def test_unparseable_rate_budget_skips_without_claim(self):
+        _, result, output, _, _ = self.run_pass(rates={})
+        self.assert_no_claim()
+        self.assertEqual(result, 0)
+        self.assertIn("rate", output.lower())
+
     def test_failed_rate_read_skips_without_claim_or_escalation(self):
         error = subprocess.CalledProcessError(1, ["gh", "api", "rate_limit"], stderr="unavailable")
         _, result, output, _, _ = self.run_pass(error=error)
@@ -123,11 +154,12 @@ class DispatchPreflightTest(unittest.TestCase):
         self.github.comments_barrier = threading.Barrier(2)
         self.github.post_barrier = threading.Barrier(2)
         authors_ready = threading.Barrier(2)
+        elections_ready = threading.Barrier(2)
         for module in modules:
             original = module.gh_json
             login = module.cfg.host_name + "-login"
 
-            def github(args, original=original, login=login):
+            def github(args, original=original, login=login, stage=[0]):
                 if args == ["api", "user"]:
                     return {"login": login}
                 value = original(args)
@@ -135,6 +167,10 @@ class DispatchPreflightTest(unittest.TestCase):
                     with self.github.lock:
                         value["user"] = {"login": login}
                     authors_ready.wait(timeout=10)
+                    stage[0] = 1
+                elif stage[0] == 1 and args[0] == "api" and "--slurp" in args:
+                    stage[0] = 2
+                    elections_ready.wait(timeout=10)
                 return value
 
             self.enterContext(mock.patch.object(module, "gh_json", side_effect=github))

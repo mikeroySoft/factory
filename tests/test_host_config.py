@@ -66,6 +66,10 @@ class HostConfigTest(unittest.TestCase):
 
     def doctor_rows(self, cfg: config.Config, host: dict) -> dict[str, dict]:
         def command(argv, **_kwargs):
+            if argv[:3] == ["gh", "api", "--paginate"]:
+                return subprocess.CompletedProcess(argv, 0, "[]", "")
+            if argv == ["gh", "api", "user"]:
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"login": "factory"}), "")
             stdout = ""
             if argv[:3] == ["gh", "repo", "view"]:
                 stdout = "ADMIN\n"

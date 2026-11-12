@@ -48,6 +48,10 @@ class FactoryDirSafetyTest(unittest.TestCase):
 
     def doctor_row(self) -> dict:
         def command(cmd, cwd=None):
+            if cmd[:3] == ["gh", "api", "--paginate"]:
+                return subprocess.CompletedProcess(cmd, 0, "[]", "")
+            if cmd == ["gh", "api", "user"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"login": "factory"}), "")
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         out = io.StringIO()
@@ -60,6 +64,7 @@ class FactoryDirSafetyTest(unittest.TestCase):
                 return_value=self.root / "c.toml",
             ),
             patch.object(onboard, "sh", side_effect=command),
+            patch.object(onboard, "sh", side_effect=lambda cmd, env=None, **kwargs: command(cmd, **kwargs)),
             patch.object(onboard.shutil, "which", return_value="/bin/tool"),
             patch.object(onboard.urllib.request, "urlopen", return_value=MagicMock()),
             redirect_stdout(out),
