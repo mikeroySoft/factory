@@ -887,6 +887,9 @@ def latest_head_review_verdict(events: list[dict], n: int, pr: int, head: str) -
 
 def review_intake_pass(dry_run: bool) -> None:
     """Review opted-in PR revisions, and `factory learn` PRs, without running the issue/merge pipeline."""
+    if cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host:
+        log(f"review-intake: skipped, triage host is {cfg.triage_host}")
+        return
     prs = gh_json([
         "pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
         "--json", "number,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefOid,labels,reviewRequests,author",
@@ -5924,6 +5927,9 @@ def main(argv: list[str]) -> int:
 
         def release_step(open_pr: bool) -> None:
             if not cfg.release_auto or args.dry_run:
+                return
+            if cfg.host_name is not None and cfg.release_host is not None and cfg.host_name != cfg.release_host:
+                log(f"release: skipped, release host is {cfg.release_host}")
                 return
             try:
                 from factory import release

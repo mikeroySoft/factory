@@ -82,7 +82,7 @@ ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engin
 HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "manager", "install", "prices"})
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",),
              "review": ("command", "second_command", "json_mode")}
-HOST_SCALARS = ("host_name", "triage_host", "land_host", "claim_ttl")
+HOST_SCALARS = ("host_name", "triage_host", "land_host", "release_host", "claim_ttl")
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
 # `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive, when}.
@@ -277,6 +277,7 @@ class Config:
     host_name: str | None = None
     triage_host: str | None = None
     land_host: str | None = None
+    release_host: str | None = None
     claim_ttl: str = "2h"
 
     @property
@@ -730,7 +731,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
-    for key in ("host_name", "triage_host", "land_host"):
+    for key in ("host_name", "triage_host", "land_host", "release_host"):
         value = layered.get(key)
         if value is not None and (
             not isinstance(value, str)

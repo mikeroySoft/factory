@@ -1095,7 +1095,10 @@ def frontier_pass(dry_run: bool = False) -> None:
 def manage_pass(dry_run: bool = False) -> None:
     """Viability, PR frontier and escalation rounds need a manager; terminal handoffs do not."""
     try:
-        if dispatch.cfg.manager:
+        cfg = dispatch.cfg
+        if cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host:
+            dispatch.log(f"manage: skipped, triage host is {cfg.triage_host}")
+        elif cfg.manager:
             viability_pass(dry_run)
             frontier_pass(dry_run)
             escalation_pass(dry_run)
