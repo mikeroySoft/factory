@@ -74,8 +74,10 @@ def repository_host_problem(
     repo: str,
     host_name: str | None,
     gh_json: Callable[[list[str]], object],
+    *,
+    include_comments: bool = True,
 ) -> str | None:
-    """Read all repository host evidence and return an unsafe setup."""
+    """Read repository labels and, for doctor, historical claim authors."""
     def read(endpoint: str) -> list[dict]:
         try:
             value = gh_json(["api", "--paginate", "--slurp", endpoint])
@@ -84,7 +86,7 @@ def repository_host_problem(
         return _flatten_pages(value, endpoint)
 
     labels = read(f"repos/{repo}/labels?per_page=100")
-    comments = read(f"repos/{repo}/issues/comments?per_page=100")
+    comments = read(f"repos/{repo}/issues/comments?per_page=100") if include_comments else []
     login = ""
     if any(_valid_claim(comment) for comment in comments):
         try:
