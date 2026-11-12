@@ -148,6 +148,7 @@ class DoctorIdentityTest(unittest.TestCase):
             cfg = make_cfg(Path(d), **install)
             with mock.patch.object(onboard.config, "load", return_value=cfg), \
                     mock.patch.object(onboard.config, "host_config", return_value={}), \
+                    mock.patch("factory.claims.repository_host_problem", return_value=None), \
                     mock.patch.object(onboard, "sh", side_effect=command), \
                     mock.patch.object(onboard, "sh", side_effect=lambda cmd, env=None, **kwargs: command(cmd, **kwargs)), \
                     mock.patch.object(onboard, "gh_login", side_effect=login), \

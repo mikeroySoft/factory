@@ -242,6 +242,7 @@ class DoctorTimerTest(unittest.TestCase):
             output = io.StringIO()
             with patch.object(onboard.config, "load", return_value=cfg), \
                     patch.object(onboard.config, "host_config", return_value={}), \
+                    patch("factory.claims.repository_host_problem", return_value=None), \
                     patch.object(onboard.config, "engine_drift", return_value=None), \
                     patch.object(onboard, "unit_dir", return_value=root / "units"), \
                     patch.object(onboard.subprocess, "run", side_effect=command) as run, \

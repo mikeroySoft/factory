@@ -22,7 +22,6 @@ from pathlib import Path
 from factory import __version__, claims, config, lifecycle, platform_identity
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
-
 TEMPLATES = Path(__file__).with_name("templates")
 GITIGNORE_LINES = ("/.factory/", ".factory-prompt.md")
 ISSUE_TEMPLATE = Path(".github/ISSUE_TEMPLATE/agent_task.md")
@@ -574,7 +573,6 @@ def doctor(argv: list[str]) -> int:
         report(ok, "service interpreter", detail)
     if drift := config.engine_drift(cfg):
         report(None, "installed engine", drift)
-
 
     for tool in ("git", "gh"):
         report(shutil.which(tool) is not None, f"{tool} on PATH")

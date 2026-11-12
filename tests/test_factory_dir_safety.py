@@ -63,6 +63,7 @@ class FactoryDirSafetyTest(unittest.TestCase):
                 "host_config_path",
                 return_value=self.root / "c.toml",
             ),
+            patch("factory.claims.repository_host_problem", return_value=None),
             patch.object(onboard, "sh", side_effect=command),
             patch.object(onboard, "sh", side_effect=lambda cmd, env=None, **kwargs: command(cmd, **kwargs)),
             patch.object(onboard.shutil, "which", return_value="/bin/tool"),

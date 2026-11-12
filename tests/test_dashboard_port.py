@@ -125,6 +125,7 @@ class DashboardPortTest(unittest.TestCase):
         with patch.object(onboard.config, "load", return_value=self.cfg), \
                 patch.object(onboard.config, "host_config", return_value={}), \
                 patch.object(onboard.config, "host_config_path", return_value=self.host_path), \
+                patch("factory.claims.repository_host_problem", return_value=None), \
                 patch.object(onboard, "sh", side_effect=command), \
                 patch.object(onboard, "sh", side_effect=lambda cmd, env=None, **kwargs: command(cmd, **kwargs)), \
                 patch.object(onboard.shutil, "which", return_value="/bin/tool"), \

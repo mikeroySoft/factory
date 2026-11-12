@@ -85,6 +85,7 @@ class HostConfigTest(unittest.TestCase):
         with mock.patch.object(onboard.config, "load", return_value=cfg), \
                 mock.patch.object(onboard.config, "host_config", return_value=host), \
                 mock.patch.object(onboard.config, "host_config_path", return_value=cfg.root / "host.toml"), \
+                mock.patch("factory.claims.repository_host_problem", return_value=None), \
                 mock.patch.object(onboard.config, "engine_drift", return_value=None), \
                 mock.patch.object(onboard, "sh", side_effect=command), \
                 mock.patch.object(onboard, "sha256", return_value=None), \
