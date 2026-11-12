@@ -207,7 +207,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch._record_rework` | `ready-for-human` | `ready-for-agent` | Deferred actionable findings: durable round charged, packet retained, owner queue cleared and assignee removed for the next pass |
 | `dispatch.defer_mutation_proof` | `ready-for-human` | `ready-for-agent` | Mutation-proof base moved during review, refresh or manager FIX: claim released and requeued for the next pass without charging worker or review budget |
 | `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
-| `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |
+| `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence; journaled REQUEST_CHANGES or REVISE |
 | `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |
 | `dispatch.refresh_pr_branch` | `factory-approved`, `ready-for-human` | `ready-for-agent` | Behind main: approval withdrawn before refresh; eligible conflict and repeated-gate requeues restore agent flow |
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
@@ -247,6 +247,7 @@ event. `{}` is a runtime value.
 | `dispatch.merge_pass_locked` | ``PR #{}: CI failed ({}); `{}` label removed`` | CI fail → escalate |
 | `dispatch.runner_unavailable` | ``PR #{}: CI runner unavailable ({}) in run {}; `{}` kept`` | CI no runner after rerun → escalate |
 | `dispatch.merge_pass_locked` | ``PR #{}: missing approval evidence bound to {}; `{}` label removed`` | CI pass, missing evidence → escalate |
+| `dispatch.merge_pass_locked` | ``PR #{}: journaled {} at {}; `{}` label removed`` | Journaled REQUEST_CHANGES or REVISE at the listed head (including COMMENT-posted reviews) → escalate (`review_revise`); `factory-approved` removed |
 | `dispatch.refresh_pr_branch` | ``PR #{}: could not remove stale `{}` approval`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``PR #{}: {}; `{}` label removed`` | refresh → escalate (wraps the reasons below) |
 | `dispatch.refresh_pr_branch` | ``kept worktree head {} differs from remote head {}`` | refresh → escalate |
