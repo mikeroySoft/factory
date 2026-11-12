@@ -1619,8 +1619,10 @@ singleton rather than a local claim: triage, review intake, manager viability
 and `learn`. Passes whose ownership comes from this host's own journal run on
 every host that has a manager, whatever `triage_host` says: the PR frontier
 (CI-failed, late-feedback and stale escalation, and the `manager.review = "all"`
-approval), escalation rounds and terminal handoffs. A PR claimed only by the
-other host has no local `claimed` row, so those passes leave it alone.
+approval) and escalation rounds. Terminal handoffs run on every host, with or
+without a manager, and act only on this host's own `escalate` rows. A PR claimed
+only by the other host has no local `claimed` or `escalate` row, so those passes
+leave it alone.
 
 Independently, the ticket merge stage skips PRs whose elected claim belongs to
 another host, even after that claim expires. It neither refreshes those branches
