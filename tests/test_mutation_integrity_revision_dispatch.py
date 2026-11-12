@@ -122,6 +122,16 @@ class MutationProofWaitCallerTest(unittest.TestCase):
         dispatch.record("mutation-proof-wait", ticket=7, head=risk_tests.HEAD, source="ticket review")
         self.assertEqual(dispatch.sync_staged(7, self.wt), (report.read_text(), risk_tests.HEAD))
 
+    def test_sync_staged_ignores_proof_wait_after_later_escalate_and_retry(self) -> None:
+        self._head_report()
+        dispatch.record(
+            "attempt", ticket=7, attempt=1, gate="PASS", head=risk_tests.HEAD, finished=True,
+        )
+        dispatch.record("mutation-proof-wait", ticket=7, head=risk_tests.HEAD, source="ticket review")
+        dispatch.record("escalate", ticket=7, code="review_revise", reason="REVISE verdict", round=1)
+        dispatch.record("manage", ticket=7, decision="RETRY")
+        self.assertIsNone(dispatch.sync_staged(7, self.wt))
+
 
 if __name__ == "__main__":
     unittest.main()

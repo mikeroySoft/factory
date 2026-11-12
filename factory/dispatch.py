@@ -3593,10 +3593,14 @@ def sync_staged(n: int, wt: Path) -> tuple[str, str] | None:
     """Return a passed report for an unchanged dispatcher or proof-deferred head."""
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     rows = generation.current(lifecycle.read_events(EVENTS), n).rows
-    deferred = next((
-        row for row in reversed(rows)
-        if row.get("event") == "mutation-proof-wait" and row.get("head") == head
-    ), None)
+    deferred = None
+    for row in reversed(rows):
+        kind = row.get("event")
+        if kind == "mutation-proof-wait" and row.get("head") == head:
+            deferred = row
+            break
+        if kind in {"escalate", "manage", "review-result", "review-rework"}:
+            break
     if deferred:
         # Reuse any passing gate already taken at this head: a dispatcher-staged
         # attempt=0 row has no `finished` field, and a worker attempt may have
