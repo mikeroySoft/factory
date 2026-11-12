@@ -339,17 +339,25 @@ print(json.dumps(result))
         # index == 1 is the only accepted "[this interpreter, scripts/mutation.py]"
         # form. A later producer token with the same argv0 must still fail closed
         # (Eq->GtE on the index would accept it). A different file whose path
-        # compares >= sys.executable must also fail closed.
+        # compares >= sys.executable must also fail closed. Pin both paths
+        # inside the temp root so that >= case does not depend on whether
+        # the host interpreter sorts before or after TemporaryDirectory.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            other = root / "other-python"
+            interpreter = root / "a-python"
+            other = root / "z-python"
+            interpreter.write_text("")
             other.write_text("")
+            interpreter.chmod(0o755)
             other.chmod(0o755)
-            self.assertGreaterEqual(other.resolve(), Path(sys.executable).resolve())
-            with mock.patch.object(mutation_scope, "_git", return_value="# trusted\n"):
+            self.assertGreaterEqual(other.resolve(), interpreter.resolve())
+            with (
+                mock.patch.object(gate.sys, "executable", str(interpreter.resolve())),
+                mock.patch.object(mutation_scope, "_git", return_value="# trusted\n"),
+            ):
                 with self.assertRaises(mutation_scope.ScopeError) as ctx:
                     gate._trusted_mutation_command(
-                        [sys.executable, "run", "scripts/mutation.py"], "base", root,
+                        [str(interpreter), "run", "scripts/mutation.py"], "base", root,
                     )
                 self.assertIn("unsupported trusted mutation command", str(ctx.exception))
                 with self.assertRaises(mutation_scope.ScopeError) as ctx:
