@@ -134,8 +134,7 @@ class ProofRunTest(unittest.TestCase):
             commit(root, {"factory/example.py": "value = 3\n"}, "head moves on")
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
-        with contextlib.chdir(root), mock.patch.object(gate, "timed", timed), \
-                mock.patch.object(gate, "_trusted_mutation_command", lambda cmd, *_: cmd):
+        with contextlib.chdir(root), mock.patch.object(gate, "timed", timed):
             _, status, why, _ = gate._proof_run(["mutation"], "origin/main")
         self.assertEqual((status, why), ("FAIL", "missing completion record"))
 

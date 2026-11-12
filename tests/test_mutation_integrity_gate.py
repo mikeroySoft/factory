@@ -110,6 +110,12 @@ class GateIntegrityTest(unittest.TestCase):
                 with self.assertRaises(mutation_scope.ScopeError):
                     gate._trusted_mutation_command(cmd, "HEAD", Path(directory))
                 self.assertEqual(list(Path(directory).iterdir()), [])
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                gate._trusted_mutation_command(["mutation"], "HEAD", Path(directory)),
+                ["mutation"],
+            )
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_fifo_completion_fails_under_independent_watchdog(self) -> None:
         base, _ = build_repo(self.root, {
