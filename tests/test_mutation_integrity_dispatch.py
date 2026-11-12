@@ -331,6 +331,19 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
             self.repo, report, self.head, self.new_base, self.new_base,
         ))
 
+    def test_moved_main_proof_requires_exactly_one_bound_proof(self) -> None:
+        # A missing or duplicated proof line is not a moved-main proof, even when
+        # snapshot and current actually differ. return False -> True at the
+        # len(proofs) != 1 guard would report a move.
+        self.assertFalse(dispatch._moved_main_proof(
+            self.repo, "no mutation proof in this report\n", self.head,
+            self.old_base, self.new_base,
+        ))
+        doubled = proof("PASS", self.new_base, self.head) + proof("PASS", self.old_base, self.head)
+        self.assertFalse(dispatch._moved_main_proof(
+            self.repo, doubled, self.head, self.old_base, self.new_base,
+        ))
+
     def test_moved_main_proof_requires_base_on_the_snapshot_to_current_path(self) -> None:
         off_path = git(
             self.repo, "commit-tree", f"{self.new_base}^{{tree}}",
