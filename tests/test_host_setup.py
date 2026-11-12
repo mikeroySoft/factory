@@ -17,7 +17,6 @@ sys.path.insert(0, str(ROOT))
 
 from factory import claims, config, onboard
 
-
 CLAIM = "Factory claim: host=tank nonce=n-1 at=2026-11-12T08:00:00+00:00"
 
 

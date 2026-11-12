@@ -158,8 +158,9 @@ class DispatchPreflightTest(unittest.TestCase):
         for module in modules:
             original = module.gh_json
             login = module.cfg.host_name + "-login"
+            stage = [0]
 
-            def github(args, original=original, login=login, stage=[0]):
+            def github(args, original=original, login=login, stage=stage):
                 if args == ["api", "user"]:
                     return {"login": login}
                 value = original(args)

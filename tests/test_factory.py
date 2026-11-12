@@ -196,6 +196,18 @@ def stub_bin(tmp: Path, **scripts: str) -> str:
     bindir = tmp / "bin"
     bindir.mkdir(exist_ok=True)
     for name, body in scripts.items():
+        if name == "gh":
+            body = '''
+case "$*" in
+  "api rate_limit")
+    echo '{"resources":{"core":{"remaining":5000},"graphql":{"remaining":5000}}}'
+    exit 0;;
+  "api --paginate --slurp repos/"*"/labels?per_page=100" | \
+  "api --paginate --slurp repos/"*"/issues/comments?per_page=100")
+    echo '[[]]'
+    exit 0;;
+esac
+''' + body
         exe = bindir / name
         exe.write_text(f'#!/bin/sh\necho "$@" >> "{bindir / name}.log"\n{body}\n')
         exe.chmod(0o755)
