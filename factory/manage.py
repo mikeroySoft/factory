@@ -479,6 +479,9 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
         if cfg.fixups:
             gate_head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        if verdict == dispatch.PR_GATE_WAIT:
+            dispatch.defer_mutation_proof(n, gate_head, "manager FIX")
+            return
         dispatch.pr_comment(n, findings)
         if pr_failed:
             reason = "pr checks failed"

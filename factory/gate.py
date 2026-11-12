@@ -224,13 +224,160 @@ def read_mutation_proof(
 
 def _read_proof_file(path: Path) -> bytes | None:
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return None
     except OSError as exc:
         return f"unreadable: {exc}".encode()  # parsed as malformed: fails closed
-    with os.fdopen(fd, "rb") as handle:
-        return handle.read(MUTATION_PROOF_MAX_BYTES + 1)
+    try:
+        import stat
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return b"unreadable: completion record is not a regular file"
+        return os.read(fd, MUTATION_PROOF_MAX_BYTES + 1)
+    except OSError as exc:
+        return f"unreadable: {exc}".encode()
+    finally:
+        os.close(fd)
+
+
+# Record-reading tests pass this stub; it does not name a producer. Every other
+# command that lacks the exact token `scripts/mutation.py` fails closed.
+_PLACEHOLDER_MUTATION_COMMANDS = (["mutation"],)
+
+
+def _provision_trusted_uv_environment(
+    uv: str, options: list[str], project: Path, environment: Path,
+) -> None:
+    """Build the base lock's dependency environment without installing the project.
+
+    `uv run` on 0.12.21 has no `--no-install-project` (that flag exists on `uv sync`).
+    Installing the temp checkout would try to build an incomplete project, and running
+    `uv` without the `run` subcommand drops the environment provisioning entirely.
+    """
+    command = [
+        uv, "sync", "--no-config", *options, "--project", str(project),
+        "--no-install-project", "--python", sys.executable,
+    ]
+    env = dict(os.environ)
+    env["UV_PROJECT_ENVIRONMENT"] = str(environment)
+    # uv writes cache lock files into TMPDIR; keep them beside the environment
+    # (not inside it: a pre-existing environment dir without a Python executable
+    # makes uv sync refuse the project venv) so a suite that isolates TMPDIR
+    # does not see leftover `uv-*.lock` files.
+    scratch = environment.parent / "uv-tmp"
+    scratch.mkdir(parents=True, exist_ok=True)
+    env["TMPDIR"] = env["TMP"] = env["TEMP"] = str(scratch)
+    for name in ("UV_NO_SYNC", "VIRTUAL_ENV", "UV_CONFIG_FILE", "UV_PROJECT",
+                 "UV_WORKING_DIR", "UV_PYTHON"):
+        env.pop(name, None)
+    proc = subprocess.Popen(
+        command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, start_new_session=True,
+    )
+    try:
+        out, _ = proc.communicate(timeout=CHECK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        raise mutation_scope.ScopeError(
+            "trusted mutation environment provisioning timed out"
+        ) from None
+    if proc.returncode != 0:
+        detail = (out or "").strip() or f"exit {proc.returncode}"
+        raise mutation_scope.ScopeError(
+            f"trusted mutation environment could not be provisioned: {detail}"
+        )
+
+
+def _isolated_environment_paths(environment: Path) -> list[str]:
+    """Site paths from `environment` itself, not this interpreter's packaging scheme.
+
+    Debian and Ubuntu interpreters report a posix_local/dist-packages layout that does
+    not match a uv virtualenv's `lib/pythonX.Y/site-packages`. Glob that layout first.
+    A `python -I -S` probe is not used: without site.py the venv is never activated, so
+    sysconfig reports the base interpreter's site-packages when that directory exists.
+    """
+    paths = [
+        str(path)
+        for pattern in ("lib/python*/site-packages", "lib64/python*/site-packages")
+        for path in environment.glob(pattern)
+        if path.is_dir()
+    ]
+    if not paths:
+        venv_python = environment / "bin" / "python"
+        if venv_python.exists():
+            try:
+                proc = subprocess.run(
+                    [str(venv_python), "-I", "-c",
+                     ("import sysconfig; print(sysconfig.get_path('purelib')); "
+                      "print(sysconfig.get_path('platlib'))")],
+                    check=False, capture_output=True, text=True, timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                proc = None
+            if proc is not None and proc.returncode == 0:
+                paths = [
+                    line.strip() for line in proc.stdout.splitlines()
+                    if line.strip() and Path(line.strip()).is_dir()
+                ]
+    paths = list(dict.fromkeys(paths))
+    if not paths:
+        raise mutation_scope.ScopeError(
+            "trusted mutation environment has no site-packages"
+        )
+    return paths
+
+
+def _trusted_mutation_command(
+    cmd: list[str], base: str, directory: Path,
+) -> list[str]:
+    """Run the proof producer, interpreter environment and imports from trusted inputs.
+
+    Keep cwd at the reviewed head: it supplies mutation targets, never producer code.
+    Python starts without site processing; the launcher explicitly adds only the isolated
+    environment provisioned from the base commit's frozen dependency configuration."""
+    if "scripts/mutation.py" not in cmd:
+        if cmd in _PLACEHOLDER_MUTATION_COMMANDS:
+            return cmd
+        raise mutation_scope.ScopeError(
+            "mutation proof command must name the producer as the exact token "
+            "`scripts/mutation.py`"
+        )
+    for name in ("scripts/mutation.py", "factory/__init__.py", "factory/mutation_scope.py"):
+        target = directory / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(mutation_scope._git(None, "show", f"{base}:{name}"))
+    index = cmd.index("scripts/mutation.py")
+    uv = len(cmd) > 2 and Path(cmd[0]).name == "uv" and cmd[1] == "run"
+    if uv:
+        if cmd[index - 1] != "python":
+            raise mutation_scope.ScopeError("trusted mutation command has no Python entry point")
+        for name in ("pyproject.toml", "uv.lock"):
+            (directory / name).write_text(mutation_scope._git(None, "show", f"{base}:{name}"))
+        environment = directory / "environment"
+        _provision_trusted_uv_environment(cmd[0], cmd[2:index - 1], directory, environment)
+        paths = _isolated_environment_paths(environment)
+    elif index == 1 and Path(cmd[0]).resolve() == Path(sys.executable).resolve():
+        # This interpreter's own paths, not parent.parent (which can resolve to a
+        # different /usr/bin/python and a Debian dist-packages layout).
+        import sysconfig
+        paths = list(dict.fromkeys(
+            path for path in (sysconfig.get_path("purelib"), sysconfig.get_path("platlib"))
+            if path and Path(path).is_dir()
+        ))
+        if not paths:
+            raise mutation_scope.ScopeError(
+                "trusted mutation environment has no site-packages"
+            )
+    else:
+        raise mutation_scope.ScopeError("unsupported trusted mutation command")
+    launcher = directory / "launch.py"
+    launcher.write_text(
+        "import runpy, sys\n"
+        f"sys.path[:0] = [{str(directory)!r}, *{paths!r}]\n"
+        f"runpy.run_path({str(directory / 'scripts/mutation.py')!r}, run_name='__main__')\n"
+    )
+    return [sys.executable, "-I", "-S", str(launcher), *cmd[index + 1:]]
 
 
 def _proof_run(
@@ -249,8 +396,14 @@ def _proof_run(
                             f"{', '.join(dirty[:20])}"), None
     with tempfile.TemporaryDirectory(prefix="factory-mutation-proof-") as directory:
         path = Path(directory) / "proof.json"
+        try:
+            cmd = _trusted_mutation_command(cmd, expected.base, Path(directory))
+        except mutation_scope.ScopeError as exc:
+            return "", "FAIL", f"trusted mutation producer unavailable: {exc}", expected
         limit = {} if duration is None else {"timeout": duration}
-        proc = timed(cmd, proof_path=path, proof_base=expected.base, **limit)
+        proc = timed(
+            cmd, proof_path=path, proof_base=expected.base, **limit,
+        )
         data = _read_proof_file(path)
     status, why = read_mutation_proof(data, proc.returncode, expected)
     try:
