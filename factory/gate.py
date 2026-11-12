@@ -245,6 +245,32 @@ def _read_proof_file(path: Path) -> bytes | None:
         os.close(fd)
 
 
+def _provision_trusted_uv_environment(
+    uv: str, options: list[str], project: Path, environment: Path,
+) -> None:
+    """Build the base lock's dependency environment without installing the project.
+
+    `uv run` on 0.12.21 has no `--no-install-project` (that flag exists on `uv sync`).
+    Installing the temp checkout would try to build an incomplete project, and running
+    `uv` without the `run` subcommand drops the environment provisioning entirely.
+    """
+    command = [
+        uv, "sync", "--no-config", *options, "--project", str(project),
+        "--no-install-project", "--python", sys.executable,
+    ]
+    env = dict(os.environ)
+    env["UV_PROJECT_ENVIRONMENT"] = str(environment)
+    for name in ("UV_NO_SYNC", "VIRTUAL_ENV", "UV_CONFIG_FILE", "UV_PROJECT",
+                 "UV_WORKING_DIR", "UV_PYTHON"):
+        env.pop(name, None)
+    proc = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        detail = (proc.stdout + proc.stderr).strip() or f"exit {proc.returncode}"
+        raise mutation_scope.ScopeError(
+            f"trusted mutation environment could not be provisioned: {detail}"
+        )
+
+
 def _trusted_mutation_command(
     cmd: list[str], base: str, directory: Path,
 ) -> list[str]:
@@ -254,7 +280,10 @@ def _trusted_mutation_command(
     Python starts without site processing; the launcher explicitly adds only the isolated
     environment provisioned from the base commit's frozen dependency configuration."""
     if "scripts/mutation.py" not in cmd:
-        return cmd
+        raise mutation_scope.ScopeError(
+            "mutation proof command must name the producer as the exact token "
+            "`scripts/mutation.py`"
+        )
     for name in ("scripts/mutation.py", "factory/__init__.py", "factory/mutation_scope.py"):
         target = directory / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -267,6 +296,7 @@ def _trusted_mutation_command(
         for name in ("pyproject.toml", "uv.lock"):
             (directory / name).write_text(mutation_scope._git(None, "show", f"{base}:{name}"))
         environment = directory / "environment"
+        _provision_trusted_uv_environment(cmd[0], cmd[2:index - 1], directory, environment)
     elif index == 1 and Path(cmd[0]).resolve() == Path(sys.executable).resolve():
         environment = Path(sys.executable).parent.parent
     else:
@@ -280,14 +310,7 @@ def _trusted_mutation_command(
         f"sys.path[:0] = [{str(directory)!r}, *dict.fromkeys(paths)]\n"
         f"runpy.run_path({str(directory / 'scripts/mutation.py')!r}, run_name='__main__')\n"
     )
-    arguments = cmd[index + 1:]
-    if not uv:
-        return [sys.executable, "-I", "-S", str(launcher), *arguments]
-    return [
-        cmd[0], "--no-config", *cmd[2:index - 1], "--project", str(directory),
-        "--no-install-project", "--python", sys.executable, "python",
-        "-I", "-S", str(launcher), *arguments,
-    ]
+    return [sys.executable, "-I", "-S", str(launcher), *cmd[index + 1:]]
 
 
 def _proof_run(
@@ -308,14 +331,11 @@ def _proof_run(
         path = Path(directory) / "proof.json"
         try:
             cmd = _trusted_mutation_command(cmd, expected.base, Path(directory))
-            uv_environment = (Path(directory) / "environment"
-                              if "--no-install-project" in cmd else None)
         except mutation_scope.ScopeError as exc:
             return "", "FAIL", f"trusted mutation producer unavailable: {exc}", expected
         limit = {} if duration is None else {"timeout": duration}
-        environment = {} if uv_environment is None else {"uv_environment": uv_environment}
         proc = timed(
-            cmd, proof_path=path, proof_base=expected.base, **environment, **limit,
+            cmd, proof_path=path, proof_base=expected.base, **limit,
         )
         data = _read_proof_file(path)
     status, why = read_mutation_proof(data, proc.returncode, expected)

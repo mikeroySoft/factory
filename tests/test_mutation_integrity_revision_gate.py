@@ -2,16 +2,14 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from factory import gate, mutation_scope
+from factory import gate
 from tests.test_mutation_scope import build_repo
 
 ROOT = Path(__file__).resolve().parents[1]

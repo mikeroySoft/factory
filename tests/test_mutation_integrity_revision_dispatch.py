@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 import unittest
-from pathlib import Path
 
 import test_risk_merge as risk_tests
 

@@ -109,6 +109,8 @@ flowchart TB
   REF -->|"gate fails twice, open ticket, gate rounds left, no unauthorized protected/add-only path: reports and diff assessment recorded, claim released to same worker profile on agent/N: dispatch.refresh_pr_branch"| RFA
   REF -->|"actionable REVISE or completed survivors, open ticket and review rounds left: dispatch._record_rework"| RFA
   REV -->|"expired clean finish, actionable findings, rounds left: durable charge and claim released: dispatch._record_rework"| RFA
+  REV -->|"pr-tier mutation proof base moved: no worker or review round charged: dispatch.defer_mutation_proof"| RFA
+  REF -->|"pr-tier mutation proof base moved: no worker or review round charged: dispatch.defer_mutation_proof"| RFA
   REF -->|"protected paths, exhausted rounds, closed ticket, reject, non-actionable REVISE, or head moved: dispatch.refresh_pr_branch"| ESC
   CI -->|"pass, missing SHA-bound approval evidence: dispatch.merge_pass_locked"| ESC
   CI -->|"pass, up to date, no human CHANGES_REQUESTED: dispatch.merge_pass_locked"| MERGE
@@ -129,6 +131,7 @@ flowchart TB
   MGR -->|"AUTHORIZE adds add-only authority before requeue: manage.apply"| RFA
   MGR -->|"SPLIT, children opened, parent stays: manage.apply"| NT
   MGR -->|"FIX: worker round, gate, review: manage.apply"| FA
+  MGR -->|"FIX pr-tier mutation proof base moved: no round charged: dispatch.defer_mutation_proof"| RFA
   MGR -->|"FIX fails gate, pr-tier gate, or review; kept head not the PR head plus the worker's own commits, or their lease push refused: manage.apply"| ESC
   MGR -->|"CLOSE with or without a PR on an original ticket: manage.apply"| WONT
   MGR -->|"CLOSE with or without a PR on a SPLIT child, issue closed not planned: manage.apply"| HUMAN
@@ -202,6 +205,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
 | `dispatch.delete_host_claim` | `*` | `*` | Remove the host label before deleting its last claim; restore it if comment deletion fails and the claim remains |
 | `dispatch._record_rework` | `ready-for-human` | `ready-for-agent` | Deferred actionable findings: durable round charged, packet retained, owner queue cleared and assignee removed for the next pass |
+| `dispatch.defer_mutation_proof` | `ready-for-human` | `ready-for-agent` | Mutation-proof base moved during review, refresh or manager FIX: claim released and requeued for the next pass without charging worker or review budget |
 | `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
 | `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |
 | `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |

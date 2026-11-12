@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -85,6 +87,33 @@ class ScratchGitTest(unittest.TestCase):
                         status = mutation.main(["--blocking"])
                     self.assertEqual(status, 0, output.getvalue())
                     self.assertIn("baseline:", output.getvalue())
+
+    def test_isolated_child_imports_the_copy_but_runs_the_trusted_producer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory).resolve() / "copy"
+            (copy / "factory").mkdir(parents=True)
+            (copy / "factory/__init__.py").write_text("")
+            (copy / "factory/config.py").write_text("ORIGIN = 'copy'\n")
+            argv = shlex.split(mutation.test_command(copy, "tests.test_x"))
+            launcher = argv.index("-c")
+            flags, tail = argv[3:launcher], argv[launcher + 2:]
+            self.assertEqual(argv[:3], ["env", "-C", str(copy)])
+            self.assertTrue({"-I", "-S"} <= set(flags), flags)
+            self.assertNotIn("-m", argv)
+            self.assertEqual(tail[0], str(copy))  # first on the child's import path
+            self.assertEqual(tail[3:], [str(Path(mutation.__file__).resolve()),
+                                        "--test-module", "tests.test_x"])
+            # Run the real launcher with a probe standing in for the trusted producer.
+            probe = Path(directory) / "probe.py"
+            probe.write_text(
+                "import json, sys\nfrom factory import config\n"
+                "print(json.dumps([config.ORIGIN, sys.argv, sys.flags.isolated, sys.flags.no_site]))\n"
+            )
+            argv[argv.index(tail[3])] = str(probe)
+            result = subprocess.run(argv, capture_output=True, text=True, check=True)
+            self.assertEqual(json.loads(result.stdout), [
+                "copy", [str(probe), "--test-module", "tests.test_x"], 1, 1,
+            ])
 
 
 if __name__ == "__main__":

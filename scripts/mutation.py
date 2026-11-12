@@ -274,14 +274,14 @@ def test_command(copy: Path, module: str | None = None) -> str:
     ]
     launcher = (
         "import runpy,sys;"
-        "sys.path[:0]=sys.argv[1:3];"
-        "script=sys.argv[3];"
-        "sys.argv=sys.argv[3:];"
+        "sys.path[:0]=sys.argv[1:4];"
+        "script=sys.argv[4];"
+        "sys.argv=sys.argv[4:];"
         "runpy.run_path(script,run_name='__main__')"
     )
     command = [
         "env", "-C", str(copy), sys.executable, "-I", "-S", "-B", "-c", launcher,
-        *paths, str(Path(__file__).resolve()), "--test-module", module or "",
+        str(copy), *paths, str(Path(__file__).resolve()), "--test-module", module or "",
     ]
     return shlex.join(command)
 

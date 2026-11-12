@@ -98,14 +98,31 @@ class GateIntegrityTest(unittest.TestCase):
         self.assertIn("trusted mutation producer unavailable", output)
         self.assertNotIn("untrusted runner executed", output)
 
+    def test_unrecognized_producer_spelling_fails_closed(self) -> None:
+        absolute = str(Path(ROOT) / "scripts/mutation.py")
+        for cmd in (
+            [sys.executable, "./scripts/mutation.py", "--blocking"],
+            [sys.executable, "-m", "scripts.mutation", "--blocking"],
+            [sys.executable, absolute, "--blocking"],
+            ["uv", "run", "python", "./scripts/mutation.py"],
+        ):
+            with self.subTest(cmd=cmd), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(mutation_scope.ScopeError):
+                    gate._trusted_mutation_command(cmd, "HEAD", Path(directory))
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
     def test_fifo_completion_fails_under_independent_watchdog(self) -> None:
-        base, _ = build_repo(self.root, {"factory/example.py": "value = 0\n"},
-                             {"factory/example.py": "value = 1\n"})
+        base, _ = build_repo(self.root, {
+            "factory/example.py": "value = 0\n",
+            "factory/__init__.py": "",
+            "factory/mutation_scope.py": "",
+            "scripts/mutation.py": "import os\nos.mkfifo(os.environ['FACTORY_MUTATION_PROOF'])\n",
+        }, {"factory/example.py": "value = 1\n"})
         script = f'''import json, sys
 sys.path.insert(0, {ROOT!r})
 from factory import gate
 result = gate.run_mutation_proof(
-    [sys.executable, "-c", "import os; os.mkfifo(os.environ['FACTORY_MUTATION_PROOF'])"],
+    [sys.executable, "scripts/mutation.py"],
     {base!r}, 61,
 )
 print(json.dumps(result))

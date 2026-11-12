@@ -405,6 +405,7 @@ class GateBoundaryTest(unittest.TestCase):
 
         execution = SimpleNamespace(outcome="unknown" if reason else "completed", reason=reason)
         with contextlib.chdir(root), mock.patch.object(gate, "timed", timed), \
+                mock.patch.object(gate, "_trusted_mutation_command", lambda cmd, *_: cmd), \
                 mock.patch.object(gate.lifecycle, "current", return_value=execution):
             return gate.run_mutation_proof(["mutation"], "origin/main")
 
