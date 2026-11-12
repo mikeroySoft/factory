@@ -101,6 +101,27 @@ class MutationProofWaitCallerTest(unittest.TestCase):
         self.assertEqual((refreshed["head"], refreshed["gate"]), (risk_tests.HEAD, "PASS"))
         self.resume(worker_calls=0)
 
+    def _head_report(self):
+        self.patch(dispatch, "sync_staged", side_effect=_SYNC_STAGED)
+        report = self.wt / ".factory" / "gate-report-7.md"
+        report.parent.mkdir(exist_ok=True)
+        report.write_text("- test: PASS\n")
+        return report
+
+    def test_sync_staged_reuses_dispatcher_staged_head_after_proof_wait(self) -> None:
+        report = self._head_report()
+        dispatch.record("attempt", ticket=7, attempt=0, gate="PASS", head=risk_tests.HEAD)
+        dispatch.record("mutation-proof-wait", ticket=7, head=risk_tests.HEAD, source="ticket review")
+        self.assertEqual(dispatch.sync_staged(7, self.wt), (report.read_text(), risk_tests.HEAD))
+
+    def test_sync_staged_reuses_unfinished_passing_attempt_after_proof_wait(self) -> None:
+        report = self._head_report()
+        dispatch.record(
+            "attempt", ticket=7, attempt=1, gate="PASS", head=risk_tests.HEAD, finished=False,
+        )
+        dispatch.record("mutation-proof-wait", ticket=7, head=risk_tests.HEAD, source="ticket review")
+        self.assertEqual(dispatch.sync_staged(7, self.wt), (report.read_text(), risk_tests.HEAD))
+
 
 if __name__ == "__main__":
     unittest.main()

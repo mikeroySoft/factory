@@ -3598,12 +3598,14 @@ def sync_staged(n: int, wt: Path) -> tuple[str, str] | None:
         if row.get("event") == "mutation-proof-wait" and row.get("head") == head
     ), None)
     if deferred:
+        # Reuse any passing gate already taken at this head: a dispatcher-staged
+        # attempt=0 row has no `finished` field, and a worker attempt may have
+        # reached review without a done handoff. Both would have gone to review
+        # without the deferral.
         staged = next((
             row for row in reversed(rows)
-            if row.get("head") == head and row.get("gate") == "PASS" and (
-                (row.get("event") in {"attempt", "gate-fixup"} and row.get("finished") is True)
-                or row.get("event") == "refreshed"
-            )
+            if row.get("head") == head and row.get("gate") == "PASS"
+            and row.get("event") in {"attempt", "gate-fixup", "refreshed"}
         ), None)
     else:
         staged = next((

@@ -814,7 +814,7 @@ it. That covers the escalation and manager rounds, frontier manager rounds,
 review-bounce rounds and conflict, gate and risk requeue rounds, so the ticket gets its
 full budget again. A factory release never opens a generation. The dispatcher and
 manager journal each of their own releases before relabeling: `conflict-requeue`,
-`gate-requeue`, `risk-requeue`, deferred `review-rework`, and RETRY, REWRITE,
+`gate-requeue`, `risk-requeue`, `mutation-proof-wait`, deferred `review-rework`, and RETRY, REWRITE,
 AUTHORIZE or ROUTE `manage` rows. A ticket that is back in `ready-for-agent` and
 unassigned after its latest escalation, with none of those rows after it, was released
 by a human. A journal with no `generation` row is generation 0 and counts exactly as
