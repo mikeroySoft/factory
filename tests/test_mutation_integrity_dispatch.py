@@ -154,6 +154,41 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
         self.assertEqual((recovered, failed), ("APPROVE", False))
         self.assertEqual(self.review_roles, ["primary", "second"])
 
+    def test_twice_moved_base_wait_compares_stale_verdict_by_equality(self) -> None:
+        # Eq->Is at the second STALE check would miss a non-interned "STALE" string
+        # (the literal returned by _mutation_proof is interned, so it does not kill).
+        stale = (" " + "STALE").lstrip()
+        self.assertEqual(stale, "STALE")
+        self.assertIsNot(stale, "STALE")
+        real = dispatch._mutation_proof
+
+        def copy_stale(report: str, head: str, base: str | None):
+            result = real(report, head, base)
+            if result and result[0] == "STALE":
+                return stale, result[1]
+            return result
+
+        runs: dict[str, tuple[bool, str]] = {}
+        third_base = git(
+            self.repo, "commit-tree", f"{self.new_base}^{{tree}}",
+            "-p", self.new_base, "-m", "move main again",
+        )
+        moved_bases = iter((self.new_base, third_base))
+
+        def stale_gate(*_args, **_kwargs):
+            moved = next(moved_bases)
+            git(self.repo, "update-ref", "refs/remotes/origin/main", moved)
+            return True, proof("PASS", moved, self.head)
+
+        with mock.patch.object(dispatch, "_mutation_proof", side_effect=copy_stale), \
+                mock.patch.object(dispatch, "run_gate", side_effect=stale_gate) as runner:
+            verdict, _, pr_failed = dispatch.pr_gate_and_review(
+                self.repo, 7, "attempt report", self.head, runs,
+            )
+        self.assertEqual((verdict, pr_failed), ("WAIT", False))
+        self.assertEqual(runner.call_count, 2)
+        self.assertNotIn(self.head, runs)
+
     def test_proof_bound_to_intermediate_base_retries_then_accepts(self) -> None:
         """Main moved before the producer bound its base, then again during the run."""
         third_base = git(

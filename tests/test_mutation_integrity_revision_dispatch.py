@@ -132,6 +132,20 @@ class MutationProofWaitCallerTest(unittest.TestCase):
         dispatch.record("manage", ticket=7, decision="RETRY")
         self.assertIsNone(dispatch.sync_staged(7, self.wt))
 
+    def test_sync_staged_does_not_treat_later_escalate_at_same_head_as_proof_wait(self) -> None:
+        # Eq->LtE would treat "escalate" as a proof wait, because
+        # "escalate" <= "mutation-proof-wait", when the escalate row carries this head.
+        self._head_report()
+        dispatch.record(
+            "attempt", ticket=7, attempt=1, gate="PASS", head=risk_tests.HEAD, finished=True,
+        )
+        dispatch.record("mutation-proof-wait", ticket=7, head=risk_tests.HEAD, source="ticket review")
+        dispatch.record(
+            "escalate", ticket=7, code="review_revise", reason="REVISE verdict",
+            round=1, head=risk_tests.HEAD,
+        )
+        self.assertIsNone(dispatch.sync_staged(7, self.wt))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -260,6 +260,13 @@ def _provision_trusted_uv_environment(
     ]
     env = dict(os.environ)
     env["UV_PROJECT_ENVIRONMENT"] = str(environment)
+    # uv writes cache lock files into TMPDIR; keep them beside the environment
+    # (not inside it: a pre-existing environment dir without a Python executable
+    # makes uv sync refuse the project venv) so a suite that isolates TMPDIR
+    # does not see leftover `uv-*.lock` files.
+    scratch = environment.parent / "uv-tmp"
+    scratch.mkdir(parents=True, exist_ok=True)
+    env["TMPDIR"] = env["TMP"] = env["TEMP"] = str(scratch)
     for name in ("UV_NO_SYNC", "VIRTUAL_ENV", "UV_CONFIG_FILE", "UV_PROJECT",
                  "UV_WORKING_DIR", "UV_PYTHON"):
         env.pop(name, None)

@@ -147,6 +147,21 @@ class GateIntegrityTest(unittest.TestCase):
             self.assertEqual(gate._isolated_environment_paths(environment), [str(site)])
             self.assertNotIn(str(wrong), gate._isolated_environment_paths(environment))
 
+    def test_provision_keeps_uv_lock_files_out_of_inherited_tmpdir(self) -> None:
+        with tempfile.TemporaryDirectory() as inherited, tempfile.TemporaryDirectory() as work:
+            inherited_tmp = Path(inherited)
+            directory = Path(work)
+            environment = directory / "environment"
+            uv = directory / "uv"
+            uv.write_text("#!/bin/sh\n: > \"$TMPDIR/uv-probe.lock\"\n")
+            uv.chmod(0o755)
+            with mock.patch.dict(os.environ, {"TMPDIR": str(inherited_tmp)}):
+                gate._provision_trusted_uv_environment(str(uv), [], directory, environment)
+            self.assertEqual(list(inherited_tmp.iterdir()), [])
+            scratch = environment.parent / "uv-tmp"
+            self.assertTrue((scratch / "uv-probe.lock").is_file())
+
+
     def test_fifo_completion_fails_under_independent_watchdog(self) -> None:
         base, _ = build_repo(self.root, {
             "factory/example.py": "value = 0\n",
