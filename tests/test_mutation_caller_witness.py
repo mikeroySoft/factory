@@ -186,6 +186,9 @@ class MutationCallerWitness(unittest.TestCase):
             mock.patch.object(dispatch, "run", self._dispatch_run),
             mock.patch.object(dispatch, "review", self._review),
             mock.patch.object(gate, "subprocess", fake_subprocess),
+            # This harness replaces the producer process itself; real producer provenance
+            # (base code and imports, isolated Python) is exercised by integrity_gate.
+            mock.patch.object(gate, "_trusted_mutation_command", lambda cmd, *_: cmd),
             mock.patch.object(gate.os, "killpg", lambda *a: self.killpg_calls.append(a)),
             mock.patch.object(gate.config, "load", lambda *a, **k: self.cfg),
         ):

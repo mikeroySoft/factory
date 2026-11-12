@@ -265,9 +265,33 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
 
 
 def test_command(copy: Path, module: str | None = None) -> str:
+    """Run the trusted producer's test-only entry point against a prepared head copy."""
+    # Reuse the provisioned environment already on this process's sys.path (baked
+    # into launch.py). Do not recompute paths from this interpreter's packaging scheme.
+    trusted_root = Path(__file__).resolve().parent.parent
+    paths = []
+    for entry in sys.path:
+        if not entry:
+            continue
+        path = Path(entry)
+        if not path.is_dir() or path.resolve() == trusted_root:
+            continue
+        if path.name in {"site-packages", "dist-packages"}:
+            paths.append(str(path))
+    paths = list(dict.fromkeys(paths))
+    if not paths:
+        raise SystemExit("trusted mutation child has no provisioned site-packages")
+    launcher = (
+        "import runpy,sys;"
+        "i=sys.argv.index('--');"
+        "sys.path[:0]=sys.argv[1:i];"
+        "script=sys.argv[i+1];"
+        "sys.argv=sys.argv[i+1:];"
+        "runpy.run_path(script,run_name='__main__')"
+    )
     command = [
-        "env", "-C", str(copy), f"PYTHONPATH={copy}", sys.executable,
-        "-B", "-m", "scripts.mutation", "--test-module", module or "",
+        "env", "-C", str(copy), sys.executable, "-I", "-S", "-B", "-c", launcher,
+        str(copy), *paths, "--", str(Path(__file__).resolve()), "--test-module", module or "",
     ]
     return shlex.join(command)
 

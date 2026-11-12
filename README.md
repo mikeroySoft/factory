@@ -814,7 +814,7 @@ it. That covers the escalation and manager rounds, frontier manager rounds,
 review-bounce rounds and conflict, gate and risk requeue rounds, so the ticket gets its
 full budget again. A factory release never opens a generation. The dispatcher and
 manager journal each of their own releases before relabeling: `conflict-requeue`,
-`gate-requeue`, `risk-requeue`, deferred `review-rework`, and RETRY, REWRITE,
+`gate-requeue`, `risk-requeue`, `mutation-proof-wait`, deferred `review-rework`, and RETRY, REWRITE,
 AUTHORIZE or ROUTE `manage` rows. A ticket that is back in `ready-for-agent` and
 unassigned after its latest escalation, with none of those rows after it, was released
 by a human. A journal with no `generation` row is generation 0 and counts exactly as
@@ -1274,6 +1274,19 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    current working files overlaid, so Git-dependent tests run without skips.
    Baseline and mutant subprocesses disable bytecode writes, preventing cached
    baseline code from masking same-size mutations in reused scratch copies.
+   On `proof = "mutation-v1"` checks, the gate recomputes committed scope from raw
+   textual diffs (no text conversion or external diff driver), counting only Git's
+   LF line boundaries; source inside a hunk cannot become a file header.
+   The producer, its local `factory` imports, and its child test harness execute
+   from the resolved trusted base in gate-owned scratch. Producer startup excludes
+   the reviewed checkout's interpreter, site hooks and build hooks; mutation targets
+   and test suites remain the reviewed working tree.
+   Missing trusted producer code fails closed. Completion records must be bounded
+   regular files: symlinks, FIFOs and devices are invalid proof, never blocking reads.
+   When main moves during a proof run, the dispatcher retries once. Another move
+   defers review to a later pass without worker rework, a failed PR gate or reviewer
+   escalation. An unbound proof, head mismatch or stale proof without a base move
+   still fails closed.
    This repository's mutation command loads `mutation-equivalents.json` through
    `--equivalents FILE`. It is a JSON array; each reviewed entry has this shape:
 
