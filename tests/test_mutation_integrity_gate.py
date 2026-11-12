@@ -130,6 +130,23 @@ class GateIntegrityTest(unittest.TestCase):
             with self.assertRaises(mutation_scope.ScopeError):
                 gate._isolated_environment_paths(Path(directory) / "empty")
 
+    def test_isolated_environment_paths_prefer_environment_glob_over_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment = Path(directory) / "environment"
+            site = environment / "lib" / "python3.12" / "site-packages"
+            site.mkdir(parents=True)
+            probe = environment / "bin" / "python"
+            probe.parent.mkdir(parents=True)
+            wrong = Path(directory) / "base-interpreter" / "lib" / "python3.12" / "site-packages"
+            wrong.mkdir(parents=True)
+            probe.write_text(
+                "#!/bin/sh\nprintf '%s\n%s\n' "
+                f"{str(wrong)!r} {str(wrong)!r}\n"
+            )
+            probe.chmod(0o755)
+            self.assertEqual(gate._isolated_environment_paths(environment), [str(site)])
+            self.assertNotIn(str(wrong), gate._isolated_environment_paths(environment))
+
     def test_fifo_completion_fails_under_independent_watchdog(self) -> None:
         base, _ = build_repo(self.root, {
             "factory/example.py": "value = 0\n",

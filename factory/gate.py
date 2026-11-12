@@ -287,31 +287,33 @@ def _isolated_environment_paths(environment: Path) -> list[str]:
     """Site paths from `environment` itself, not this interpreter's packaging scheme.
 
     Debian and Ubuntu interpreters report a posix_local/dist-packages layout that does
-    not match a uv virtualenv's `lib/pythonX.Y/site-packages`. Asking the environment's
-    own Python, then falling back to that layout, keeps third-party imports (including
-    `attrs` from the mutation group) visible under `python -I -S`.
+    not match a uv virtualenv's `lib/pythonX.Y/site-packages`. Glob that layout first.
+    A `python -I -S` probe is not used: without site.py the venv is never activated, so
+    sysconfig reports the base interpreter's site-packages when that directory exists.
     """
-    paths: list[str] = []
-    venv_python = environment / "bin" / "python"
-    if venv_python.exists():
-        try:
-            proc = subprocess.run(
-                [str(venv_python), "-I", "-S", "-c",
-                 ("import sysconfig; print(sysconfig.get_path('purelib')); "
-                  "print(sysconfig.get_path('platlib'))")],
-                check=False, capture_output=True, text=True, timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            proc = None
-        if proc is not None and proc.returncode == 0:
-            paths = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-    if not any(Path(path).is_dir() for path in paths):
-        paths = [
-            str(path)
-            for pattern in ("lib/python*/site-packages", "lib64/python*/site-packages")
-            for path in environment.glob(pattern)
-            if path.is_dir()
-        ]
+    paths = [
+        str(path)
+        for pattern in ("lib/python*/site-packages", "lib64/python*/site-packages")
+        for path in environment.glob(pattern)
+        if path.is_dir()
+    ]
+    if not paths:
+        venv_python = environment / "bin" / "python"
+        if venv_python.exists():
+            try:
+                proc = subprocess.run(
+                    [str(venv_python), "-I", "-c",
+                     ("import sysconfig; print(sysconfig.get_path('purelib')); "
+                      "print(sysconfig.get_path('platlib'))")],
+                    check=False, capture_output=True, text=True, timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                proc = None
+            if proc is not None and proc.returncode == 0:
+                paths = [
+                    line.strip() for line in proc.stdout.splitlines()
+                    if line.strip() and Path(line.strip()).is_dir()
+                ]
     paths = list(dict.fromkeys(paths))
     if not paths:
         raise mutation_scope.ScopeError(
