@@ -77,7 +77,7 @@ def repository_host_problem(
     *,
     include_comments: bool = True,
 ) -> str | None:
-    """Read repository labels and, for doctor, historical claim authors."""
+    """Read repository labels and optionally historical claim authors."""
     def read(endpoint: str) -> list[dict]:
         try:
             value = gh_json(["api", "--paginate", "--slurp", endpoint])
