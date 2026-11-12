@@ -181,6 +181,7 @@ class DrainPassTest(unittest.TestCase):
         with mock.patch.dict(os.environ, self.env), \
              mock.patch.object(config, "load", return_value=self.cfg), \
              mock.patch.object(dispatch, "pin_root", return_value=[]), \
+             mock.patch.object(dispatch, "github_preflight", return_value=None), \
              mock.patch.object(dispatch, "land_pass"), \
              mock.patch.object(dispatch, "review_intake_pass"), \
              mock.patch.object(manage, "manage_pass"), \
