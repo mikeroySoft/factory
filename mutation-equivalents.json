@@ -118,20 +118,20 @@
  },
  {
   "file": "factory/dispatch.py",
-  "line": 3264,
+  "line": 3267,
   "operator": "core/ReplaceComparisonOperator_NotEq_IsNot",
   "original": "                if current_base != base_commit and _moved_main_proof(",
   "mutated": "                if current_base is not base_commit and _moved_main_proof(",
-  "argument": "!= and 'is not' disagree only when current_base == base_commit as values but are not the same object. In that case the 'and' still short-circuits to False, because _moved_main_proof(wt, report, head, base_commit, current_base) hits the guard at dispatch.py:3124 (`if not snapshot or not current or snapshot == current: return False`). When the values differ, != and 'is not' agree. So the if-body never runs under one form and not the other.",
+  "argument": "!= and 'is not' disagree only when current_base == base_commit as values but are not the same object. In that case the 'and' still short-circuits to False, because _moved_main_proof(wt, report, head, base_commit, current_base) hits the guard at dispatch.py:3127 (`if not snapshot or not current or snapshot == current: return False`). When the values differ, != and 'is not' agree. So the if-body never runs under one form and not the other.",
   "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
  },
  {
   "file": "factory/dispatch.py",
-  "line": 3278,
+  "line": 3281,
   "operator": "core/ReplaceComparisonOperator_Eq_GtE",
   "original": "                        verdict == \"STALE\" and ok and current_base != base_commit",
   "mutated": "                        verdict >= \"STALE\" and ok and current_base != base_commit",
-  "argument": "At this site verdict comes only from `_mutation_proof(...) or (\"FAIL\", None)` (dispatch.py:3274-3276). _mutation_proof returns one of PASS, FAIL, SKIP, or STALE (a listed status, a stale binding, or FAIL on a malformed report). For that closed set, verdict >= \"STALE\" is true only for \"STALE\": FAIL, PASS and SKIP are all lexicographically less than STALE (F/P before S; SKIP is S+K before S+T). So verdict >= \"STALE\" and verdict == \"STALE\" agree for every reachable value.",
+  "argument": "At this site verdict comes only from `_mutation_proof(...) or (\"FAIL\", None)` (dispatch.py:3277-3279). _mutation_proof returns one of PASS, FAIL, SKIP, or STALE (a listed status, a stale binding, or FAIL on a malformed report). For that closed set, verdict >= \"STALE\" is true only for \"STALE\": FAIL, PASS and SKIP are all lexicographically less than STALE (F/P before S; SKIP is S+K before S+T). So verdict >= \"STALE\" and verdict == \"STALE\" agree for every reachable value.",
   "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
  },
  {
@@ -151,5 +151,14 @@
   "mutated": "    uv = len(cmd) > 1 and Path(cmd[0]).name == \"uv\" and cmd[1] == \"run\"",
   "argument": "Same reachability as the Gt_GtE entry at this line: after the \"scripts/mutation.py\" token check, any command with cmd[1] == \"run\" has len(cmd) >= 3. Therefore len(cmd) > 1 and len(cmd) > 2 agree on every command that can make the uv predicate true; a length-2 command cannot hold both \"run\" and the producer token.",
   "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
+ },
+ {
+  "file": "factory/onboard.py",
+  "line": 561,
+  "operator": "core/ReplaceTrueWithFalse",
+  "original": "        report(True, \"release_host\", cfg.release_host, info=True)",
+  "mutated": "        report(False, \"release_host\", cfg.release_host, info=True)",
+  "argument": "Same form as the accepted onboard.py:559 land_host equivalent (#731, Factory PM r3-1155): the call is report(True, \"release_host\", cfg.release_host, info=True) at onboard.py:561. The nested report() at onboard.py:497-502 computes `tag = \"INFO\" if info else \"PASS\" if status else (\"WARN\" if status is None else \"FAIL\")` (onboard.py:498) and appends {\"status\": tag, \"label\", \"detail\"} (onboard.py:499); `status` is not stored anywhere else. When info is True the first branch is taken and `status` is never read, so report(True, ..., info=True) and report(False, ..., info=True) produce the identical INFO row with the same label and detail; no input (cfg.release_host value, host config) can make the two differ. Doctor text prints only r['status'], r['label'] and r['detail'] (onboard.py:735-738). The exit code and JSON ok flag count only rows whose tag is FAIL (onboard.py:730-733, 739: fails = sum(r[\"status\"] == \"FAIL\" for r in rows); return 1 if fails else 0; JSON ok is not fails). An INFO row is not FAIL, so output, exit code and JSON are unchanged for this row. The mutant leaves info=True in place and only flips the unread status argument.",
+  "reviewer": "Factory PM ruling r3-0205 accepted Nov 12 2026 (equivalent by the info=True branch at onboard.py:498, same as onboard.py:559 in #731)"
  }
 ]

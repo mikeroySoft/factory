@@ -1609,6 +1609,21 @@ calls or journal writes, including dry runs. Unset `land_host` keeps landing
 enabled everywhere. Like `triage_host`, it is host-only and uses the same host
 name syntax and per-repository override.
 
+`release_host` works the same way: set the same `release_host = "tank"` on every
+host and only the matching `host_name` runs the release step; other hosts log
+`release: skipped, release host is <name>` before any git or `gh` call. Unset
+`release_host` keeps releasing enabled everywhere.
+
+`triage_host` also gates every loop whose ownership is a GitHub-wide scan or
+singleton rather than a local claim: triage, review intake, manager viability
+and `learn`. Passes whose ownership comes from this host's own journal run on
+every host that has a manager, whatever `triage_host` says: the PR frontier
+(CI-failed, late-feedback and stale escalation, and the `manager.review = "all"`
+approval) and escalation rounds. Terminal handoffs run on every host, with or
+without a manager, and act only on this host's own `escalate` rows. A PR claimed
+only by the other host has no local `claimed` or `escalate` row, so those passes
+leave it alone.
+
 Independently, the ticket merge stage skips PRs whose elected claim belongs to
 another host, even after that claim expires. It neither refreshes those branches
 nor consumes local approval evidence, removes `factory-approved`, or escalates

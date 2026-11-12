@@ -1096,10 +1096,15 @@ def frontier_pass(dry_run: bool = False) -> None:
 
 
 def manage_pass(dry_run: bool = False) -> None:
-    """Viability, PR frontier and escalation rounds need a manager; terminal handoffs do not."""
+    """Viability (a GitHub-wide label scan) runs on the triage host; frontier and escalation rounds, owned through the local journal, run on every host with a manager; terminal handoffs need no manager."""
     try:
-        if dispatch.cfg.manager:
-            viability_pass(dry_run)
+        cfg = dispatch.cfg
+        shared = cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host
+        if shared:
+            dispatch.log(f"manage: viability skipped, triage host is {cfg.triage_host}")
+        if cfg.manager:
+            if not shared:
+                viability_pass(dry_run)
             frontier_pass(dry_run)
             escalation_pass(dry_run)
     finally:
