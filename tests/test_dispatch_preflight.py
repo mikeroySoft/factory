@@ -99,6 +99,16 @@ class DispatchPreflightTest(unittest.TestCase):
                             row.get("reason") == "host_setup"
                             for row in lifecycle.read_events(module.EVENTS)))
 
+    def test_unnamed_host_refuses_graphql_shaped_claim_on_fresh_ticket(self):
+        # `gh issue view --json comments` returns GraphQL fields, not REST `user`/`author_association`.
+        self.github.issue["comments"] = [{
+            "body": f"Factory claim: host=ultron nonce=old at={datetime.now(UTC).isoformat()}",
+            "author": {"login": "@me"}, "authorAssociation": "COLLABORATOR",
+        }]
+        _, _, output, _, _ = self.run_pass()
+        self.assert_no_claim()
+        self.assertIn("#7: refused (host_name is required", output)
+
     def test_unnamed_host_refuses_unreadable_repository_comment_history(self):
         _, result, output, health, land = self.run_pass(comments_error=True)
         self.assert_no_claim()

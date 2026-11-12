@@ -5501,8 +5501,12 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "initiative"
                 return
+            # `issue view` comments are GraphQL-shaped; host_setup_problem reads REST fields.
             if not cfg.host_name and (problem := host_setup_problem(
-                None, "", fresh.get("labels", []), fresh.get("comments", []),
+                None, "", fresh.get("labels", []), [
+                    {"user": c.get("author"), "author_association": c.get("authorAssociation"), **c}
+                    for c in fresh.get("comments", [])
+                ],
             )):
                 raise HostSetupError(problem)
             claims = []
