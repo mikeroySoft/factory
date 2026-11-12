@@ -136,10 +136,10 @@
             </div>
             <div class="install-line">
               <span class="install-label">CLI</span>
-              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.4.6</code></pre>
+              <pre><code>uv tool install git+https://github.com/mikeroySoft/factory@v0.4.11</code></pre>
             </div>
           </div>
-          <p class="release-note"><a href="#changelog">Latest release: v0.4.6 · October 23, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
+          <p class="release-note"><a href="#changelog">Latest release: v0.4.11 · November 12, 2026</a><br>CLI command pins this release. Use <code>@stable</code> for the released channel or <code>@main</code> for development; the bare URL follows the default <code>main</code> branch.</p>
 
           <div class="hero-actions">
             <a class="button" href="https://github.com/mikeroySoft/factory">
@@ -445,6 +445,22 @@ model = "qwen3:30b"</code></pre>
           <li class="release">
             <div class="release-meta">
               <span class="chip chip-success">Latest release</span>
+              <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.4.11">v0.4.11</a>
+              <time datetime="2026-11-12">November 12, 2026</time>
+            </div>
+            <div>
+              <h3>v0.4.11 release notes.</h3>
+              <ul>
+                <li>Mutation proof scope counts raw Git LF lines, ignoring source-text file headers inside hunks and bypassing binary/textconv attributes. Trusted producer and child harness code exclude head-controlled startup hooks; nonregular completion files fail without hanging. Actual moved-main races retry then defer through dispatch, manager and refresh without spending worker rework budget; invalid proof bindings still fail closed. A proof command that does not name the producer as the exact token `scripts/mutation.py` fails instead of running from the reviewed worktree. The isolated child harness imports the prepared copy ahead of the trusted environment, and a `uv run` proof provisions that environment with a time-bounded `uv sync --no-install-project` from the base lock. The trusted launcher and the child test harness both add the provisioned environment&#x27;s own site-packages, discovered by globbing that environment first, rather than this interpreter&#x27;s packaging scheme, so Debian/Ubuntu `dist-packages` layouts and a `python -I -S` venv probe cannot hide the mutation group&#x27;s `attrs` or other third-party imports. A trusted `uv sync` keeps its temporary lock files inside that environment, so they are not left in an inherited TMPDIR. A mutation-proof wait is a factory release, so it does not open an owner generation, and a proof bound to an intermediate main still retries or defers (#725).</li>
+                <li>`factory claims --supported` prints exactly `host-claims 1` with exit 0, including offline outside a repository, so District can probe multi-host support without version sniffing. Bare or other arguments exit 2 (#722).</li>
+                <li>`factory doctor` reports systemd timer and configured triage liveness probes as informational `n/a (launchd)` rows when `systemctl` is missing or cannot execute, instead of losing the report to an `OSError`. Existing systemd probe output is unchanged (#754).</li>
+                <li>Host-only `land_host` selects the host allowed to run upstream sync, merge and behind-main refresh; other hosts skip landing before git/gh calls or journal writes. Ticket merges also skip foreign elected claims before CI or approval mutations, preventing cross-host `approval_missing` and refresh collisions. Unconfigured single-host behavior is unchanged (#731).</li>
+              </ul>
+            </div>
+          </li>
+          <li class="release">
+            <div class="release-meta">
+              <span class="chip">Release</span>
               <a href="https://github.com/mikeroySoft/factory/releases/tag/v0.4.6">v0.4.6</a>
               <time datetime="2026-10-23">October 23, 2026</time>
             </div>
