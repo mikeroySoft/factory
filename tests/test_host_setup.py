@@ -22,7 +22,7 @@ CLAIM = "Factory claim: host=tank nonce=n-1 at=2026-11-12T08:00:00+00:00"
 
 def comment(login: str | None, body: str = CLAIM) -> dict:
     user = {} if login is None else {"login": login}
-    return {"body": body, "user": user}
+    return {"body": body, "user": user, "author_association": "COLLABORATOR"}
 
 
 class HostSetupProblemTest(unittest.TestCase):
@@ -55,6 +55,13 @@ class HostSetupProblemTest(unittest.TestCase):
             comment("someone", "prefix Factory claim: host=tank nonce=n-1 at=2026-11-12T08:00:00+00:00"),
         ]
         self.assertIsNone(claims.host_setup_problem(None, "", [{"name": "bug"}], ordinary))
+
+    def test_outsider_claim_cannot_refuse_named_or_single_host_dispatch(self) -> None:
+        for host in (None, "tank"):
+            for association in ("NONE", "CONTRIBUTOR", "FIRST_TIMER", None):
+                with self.subTest(host=host, association=association):
+                    forged = {**comment("outsider"), "author_association": association}
+                    self.assertIsNone(claims.host_setup_problem(host, "factory-bot", [], [forged]))
 
 
 class RepositoryHostProblemTest(unittest.TestCase):
