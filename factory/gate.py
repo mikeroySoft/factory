@@ -240,21 +240,9 @@ def _read_proof_file(path: Path) -> bytes | None:
         os.close(fd)
 
 
-def _names_untrusted_mutation_producer(cmd: list[str]) -> bool:
-    """True when `cmd` names a mutation producer without the exact token `scripts/mutation.py`.
-
-    Placeholder commands used by record-reading tests (for example `["mutation"]`) do not
-    name a producer and are left unchanged. `./scripts/mutation.py`, an absolute path, or
-    `-m scripts.mutation` would otherwise run the reviewed worktree's producer.
-    """
-    if "-m" in cmd:
-        index = cmd.index("-m")
-        if index + 1 < len(cmd) and cmd[index + 1].startswith("scripts.mutation"):
-            return True
-    return any(
-        argument.endswith("mutation.py") or "scripts/mutation.py" in argument
-        for argument in cmd
-    )
+# Record-reading tests pass this stub; it does not name a producer. Every other
+# command that lacks the exact token `scripts/mutation.py` fails closed.
+_PLACEHOLDER_MUTATION_COMMANDS = (["mutation"],)
 
 
 def _provision_trusted_uv_environment(
@@ -303,12 +291,12 @@ def _trusted_mutation_command(
     Python starts without site processing; the launcher explicitly adds only the isolated
     environment provisioned from the base commit's frozen dependency configuration."""
     if "scripts/mutation.py" not in cmd:
-        if _names_untrusted_mutation_producer(cmd):
-            raise mutation_scope.ScopeError(
-                "mutation proof command must name the producer as the exact token "
-                "`scripts/mutation.py`"
-            )
-        return cmd
+        if cmd in _PLACEHOLDER_MUTATION_COMMANDS:
+            return cmd
+        raise mutation_scope.ScopeError(
+            "mutation proof command must name the producer as the exact token "
+            "`scripts/mutation.py`"
+        )
     for name in ("scripts/mutation.py", "factory/__init__.py", "factory/mutation_scope.py"):
         target = directory / name
         target.parent.mkdir(parents=True, exist_ok=True)

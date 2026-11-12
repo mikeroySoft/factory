@@ -103,8 +103,12 @@ class GateIntegrityTest(unittest.TestCase):
         for cmd in (
             [sys.executable, "./scripts/mutation.py", "--blocking"],
             [sys.executable, "-m", "scripts.mutation", "--blocking"],
+            [sys.executable, "-mscripts.mutation", "--blocking"],
+            [sys.executable, "-Bm", "scripts.mutation", "--blocking"],
+            [sys.executable, "-c", 'import runpy; runpy.run_module("scripts.mutation")'],
             [sys.executable, absolute, "--blocking"],
             ["uv", "run", "python", "./scripts/mutation.py"],
+            ["make", "mutation"],
         ):
             with self.subTest(cmd=cmd), tempfile.TemporaryDirectory() as directory:
                 with self.assertRaises(mutation_scope.ScopeError):
