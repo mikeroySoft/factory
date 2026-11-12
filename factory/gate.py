@@ -282,6 +282,43 @@ def _provision_trusted_uv_environment(
         )
 
 
+def _isolated_environment_paths(environment: Path) -> list[str]:
+    """Site paths from `environment` itself, not this interpreter's packaging scheme.
+
+    Debian and Ubuntu interpreters report a posix_local/dist-packages layout that does
+    not match a uv virtualenv's `lib/pythonX.Y/site-packages`. Asking the environment's
+    own Python, then falling back to that layout, keeps third-party imports (including
+    `attrs` from the mutation group) visible under `python -I -S`.
+    """
+    paths: list[str] = []
+    venv_python = environment / "bin" / "python"
+    if venv_python.exists():
+        try:
+            proc = subprocess.run(
+                [str(venv_python), "-I", "-S", "-c",
+                 ("import sysconfig; print(sysconfig.get_path('purelib')); "
+                  "print(sysconfig.get_path('platlib'))")],
+                check=False, capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            paths = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if not any(Path(path).is_dir() for path in paths):
+        paths = [
+            str(path)
+            for pattern in ("lib/python*/site-packages", "lib64/python*/site-packages")
+            for path in environment.glob(pattern)
+            if path.is_dir()
+        ]
+    paths = list(dict.fromkeys(paths))
+    if not paths:
+        raise mutation_scope.ScopeError(
+            "trusted mutation environment has no site-packages"
+        )
+    return paths
+
+
 def _trusted_mutation_command(
     cmd: list[str], base: str, directory: Path,
 ) -> list[str]:
@@ -314,13 +351,11 @@ def _trusted_mutation_command(
         environment = Path(sys.executable).parent.parent
     else:
         raise mutation_scope.ScopeError("unsupported trusted mutation command")
+    paths = _isolated_environment_paths(environment)
     launcher = directory / "launch.py"
     launcher.write_text(
-        "import runpy, sys, sysconfig\n"
-        f"environment = {str(environment)!r}\n"
-        "paths = [sysconfig.get_path(name, vars={'base': environment, 'platbase': environment}) "
-        "for name in ('purelib', 'platlib')]\n"
-        f"sys.path[:0] = [{str(directory)!r}, *dict.fromkeys(paths)]\n"
+        "import runpy, sys\n"
+        f"sys.path[:0] = [{str(directory)!r}, *{paths!r}]\n"
         f"runpy.run_path({str(directory / 'scripts/mutation.py')!r}, run_name='__main__')\n"
     )
     return [sys.executable, "-I", "-S", str(launcher), *cmd[index + 1:]]

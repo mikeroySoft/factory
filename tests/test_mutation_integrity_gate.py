@@ -121,6 +121,15 @@ class GateIntegrityTest(unittest.TestCase):
             )
             self.assertEqual(list(Path(directory).iterdir()), [])
 
+    def test_isolated_environment_paths_ignore_interpreter_packaging_scheme(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment = Path(directory) / "environment"
+            site = environment / "lib" / "python3.12" / "site-packages"
+            site.mkdir(parents=True)
+            self.assertEqual(gate._isolated_environment_paths(environment), [str(site)])
+            with self.assertRaises(mutation_scope.ScopeError):
+                gate._isolated_environment_paths(Path(directory) / "empty")
+
     def test_fifo_completion_fails_under_independent_watchdog(self) -> None:
         base, _ = build_repo(self.root, {
             "factory/example.py": "value = 0\n",
