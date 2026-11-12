@@ -176,6 +176,51 @@ class DispatchPreflightTest(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("rate", output.lower())
 
+    def rate_skip_details(self, host, **kwargs):
+        module, result, _, health, _ = self.run_pass(host=host, **kwargs)
+        self.assert_no_claim()
+        self.assertEqual(result, 0)
+        health.assert_not_called()
+        return [row["detail"] for row in lifecycle.read_events(module.EVENTS)
+                if row.get("event") == "pass-skipped" and row.get("reason") == "github_rate_limit"]
+
+    def test_zero_budget_is_below_floor_not_invalid(self):
+        for resource, name in (("graphql", "graphql"), ("rest", "core")):
+            with self.subTest(resource=resource):
+                self.assertEqual(self.rate_skip_details(f"zero-{resource}", **{resource: 0}),
+                                 [f"{name} has 0 remaining (floor 100), reset 1800000000"])
+
+    def test_negative_or_non_integer_budget_is_invalid(self):
+        for index, remaining in enumerate((-1, True, "5000")):
+            with self.subTest(remaining=remaining):
+                self.assertEqual(self.rate_skip_details(f"invalid-{index}", graphql=remaining),
+                                 ["cannot read GitHub rate limits (invalid graphql remaining budget)"])
+
+    def test_first_low_budget_is_reported_and_stops_the_check(self):
+        graphql_low = "graphql has 5 remaining (floor 100), reset 1"
+        for graphql, core, expected in (
+            (5, {"remaining": 5000, "reset": 2}, graphql_low),
+            (5000, {"remaining": 7, "reset": 2}, "core has 7 remaining (floor 100), reset 2"),
+            (5, {"remaining": 7, "reset": 2}, graphql_low),
+            (5, {"remaining": -1}, graphql_low),
+        ):
+            with self.subTest(graphql=graphql, core=core):
+                rates = {"resources": {"graphql": {"remaining": graphql, "reset": 1}, "core": core}}
+                host = f"first-low-{graphql}-{core['remaining']}"
+                self.assertEqual(self.rate_skip_details(host, rates=rates), [expected])
+
+    def test_shared_login_check_is_keyword_only_and_refuses_foreign_author(self):
+        module = self.dispatcher("ultron")
+        now = datetime.now(UTC).isoformat()
+        self.github.comments = [{
+            "id": 1, "created_at": now, "body": f"Factory claim: host=tank nonce=old at={now}",
+            "user": {"login": "different-account"}, "author_association": "COLLABORATOR",
+        }]
+        with self.assertRaises(TypeError):
+            module.host_claim_state(7, True)
+        with self.assertRaisesRegex(module.HostSetupError, "different-account"):
+            module.host_claim_state(n=7, require_shared_login=True)
+
     def test_ordinary_single_host_still_dispatches(self):
         _, result, _, _, _ = self.run_pass()
         self.assertEqual(result, 0)

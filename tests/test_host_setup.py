@@ -7,7 +7,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import typing
 import unittest
+from collections.abc import Callable
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -63,6 +65,32 @@ class HostSetupProblemTest(unittest.TestCase):
                     forged = {**comment("outsider"), "author_association": association}
                     self.assertIsNone(claims.host_setup_problem(host, "factory-bot", [], [forged]))
 
+    def test_claim_without_text_body_or_timezone_is_not_a_claim(self) -> None:
+        not_claims = [
+            {**comment("factory-bot"), "body": None},
+            {"user": {"login": "factory-bot"}, "author_association": "OWNER"},
+            comment("factory-bot", "Factory claim: host=tank nonce=n-1 at=2026-11-12T08:00:00"),
+        ]
+        for candidate in not_claims:
+            with self.subTest(candidate=candidate):
+                self.assertIsNone(claims.host_setup_problem(None, "factory-bot", [], [candidate]))
+
+    def test_outsider_association_claim_counts_when_login_matches_case_insensitively(self) -> None:
+        own = {**comment("FACTORY-BOT"), "author_association": "NONE"}
+        problem = claims.host_setup_problem(None, "factory-bot", [], [own])
+        self.assertIsNotNone(problem)
+        self.assertIn("host_name", problem)
+
+    def test_outsider_claim_without_user_cannot_refuse_dispatch(self) -> None:
+        anonymous = {"body": CLAIM, "user": None, "author_association": "NONE"}
+        self.assertIsNone(claims.host_setup_problem(None, "factory-bot", [], [anonymous]))
+
+    def test_outsider_login_sorting_before_dispatcher_cannot_refuse(self) -> None:
+        for login in ("aardvark", "factory-bo"):
+            with self.subTest(login=login):
+                forged = {**comment(login), "author_association": "NONE"}
+                self.assertIsNone(claims.host_setup_problem("tank", "factory-bot", [], [forged]))
+
 
 class RepositoryHostProblemTest(unittest.TestCase):
     def test_reads_all_label_and_closed_issue_comment_pages(self) -> None:
@@ -106,6 +134,36 @@ class RepositoryHostProblemTest(unittest.TestCase):
         for github in (unreadable, malformed):
             with self.subTest(github=github.__name__), self.assertRaises(claims.HostSetupError):
                 claims.repository_host_problem("acme/widgets", None, github)
+
+    def test_pages_that_are_not_lists_of_objects_fail_closed(self) -> None:
+        for labels in ([[{"name": "bug"}, "host:tank"]], [{}]):
+            def github(argv: list[str], labels: object = labels) -> object:
+                return labels if "labels" in argv[-1] else [[]]
+
+            with self.subTest(labels=labels), \
+                    self.assertRaisesRegex(claims.HostSetupError, "expected paginated JSON objects"):
+                claims.repository_host_problem("acme/widgets", "tank", github)
+
+    def test_unreadable_dispatcher_login_fails_closed(self) -> None:
+        def github(argv: list[str]) -> object:
+            if argv == ["api", "user"]:
+                raise RuntimeError("token expired")
+            return [[]] if "labels" in argv[-1] else [[comment("factory-bot")]]
+
+        with self.assertRaisesRegex(claims.HostSetupError, "dispatcher GitHub login: token expired"):
+            claims.repository_host_problem("acme/widgets", "tank", github)
+
+
+class ClaimsAnnotationTest(unittest.TestCase):
+    def test_host_check_annotations_resolve_exactly(self) -> None:
+        self.assertEqual(typing.get_type_hints(claims.host_setup_problem), {
+            "host_name": str | None, "login": str, "labels": list[dict],
+            "comments": list[dict], "return": str | None,
+        })
+        self.assertEqual(typing.get_type_hints(claims.repository_host_problem), {
+            "repo": str, "host_name": str | None, "gh_json": Callable[[list[str]], object],
+            "include_comments": bool, "return": str | None,
+        })
 
 
 class DoctorHostClaimsTest(unittest.TestCase):
