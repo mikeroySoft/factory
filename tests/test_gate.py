@@ -818,6 +818,51 @@ FAILED tests/test_math.py::test_load - subprocess.CalledProcessError: Command fa
                 self.assertEqual(result["failure_summary"]["location"], "tests/test_math.py:12")
                 self.assertEqual(result["failure_summary"]["message"], message)
 
+    def test_unittest_assertion_ignores_embedded_subprocess_exception_chain(self) -> None:
+        for separator in (
+            "The above exception was the direct cause of the following exception:",
+            "During handling of the above exception, another exception occurred:",
+        ):
+            with self.subTest(separator=separator):
+                output = f"""FAIL: test_run (tests.test_math.MathTest.test_run)
+Traceback (most recent call last):
+  File "tests/test_math.py", line 7, in test_run
+    raise ValueError("outer root")
+ValueError: outer root
+
+{separator}
+
+Traceback (most recent call last):
+  File "tests/test_math.py", line 12, in test_run
+    self.assertEqual(proc.returncode, 0, proc.stderr)
+AssertionError: 1 != 0 : Traceback (most recent call last):
+  File "factory/cli.py", line 90, in main
+    raise KeyError("subprocess root")
+KeyError: 'subprocess root'
+
+{separator}
+
+Traceback (most recent call last):
+  File "factory/cli.py", line 99, in main
+    raise RuntimeError("subprocess terminal")
+RuntimeError: subprocess terminal
+"""
+
+                _, report, result = self._failed_output(output)
+
+                summary = report.split("```", 1)[0]
+                message = "AssertionError: 1 != 0 : Traceback (most recent call last):"
+                self.assertIn(f"`tests/test_math.py:12`: {message}", summary)
+                self.assertNotIn("factory/cli.py", summary)
+                self.assertNotIn("outer root", summary)
+                self.assertNotIn("subprocess terminal", summary)
+                self.assertEqual(result["failure_summary"], {
+                    "test": "tests.test_math.MathTest.test_run",
+                    "location": "tests/test_math.py:12",
+                    "message": message,
+                    "expected_actual": [],
+                })
+
 
 class GateTempdirTest(unittest.TestCase):
     def test_configured_check_tmpdir_is_removed_after_exit_and_timeout(self) -> None:
