@@ -64,6 +64,8 @@ _SECRET = re.compile(
 )
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 _FILE_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+_LOCK_FLAGS = os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+_LOCK_OPEN_ATTEMPTS = 3
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -892,12 +894,21 @@ def _load_proposal(directory: int, proposal_id: str) -> dict:
 
 def _lock_file(directory: int, name: str) -> int:
     try:
-        fd = os.open(
-            name,
-            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-            dir_fd=directory,
-        )
+        for _ in range(_LOCK_OPEN_ATTEMPTS):
+            try:
+                # Not plain O_CREAT: on Darwin the loser of two concurrent O_CREAT opens
+                # of one new name was observed to get ENOENT; with O_EXCL it gets EEXIST.
+                fd = os.open(name, _LOCK_FLAGS | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+                break
+            except FileExistsError:
+                pass
+            try:
+                fd = os.open(name, _LOCK_FLAGS, dir_fd=directory)
+                break
+            except FileNotFoundError as exc:
+                vanished = exc  # Removed after EEXIST: create it again, a bounded number of times.
+        else:
+            raise vanished
     except OSError as exc:
         raise DecisionError("decision lock is unavailable", "storage_unavailable") from exc
     info = os.fstat(fd)

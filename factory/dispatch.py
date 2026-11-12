@@ -76,6 +76,8 @@ UNAVAILABLE_WORKERS: dict[str, str] = {}
 VERIFIED_WORKERS: set[str] = set()
 # Tickets this pass escalated: no owner can have released them yet (see `observe_owner_requeue`).
 _ESCALATED: set[int] = set()
+PR_GATE_WAIT = "WAIT"
+
 
 
 def configure(c: Config) -> None:
@@ -852,11 +854,47 @@ def frontier() -> list[dict]:
     return issues
 
 
+def _pr_author_login(pr: dict) -> str:
+    author = pr.get("author")
+    if isinstance(author, dict):
+        return str(author.get("login") or "")
+    return author if isinstance(author, str) else ""
+
+
+def _reviewer_login() -> str:
+    try:
+        user = gh_json(["api", "user"])
+    except (OSError, subprocess.CalledProcessError, TypeError, ValueError):
+        return ""
+    login = user.get("login") if isinstance(user, dict) else ""
+    return login if isinstance(login, str) else ""
+
+
+def _same_github_login(left: str, right: str) -> bool:
+    return bool(left) and bool(right) and left.casefold() == right.casefold()
+
+
+def latest_head_review_verdict(events: list[dict], n: int, pr: int, head: str) -> str | None:
+    """The latest journaled review verdict bound to this ticket, PR, and head."""
+    verdict = None
+    for event in events:
+        ev = event.get("event")
+        if (
+            ev == "review-result" and event.get("pr") == pr and event.get("head") == head
+            or ev == "review" and event.get("ticket") == n and event.get("head") == head
+        ):
+            verdict = event.get("verdict")
+    return verdict if isinstance(verdict, str) and verdict else None
+
+
 def review_intake_pass(dry_run: bool) -> None:
     """Review opted-in PR revisions, and `factory learn` PRs, without running the issue/merge pipeline."""
+    if cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host:
+        log(f"review-intake: skipped, triage host is {cfg.triage_host}")
+        return
     prs = gh_json([
         "pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
-        "--json", "number,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefOid,labels,reviewRequests",
+        "--json", "number,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefOid,labels,reviewRequests,author",
     ])
     login = None
     for pr in prs:
@@ -921,13 +959,24 @@ def review_intake_pass(dry_run: bool) -> None:
                            ticket=int(url.rstrip("/").rsplit("/", 1)[-1]),
                            code="review_intake", reason=reason, packet=str(packet), round=1)
                 continue
-            if any(e.get("event") == "review-intake" and e.get("head") == head
+            if any(e.get("event") == "review-result" and e.get("head") == head
                    for e in history):
                 continue
-            log(f"PR #{n}: {'would record' if dry_run else 'recording'} review intake at {head}")
+            already_admitted = any(
+                e.get("event") == "review-intake" and e.get("head") == head
+                for e in history
+            )
+            if already_admitted:
+                log(f"PR #{n}: {'would retry' if dry_run else 'retrying'} review at {head} after intake without a result")
+            else:
+                log(f"PR #{n}: {'would record' if dry_run else 'recording'} review intake at {head}")
             if not dry_run:
-                record("review-intake", pr=n, head=head)
-                review_external_pr(n, pr["baseRefOid"], head, pr.get("headRefName") or "")
+                if not already_admitted:
+                    record("review-intake", pr=n, head=head)
+                review_external_pr(
+                    n, pr["baseRefOid"], head, pr.get("headRefName") or "",
+                    author=_pr_author_login(pr),
+                )
                 review_readiness(n, head, lifecycle.read_events(EVENTS))
 
 
@@ -976,10 +1025,13 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
            review_head=review.get("head"), checks=rows if valid else [])
 
 
-def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
-    """Publish findings against the immutable revision admitted by intake. `factory learn` PRs are
-    the dispatcher's own, and GitHub rejects self-approval: their findings post as a COMMENT review
-    while the journal keeps the verdict `promote_pass` reads."""
+def review_external_pr(n: int, base: str, head: str, branch: str = "", author: str = "") -> None:
+    """Publish findings against the immutable revision admitted by intake.
+
+    GitHub rejects APPROVE/REQUEST_CHANGES from the PR author (HTTP 422). Lessons
+    PRs and any other PR whose author is the reviewing account therefore post as a
+    COMMENT review, while the journal keeps the verdict that merge and `promote_pass` read.
+    """
     with lifecycle.scope(EVENTS, "review") as execution:
         clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         policy, nit_cap = _review_policy(ROOT, base)
@@ -1047,16 +1099,31 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "") -> None:
             execution.outcome = "unknown"
             execution.reason = parser_reason
             findings += f"\n\nFactory rejected reviewer evidence: {parser_reason}."
-        run([
+        post_event = event
+        if LESSONS_BRANCH.match(branch) or (
+            author and _same_github_login(author, _reviewer_login())
+        ):
+            post_event = "COMMENT"
+        posted = run([
             "gh", "api", "--method", "POST", f"repos/{REPO}/pulls/{n}/reviews",
-            "-f", f"commit_id={head}", "-f", f"event={'COMMENT' if LESSONS_BRANCH.match(branch) else event}",
+            "-f", f"commit_id={head}", "-f", f"event={post_event}",
             "-f", f"body={findings}",
-        ])
+        ], check=False)
+        if posted.returncode:
+            execution.outcome = "unknown"
+            execution.reason = f"review_post:{posted.returncode}"
+            log(
+                f"PR #{n}: review post failed (exit {posted.returncode}) at {head}; "
+                "journaling the verdict"
+            )
+            tail = stderr_tail(posted.stderr)
+            if tail:
+                log(f"command failed (exit {posted.returncode}); stderr tail:\n{tail}")
         record(
             "review-result", pr=n, head=head, branch=branch, verdict=event, findings=findings,
             counts=counts, reason=parser_reason,
         )
-        if not parser_reason:
+        if not parser_reason and not posted.returncode:
             execution.outcome = "approved" if event == "APPROVE" else "product_feedback"
             execution.reason = "APPROVE" if event == "APPROVE" else "REVISE"
 
@@ -2163,6 +2230,7 @@ def run_gate(
     tier: str = "attempt", upstream: list[str] = (), bug: bool = False,
     repro_test: str | None = None, no_repro_test: str | None = None,
     base: str | None = None, timeout: float | None = None, blocking_mutation: bool = False,
+    mutation_proof: bool = False, mutation_duration: float | None = None,
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -2205,6 +2273,10 @@ def run_gate(
         cmd += ["--tier", tier]
     if blocking_mutation:
         cmd.append("--blocking-mutation")
+    if mutation_proof:
+        cmd.append("--mutation-proof")
+    if mutation_duration is not None:  # as given: the gate's parser is the one validation point
+        cmd.append(f"--mutation-duration={mutation_duration}")
     proc = run(cmd, cwd=wt, check=False, timeout=timeout)
     if report.exists():
         text = report.read_text()
@@ -2353,8 +2425,28 @@ def escalate(
 ) -> None:
     assert code in ESCALATION_CODES, code
     assert (refreshed_head is None) == (evidence_ref is None)
-    log(f"#{n}: escalating to human ({code}: {reason})")
     wt = FACTORY / f"wt-{n}"
+    if code == "gate_failed" and log_path is not None:
+        # A budget cut skips the gate; do not turn a passing ticket into a code failure.
+        rows = generation.current(lifecycle.read_events(EVENTS), n).rows
+        attempt = next((row for row in reversed(rows) if row.get("event") == "attempt"), {})
+        last_gate = next((
+            row for row in reversed(rows)
+            if row.get("gate") in {"PASS", "FAIL"}
+            or (row.get("event") == "decision" and row.get("stage") == "gate")
+        ), {})
+        if (
+            attempt.get("log") == str(log_path) and attempt.get("gate") is None
+            and (attempt.get("timeout") in {"budget_min", "budget_exceeded"}
+                 or attempt.get("reason") == "budget_exceeded")
+            and (last_gate.get("gate") == "PASS" or last_gate.get("chosen") == "pass")
+        ):
+            code = "budget"
+            reason = (
+                f"worker killed by {attempt.get('timeout') or 'budget_exceeded'} "
+                f"(budget_exceeded) before gate; last gate passed; worktree kept at {wt}"
+            )
+    log(f"#{n}: escalating to human ({code}: {reason})")
     if refreshed_head is not None:
         extra = (
             (f"{extra.rstrip()}\n\n" if extra.strip() else "")
@@ -2974,6 +3066,77 @@ def _mutation_status(report: str) -> str:
     return match.group(1) if match else "MISSING"
 
 
+def _mutation_proof_opted() -> bool:
+    """The repository's own `.factory.toml` declared a `proof = "mutation-v1"` pr check."""
+    checks = getattr(globals().get("cfg"), "checks", None) or []
+    return any(c.when == "pr" and c.proof == config.MUTATION_PROOF for c in checks)
+
+
+_PROOF_LINE = re.compile(
+    r"(?m)^Mutation proof: ([\w-]+) (PASS|SKIP|FAIL)"
+    r"(?: base=([0-9a-f]{40}|[0-9a-f]{64}) head=([0-9a-f]{40}|[0-9a-f]{64}) scope=([0-9a-f]{64}))?$"
+)
+
+
+def _mutation_proof(report: str, head: str, base: str | None) -> tuple[str, str | None] | None:
+    """`(PASS | SKIP | FAIL | STALE, scope)` from the gate-written proof header; None when
+    the report has none. The gate validated the record's scope against the shared rule;
+    this only binds that verdict to the head being decided and the caller base commit.
+
+    Exactly one `Mutation proof:` line above the host toolchain, agreeing with that check's
+    `- <name>:` status line, is required; anything else is FAIL. A PASS or SKIP without a
+    binding, or whose base or head is not this one, is STALE (rerun, never accepted)."""
+    proofs = _PROOF_LINE.findall(report.split("\n## Host toolchain", 1)[0])
+    if not proofs:
+        return None
+    if len(proofs) != 1:
+        return "FAIL", None
+    name, status, proof_base, proof_head, scope = proofs[0]
+    listed = re.search(rf"(?m)^- {re.escape(name)}: (PASS|FAIL|SKIP)", report.split("```", 1)[0])
+    if not listed or listed.group(1) != status:
+        return "FAIL", None
+    if status != "FAIL" and (not scope or proof_head != head or base is None or proof_base != base):
+        return "STALE", None  # unbound (pre-scope) or bound elsewhere: never this run's proof
+    return status, scope or None
+
+
+def _resolved_commit(wt: Path, ref: str) -> str | None:
+    """The commit `ref` names in `wt` now (the gate resolves the same label the same way)."""
+    oid = run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+              cwd=wt, check=False).stdout.strip()
+    return oid or None
+
+
+def _is_ancestor(wt: Path, ancestor: str, descendant: str) -> bool:
+    return run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=wt, check=False,
+    ).returncode == 0
+
+
+def _moved_main_proof(
+    wt: Path, report: str, head: str, snapshot: str | None, current: str | None,
+) -> bool:
+    """True when a PASS/SKIP proof is bound to this head and a base on the
+    snapshot→current main ancestry, including an intermediate base.
+
+    Main moved after the dispatcher snapshot and/or after the producer bound
+    its base. A head mismatch, a FAIL proof, or a base off that ancestry is not
+    a move and stays stale.
+    """
+    if not snapshot or not current or snapshot == current:
+        return False
+    proofs = _PROOF_LINE.findall(report.split("\n## Host toolchain", 1)[0])
+    if len(proofs) != 1:
+        return False
+    _name, status, proof_base, proof_head, scope = proofs[0]
+    if status not in {"PASS", "SKIP"} or not scope or proof_head != head or not proof_base:
+        return False
+    if proof_base == current:
+        return True
+    return _is_ancestor(wt, snapshot, proof_base) and _is_ancestor(wt, proof_base, current)
+
+
 def _worker_model_for_head(n: int, head: str) -> str | None:
     events = lifecycle.read_events(EVENTS)
     exact = next((
@@ -3029,17 +3192,33 @@ def risk_disagreement_transition(
 
 def pr_gate_and_review(
     wt: Path, n: int, report: str, head: str, pr_runs: dict[str, tuple[bool, str]],
+    mutation_duration: float | None = None,
     *, fixups: bool = True,
 ) -> tuple[str | None, str, bool]:
-    """Apply the per-head Low, Medium, or High gate and review policy."""
+    """Apply the per-head Low, Medium, or High gate and review policy.
+
+    `mutation_duration` (manual API; no production caller passes it) is an explicit total
+    for the opted High proof check only, forwarded as `gate --mutation-duration`; elsewhere
+    it is ignored. On the opted path it always starts a new gate run, never a cached one."""
     _PENDING_RISK.pop(n, None)
     tier, rules = risk_for_head(n, head)
     policy_tier = "Medium" if tier == "Low" and n in _LOW_FALLBACK else tier
     ok, pr_report = True, ""
+    proof = policy_tier == "High" and _mutation_proof_opted()
+    caller_base = f"origin/{cfg.main}"  # what run_gate passes as --base
+    base_commit = _resolved_commit(wt, caller_base) if proof else None
+    duration = mutation_duration if proof else None
+    proof_fields = {"mutation_proof": config.MUTATION_PROOF} if proof else {}
+    proof_status = "FAIL"  # until a gate proof header bound to this head and base says otherwise
     if policy_tier != "Low" and any(check.when == "pr" for check in cfg.checks):
-        if head not in pr_runs:
+        # A cached run without a proof header (Medium, or pre-opt-in), or one bound to
+        # another base or head, never stands in for one; nor for an explicit duration.
+        if head not in pr_runs or duration is not None or (
+            proof and (_mutation_proof(pr_runs[head][1], head, base_commit) or ("STALE",))[0] == "STALE"
+        ):
             pr_runs[head] = run_gate(
                 wt, f"{n}-pr", tier="pr", blocking_mutation=policy_tier == "High",
+                base=caller_base, mutation_proof=proof, mutation_duration=duration,
             )
             ok, pr_report = pr_runs[head]
             if not ok and fixups and cfg.fixups:
@@ -3081,6 +3260,37 @@ def pr_gate_and_review(
                         wt, n, attempt_report, candidate, pr_runs, fixups=False,
                     )
         ok, pr_report = pr_runs[head]
+        if proof:
+            verdict, proof_scope = _mutation_proof(pr_report, head, base_commit) or ("FAIL", None)
+            if verdict == "STALE":
+                current_base = _resolved_commit(wt, caller_base)
+                if current_base != base_commit and _moved_main_proof(
+                    wt, pr_report, head, base_commit, current_base,
+                ):
+                    base_commit = current_base
+                    pr_runs[head] = run_gate(
+                        wt, f"{n}-pr", tier="pr", blocking_mutation=True,
+                        base=caller_base, mutation_proof=True, mutation_duration=duration,
+                    )
+                    ok, pr_report = pr_runs[head]
+                    verdict, proof_scope = (
+                        _mutation_proof(pr_report, head, base_commit) or ("FAIL", None)
+                    )
+                    current_base = _resolved_commit(wt, caller_base)
+                    if (
+                        verdict == "STALE" and ok and current_base != base_commit
+                        and _moved_main_proof(
+                            wt, pr_report, head, base_commit, current_base,
+                        )
+                    ):
+                        pr_runs.pop(head, None)
+                        return PR_GATE_WAIT, pr_report, False
+                if verdict == "STALE":
+                    verdict, proof_scope = "FAIL", None
+            proof_status = verdict
+            ok = ok and proof_status != "FAIL"
+            if proof_scope:
+                proof_fields.update(mutation_base=base_commit, mutation_scope=proof_scope)
         report = f"{report}\n{pr_report}"
         if not ok:
             statuses = dict(re.findall(
@@ -3099,7 +3309,8 @@ def pr_gate_and_review(
                 if policy_tier == "High":
                     record(
                         "risk-check", ticket=n, head=head,
-                        mutation=_mutation_status(pr_report), pr_gate="FAIL",
+                        mutation=proof_status if proof else _mutation_status(pr_report),
+                        pr_gate="FAIL", **proof_fields,
                     )
                 return "REVISE", pr_report, True
     primary, primary_findings = review(wt, n, report, head)
@@ -3140,11 +3351,15 @@ def pr_gate_and_review(
         for path in line.split("\t")[1:]
     )
     mutation = _mutation_status(pr_report)
-    if mutation == "MISSING" and not changed_factory_code:
+    if proof:
+        # The gate's validated, head- and base-bound verdict; no filename heuristic here.
+        mutation = proof_status
+    elif mutation == "MISSING" and not changed_factory_code:
         mutation = "SKIP"
     record(
         "risk-check", ticket=n, head=head, mutation=mutation,
         primary=primary, second=second, models=list(models), pr_gate="PASS" if ok else "FAIL",
+        **proof_fields,
     )
     packet = risk_disagreement_packet(
         head, rules, primary, primary_findings, second, second_findings,
@@ -3440,15 +3655,46 @@ def gate_flags(
 
 
 def sync_staged(n: int, wt: Path) -> tuple[str, str] | None:
-    """(gate report, head) when the dispatcher's own staged candidate passed the gate and
-    is still this worktree's exact head: nothing for a worker to fix."""
+    """Return a passed report for an unchanged dispatcher or proof-deferred head."""
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-    staged = next((e for e in reversed(lifecycle.read_events(EVENTS))
-                   if e.get("event") == "attempt" and e.get("ticket") == n and e.get("attempt") == 0), None)
+    rows = generation.current(lifecycle.read_events(EVENTS), n).rows
+    deferred = None
+    for row in reversed(rows):
+        kind = row.get("event")
+        if kind == "mutation-proof-wait" and row.get("head") == head:
+            deferred = row
+            break
+        if kind in {"escalate", "manage", "review-result", "review-rework"}:
+            break
+    if deferred:
+        # Reuse any passing gate already taken at this head: a dispatcher-staged
+        # attempt=0 row has no `finished` field, and a worker attempt may have
+        # reached review without a done handoff. Both would have gone to review
+        # without the deferral.
+        staged = next((
+            row for row in reversed(rows)
+            if row.get("head") == head and row.get("gate") == "PASS"
+            and row.get("event") in {"attempt", "gate-fixup", "refreshed"}
+        ), None)
+    else:
+        staged = next((
+            row for row in reversed(rows)
+            if row.get("event") == "attempt" and row.get("attempt") == 0
+        ), None)
     report = wt / ".factory" / f"gate-report-{n}.md"
     if not staged or staged.get("gate") != "PASS" or staged.get("head") != head or not report.exists():
         return None
     return report.read_text(), head
+
+
+def defer_mutation_proof(n: int, head: str, source: str) -> None:
+    """Requeue a raced base proof without charging worker or review budgets."""
+    record("mutation-proof-wait", ticket=n, head=head, source=source)
+    unclaim(
+        n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+        assignee_last=True, check=True,
+    )
+    log(f"#{n}: mutation proof base moved during {source}; retrying next pass")
 
 
 def sync_issue(tip: str, count: str, staged: str, evidence: str) -> int:
@@ -3632,6 +3878,7 @@ def _head_evidence_matches(
     reviews: dict[str, dict] = {}
     mutation = None
     pr_gate = None
+    mutation_proof = None
     for event in events:
         if event.get("ticket") != n:
             continue
@@ -3647,6 +3894,9 @@ def _head_evidence_matches(
         elif event.get("event") == "risk-check" and event.get("head") == head:
             mutation = event.get("mutation")
             pr_gate = event.get("pr_gate")
+            scope = event.get("mutation_scope")
+            bound = isinstance(scope, str) and re.fullmatch(r"[0-9a-f]{64}", scope)
+            mutation_proof = event.get("mutation_proof") if bound else None
     if worker_model is None:
         worker_model = next((
             event.get("worker_model") for event in reversed(events)
@@ -3670,6 +3920,9 @@ def _head_evidence_matches(
         and second.get("actual_head") == head
         and mutation in {"PASS", "SKIP"}
         and pr_gate == "PASS"
+        # Opted-in repositories accept only a risk-check decided by the completion record
+        # and bound to a gate-validated scope (rows without one, e.g. legacy, never qualify).
+        and (mutation_proof == config.MUTATION_PROOF or not _mutation_proof_opted())
         and all(isinstance(model, str) and model for model in models)
         and len(set(models)) == 3
     )
@@ -4382,6 +4635,9 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     else:
         verdict, findings = review(wt, n, report, head)
         pr_failed = False
+    if verdict == PR_GATE_WAIT:
+        defer_mutation_proof(n, head, "refresh")
+        return False
     pending = _PENDING_REVIEWS.get(n)
     unavailable = pending is not None and pending.get("verdict") is None
     pr_comment(n, findings)
@@ -4448,7 +4704,8 @@ def cleanup_after_merge(n: int, head: str) -> None:
     if wt.is_dir():
         run(["git", "worktree", "remove", "--force", str(wt)], cwd=ROOT, check=False)
     run(["git", "branch", "-D", f"agent/{n}"], cwd=ROOT, check=False)
-    ticket_lock(n).unlink(missing_ok=True)
+    # The ticket lock is kept: decisions and later passes coordinate on its inode, and
+    # unlinking it under a live holder lets the next opener lock a second inode.
 
 
 def land_pass(dry_run: bool) -> None:
@@ -4462,6 +4719,9 @@ def land_pass(dry_run: bool) -> None:
     merge queue: landing one PR makes the others stale, and the refresh path
     re-earns gate and fresh review evidence before they land.
     """
+    if cfg.host_name is not None and cfg.land_host is not None and cfg.host_name != cfg.land_host:
+        log(f"land: skipped, land host is {cfg.land_host}")
+        return
     # Serialize against concurrent dispatcher runs (timer + manual): two merge
     # stages rebasing the same worktree would corrupt it. Skip, don't wait —
     # the next timer pass retries.
@@ -4526,6 +4786,11 @@ def merge_pass_locked(dry_run: bool) -> None:
             continue
         candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
     for pr_num, n, listed_head in sorted(candidates):
+        if cfg.host_name is not None:
+            elected = elected_host_claim(host_claims(n))
+            if elected is not None and elected["host"] != cfg.host_name:
+                log(f"PR #{pr_num}: skipped, elected claim belongs to host {elected['host']}")
+                continue
         with nullcontext() if dry_run else lifecycle.scope(
             EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
         ) as execution:
@@ -4533,6 +4798,40 @@ def merge_pass_locked(dry_run: bool) -> None:
                 log(f"PR #{pr_num}: refused (ticket #{n} is an initiative record); not merging")
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "initiative"
+                continue
+            verdict = latest_head_review_verdict(
+                lifecycle.read_events(EVENTS), n, pr_num, listed_head,
+            )
+            if verdict in {"REQUEST_CHANGES", "REVISE"}:
+                log(f"PR #{pr_num}: journaled {verdict} at {listed_head}; not merging")
+                if dry_run:
+                    continue
+                record_merge_decision(
+                    n, pr_num, "review_revise",
+                    f"journaled {verdict} at {listed_head}; approval is no longer eligible",
+                    listed_head, listed_head, [],
+                )
+                run(
+                    [
+                        "gh",
+                        "pr",
+                        "edit",
+                        str(pr_num),
+                        "--repo",
+                        REPO,
+                        "--remove-label",
+                        FACTORY_APPROVED,
+                    ],
+                    check=False,
+                )
+                escalate(
+                    n,
+                    f"PR #{pr_num}: journaled {verdict} at {listed_head}; "
+                    f"`{FACTORY_APPROVED}` label removed",
+                    None, code="review_revise",
+                )
+                if execution:
+                    execution.outcome, execution.reason = "project_escalation", "review_revise"
                 continue
             checks = triage_cancelled(pr_num, pr_checks(pr_num, listed_head), dry_run, n, listed_head)
             buckets: dict[str, int] = {}
@@ -5362,6 +5661,12 @@ def process_ticket(
                 gate_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
                 if _remote_agent_head(wt, n) == gate_head:
                     lease = gate_head
+            if verdict == PR_GATE_WAIT:
+                defer_mutation_proof(n, gate_head, "ticket review")
+                execution.wait(
+                    "mutation_proof_stale", mode="retry_next_pass", head=gate_head,
+                )
+                return
             pr_comment(n, findings)
             current_risk = _PENDING_RISK.get(n) or {}
             risk_disagreement_head, repeated_disagreement = risk_disagreement_transition(
@@ -5453,6 +5758,12 @@ def process_ticket(
                     gate_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
                     if _remote_agent_head(wt, n) == gate_head:
                         lease = gate_head
+                if verdict == PR_GATE_WAIT:
+                    defer_mutation_proof(n, gate_head, "ticket re-review")
+                    execution.wait(
+                        "mutation_proof_stale", mode="retry_next_pass", head=gate_head,
+                    )
+                    return
                 pr_comment(n, findings)
                 current_risk = _PENDING_RISK.get(n) or {}
                 current_disagreement_head, repeated_disagreement = risk_disagreement_transition(
@@ -5719,6 +6030,9 @@ def main(argv: list[str]) -> int:
 
         def release_step(open_pr: bool) -> None:
             if not cfg.release_auto or args.dry_run:
+                return
+            if cfg.host_name is not None and cfg.release_host is not None and cfg.host_name != cfg.release_host:
+                log(f"release: skipped, release host is {cfg.release_host}")
                 return
             try:
                 from factory import release

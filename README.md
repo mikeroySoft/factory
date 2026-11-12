@@ -42,7 +42,7 @@ npx skills add mikeroysoft/factory
 ```sh
 uv tool install git+https://github.com/mikeroySoft/factory@stable   # stable: released channel
 uv tool install git+https://github.com/mikeroySoft/factory@main     # latest: tip of main
-uv tool install git+https://github.com/mikeroySoft/factory@v0.4.6   # a specific release
+uv tool install git+https://github.com/mikeroySoft/factory@v0.4.11   # a specific release
 ```
 
 `pipx install` and `pip install --user` take the same URLs. The repository's
@@ -369,6 +369,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 
 | Command | What one invocation does |
 |---|---|
+| `factory claims --supported` | Prints exactly `host-claims 1` and exits 0 for District's multi-host capability check. Works offline outside a repository; bare or other arguments exit 2. |
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or `wontfix-proposal` (proposal comment and label; a human closes). An issue unchanged since its last triage comment is skipped. After two consecutive unparseable model decisions, it comments once, records `triage_stalled`, and keeps the issue for retry. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory triage-probe` | Sends `GET <triage base>/models` with a three-second timeout. A 503 `Loading model` response is alive. After three consecutive failures it restarts `[triage].service` at most once per 15 minutes; failures and restarts are lifecycle-journaled. With no service configured it reports only. |
 | `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets, worked concurrently → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
@@ -813,7 +814,7 @@ it. That covers the escalation and manager rounds, frontier manager rounds,
 review-bounce rounds and conflict, gate and risk requeue rounds, so the ticket gets its
 full budget again. A factory release never opens a generation. The dispatcher and
 manager journal each of their own releases before relabeling: `conflict-requeue`,
-`gate-requeue`, `risk-requeue`, deferred `review-rework`, and RETRY, REWRITE,
+`gate-requeue`, `risk-requeue`, `mutation-proof-wait`, deferred `review-rework`, and RETRY, REWRITE,
 AUTHORIZE or ROUTE `manage` rows. A ticket that is back in `ready-for-agent` and
 unassigned after its latest escalation, with none of those rows after it, was released
 by a human. A journal with no `generation` row is generation 0 and counts exactly as
@@ -1072,6 +1073,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    retried). One that committed or wrote its handoff, then stayed quiet for
    `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
    The attempt journal row and escalation packet name the timeout that fired.
+   If a budget-killed worker never reaches its next gate and the ticket's last
+   gate in the current generation passed, escalation uses `budget`, not
+   `gate_failed`; the comment and packet name `budget_min` / `budget_exceeded`
+   so the budget cut is identifiable for a not-a-strike owner requeue.
+   An actual failing gate retains its existing classification.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
@@ -1102,6 +1108,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    bypasses only function protection on bug tickets. An `upstream sync:`
    ticket's worker otherwise gets no override; only upstream-authored content
    is exempt (`--upstream`, above).
+   Local gate runs only (the dispatcher does not pass it): `factory gate
+   --add-only-allow <path>=<blob> --add-only-allow-base <commit>` exempts exactly
+   the named add-only files from both checks when a human supplies the reviewed
+   blob ids. Each path must be canonical, inside `add_only_paths` and outside
+   `protected_paths`, an in-place regular-file text edit, and both its committed
+   blob and its working-tree bytes (`git hash-object --no-filters`) must equal the
+   approved blob; `<commit>` must be the merge-base. Any refusal fails
+   `protected-paths`; every other add-only file and test stays protected.
    A bug worker must add the reproducing test in its own commit before the fix
    and put `Repro test: <test ID>` in its handoff. The test may be added during
    a later retry, review bounce, or manager FIX, not just the first branch commit.
@@ -1260,6 +1274,19 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    current working files overlaid, so Git-dependent tests run without skips.
    Baseline and mutant subprocesses disable bytecode writes, preventing cached
    baseline code from masking same-size mutations in reused scratch copies.
+   On `proof = "mutation-v1"` checks, the gate recomputes committed scope from raw
+   textual diffs (no text conversion or external diff driver), counting only Git's
+   LF line boundaries; source inside a hunk cannot become a file header.
+   The producer, its local `factory` imports, and its child test harness execute
+   from the resolved trusted base in gate-owned scratch. Producer startup excludes
+   the reviewed checkout's interpreter, site hooks and build hooks; mutation targets
+   and test suites remain the reviewed working tree.
+   Missing trusted producer code fails closed. Completion records must be bounded
+   regular files: symlinks, FIFOs and devices are invalid proof, never blocking reads.
+   When main moves during a proof run, the dispatcher retries once. Another move
+   defers review to a later pass without worker rework, a failed PR gate or reviewer
+   escalation. An unbound proof, head mismatch or stale proof without a base move
+   still fails closed.
    This repository's mutation command loads `mutation-equivalents.json` through
    `--equivalents FILE`. It is a JSON array; each reviewed entry has this shape:
 
@@ -1560,6 +1587,7 @@ Opt in on each machine through the shared host file. Values directly in
 [defaults]
 host_name = "tank"
 triage_host = "tank"
+land_host = "tank"
 claim_ttl = "2h"
 
 [repo."owner/name"]
@@ -1573,6 +1601,33 @@ hosts to avoid duplicate triage; other hosts exit 0 with
 Unset `triage_host` keeps triage enabled everywhere. `claim_ttl` defaults to
 `"2h"` and accepts positive `s`, `m`, `h`, or `d` durations, including `"1h30m"`.
 `factory doctor` reports the effective host settings.
+
+Set the same `land_host = "tank"` on both Tank and Ultron before enabling
+Ultron's Factory timer. Only the matching `host_name` runs landing: upstream
+sync, merge and behind-main refresh. Other hosts skip before any landing git/gh
+calls or journal writes, including dry runs. Unset `land_host` keeps landing
+enabled everywhere. Like `triage_host`, it is host-only and uses the same host
+name syntax and per-repository override.
+
+`release_host` works the same way: set the same `release_host = "tank"` on every
+host and only the matching `host_name` runs the release step; other hosts log
+`release: skipped, release host is <name>` before any git or `gh` call. Unset
+`release_host` keeps releasing enabled everywhere.
+
+`triage_host` also gates every loop whose ownership is a GitHub-wide scan or
+singleton rather than a local claim: triage, review intake, manager viability
+and `learn`. Passes whose ownership comes from this host's own journal run on
+every host that has a manager, whatever `triage_host` says: the PR frontier
+(CI-failed, late-feedback and stale escalation, and the `manager.review = "all"`
+approval) and escalation rounds. Terminal handoffs run on every host, with or
+without a manager, and act only on this host's own `escalate` rows. A PR claimed
+only by the other host has no local `claimed` or `escalate` row, so those passes
+leave it alone.
+
+Independently, the ticket merge stage skips PRs whose elected claim belongs to
+another host, even after that claim expires. It neither refreshes those branches
+nor consumes local approval evidence, removes `factory-approved`, or escalates
+them. PRs without a claim retain ordinary eligibility checks.
 
 Inside the existing per-ticket lock, dispatch adds `host:<name>` and a comment
 whose first line is `Factory claim: host=<name> nonce=<uuid> at=<iso8601>`.
@@ -1628,8 +1683,8 @@ same-host contender keeps its label. If comment deletion fails with the comment
 still present, cleanup restores the label and surfaces the error.
 Hosts need synchronized clocks and current GitHub reads. This comment-based
 lease is not a fencing token for a disconnected worker that outlives its TTL.
-With `host_name` unset, dispatch makes no host-label/comment calls and triage
-always runs, even when `triage_host` is configured.
+With `host_name` unset, dispatch makes no host-label/comment calls; triage and
+landing always run, even when `triage_host` or `land_host` is configured.
 
 
 `[worker_wrap]` is host-only: set `command` under `[defaults.worker_wrap]` or
@@ -2078,7 +2133,7 @@ applicable or not known; it is not a fabricated ticket, run, round, or result.
 | `at` | string | UTC source timestamp, ISO 8601 with microseconds and `Z`. A reconciled exit uses the time of observation, not an estimated crash time. |
 | `outcome` | string or null | Terminal classification on `exit`; null on other kinds. |
 | `reason` | string or null | Supported terminal reason or diagnostic text, not a closed enumeration; null when no reason is known. |
-| `process` | object or null | Owner identity sampled on entry: `pid` (integer), `boot_id` (string or null), `start_ticks` (integer or null), `pid_namespace` (string or null), `uid` (integer or null), `state` (Linux process-state string or null), `ppid` (integer or null). Factory emits an object; the reader also accepts null as unavailable authority. This cached identity is not a live heartbeat. |
+| `process` | object or null | Owner identity sampled on entry: `pid` (integer), `boot_id` (string or null), `start_ticks` (integer or null), `pid_namespace` (string or null), `uid` (integer or null), `state` (process-state string or null), `ppid` (integer or null). Factory emits an object; the reader also accepts null as unavailable authority. This cached identity is not a live heartbeat. |
 | `locks` | array of objects | Recorded exclusion evidence, possibly empty. Each object has `path` (absolute-path string), `device` (integer or null), and `inode` (integer or null). Null identity fields mean unavailable evidence. |
 
 IDs and sequence numbers survive repeated reads. Sort a single execution by
@@ -2089,6 +2144,43 @@ terminal `exit`; an abrupt death can leave the exit absent until observation
 has enough evidence to reconcile it. Extra keys and evidence kinds may be
 added; consumers should ignore those they do not understand. Unsupported schema
 versions are not interpreted as version 1 by the existing observer.
+
+Linux identity fields retain their procfs values: boot UUID, field-22 start ticks,
+and PID namespace link. On macOS, lifecycle and passive runtime observation share
+one private backend, and only the verified receipt is read: macOS 27.2, arm64,
+64-bit pointers, little-endian. Any other combination is unknown and does not
+guess offsets. `kern.bootsessionuuid` identifies the boot. Process identity
+comes from `proc_pidinfo(PROC_PIDTBSDINFO)` on the verified 136-byte layout;
+journal `start_ticks` stays that start time in integer Unix seconds, and the
+microsecond field is used only to compare two reads of the same process. A
+runnable-to-sleeping transition does not make that identity new. A changed
+parent or uid does. Context tags come from `KERN_PROCARGS2` into one
+`KERN_ARGMAX`-sized buffer (1 MiB on the verified host). A full buffer is
+truncated and unknown. `proc_listallpids` uses byte sizes and returns a pid
+count; a buffer that comes back full is retried, then incomplete. Identity
+reads follow kernel order up to 4096 pids. Context reads stay capped at 256.
+Processes that started after their own uid's known process-start second are
+read newest first. The same second and any earlier start stay deferred, and
+an unknown origin keeps that uid deferred. Another uid's start is not a
+cutoff. Membership is a context tag or a start-validated ancestor. The
+continuation hand is that process's pid and start. It stays eligible when the
+same process is also newer than the previous read, and a deadline does not
+skip it. Past either cap, or while any deferred process is unread, the scan
+is incomplete. `pid_namespace` is `"darwin"`.
+Host IDs hash the IOKit `IOPlatformUUID` with the same UUIDv5 scheme as Linux
+machine-id. The guarded observer never runs `ps`, `lsof`, `sysctl`, or
+`ioreg`. Denied, malformed, empty, or truncated reads are unknown, not absence.
+A missing recorded PID or a changed start time proves the original process dead
+only when this observer can see itself. Descendant membership is a context tag
+or a start-validated ancestor, not a uid and not a parent pid alone. The existing
+handoff safeguard still prevents interruption when a launched descendant cannot
+be ruled out. There is no non-spawning flock-owner source: attribution stays
+unavailable, the owner stays null, and an open file is not ownership. The same
+limit covers passive resource state and observed admission capacity. State stays
+`unknown`, not `free`. With any numeric ticket lock, `capacity.active` is null
+and `capacity.complete` is false, never zero. A lock directory that was listed
+and contains no numeric ticket lock is zero. A retained observation is not a
+fresh reading of the current lock.
 
 | Stage | Boundary |
 |---|---|
@@ -2301,7 +2393,7 @@ holder identity. `wait_end.wait_event_id` names the ended wait's event UUID.
 | `state`, `ownership` | Independent string enums described above. `none` is supported only by observed free state. |
 | `owner` | Null or object with all common execution identity fields, recorded `process`, `acquisition_id`, and source `acquired_at` timestamp. |
 | `requests` | Array of currently live, unterminated requesters not yet acquired/released: common execution identity fields, `process`, source `event_id`, `requested_at`, and `blocking`. A pending request is not ownership. |
-| `evidence` | Object: `lock_state` (`held`/`free`/`unknown`), `attribution` (`proc_locks`/`unavailable`), `holder_pids` (integer array or null). Kernel PIDs alone are not confirmed execution identity. |
+| `evidence` | Object: `lock_state` (`held`/`free`/`unknown`), `attribution` (`proc_locks`/`lsof`/`unavailable`), `holder_pids` (integer array or null). Linux uses kernel FLOCK owners; macOS uses flock try-lock for availability and lsof's whole-file lock fields for owners, not merely open descriptors. Kernel PIDs alone are not confirmed execution identity. |
 | `event_id`, `at` | Stable identity and source time of the last distinct local resource observation. |
 | `observed_at` | UTC time of this local evidence collection, distinct from transition time. |
 
@@ -2534,16 +2626,21 @@ is forced to a local Unix socket, never an inherited TCP address. Missing tools,
 unavailable units, invalid output, overflow and timeouts yield partial errors.
 Only explicit `ActiveState=active` is true; transitional states remain unknown.
 `next_at` requires an active timer and an explicitly returned future timestamp.
-Admission scans at most 1024 directory entries and a 256 KiB kernel lock window;
-unreadable/incomplete evidence returns null capacity, not a false zero.
+Admission scans at most 1024 directory entries and a 256 KiB kernel lock window.
+The count is Linux `/proc/locks` only. Unreadable, incomplete, or Darwin evidence
+with a numeric ticket lock returns null capacity, not a false zero. An empty
+numeric listing stays zero because the directory itself was read.
 
 System query errors use source `systemctl`, scope `service`, `timer`, or
 `schedule`, and codes `invalid_unit`, `timeout`, `output_limit`, `command_failed`,
 `command_unavailable`, `unit_unavailable`, `transitioning`, `unit_failed`,
 `invalid_state`, or `invalid_schedule`. Admission errors use source `admission`,
 scope `repository`, with `missing`, `unreadable`, `unsupported_file`, `byte_limit`,
-`entry_limit`, `changed`, or `invalid_kernel_locks`. Errors contain fixed codes
-only; raw stderr and arbitrary stored diagnostic text are never returned.
+`entry_limit`, `changed`, `invalid_kernel_locks`, or `locks_unavailable`.
+`locks_unavailable` is the Darwin numeric-ticket-lock result: no passive flock
+table, so the count is null rather than zero or a foreign kernel table. Errors
+contain fixed codes only; raw stderr and arbitrary stored diagnostic text are
+never returned.
 
 The journal reader performs one `pread` of at most **1,048,576 bytes** at the
 end of the regular file, with no journal lock. It drops the first clipped line,
@@ -2626,13 +2723,20 @@ missing entry, conflicting identity/sequence, ambiguous suffix or unavailable
 live evidence still makes that record partial/unknown; history gaps remain
 reported even when independent current observations are fresh.
 
-Direct identity checks are cached for at most 128 PIDs, with 4096-byte `/proc`
-stat reads, a 64 KiB mounts read, 128-byte boot/machine identity reads, and at
-most 512 cached lock stats. Resource attribution reads `/proc/locks` once, under
-1 MiB; at most 128 current holder PIDs are returned per resource. Hitting these
-bounds yields unknown/partial evidence. The separate admission query has its
-own smaller kernel bound above. No flock is acquired, no ownership file is
-rewritten, no lock/state directory is created, and no reconciliation is persisted.
+Direct identity checks are cached for at most 128 PIDs, with at most 512 cached
+lock stats and 128 current holder PIDs returned per resource. On Linux, probes
+use 4096-byte `/proc` stat reads, a 64 KiB mounts read, 128-byte boot/machine
+identity reads, and one `/proc/locks` read under 1 MiB. On Darwin, `sysctl`
+supplies the boot-session UUID, `ioreg` supplies the hashed machine UUID, and
+`ps` supplies PID/start-time identity. An absent PID is dead only after a
+successful current-process visibility probe on the same boot. Resource
+attribution uses `lsof` lock fields per resource; missing lock fields remain
+unknown, never proof that a lock is free. Each Darwin command has a two-second
+timeout; its captured output has no byte cap. Hitting identity/lock/holder
+bounds or unavailable probes yields unknown/partial evidence. The separate
+admission query has its own smaller kernel bound above. No flock is acquired,
+no ownership file is rewritten, no lock/state directory is created, and no
+reconciliation is persisted.
 Without host identity, configured descriptors are omitted with an error rather
 than assigning unrelated hosts a fabricated shared identity.
 
@@ -2649,12 +2753,16 @@ unsupported for lifecycle coverage, not an empty valid lifecycle history.
 Known legacy rows cannot hide a lifecycle exit, so they do not independently
 invalidate supported open scopes.
 
-Other source/scope pairs are `proc`/`identity` (`boot_unavailable`,
+Linux source/scope pairs are `proc`/`identity` (`boot_unavailable`,
 `namespace_unavailable`, `process_limit`, `process_unavailable`,
-`absence_unavailable`), `proc`/`executions` (`descendants_not_scanned`),
-`proc/locks`/`resources` (`locks_unavailable`, `holder_limit`),
+`absence_unavailable`) and
+`proc/locks`/`resources` (`locks_unavailable`, `holder_limit`).
+Darwin uses `process`/`identity` (`boot_unavailable`, `process_limit`,
+`process_unavailable`) and `lsof`/`resources` (`locks_unavailable`, `holder_limit`)
+instead of the Linux identity and lock sources. Shared pairs are
+`proc`/`executions` (`descendants_not_scanned`),
 `filesystem`/`resources` (`lock_limit`, `not_regular`, `lock_unavailable`,
-`canonical_path_unavailable`), and `configuration`/`resources`
+`canonical_path_unavailable`) and `configuration`/`resources`
 (`lock_limit`, `invalid_scope`, `host_identity_unavailable`). A lock file that
 does not exist (not yet created, or unlinked by ticket cleanup) is not an error:
 its resource reports state `unknown` with no `lock_unavailable`.

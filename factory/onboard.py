@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, config, lifecycle
+from factory import __version__, config, lifecycle, platform_identity
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -360,6 +360,22 @@ def _listener_conflicts(local: str, target: str) -> bool:
     return listener.is_unspecified or requested.is_unspecified or listener == requested
 
 
+def _wildcard_held(port: int) -> bool:
+    """Whether a wildcard listener covers `port`; raises OSError when it cannot tell."""
+    for family, address in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6:
+                probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            try:
+                probe.bind((address, port))
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE:
+                    raise
+                return True
+    return False
+
+
 def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[bool, str]:
     unit = f"{cfg.unit}-dashboard.service"
     try:
@@ -372,11 +388,19 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
         try:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(target)
-            collision = False
+            # BSD SO_REUSEADDR lets this specific bind succeed beside a listening
+            # wildcard (`0.0.0.0`, dual-stack `::`) that still serves the address.
+            collision = platform_identity.darwin() and _wildcard_held(port)
         except OSError as exc:
             if exc.errno != errno.EADDRINUSE:
                 return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
             collision = True
+
+        # Darwin has no `ss`. There, the target bind plus both wildcard probes
+        # succeeding is the positive evidence that nothing serves host:port.
+        # (A `0.0.0.0` host collides with its own held probe and stays closed.)
+        if not collision and platform_identity.darwin():
+            return True, f"available on {host}"
 
         # Keep a free probe held through `ss`; the later install-to-service bind
         # remains inherently racy. A collision that vanishes here fails closed.
@@ -531,6 +555,10 @@ def doctor(argv: list[str]) -> int:
         report(True, "host_name", cfg.host_name, info=True)
     if cfg.triage_host is not None:
         report(True, "triage_host", cfg.triage_host, info=True)
+    if cfg.land_host is not None:
+        report(True, "land_host", cfg.land_host, info=True)
+    if cfg.release_host is not None:
+        report(True, "release_host", cfg.release_host, info=True)
     if cfg.host_name is not None or any(
         isinstance(section, dict) and "claim_ttl" in section
         for section in effective_host_sections
@@ -659,16 +687,30 @@ def doctor(argv: list[str]) -> int:
         f"{cfg.llm_url} ({detail})" if alive else f"{cfg.llm_url} ({detail}); `factory triage` will not run",
     )
 
-    timer = sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).stdout.strip()
-    report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
+    def timer_state(unit: str) -> str | None:
+        if shutil.which("systemctl") is None:
+            return None
+        try:
+            return sh(["systemctl", "--user", "is-active", unit]).stdout.strip()
+        except OSError:
+            return None
+
+    timer = timer_state(f"{cfg.unit}.timer")
+    if timer is None:
+        report(None, f"systemd timer {cfg.unit}.timer", "n/a (launchd)", info=True)
+    else:
+        report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
     if cfg.triage_service:
         probe_timer = f"{cfg.unit}-triage-probe.timer"
-        active = sh(["systemctl", "--user", "is-active", probe_timer]).stdout.strip()
-        report(
-            True if active == "active" else None,
-            "triage liveness probe",
-            f"{probe_timer} {active}" if active else "not installed (factory install)",
-        )
+        active = timer_state(probe_timer)
+        if active is None:
+            report(None, "triage liveness probe", "n/a (launchd)", info=True)
+        else:
+            report(
+                True if active == "active" else None,
+                "triage liveness probe",
+                f"{probe_timer} {active}" if active else "not installed (factory install)",
+            )
     else:
         report(
             None,
@@ -842,10 +884,16 @@ def interpreter_probe(cfg: config.Config) -> tuple[bool, str]:
         if not origin:
             continue
         # Check both spellings: resolving alone hides lexical checkout imports,
-        # while lexical checks alone miss symlinks back into the checkout.
-        for resolve in (False, True):
+        # while lexical checks alone miss symlinks back into the checkout. A
+        # directory alias in the origin's spelling (PYTHONPATH, __path__, /var on
+        # Darwin) must not hide a symlinked checkout file, so also resolve each
+        # directory prefix while keeping the rest of the origin lexical.
+        lexical = Path(os.path.abspath(origin))
+        spellings = [(lexical, False), (Path(origin).resolve(), True)] + [
+            (parent.resolve() / lexical.relative_to(parent), True) for parent in lexical.parents
+        ]
+        for loaded, resolve in spellings:
             root = cfg.root.resolve() if resolve else Path(os.path.abspath(cfg.root))
-            loaded = Path(origin).resolve() if resolve else Path(os.path.abspath(origin))
             package_roots = [
                 path.resolve() if resolve else Path(os.path.abspath(path)) for path in installed
             ]

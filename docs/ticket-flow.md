@@ -109,6 +109,8 @@ flowchart TB
   REF -->|"gate fails twice, open ticket, gate rounds left, no unauthorized protected/add-only path: reports and diff assessment recorded, claim released to same worker profile on agent/N: dispatch.refresh_pr_branch"| RFA
   REF -->|"actionable REVISE or completed survivors, open ticket and review rounds left: dispatch._record_rework"| RFA
   REV -->|"expired clean finish, actionable findings, rounds left: durable charge and claim released: dispatch._record_rework"| RFA
+  REV -->|"pr-tier mutation proof base moved: no worker or review round charged: dispatch.defer_mutation_proof"| RFA
+  REF -->|"pr-tier mutation proof base moved: no worker or review round charged: dispatch.defer_mutation_proof"| RFA
   REF -->|"protected paths, exhausted rounds, closed ticket, reject, non-actionable REVISE, or head moved: dispatch.refresh_pr_branch"| ESC
   CI -->|"pass, missing SHA-bound approval evidence: dispatch.merge_pass_locked"| ESC
   CI -->|"pass, up to date, no human CHANGES_REQUESTED: dispatch.merge_pass_locked"| MERGE
@@ -129,6 +131,7 @@ flowchart TB
   MGR -->|"AUTHORIZE adds add-only authority before requeue: manage.apply"| RFA
   MGR -->|"SPLIT, children opened, parent stays: manage.apply"| NT
   MGR -->|"FIX: worker round, gate, review: manage.apply"| FA
+  MGR -->|"FIX pr-tier mutation proof base moved: no round charged: dispatch.defer_mutation_proof"| RFA
   MGR -->|"FIX fails gate, pr-tier gate, or review; kept head not the PR head plus the worker's own commits, or their lease push refused: manage.apply"| ESC
   MGR -->|"CLOSE with or without a PR on an original ticket: manage.apply"| WONT
   MGR -->|"CLOSE with or without a PR on a SPLIT child, issue closed not planned: manage.apply"| HUMAN
@@ -202,8 +205,9 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
 | `dispatch.delete_host_claim` | `*` | `*` | Remove the host label before deleting its last claim; restore it if comment deletion fails and the claim remains |
 | `dispatch._record_rework` | `ready-for-human` | `ready-for-agent` | Deferred actionable findings: durable round charged, packet retained, owner queue cleared and assignee removed for the next pass |
+| `dispatch.defer_mutation_proof` | `ready-for-human` | `ready-for-agent` | Mutation-proof base moved during review, refresh or manager FIX: claim released and requeued for the next pass without charging worker or review budget |
 | `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
-| `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence |
+| `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence; journaled REQUEST_CHANGES or REVISE |
 | `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |
 | `dispatch.refresh_pr_branch` | `factory-approved`, `ready-for-human` | `ready-for-agent` | Behind main: approval withdrawn before refresh; eligible conflict and repeated-gate requeues restore agent flow |
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
@@ -222,6 +226,7 @@ event. `{}` is a runtime value.
 
 | Code | Reason | Edge |
 |------|--------|------|
+| `dispatch.escalate` | ``worker killed by {} (budget_exceeded) before gate; last gate passed; worktree kept at {}`` | Budget-killed worker after the current generation's last passing gate → escalate (`budget`, not `gate_failed`) |
 | `dispatch.process_ticket` | ``worker edited protected paths`` | worker round → escalate |
 | `dispatch.process_ticket` | ``worker removed or changed existing tests`` | worker round → escalate (add-only or protected-tests check; the escalation detail names the check and clearing label) |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded`` | worker round → escalate |
@@ -242,6 +247,7 @@ event. `{}` is a runtime value.
 | `dispatch.merge_pass_locked` | ``PR #{}: CI failed ({}); `{}` label removed`` | CI fail → escalate |
 | `dispatch.runner_unavailable` | ``PR #{}: CI runner unavailable ({}) in run {}; `{}` kept`` | CI no runner after rerun → escalate |
 | `dispatch.merge_pass_locked` | ``PR #{}: missing approval evidence bound to {}; `{}` label removed`` | CI pass, missing evidence → escalate |
+| `dispatch.merge_pass_locked` | ``PR #{}: journaled {} at {}; `{}` label removed`` | Journaled REQUEST_CHANGES or REVISE at the listed head (including COMMENT-posted reviews) → escalate (`review_revise`); `factory-approved` removed |
 | `dispatch.refresh_pr_branch` | ``PR #{}: could not remove stale `{}` approval`` | refresh → escalate |
 | `dispatch.refresh_pr_branch` | ``PR #{}: {}; `{}` label removed`` | refresh → escalate (wraps the reasons below) |
 | `dispatch.refresh_pr_branch` | ``kept worktree head {} differs from remote head {}`` | refresh → escalate |

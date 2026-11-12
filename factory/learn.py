@@ -1429,6 +1429,9 @@ def learn_pass(dry_run: bool = False) -> None:
     Learn needs a manager (without one, learn only writes an uncommitted file) and no open lessons,
     curate or revert PR (lessons rewrite the whole file). A failure is journaled, never raised."""
     cfg = dispatch.cfg
+    if cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host:
+        dispatch.log(f"learn: skipped, triage host is {cfg.triage_host}")
+        return
     try:
         if not dry_run:
             score.run(cfg)

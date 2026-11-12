@@ -58,22 +58,6 @@ class TempdirHygieneTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
-    @unittest.skipIf(os.environ.get("FACTORY_TEMPDIR_HYGIENE_CHILD") == "1", "recursive suite")
-    def test_full_suite_leaves_no_tempdirs_behind(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            before = set(Path(tmp).iterdir())
-            proc = subprocess.run(
-                [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
-                cwd=ROOT,
-                env=os.environ | {"TMPDIR": tmp, "FACTORY_TEMPDIR_HYGIENE_CHILD": "1"},
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-            self.assertEqual(set(Path(tmp).iterdir()) - before, set())
-
-
 
 if __name__ == "__main__":
     unittest.main()

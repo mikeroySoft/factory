@@ -479,6 +479,9 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         verdict, findings, pr_failed = dispatch.pr_gate_and_review(wt, n, report, gate_head, {})
         if cfg.fixups:
             gate_head = dispatch.run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        if verdict == dispatch.PR_GATE_WAIT:
+            dispatch.defer_mutation_proof(n, gate_head, "manager FIX")
+            return
         dispatch.pr_comment(n, findings)
         if pr_failed:
             reason = "pr checks failed"
@@ -1093,10 +1096,15 @@ def frontier_pass(dry_run: bool = False) -> None:
 
 
 def manage_pass(dry_run: bool = False) -> None:
-    """Viability, PR frontier and escalation rounds need a manager; terminal handoffs do not."""
+    """Viability (a GitHub-wide label scan) runs on the triage host; frontier and escalation rounds, owned through the local journal, run on every host with a manager; terminal handoffs need no manager."""
     try:
-        if dispatch.cfg.manager:
-            viability_pass(dry_run)
+        cfg = dispatch.cfg
+        shared = cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host
+        if shared:
+            dispatch.log(f"manage: viability skipped, triage host is {cfg.triage_host}")
+        if cfg.manager:
+            if not shared:
+                viability_pass(dry_run)
             frontier_pass(dry_run)
             escalation_pass(dry_run)
     finally:

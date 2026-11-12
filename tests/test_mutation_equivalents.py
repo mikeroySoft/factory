@@ -200,7 +200,14 @@ class MutationEquivalentsTest(unittest.TestCase):
                 for value in (0, 2)
             ]
             command = [
+                # Inherited UV_NO_SYNC/VIRTUAL_ENV or an unsynced or missing <repository>/.venv
+                # must not decide the result; UV_PROJECT_ENVIRONMENT overrides any inherited value
+                # and keeps <repository> unwritten; --python pins the suite's own interpreter.
+                "env", "-u", "UV_NO_SYNC", "-u", "VIRTUAL_ENV",
+                f"UV_PROJECT_ENVIRONMENT={tmp}/uv-project-env",
+                "UV_OFFLINE=1",
                 "uv", "run", "--project", str(repository), "--frozen", "--no-managed-python",
+                "--python", sys.executable,
                 "--group", "mutation", "python", "scripts/mutation.py",
                 "--blocking", "--equivalents", "reviewed.json",
             ]
