@@ -22,7 +22,7 @@ class DispatchPreflightTest(unittest.TestCase):
 
     def run_pass(
         self, *, host=None, labels=(), comments=(), rest=5000, graphql=5000,
-        error=None, repo_error=False, rates=None, argv=None,
+        error=None, repo_error=False, comments_error=False, rates=None, argv=None,
     ):
         module = self.dispatcher(host)
         read = module.gh_json
@@ -36,10 +36,12 @@ class DispatchPreflightTest(unittest.TestCase):
                 return {"resources": {"core": {"remaining": rest, "reset": 1800000000},
                                       "graphql": {"remaining": graphql, "reset": 1800000000}}}
             if args[0] == "api" and any(arg.endswith("/labels?per_page=100") for arg in args):
-                return [[{"name": name} for name in labels]]
-            if args[0] == "api" and any(arg.endswith("/issues/comments?per_page=100") for arg in args):
                 if repo_error:
                     raise OSError("repository unavailable")
+                return [[{"name": name} for name in labels]]
+            if args[0] == "api" and any(arg.endswith("/issues/comments?per_page=100") for arg in args):
+                if comments_error:
+                    raise OSError("repository comment history exceeds remaining budget")
                 return [[], list(comments)]
             return read(args)
 
@@ -74,11 +76,11 @@ class DispatchPreflightTest(unittest.TestCase):
         self.assertIn("host_name", output)
         health.assert_not_called()
 
-    def test_unnamed_host_refuses_claim_on_another_closed_ticket(self):
+    def test_unnamed_host_refuses_repository_label_from_closed_claim(self):
         claim = {"body": f"Factory claim: host=ultron nonce=old at={datetime.now(UTC).isoformat()}",
                  "user": {"login": "@me"}, "author_association": "COLLABORATOR",
                  "issue_url": "repos/local/claims/issues/99"}
-        _, result, output, _, _ = self.run_pass(comments=[claim])
+        _, result, output, _, _ = self.run_pass(labels=["host:ultron"], comments=[claim])
         self.assert_no_claim()
         self.assertNotEqual(result, 0)
         self.assertIn("host_name", output)
@@ -86,6 +88,7 @@ class DispatchPreflightTest(unittest.TestCase):
     def test_different_repository_login_refuses_before_claim(self):
         claim = {"body": f"Factory claim: host=tank nonce=old at={datetime.now(UTC).isoformat()}",
                  "user": {"login": "different-account"}, "author_association": "COLLABORATOR"}
+        self.github.comments = [claim]
         _, result, output, _, _ = self.run_pass(host="ultron", comments=[claim])
         self.assert_no_claim()
         self.assertNotEqual(result, 0)
@@ -114,6 +117,11 @@ class DispatchPreflightTest(unittest.TestCase):
 
     def test_budget_at_floor_allows_single_host_dispatch(self):
         _, result, _, _, _ = self.run_pass(rest=100, graphql=100)
+        self.assertEqual(result, 0)
+        self.assertEqual(self.launched, [None])
+
+    def test_budget_at_floor_dispatches_without_reading_repository_comment_history(self):
+        _, result, _, _, _ = self.run_pass(rest=100, graphql=100, comments_error=True)
         self.assertEqual(result, 0)
         self.assertEqual(self.launched, [None])
 
