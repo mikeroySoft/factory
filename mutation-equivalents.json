@@ -118,20 +118,20 @@
  },
  {
   "file": "factory/dispatch.py",
-  "line": 3267,
+  "line": 3277,
   "operator": "core/ReplaceComparisonOperator_NotEq_IsNot",
   "original": "                if current_base != base_commit and _moved_main_proof(",
   "mutated": "                if current_base is not base_commit and _moved_main_proof(",
-  "argument": "!= and 'is not' disagree only when current_base == base_commit as values but are not the same object. In that case the 'and' still short-circuits to False, because _moved_main_proof(wt, report, head, base_commit, current_base) hits the guard at dispatch.py:3127 (`if not snapshot or not current or snapshot == current: return False`). When the values differ, != and 'is not' agree. So the if-body never runs under one form and not the other.",
+  "argument": "!= and 'is not' disagree only when current_base == base_commit as values but are not the same object. In that case the 'and' still short-circuits to False, because _moved_main_proof(wt, report, head, base_commit, current_base) hits the guard at dispatch.py:3137 (`if not snapshot or not current or snapshot == current: return False`). When the values differ, != and 'is not' agree. So the if-body never runs under one form and not the other.",
   "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
  },
  {
   "file": "factory/dispatch.py",
-  "line": 3281,
+  "line": 3291,
   "operator": "core/ReplaceComparisonOperator_Eq_GtE",
   "original": "                        verdict == \"STALE\" and ok and current_base != base_commit",
   "mutated": "                        verdict >= \"STALE\" and ok and current_base != base_commit",
-  "argument": "At this site verdict comes only from `_mutation_proof(...) or (\"FAIL\", None)` (dispatch.py:3277-3279). _mutation_proof returns one of PASS, FAIL, SKIP, or STALE (a listed status, a stale binding, or FAIL on a malformed report). For that closed set, verdict >= \"STALE\" is true only for \"STALE\": FAIL, PASS and SKIP are all lexicographically less than STALE (F/P before S; SKIP is S+K before S+T). So verdict >= \"STALE\" and verdict == \"STALE\" agree for every reachable value.",
+  "argument": "At this site verdict comes only from `_mutation_proof(...) or (\"FAIL\", None)` (dispatch.py:3286-3288). _mutation_proof returns one of PASS, FAIL, SKIP, or STALE (a listed status, a stale binding, or FAIL on a malformed report). For that closed set, verdict >= \"STALE\" is true only for \"STALE\": FAIL, PASS and SKIP are all lexicographically less than STALE (F/P before S; SKIP is S+K before S+T). So verdict >= \"STALE\" and verdict == \"STALE\" agree for every reachable value.",
   "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
  },
  {
