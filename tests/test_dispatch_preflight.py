@@ -85,6 +85,28 @@ class DispatchPreflightTest(unittest.TestCase):
         self.assertNotEqual(result, 0)
         self.assertIn("host_name", output)
 
+    def test_unnamed_host_refuses_claim_on_another_issue_without_host_labels(self):
+        claim = {"body": f"Factory claim: host=ultron nonce=old at={datetime.now(UTC).isoformat()}",
+                 "user": {"login": "@me"}, "author_association": "COLLABORATOR",
+                 "issue_url": "repos/local/claims/issues/99"}
+        module, result, output, health, land = self.run_pass(comments=[claim])
+        self.assert_no_claim()
+        self.assertEqual(result, 1)
+        self.assertIn("host_name", output)
+        health.assert_not_called()
+        land.assert_not_called()
+        self.assertTrue(any(row.get("event") == "pass-skipped" and
+                            row.get("reason") == "host_setup"
+                            for row in lifecycle.read_events(module.EVENTS)))
+
+    def test_unnamed_host_refuses_unreadable_repository_comment_history(self):
+        _, result, output, health, land = self.run_pass(comments_error=True)
+        self.assert_no_claim()
+        self.assertEqual(result, 1)
+        self.assertIn("cannot verify repository host setup", output)
+        health.assert_not_called()
+        land.assert_not_called()
+
     def test_different_repository_login_refuses_before_claim(self):
         claim = {"body": f"Factory claim: host=tank nonce=old at={datetime.now(UTC).isoformat()}",
                  "user": {"login": "different-account"}, "author_association": "COLLABORATOR"}
@@ -120,10 +142,10 @@ class DispatchPreflightTest(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(self.launched, [None])
 
-    def test_budget_at_floor_dispatches_without_reading_repository_comment_history(self):
-        _, result, _, _, _ = self.run_pass(rest=100, graphql=100, comments_error=True)
+    def test_named_host_at_floor_dispatches_without_reading_repository_comment_history(self):
+        _, result, _, _, _ = self.run_pass(host="tank", rest=100, graphql=100, comments_error=True)
         self.assertEqual(result, 0)
-        self.assertEqual(self.launched, [None])
+        self.assertEqual(self.launched, ["tank"])
 
     def test_unreadable_repository_refuses_without_claim(self):
         _, result, output, _, _ = self.run_pass(repo_error=True)
