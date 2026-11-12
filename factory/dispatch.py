@@ -5995,7 +5995,7 @@ def github_preflight(dry_run: bool) -> int | None:
             record("pass-skipped", reason="github_rate_limit", detail=detail)
         return 0
     try:
-        problem = repository_host_problem(REPO, cfg.host_name, gh_json)
+        problem = repository_host_problem(REPO, cfg.host_name, gh_json, include_comments=False)
     except (HostSetupError, OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError) as exc:
         problem = f"cannot verify repository host setup ({exc})"
     if problem:
