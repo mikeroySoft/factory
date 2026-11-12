@@ -198,3 +198,162 @@ print(json.dumps(result))
         self.assertEqual(gate.read_mutation_proof(data, 0, mutation_scope.Scope(
             "b" * 40, "b" * 40, "h" * 40, (),
         ))[0], "FAIL")
+
+
+    def test_provision_succeeds_when_scratch_dir_already_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as inherited, tempfile.TemporaryDirectory() as work:
+            inherited_tmp = Path(inherited)
+            directory = Path(work)
+            environment = directory / "environment"
+            scratch = directory / "uv-tmp"
+            scratch.mkdir()
+            leftover = scratch / "prior.lock"
+            leftover.write_text("kept")
+            uv = directory / "uv"
+            uv.write_text("#!/bin/sh\n: > \"$TMPDIR/uv-probe.lock\"\n")
+            uv.chmod(0o755)
+            with mock.patch.dict(os.environ, {"TMPDIR": str(inherited_tmp)}):
+                gate._provision_trusted_uv_environment(str(uv), [], directory, environment)
+            self.assertEqual(list(inherited_tmp.iterdir()), [])
+            self.assertTrue((scratch / "uv-probe.lock").is_file())
+            self.assertTrue(leftover.is_file())
+
+    def test_provision_failure_includes_output_for_any_nonzero_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            directory = Path(work)
+            environment = directory / "environment"
+            uv = directory / "uv"
+            uv.write_text("#!/bin/sh\necho 'uv could not resolve the lock'\nexit 1\n")
+            uv.chmod(0o755)
+            with self.assertRaises(mutation_scope.ScopeError) as ctx:
+                gate._provision_trusted_uv_environment(str(uv), [], directory, environment)
+            self.assertIn("uv could not resolve the lock", str(ctx.exception))
+
+    def test_provision_failure_includes_signal_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            directory = Path(work)
+            environment = directory / "environment"
+            uv = directory / "uv"
+            uv.write_text("#!/bin/sh\nkill -9 $$\n")
+            uv.chmod(0o755)
+            with self.assertRaises(mutation_scope.ScopeError) as ctx:
+                gate._provision_trusted_uv_environment(str(uv), [], directory, environment)
+            self.assertIn("trusted mutation environment could not be provisioned", str(ctx.exception))
+
+    def test_isolated_paths_treat_a_failing_probe_as_missing_site_packages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment = Path(directory) / "environment"
+            probe = environment / "bin" / "python"
+            probe.parent.mkdir(parents=True)
+            existing = Path(directory) / "apparent-site"
+            existing.mkdir()
+            probe.write_text(f"#!/bin/sh\nprintf '%s\\n' {str(existing)!r}\nexit 1\n")
+            probe.chmod(0o755)
+            with self.assertRaises(mutation_scope.ScopeError):
+                gate._isolated_environment_paths(environment)
+
+    def test_isolated_paths_use_a_successful_probe_when_the_layout_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment = Path(directory) / "environment"
+            site = Path(directory) / "probed-site"
+            site.mkdir()
+            probe = environment / "bin" / "python"
+            probe.parent.mkdir(parents=True)
+            probe.write_text(f"#!/bin/sh\nprintf '%s\\n' {str(site)!r}\n")
+            probe.chmod(0o755)
+            self.assertEqual(gate._isolated_environment_paths(environment), [str(site)])
+
+    def test_isolated_paths_a_broken_probe_is_still_a_scope_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            environment = Path(directory) / "environment"
+            probe = environment / "bin" / "python"
+            probe.parent.mkdir(parents=True)
+            probe.mkdir()  # exists, but cannot be executed
+            with self.assertRaises(mutation_scope.ScopeError):
+                gate._isolated_environment_paths(environment)
+
+    def _trusted_uv(self, cmd: list[str]):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provision = mock.Mock()
+            with mock.patch.object(mutation_scope, "_git", return_value="# trusted\n"), \
+                    mock.patch.object(gate, "_provision_trusted_uv_environment", provision), \
+                    mock.patch.object(gate, "_isolated_environment_paths",
+                                      return_value=[str(root / "site")]):
+                (root / "site").mkdir()
+                result = gate._trusted_mutation_command(cmd, "base", root)
+            return result, provision
+
+    def test_trusted_uv_command_requires_the_run_subcommand_and_uv_binary(self) -> None:
+        python = (" " + "python").lstrip()
+        run = (" " + "run").lstrip()
+        with self.assertRaises(mutation_scope.ScopeError):
+            self._trusted_uv(["uw", "run", python, "scripts/mutation.py"])
+        with self.assertRaises(mutation_scope.ScopeError):
+            self._trusted_uv(["uv", "sync", python, "scripts/mutation.py"])
+        with self.assertRaises(mutation_scope.ScopeError):
+            self._trusted_uv(["uv", "init", python, "scripts/mutation.py"])
+        with self.assertRaises(mutation_scope.ScopeError) as ctx:
+            self._trusted_uv(["uv", run, "scripts/mutation.py"])
+        self.assertIn("no Python entry point", str(ctx.exception))
+        with self.assertRaises(mutation_scope.ScopeError):
+            self._trusted_uv(["python", run, python, "scripts/mutation.py"])
+
+    def test_trusted_uv_command_accepts_a_noninterned_run_token(self) -> None:
+        run = (" " + "run").lstrip()
+        python = (" " + "python").lstrip()
+        self.assertIsNot(run, "run")
+        self.assertIsNot(python, "python")
+        result, provision = self._trusted_uv(["uv", run, python, "scripts/mutation.py"])
+        self.assertTrue(result)
+        provision.assert_called_once()
+        self.assertEqual(provision.call_args.args[1], [])
+
+    def test_trusted_uv_command_rejects_a_non_python_entry_point(self) -> None:
+        with self.assertRaises(mutation_scope.ScopeError) as ctx:
+            self._trusted_uv(["uv", "run", "ruby", "scripts/mutation.py"])
+        self.assertIn("no Python entry point", str(ctx.exception))
+
+    def test_trusted_uv_command_keeps_flags_when_the_script_index_is_even(self) -> None:
+        # An extra trusted flag makes scripts/mutation.py sit at an even index,
+        # where index-1 and index^1 differ. Options passed to provision must
+        # stay the uv flags, not include python or the producer path.
+        result, provision = self._trusted_uv(
+            ["uv", "run", "--frozen", "python", "scripts/mutation.py"],
+        )
+        self.assertTrue(result)
+        provision.assert_called_once()
+        self.assertEqual(provision.call_args.args[1], ["--frozen"])
+
+    def test_trusted_command_accepts_this_interpreter_by_path_equality(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(mutation_scope, "_git", return_value="# trusted\n"):
+                result = gate._trusted_mutation_command(
+                    [sys.executable, "scripts/mutation.py"], "base", root,
+                )
+        self.assertEqual(result[0], sys.executable)
+        self.assertEqual(result[1], "-I")
+
+    def test_trusted_command_rejects_this_interpreter_unless_it_is_the_entry_point(self) -> None:
+        # index == 1 is the only accepted "[this interpreter, scripts/mutation.py]"
+        # form. A later producer token with the same argv0 must still fail closed
+        # (Eq->GtE on the index would accept it). A different file whose path
+        # compares >= sys.executable must also fail closed.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            other = root / "other-python"
+            other.write_text("")
+            other.chmod(0o755)
+            self.assertGreaterEqual(other.resolve(), Path(sys.executable).resolve())
+            with mock.patch.object(mutation_scope, "_git", return_value="# trusted\n"):
+                with self.assertRaises(mutation_scope.ScopeError) as ctx:
+                    gate._trusted_mutation_command(
+                        [sys.executable, "run", "scripts/mutation.py"], "base", root,
+                    )
+                self.assertIn("unsupported trusted mutation command", str(ctx.exception))
+                with self.assertRaises(mutation_scope.ScopeError) as ctx:
+                    gate._trusted_mutation_command(
+                        [str(other), "scripts/mutation.py"], "base", root,
+                    )
+                self.assertIn("unsupported trusted mutation command", str(ctx.exception))

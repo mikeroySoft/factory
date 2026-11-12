@@ -32,12 +32,11 @@ class MutationRunnerTrustRevisionTest(unittest.TestCase):
         base = Path(temporary.name).resolve()
         self.root = base / "repo"
         scratch = base / "tmp"
-        cache = base / "uv-cache"
         scratch.mkdir()
-        cache.mkdir()
+        # Inherit the host UV_CACHE_DIR so UV_OFFLINE sync can reuse wheels;
+        # only TMPDIR is isolated (uv lock files go there).
         environ = mock.patch.dict(os.environ, {
             "TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch),
-            "UV_CACHE_DIR": str(cache),
         })
         environ.start()
         self.addCleanup(environ.stop)

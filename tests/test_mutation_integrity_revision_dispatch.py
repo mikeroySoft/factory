@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import subprocess
+import types
 import unittest
+from unittest import mock
 
 import test_risk_merge as risk_tests
 
-from factory import config, dispatch, lifecycle, manage
+from factory import config, dispatch, generation, lifecycle, manage
 
 _SYNC_STAGED = dispatch.sync_staged
 _WAIT = ("WAIT", "base moved during mutation proof", False)
@@ -145,6 +147,79 @@ class MutationProofWaitCallerTest(unittest.TestCase):
             round=1, head=risk_tests.HEAD,
         )
         self.assertIsNone(dispatch.sync_staged(7, self.wt))
+
+    def test_sync_staged_does_not_treat_later_review_result_as_proof_wait(self) -> None:
+        # Eq->GtE would treat "review-result" as a proof wait, because
+        # "review-result" >= "mutation-proof-wait", when that row carries this head.
+        self._head_report()
+        dispatch.record(
+            "attempt", ticket=7, attempt=1, gate="PASS", head=risk_tests.HEAD, finished=True,
+        )
+        dispatch.record("mutation-proof-wait", ticket=7, head=risk_tests.HEAD, source="ticket review")
+        dispatch.record(
+            "review-result", ticket=7, verdict="REVISE", head=risk_tests.HEAD,
+        )
+        self.assertIsNone(dispatch.sync_staged(7, self.wt))
+
+    def test_sync_staged_ignores_a_proof_wait_at_a_lexicographically_different_head(self) -> None:
+        # A wait at another head plus a later PASS at this head is not a deferred
+        # reuse: only attempt==0 is reused when this head has no proof-wait.
+        # Eq->LtE / Eq->GtE would treat a smaller or larger wait head as a match
+        # and then pick up the PASS row.
+        self._head_report()
+        lesser, greater = "0" * 40, "f" * 40
+        self.assertLess(lesser, risk_tests.HEAD)
+        self.assertGreater(greater, risk_tests.HEAD)
+        dispatch.record(
+            "attempt", ticket=7, attempt=1, gate="PASS", head=risk_tests.HEAD, finished=True,
+        )
+        dispatch.record("mutation-proof-wait", ticket=7, head=lesser, source="ticket review")
+        self.assertIsNone(dispatch.sync_staged(7, self.wt))
+        dispatch.record("mutation-proof-wait", ticket=7, head=greater, source="ticket review")
+        self.assertIsNone(dispatch.sync_staged(7, self.wt))
+
+    def test_sync_staged_matches_a_deferred_head_by_equality(self) -> None:
+        # Eq->IsNot would miss a PASS row whose head is the same string object
+        # that rev-parse returned (stdout had no trailing newline, so strip is
+        # identity). JSON-round-tripped events would not kill that mutant.
+        head = risk_tests.HEAD
+        report = self._head_report()
+
+        def commands(args, **kwargs):
+            if args[:3] == ["git", "rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(args, 0, head, "")
+            return self.command_result(args, **kwargs)
+
+        self.command.side_effect = commands
+        rows = [
+            {"event": "attempt", "ticket": 7, "attempt": 1, "gate": "PASS", "head": head},
+            {"event": "mutation-proof-wait", "ticket": 7, "head": head, "source": "ticket review"},
+        ]
+        with mock.patch.object(
+            generation, "current", return_value=types.SimpleNamespace(rows=rows),
+        ):
+            self.assertEqual(dispatch.sync_staged(7, self.wt), (report.read_text(), head))
+
+    def test_sync_staged_without_a_proof_wait_reuses_only_attempt_zero(self) -> None:
+        report = self._head_report()
+        dispatch.record(
+            "attempt", ticket=7, attempt=-1, gate="PASS", head=risk_tests.HEAD,
+        )
+        self.assertIsNone(dispatch.sync_staged(7, self.wt))
+        dispatch.record("attempt", ticket=7, attempt=0, gate="PASS", head=risk_tests.HEAD)
+        self.assertEqual(dispatch.sync_staged(7, self.wt), (report.read_text(), risk_tests.HEAD))
+
+    def test_review_bounce_defers_when_proof_base_moves_during_rereview(self) -> None:
+        self.patch(dispatch, "pr_gate_and_review", side_effect=[
+            ("REVISE", "address findings", False),
+            _WAIT,
+        ])
+        dispatch.process_ticket(self.issue, 1, False, forced=True)
+        self.assertEqual(self.worker.call_count, 2)
+        self.escalate.assert_not_called()
+        waits = self.events("mutation-proof-wait")
+        self.assertEqual(len(waits), 1)
+        self.assertEqual(waits[0]["source"], "ticket re-review")
 
 
 if __name__ == "__main__":

@@ -290,5 +290,131 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
         self.assertEqual(self.review_roles, [])
 
 
+    def descendant_oid(self, parent: str, *, greater: bool) -> str:
+        for i in range(20_000):
+            oid = git(
+                self.repo, "commit-tree", f"{parent}^{{tree}}", "-p", parent,
+                "-m", f"move {i} {'gt' if greater else 'lt'}",
+            )
+            if oid != parent and (oid > parent) is greater:
+                return oid
+        self.fail(f"could not synthesize a descendant oid {'>' if greater else '<'} {parent}")
+
+    def test_merge_base_failure_is_not_ancestry(self) -> None:
+        # proof_base is between snapshot and current so the move path has to
+        # ask git; a signal or git error must not count as ancestry.
+        mid = git(
+            self.repo, "commit-tree", f"{self.old_base}^{{tree}}",
+            "-p", self.old_base, "-m", "intermediate",
+        )
+        tip = git(
+            self.repo, "commit-tree", f"{mid}^{{tree}}", "-p", mid, "-m", "tip",
+        )
+        report = proof("PASS", mid, self.head)
+        for code in (-9, 128):
+            failed = subprocess.CompletedProcess(["git", "merge-base"], code, "", "")
+            with mock.patch.object(dispatch, "run", return_value=failed):
+                self.assertFalse(dispatch._is_ancestor(self.repo, self.old_base, tip))
+                self.assertFalse(dispatch._moved_main_proof(
+                    self.repo, report, self.head, self.old_base, tip,
+                ))
+
+    def test_moved_main_proof_is_false_when_snapshot_or_current_is_missing_or_equal(self) -> None:
+        report = proof("PASS", self.new_base, self.head)
+        self.assertFalse(dispatch._moved_main_proof(
+            self.repo, report, self.head, None, self.new_base,
+        ))
+        self.assertFalse(dispatch._moved_main_proof(
+            self.repo, report, self.head, self.old_base, None,
+        ))
+        self.assertFalse(dispatch._moved_main_proof(
+            self.repo, report, self.head, self.new_base, self.new_base,
+        ))
+
+    def test_moved_main_proof_requires_base_on_the_snapshot_to_current_path(self) -> None:
+        off_path = git(
+            self.repo, "commit-tree", f"{self.new_base}^{{tree}}",
+            "-p", self.new_base, "-m", "descendant of current, not between snapshot and current",
+        )
+        report = proof("PASS", off_path, self.head)
+        self.assertFalse(dispatch._moved_main_proof(
+            self.repo, report, self.head, self.old_base, self.new_base,
+        ))
+
+    def test_moved_main_reruns_when_the_new_base_oid_is_lexicographically_greater(self) -> None:
+        greater = self.descendant_oid(self.old_base, greater=True)
+        git(self.repo, "update-ref", "refs/remotes/origin/main", self.old_base)
+        runs: dict[str, tuple[bool, str]] = {}
+
+        def moving_gate(*_args, **_kwargs):
+            git(self.repo, "update-ref", "refs/remotes/origin/main", greater)
+            return True, proof("PASS", greater, self.head)
+
+        with mock.patch.object(dispatch, "run_gate", side_effect=moving_gate) as runner:
+            verdict, _, pr_failed = dispatch.pr_gate_and_review(
+                self.repo, 7, "attempt report", self.head, runs,
+            )
+        self.assertFalse(pr_failed)
+        self.assertNotEqual(verdict, "REVISE")
+        self.assertGreaterEqual(runner.call_count, 1)
+        if runner.call_count == 1:
+            self.assertEqual(verdict, "WAIT")
+        else:
+            self.assertEqual(verdict, "APPROVE")
+
+    def test_twice_moved_base_defers_when_second_oid_is_lexicographically_greater(self) -> None:
+        first = self.descendant_oid(self.old_base, greater=True)
+        second = self.descendant_oid(first, greater=True)
+        self._assert_twice_moved_defers(first, second)
+
+    def test_twice_moved_base_defers_when_second_oid_is_lexicographically_lesser(self) -> None:
+        first = self.descendant_oid(self.old_base, greater=True)
+        second = self.descendant_oid(first, greater=False)
+        self._assert_twice_moved_defers(first, second)
+
+    def _assert_twice_moved_defers(self, first: str, second: str) -> None:
+        runs: dict[str, tuple[bool, str]] = {}
+        moved_bases = iter((first, second))
+
+        def stale_gate(*_args, **_kwargs):
+            moved = next(moved_bases)
+            git(self.repo, "update-ref", "refs/remotes/origin/main", moved)
+            return True, proof("PASS", moved, self.head)
+
+        with mock.patch.object(dispatch, "run_gate", side_effect=stale_gate) as runner:
+            verdict, _, pr_failed = dispatch.pr_gate_and_review(
+                self.repo, 7, "attempt report", self.head, runs,
+            )
+        self.assertEqual((verdict, pr_failed), ("WAIT", False))
+        self.assertEqual(runner.call_count, 2)
+        self.assertNotIn(self.head, runs)
+        self.assertEqual(self.review_roles, [])
+
+    def test_stale_proof_without_a_second_move_fails_closed_by_equality(self) -> None:
+        # After a single base move and rerun that is still STALE, equality (not
+        # identity) must turn the leftover STALE into a fail-closed proof.
+        stale = (" " + "STALE").lstrip()
+        self.assertEqual(stale, "STALE")
+        self.assertIsNot(stale, "STALE")
+        real = dispatch._mutation_proof
+
+        def copy_stale(report: str, head: str, base: str | None):
+            result = real(report, head, base)
+            if result and result[0] == "STALE":
+                return stale, result[1]
+            return result
+
+        git(self.repo, "update-ref", "refs/remotes/origin/main", self.old_base)
+        with mock.patch.object(dispatch, "_mutation_proof", side_effect=copy_stale),                 mock.patch.object(
+                    dispatch, "run_gate",
+                    return_value=(True, proof("PASS", self.old_base, "f" * 40)),
+                ):
+            verdict, _, pr_failed = dispatch.pr_gate_and_review(
+                self.repo, 7, "attempt report", self.head, {},
+            )
+        self.assertEqual((verdict, pr_failed), ("REVISE", True))
+        self.assertEqual(self.review_roles, [])
+
+
 if __name__ == "__main__":
     unittest.main()

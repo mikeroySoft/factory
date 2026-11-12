@@ -174,5 +174,68 @@ class SharedRuleTest(Fixture):
         self.assertEqual(mutation_scope.parse(""), ())
 
 
+class HunkBoundsTest(unittest.TestCase):
+    """parse() must keep later hunks and fail closed on a malformed counter."""
+
+    def test_context_lines_do_not_drop_a_later_hunk(self) -> None:
+        blob = "a" * 40
+        diff = (
+            f"index {blob}..{blob}\n"
+            "+++ b/factory/a.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            " unchanged\n"
+            "-old\n"
+            "+new\n"
+            "@@ -10 +10 @@\n"
+            "-gone\n"
+            "+here\n"
+        )
+        parsed = mutation_scope.parse(diff)
+        self.assertEqual(parsed, (("factory/a.py", blob, (1, 2, 10)),))
+
+    def test_no_newline_marker_does_not_drop_a_later_hunk(self) -> None:
+        blob = "a" * 40
+        diff = (
+            f"index {blob}..{blob}\n"
+            "+++ b/factory/a.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-old\n"
+            "\\ No newline at end of file\n"
+            "+new\n"
+            " trailing\n"
+            "@@ -8 +8 @@\n"
+            "-gone\n"
+            "+here\n"
+        )
+        parsed = mutation_scope.parse(diff)
+        self.assertEqual(parsed, (("factory/a.py", blob, (1, 2, 8)),))
+
+    def test_an_extra_new_line_in_a_hunk_fails_closed(self) -> None:
+        blob = "a" * 40
+        diff = (
+            f"index {blob}..{blob}\n"
+            "+++ b/factory/a.py\n"
+            "@@ -1,2 +1 @@\n"
+            "-keep-counting\n"
+            "+one\n"
+            "+extra\n"
+        )
+        with self.assertRaises(mutation_scope.ScopeError):
+            mutation_scope.parse(diff)
+
+    def test_an_extra_old_line_in_a_hunk_fails_closed(self) -> None:
+        blob = "a" * 40
+        diff = (
+            f"index {blob}..{blob}\n"
+            "+++ b/factory/a.py\n"
+            "@@ -1 +1,2 @@\n"
+            "+keep-counting\n"
+            "-one\n"
+            "-extra\n"
+        )
+        with self.assertRaises(mutation_scope.ScopeError):
+            mutation_scope.parse(diff)
+
+
 if __name__ == "__main__":
     unittest.main()

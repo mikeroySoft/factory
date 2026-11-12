@@ -52,5 +52,104 @@
   "mutated": "        report(False, \"land_host\", cfg.land_host, info=True)",
   "argument": "The mutated call passes info=True, and the nested report() at onboard.py:497-499 computes `tag = \"INFO\" if info else \"PASS\" if status else (\"WARN\" if status is None else \"FAIL\")` (onboard.py:498): when info is True the first branch is taken and `status` is never read. The row appended is {\"status\": tag, \"label\", \"detail\"} (onboard.py:499) and `status` is not stored anywhere else, so report(True, ...) and report(False, ..., info=True) produce the identical INFO row with the same label and detail; no input (cfg.land_host value, host config) can make the two differ. The sibling calls on onboard.py:555 and 557 (host_name, triage_host) have the same form.",
   "reviewer": "Factory PM ruling r3-1155 accepted Nov 11 2026 (equivalent by the info=True branch at onboard.py:498)"
+ },
+ {
+  "file": "factory/gate.py",
+  "line": 227,
+  "operator": "core/ReplaceBinaryOperator_BitOr_Add",
+  "original": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)",
+  "mutated": "        fd = os.open(path, os.O_RDONLY + os.O_NOFOLLOW | os.O_NONBLOCK)",
+  "argument": "Parses as (O_RDONLY + O_NOFOLLOW) | O_NONBLOCK. O_RDONLY is 0 on every POSIX platform this module supports (Linux and Darwin fcntl.h; Windows is not one: the call also needs os.O_NOFOLLOW and os.O_NONBLOCK). 0 + X == 0 | X, so the value passed to os.open is identical to O_RDONLY | O_NOFOLLOW | O_NONBLOCK. Cited constants: Linux asm-generic/fcntl.h O_RDONLY=0, O_NOFOLLOW=0x20000, O_NONBLOCK=0x800 (measured 0 / 131072 / 2048 on this host); Darwin sys/fcntl.h O_RDONLY=0x0000, O_NOFOLLOW=0x0100, O_NONBLOCK=0x0004. No input to _read_proof_file can change those flags, which are fixed at import.",
+  "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
+ },
+ {
+  "file": "factory/gate.py",
+  "line": 227,
+  "operator": "core/ReplaceBinaryOperator_BitOr_BitXor",
+  "original": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)",
+  "mutated": "        fd = os.open(path, os.O_RDONLY ^ os.O_NOFOLLOW | os.O_NONBLOCK)",
+  "argument": "Parses as (O_RDONLY ^ O_NOFOLLOW) | O_NONBLOCK. O_RDONLY is 0 (Linux and Darwin fcntl.h; see the BitOr_Add entry at this call site). 0 ^ X == 0 | X, so os.open receives the same int as O_RDONLY | O_NOFOLLOW | O_NONBLOCK. Flags are fixed at import; no path argument changes them.",
+  "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
+ },
+ {
+  "file": "factory/gate.py",
+  "line": 227,
+  "operator": "core/ReplaceBinaryOperator_BitOr_BitXor",
+  "original": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)",
+  "mutated": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW ^ os.O_NONBLOCK)",
+  "argument": "Parses as O_RDONLY | (O_NOFOLLOW ^ O_NONBLOCK). X ^ Y == X | Y whenever X & Y == 0. O_NOFOLLOW and O_NONBLOCK are disjoint at this call site: Linux 0x20000 & 0x800 == 0 (measured 131072 & 2048 == 0); Darwin 0x0100 & 0x0004 == 0. O_RDONLY is 0 and does not overlap either flag. So os.open receives the same int as the '|' form. Flags are fixed at import.",
+  "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
+ },
+ {
+  "file": "factory/gate.py",
+  "line": 227,
+  "operator": "core/ReplaceBinaryOperator_BitOr_Add",
+  "original": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)",
+  "mutated": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW + os.O_NONBLOCK)",
+  "argument": "Parses as O_RDONLY | (O_NOFOLLOW + O_NONBLOCK). X + Y == X | Y whenever X & Y == 0. O_NOFOLLOW and O_NONBLOCK are disjoint at this call site (Linux 0x20000 & 0x800 == 0; Darwin 0x0100 & 0x0004 == 0; O_RDONLY is 0). So os.open receives the same int as the '|' form. Flags are fixed at import.",
+  "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
+ },
+ {
+  "file": "factory/gate.py",
+  "line": 236,
+  "operator": "core/ReplaceBinaryOperator_Add_BitXor",
+  "original": "        return os.read(fd, MUTATION_PROOF_MAX_BYTES + 1)",
+  "mutated": "        return os.read(fd, MUTATION_PROOF_MAX_BYTES ^ 1)",
+  "argument": "MUTATION_PROOF_MAX_BYTES is the constant 64 * 1024 = 65536 (gate.py:36), a power of two, so MUTATION_PROOF_MAX_BYTES & 1 == 0. Therefore MUTATION_PROOF_MAX_BYTES + 1 == MUTATION_PROOF_MAX_BYTES ^ 1 == 65537, the count _read_proof_file uses to detect an oversized record. The operands at this call site are disjoint and fixed; no input changes the read size.",
+  "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
+ },
+ {
+  "file": "factory/gate.py",
+  "line": 236,
+  "operator": "core/ReplaceBinaryOperator_Add_BitOr",
+  "original": "        return os.read(fd, MUTATION_PROOF_MAX_BYTES + 1)",
+  "mutated": "        return os.read(fd, MUTATION_PROOF_MAX_BYTES | 1)",
+  "argument": "MUTATION_PROOF_MAX_BYTES is 64 * 1024 = 65536 (gate.py:36) and MUTATION_PROOF_MAX_BYTES & 1 == 0, so MUTATION_PROOF_MAX_BYTES + 1 == MUTATION_PROOF_MAX_BYTES | 1 == 65537. Same read size as the original, used to detect overflow. Operands are disjoint and fixed at this call site.",
+  "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
+ },
+ {
+  "file": "factory/gate.py",
+  "line": 348,
+  "operator": "core/ReplaceTrueWithFalse",
+  "original": "        target.parent.mkdir(parents=True, exist_ok=True)",
+  "mutated": "        target.parent.mkdir(parents=False, exist_ok=True)",
+  "argument": "The only production caller is run_mutation_proof (gate.py:397-400), which passes Path(directory) from tempfile.TemporaryDirectory, so directory always pre-exists. The names written are scripts/mutation.py, factory/__init__.py and factory/mutation_scope.py: each target.parent is a single direct child of directory (scripts/ or factory/). mkdir(parents=False) creates that one level when the parent (directory) already exists, identically to parents=True. No other caller of _trusted_mutation_command exists outside tests that also pass an already-created TemporaryDirectory.",
+  "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
+ },
+ {
+  "file": "factory/dispatch.py",
+  "line": 3264,
+  "operator": "core/ReplaceComparisonOperator_NotEq_IsNot",
+  "original": "                if current_base != base_commit and _moved_main_proof(",
+  "mutated": "                if current_base is not base_commit and _moved_main_proof(",
+  "argument": "!= and 'is not' disagree only when current_base == base_commit as values but are not the same object. In that case the 'and' still short-circuits to False, because _moved_main_proof(wt, report, head, base_commit, current_base) hits the guard at dispatch.py:3124 (`if not snapshot or not current or snapshot == current: return False`). When the values differ, != and 'is not' agree. So the if-body never runs under one form and not the other.",
+  "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
+ },
+ {
+  "file": "factory/dispatch.py",
+  "line": 3278,
+  "operator": "core/ReplaceComparisonOperator_Eq_GtE",
+  "original": "                        verdict == \"STALE\" and ok and current_base != base_commit",
+  "mutated": "                        verdict >= \"STALE\" and ok and current_base != base_commit",
+  "argument": "At this site verdict comes only from `_mutation_proof(...) or (\"FAIL\", None)` (dispatch.py:3274-3276). _mutation_proof returns one of PASS, FAIL, SKIP, or STALE (a listed status, a stale binding, or FAIL on a malformed report). For that closed set, verdict >= \"STALE\" is true only for \"STALE\": FAIL, PASS and SKIP are all lexicographically less than STALE (F/P before S; SKIP is S+K before S+T). So verdict >= \"STALE\" and verdict == \"STALE\" agree for every reachable value.",
+  "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
+ },
+ {
+  "file": "factory/gate.py",
+  "line": 351,
+  "operator": "core/ReplaceComparisonOperator_Gt_GtE",
+  "original": "    uv = len(cmd) > 2 and Path(cmd[0]).name == \"uv\" and cmd[1] == \"run\"",
+  "mutated": "    uv = len(cmd) >= 2 and Path(cmd[0]).name == \"uv\" and cmd[1] == \"run\"",
+  "argument": "_trusted_mutation_command only reaches this line after confirming \"scripts/mutation.py\" is a token in cmd (gate.py:339). Any command that also has cmd[1] == \"run\" therefore has at least [\"uv\", \"run\", \"scripts/mutation.py\"], so len(cmd) >= 3. The two comparisons len(cmd) > 2 and len(cmd) >= 2 then agree on every command that can satisfy the rest of the predicate; commands of length 2 cannot contain both \"run\" at [1] and \"scripts/mutation.py\".",
+  "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
+ },
+ {
+  "file": "factory/gate.py",
+  "line": 351,
+  "operator": "core/NumberReplacer",
+  "original": "    uv = len(cmd) > 2 and Path(cmd[0]).name == \"uv\" and cmd[1] == \"run\"",
+  "mutated": "    uv = len(cmd) > 1 and Path(cmd[0]).name == \"uv\" and cmd[1] == \"run\"",
+  "argument": "Same reachability as the Gt_GtE entry at this line: after the \"scripts/mutation.py\" token check, any command with cmd[1] == \"run\" has len(cmd) >= 3. Therefore len(cmd) > 1 and len(cmd) > 2 agree on every command that can make the uv predicate true; a length-2 command cannot hold both \"run\" and the producer token.",
+  "reviewer": "Factory PM ruling r3-2300 accepted Nov 11 2026 (equivalent with a site-specific written reason)"
  }
 ]
