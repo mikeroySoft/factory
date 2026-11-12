@@ -628,6 +628,9 @@ class LessonsFileTest(unittest.TestCase):
 
 
 class DoctorSigningKeyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(mock.patch("factory.claims.repository_host_problem", return_value=None))
+
     def test_doctor_warns_when_configured_ssh_signing_key_is_not_registered(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -646,10 +649,6 @@ class DoctorSigningKeyTest(unittest.TestCase):
             commands: list[list[str]] = []
 
             def command(argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None):
-                if argv[:3] == ["gh", "api", "--paginate"]:
-                    return subprocess.CompletedProcess(argv, 0, "[]", "")
-                if argv == ["gh", "api", "user"]:
-                    return subprocess.CompletedProcess(argv, 0, json.dumps({"login": "factory"}), "")
                 commands.append(argv)
                 if argv == ["gh", "api", "user", "--jq", ".login"]:
                     return subprocess.CompletedProcess(argv, 0, "mikeroysoft-agent\n", "")
