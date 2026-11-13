@@ -603,7 +603,7 @@ class RealConfigDurationCases(real_config.RealConfigCallerTest):
         self.assertEqual((self.root / config.CONFIG_NAME).read_text(), real_config.CANDIDATE)
         check = self.mutation_check()
         self.assertEqual((check.when, check.proof, check.run), ("pr", config.MUTATION_PROOF, REPO))
-        self.assertEqual(self.cfg.check_timeout, 1200)
+        self.assertEqual(self.cfg.check_timeout, 3600)
 
         result = self.invoke_with([clocked_runner(self.seen)], mutation_duration=1800)
         argv = self.gate_cmds[0]
@@ -630,7 +630,7 @@ class RealConfigDurationCases(real_config.RealConfigCallerTest):
         row = self.risk_rows()[-1]
         self.assertEqual((row["mutation_proof"], row["mutation_base"], row["mutation_scope"]),
                          (config.MUTATION_PROOF, self.base, scope.fingerprint))
-        self.assertEqual(gate.CHECK_TIMEOUT, 1200)
+        self.assertEqual(gate.CHECK_TIMEOUT, 3600)
 
     def test_real_config_worktree_only_opt_in_ignores_even_an_invalid_duration(self) -> None:
         self.changed = "M\t.factory.toml\nM\tfactory/example.py\n"
@@ -650,12 +650,12 @@ class RealConfigDurationCases(real_config.RealConfigCallerTest):
         self.assertEqual(self.loaded_roots, [self.main.resolve()])
         self.assertEqual([(c.args, c.timeouts) for c in self.children],
                          [([*REPO, "--blocking"], [self.cfg.check_timeout])])
-        self.assertEqual(self.cfg.check_timeout, 1200)
+        self.assertEqual(self.cfg.check_timeout, 3600)
         self.assertNotIn(mutation.PROOF_ENV, self.children[0].kwargs["env"])
         self.assertNotIn("mutation_proof", self.risk_rows()[-1])
         self.assertEqual(result["gate_exit"], 0)
         self.assertEqual(result["risk"], [("PASS", "PASS")])
-        self.assertEqual(gate.CHECK_TIMEOUT, 1200)
+        self.assertEqual(gate.CHECK_TIMEOUT, 3600)
 
 
 # Only the two duration cases above run here; the parent's own cases run from their module.
