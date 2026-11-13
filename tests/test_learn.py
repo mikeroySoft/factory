@@ -632,6 +632,12 @@ class DoctorSigningKeyTest(unittest.TestCase):
         self.enterContext(mock.patch("factory.claims.repository_host_problem", return_value=None))
 
     def test_doctor_warns_when_configured_ssh_signing_key_is_not_registered(self) -> None:
+        self.enterContext(mock.patch.dict(os.environ))
+        for name in list(os.environ):
+            if name in ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS") or name.startswith(
+                ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+            ):
+                del os.environ[name]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
