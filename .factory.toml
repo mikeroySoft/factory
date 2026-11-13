@@ -72,6 +72,13 @@ theme = ".factory-dashboard.css"
 [dispatch]
 review_rounds = 3
 max_active = 4
+# Mitigation for #761. dispatch treats any commit or handoff as "done" and terminates the worker
+# after exit_grace seconds of quiet (default 300). Workers run their own `factory gate`, which stays
+# quiet for longer than 300 s, so working workers were killed as hung_after_done (6 of 9 Ultron
+# attempts, plus #731 on Tank). budget_min still bounds a truly hung worker and idle_timeout is
+# unchanged. The real fix (no exit_grace while the worker has a live child) stays in #761; drop this
+# override when it lands.
+exit_grace = 1800
 
 [release]
 auto = true
