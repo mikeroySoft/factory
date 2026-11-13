@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,6 +38,8 @@ class MutationRunnerTrustRevisionTest(unittest.TestCase):
         # only TMPDIR is isolated (uv lock files go there).
         environ = mock.patch.dict(os.environ, {
             "TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch),
+            # Reuse the suite's cached wheels, not a different Python found on PATH.
+            "UV_PYTHON": sys.executable,
         })
         environ.start()
         self.addCleanup(environ.stop)

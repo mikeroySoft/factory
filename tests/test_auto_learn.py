@@ -257,6 +257,11 @@ class PromotionTest(unittest.TestCase):
                           "isDraft": False, "reviewDecision": ""}]
         self.compare = {"behind_by": 0, "files": [{"filename": ".factory-lessons.md"}]}
         self.gh.side_effect = lambda args: self.compare if "/compare/" in args[1] else self.open_prs
+        previous = self.gh.side_effect
+        self.gh.side_effect = lambda args: (
+            {"isDraft": self.open_prs[0]["isDraft"], "labels": self.open_prs[0].get("labels", [])}
+            if args[-1] == "isDraft,labels" else previous(args)
+        )
 
     def journal(self, *rows: dict) -> None:
         with self.events.open("a") as f:

@@ -51,6 +51,11 @@ class PromoteRegressionTest(unittest.TestCase):
             "gh_json",
             side_effect=lambda args: self.compare if args[0] == "api" else {},
         ))
+        previous = self.gh.side_effect
+        self.gh.side_effect = lambda args: (
+            {"isDraft": self.pr["isDraft"], "labels": self.pr.get("labels", [])}
+            if args[-1] == "isDraft,labels" else previous(args)
+        )
 
     def journal(self, *rows: dict) -> None:
         with self.events.open("a") as handle:
@@ -387,6 +392,10 @@ class PromoteRegressionTest(unittest.TestCase):
                 self.gh.side_effect = lambda args, state=state: (
                     self.compare if args[0] == "api" else {"mergeStateStatus": state}
                 )
+                previous = self.gh.side_effect
+                self.gh.side_effect = lambda args, previous=previous: (
+                    {"isDraft": False, "labels": []} if args[-1] == "isDraft,labels" else previous(args)
+                )
 
                 def reject_merge(args: list[str], refusal=refusal, **_kwargs) -> subprocess.CompletedProcess:
                     if args[:3] == ["gh", "pr", "merge"]:
@@ -456,6 +465,10 @@ class PromoteRegressionTest(unittest.TestCase):
         ))
         open_prs = [self.pr]
         self.gh.side_effect = lambda args: self.compare if args[0] == "api" else open_prs
+        previous = self.gh.side_effect
+        self.gh.side_effect = lambda args: (
+            {"isDraft": self.pr["isDraft"], "labels": []} if args[-1] == "isDraft,labels" else previous(args)
+        )
         new = "b" * 40
 
         def refreshed(*_args) -> None:
@@ -565,6 +578,7 @@ class MergeRefreshTest(unittest.TestCase):
                                 mock.patch.object(dispatch, "pr_checks", return_value=[{"bucket": "pass"}]), \
                                 mock.patch.object(dispatch, "gh_json", return_value={
                                     "behind_by": 0, "files": [{"filename": config.LESSONS_NAME}],
+                                    "isDraft": False, "labels": [],
                                 }):
                             for _ in range(3):
                                 learn.promote_pass([pr])

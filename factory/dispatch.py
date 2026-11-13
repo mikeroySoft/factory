@@ -4791,6 +4791,8 @@ def merge_pass_locked(dry_run: bool) -> None:
             continue
         if FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}:
             continue
+        if "factory-held" in {label["name"] for label in pr["labels"]}:
+            continue
         if pr["reviewDecision"] == "CHANGES_REQUESTED":
             log(f"PR #{pr['number']}: human requested changes; not merging")
             continue
@@ -4907,6 +4909,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 or fresh.get("baseRefName") != cfg.main
                 or fresh.get("isDraft")
                 or FACTORY_APPROVED not in labels
+                or "factory-held" in labels
                 or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
             ):
                 log(f"PR #{pr_num}: state changed during eligibility check; not merging")
@@ -5093,6 +5096,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 or final.get("baseRefName") != cfg.main
                 or final.get("isDraft")
                 or FACTORY_APPROVED not in final_labels
+                or "factory-held" in final_labels
                 or final.get("reviewDecision") == "CHANGES_REQUESTED"
             ):
                 log(f"PR #{pr_num}: head, label, or human review changed before merge; not merging")
