@@ -936,6 +936,11 @@ def frontier_pass(dry_run: bool = False) -> None:
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dispatch.lock_held(lock_path):
             continue
+        if cfg.host_name is not None:
+            elected = dispatch.elected_host_claim(dispatch.host_claims(n))
+            if elected is not None and elected["host"] != cfg.host_name:
+                dispatch.log(f"PR #{number}: skipped, elected claim belongs to host {elected['host']}")
+                continue
         with (
             (nullcontext() if dry_run else lifecycle.scope(
                 dispatch.EVENTS, "manage", ticket=n, lazy=True

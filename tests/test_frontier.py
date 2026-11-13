@@ -47,6 +47,7 @@ class FrontierTest(unittest.TestCase):
         self.pr = pr_row()
         self.mutations: list[list[str]] = []
         self.manager_output = "DECISION: HUMAN\nnothing"
+        self.claim_comments: list[dict] = []
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=self.gh_json))
         self.enterContext(mock.patch.object(dispatch, "run", side_effect=self.fake_run))
         self.enterContext(mock.patch.object(dispatch, "pr_checks", return_value=[]))
@@ -75,8 +76,10 @@ class FrontierTest(unittest.TestCase):
             return {"id": "I_79", "number": 79, "url": "https://github.com/example/project/issues/79",
                     "title": "Ticket", "body": "Scope", "state": "OPEN",
                     "labels": [{"name": n} for n in self.issue_labels]}
+        if args[:2] == ["api", "user"]:
+            return {"login": "factory-bot"}
         if args[-1] == "repos/example/project/issues/79/comments":
-            return [[]]  # host-claim comments: none (escalate reads them when host_name is set)
+            return [self.claim_comments]  # host-claim comments (escalate reads them when host_name is set)
         raise AssertionError(args)
 
     def fake_run(self, cmd, *a, **kw):
@@ -383,6 +386,30 @@ class FrontierTest(unittest.TestCase):
         self.assertTrue(any(m.startswith("PR #80: not factory-owned") for m in logs), logs)
         self.assertEqual(self.escalations(), [])
         self.assertEqual(self.mutations, [])
+
+    def test_moved_ticket_claimed_in_both_journals_is_shepherded_only_by_the_elected_host(self) -> None:
+        # #777: ticket 79 moved tank -> ultron, so both hosts' journals hold a `claimed` row;
+        # the issue's elected host claim (tank's expired, ultron's live) decides frontier ownership.
+        old, now = datetime.now(UTC) - timedelta(days=2), datetime.now(UTC)
+        self.claim_comments = [
+            {"id": i, "user": {"login": "factory-bot"}, "created_at": at.isoformat(),
+             "body": f"Factory claim: host={host} nonce=n{i} at={at.isoformat()}"}
+            for i, (host, at) in enumerate((("tank", old), ("ultron", now)), 1)]
+        escalated = {}
+        for host in ("tank", "ultron"):
+            journal = tempfile.TemporaryDirectory()
+            self.addCleanup(journal.cleanup)
+            (Path(journal.name) / ".factory").mkdir()
+            self.cfg = config.Config(Path(journal.name), "example/project", manager=["manager-stub"], manager_stale_days=7)
+            dispatch.configure(self.cfg)
+            dispatch.record("claimed", ticket=79)  # this host's own journal claims ticket 79
+            self.quiet_provider()
+            self.mutations.clear()
+            with mock.patch.object(dispatch, "pr_checks", return_value=[
+                    {"name": "gate", "bucket": "fail", "completedAt": "2026-10-07T18:52:10Z"}]):
+                self.manage_on(host)
+            escalated[host] = ([e["reason"] for e in self.escalations()], bool(self.mutations))
+        self.assertEqual(escalated, {"tank": ([], False), "ultron": (["PR #80: CI failed (gate)"], True)})
 
 
 class CloseDecisionTest(unittest.TestCase):
