@@ -628,6 +628,9 @@ class LessonsFileTest(unittest.TestCase):
 
 
 class DoctorSigningKeyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enterContext(mock.patch("factory.claims.repository_host_problem", return_value=None))
+
     def test_doctor_warns_when_configured_ssh_signing_key_is_not_registered(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

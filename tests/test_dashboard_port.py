@@ -98,6 +98,10 @@ class DashboardPortTest(unittest.TestCase):
         calls: list[list[str]] = []
 
         def command(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+            if cmd[:3] == ["gh", "api", "--paginate"]:
+                return subprocess.CompletedProcess(cmd, 0, "[]", "")
+            if cmd == ["gh", "api", "user"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"login": "factory"}), "")
             calls.append(cmd)
             if cmd[0] == "ss":
                 self.assertEqual(cmd, ["ss", "-ltnp", f"sport = :{self.cfg.dashboard_port}"])
@@ -121,7 +125,9 @@ class DashboardPortTest(unittest.TestCase):
         with patch.object(onboard.config, "load", return_value=self.cfg), \
                 patch.object(onboard.config, "host_config", return_value={}), \
                 patch.object(onboard.config, "host_config_path", return_value=self.host_path), \
+                patch("factory.claims.repository_host_problem", return_value=None), \
                 patch.object(onboard, "sh", side_effect=command), \
+                patch.object(onboard, "sh", side_effect=lambda cmd, env=None, **kwargs: command(cmd, **kwargs)), \
                 patch.object(onboard.shutil, "which", return_value="/bin/tool"), \
                 patch.object(onboard.urllib.request, "urlopen", return_value=MagicMock()), \
                 redirect_stdout(output):

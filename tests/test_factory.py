@@ -196,6 +196,18 @@ def stub_bin(tmp: Path, **scripts: str) -> str:
     bindir = tmp / "bin"
     bindir.mkdir(exist_ok=True)
     for name, body in scripts.items():
+        if name == "gh":
+            body = '''
+case "$*" in
+  "api rate_limit")
+    echo '{"resources":{"core":{"remaining":5000},"graphql":{"remaining":5000}}}'
+    exit 0;;
+  "api --paginate --slurp repos/"*"/labels?per_page=100" | \
+  "api --paginate --slurp repos/"*"/issues/comments?per_page=100")
+    echo '[[]]'
+    exit 0;;
+esac
+''' + body
         exe = bindir / name
         exe.write_text(f'#!/bin/sh\necho "$@" >> "{bindir / name}.log"\n{body}\n')
         exe.chmod(0o755)
@@ -2450,6 +2462,7 @@ class DispatchTest(unittest.TestCase):
             return real_gh_json(args, *positional, **kwargs)
 
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=github))
+        self.enterContext(mock.patch.object(dispatch, "github_preflight", return_value=None))
 
     def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
         from unittest import mock
@@ -5079,6 +5092,11 @@ esac
 
 
 class TriageProbeOnboardingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from unittest.mock import patch
+
+        self.enterContext(patch("factory.claims.repository_host_problem", return_value=None))
+
     def tearDown(self) -> None:
         host_file("")
 

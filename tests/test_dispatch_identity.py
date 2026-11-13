@@ -136,6 +136,10 @@ class DoctorIdentityTest(unittest.TestCase):
             return logins[env.get("GH_CONFIG_DIR", "human")]
 
         def command(cmd, cwd=None):
+            if cmd[:3] == ["gh", "api", "--paginate"]:
+                return subprocess.CompletedProcess(cmd, 0, "[]", "")
+            if cmd == ["gh", "api", "user"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"login": "factory"}), "")
             out = {"view": "ADMIN\n", "list": json.dumps(list(config.LABELS))}.get(cmd[2] if cmd[0] == "gh" else "", "")
             return subprocess.CompletedProcess(cmd, 0, out, "")
 
@@ -144,7 +148,9 @@ class DoctorIdentityTest(unittest.TestCase):
             cfg = make_cfg(Path(d), **install)
             with mock.patch.object(onboard.config, "load", return_value=cfg), \
                     mock.patch.object(onboard.config, "host_config", return_value={}), \
+                    mock.patch("factory.claims.repository_host_problem", return_value=None), \
                     mock.patch.object(onboard, "sh", side_effect=command), \
+                    mock.patch.object(onboard, "sh", side_effect=lambda cmd, env=None, **kwargs: command(cmd, **kwargs)), \
                     mock.patch.object(onboard, "gh_login", side_effect=login), \
                     mock.patch.object(onboard, "_dashboard_port_check", return_value=(True, "")), \
                     mock.patch.object(onboard.shutil, "which", return_value="/bin/tool"), \

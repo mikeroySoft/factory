@@ -24,6 +24,7 @@ class LearningProgressTest(unittest.TestCase):
             dispatch, create=True, cfg=self.cfg, ROOT=self.root, REPO=self.cfg.repo,
             FACTORY=self.cfg.factory, EVENTS=self.events,
         ))
+        self.enterContext(mock.patch.object(dispatch, "github_preflight", return_value=None))
         self.prs = [{"number": 42, "headRefName": "agent/lessons-pending"}]
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=lambda _: self.prs))
         self.enterContext(mock.patch.object(learn.triage, "call_llm", return_value="0.7"))

@@ -1629,6 +1629,34 @@ another host, even after that claim expires. It neither refreshes those branches
 nor consumes local approval evidence, removes `factory-approved`, or escalates
 them. PRs without a claim retain ordinary eligibility checks.
 
+Before any GitHub mutation, dispatch reads `gh api rate_limit` and requires at
+least **100 remaining** in both GraphQL and REST (`core`). Below either floor,
+or if the budget cannot be verified, it skips the whole pass (exit 0), logs the
+reason and reset time when available, and journals `pass-skipped` with reason
+`github_rate_limit`. Dry runs log without journaling. This is a pass-start
+safety margin, not a reservation: other hosts and clients can consume the shared
+account's budget after the check.
+
+Dispatch inspects paginated repository labels at pass start. Any `host:*` label
+requires `host_name`. When `host_name` is unset, dispatch also scans all paginated
+issue comments (including closed issues) and refuses valid host claims even if
+their repository labels were removed. Unreadable evidence refuses dispatch.
+Named hosts do not scan repository comment history at pass start, so their
+preflight cost does not grow with historical issue/PR conversations.
+
+Doctor inspects all paginated issue comments for every host.
+Valid claim comments require `host_name`; claim authors must match the
+dispatcher GitHub login when authored by that login or a repository owner,
+member, or collaborator. Outsider comments cannot establish host identity or
+block dispatch. Login comparison is case-insensitive. Doctor checks the effective
+dispatcher environment, including `install.dispatch_env`, and reports a blocking
+`host claims` FAIL on mismatch, missing identity, or unreadable evidence.
+Dispatch refuses unsafe repository host setups (exit 1), including `--ticket`
+and dry runs. It checks the selected ticket's claim authors at admission and
+after publishing a contender, closing the different-login election window.
+Foreign comments never gain cleanup authority; inspect and resolve incompatible
+claims before restarting.
+
 Inside the existing per-ticket lock, dispatch adds `host:<name>` and a comment
 whose first line is `Factory claim: host=<name> nonce=<uuid> at=<iso8601>`.
 Only comments authored by the authenticated dispatcher account count as claims.
@@ -1683,8 +1711,9 @@ same-host contender keeps its label. If comment deletion fails with the comment
 still present, cleanup restores the label and surfaces the error.
 Hosts need synchronized clocks and current GitHub reads. This comment-based
 lease is not a fencing token for a disconnected worker that outlives its TTL.
-With `host_name` unset, dispatch makes no host-label/comment calls; triage and
-landing always run, even when `triage_host` or `land_host` is configured.
+With `host_name` unset and no repository host evidence, ticket assignment retains
+the single-host path after preflight; triage and landing remain enabled even when
+`triage_host` or `land_host` is configured.
 
 
 `[worker_wrap]` is host-only: set `command` under `[defaults.worker_wrap]` or

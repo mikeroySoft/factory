@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, config, lifecycle, platform_identity
+from factory import __version__, claims, config, lifecycle, platform_identity
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -574,11 +574,25 @@ def doctor(argv: list[str]) -> int:
     if drift := config.engine_drift(cfg):
         report(None, "installed engine", drift)
 
-
     for tool in ("git", "gh"):
         report(shutil.which(tool) is not None, f"{tool} on PATH")
     auth = sh(["gh", "auth", "status"])
     report(auth.returncode == 0, "gh authenticated", "" if auth.returncode == 0 else (auth.stderr.strip().splitlines() or ["?"])[-1])
+    dispatcher_environment = {
+        **os.environ,
+        **cfg.install["env"],
+        **cfg.install.get("dispatch_env", {}),
+    }
+    def github_json(argv: list[str]) -> object:
+        result = sh(["gh", *argv], env=dispatcher_environment)
+        result.check_returncode()
+        return json.loads(result.stdout)
+
+    try:
+        host_problem = claims.repository_host_problem(cfg.repo, cfg.host_name, github_json)
+    except claims.HostSetupError as exc:
+        host_problem = str(exc)
+    report(host_problem is None, "host claims", host_problem or "repository host claims match dispatcher setup")
     if signing := ssh_signing_key_status(cfg):
         registered, detail = signing
         report(registered, "SSH signing key registered", detail)
