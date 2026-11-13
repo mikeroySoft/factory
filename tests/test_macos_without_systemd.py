@@ -42,6 +42,8 @@ DARWIN_CHILD = (
 
 
 def git(cwd: Path, *args: str) -> None:
+    # The restricted PATH deliberately excludes signers; fixture commits must stay unsigned.
+    args = ("-c", "commit.gpgsign=false", *args)
     subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True)
 
 
