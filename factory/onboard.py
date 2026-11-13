@@ -407,12 +407,7 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
         try:
             listeners = sh(["ss", "-ltnp", f"sport = :{port}"])
         except OSError as exc:
-            if isinstance(exc, FileNotFoundError) and platform_identity.darwin():
-                # The bind above already proved something holds the port; macOS has no `ss` to name it.
-                return False, dashboard_port_error(
-                    cfg, host, port, "is in use by an unknown process (`ss` is not available on this platform)"
-                )
-            return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {exc})")
+            return False, dashboard_port_error(cfg, host, port, _ss_failure(exc))
         if listeners.returncode != 0:
             detail = listeners.stderr.strip() or str(listeners.returncode)
             return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {detail})")
@@ -1002,6 +997,14 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
             ),
         })
     return result
+
+
+def _ss_failure(exc: OSError) -> str:
+    """Reason for a dashboard-port row when `ss` could not run (defined below the doctor rows so their line numbers stay put)."""
+    if isinstance(exc, FileNotFoundError) and platform_identity.darwin():
+        # The bind already proved something holds the port; macOS has no `ss` to name it.
+        return "is in use by an unknown process (`ss` is not available on this platform)"
+    return f"could not be checked (ss: {exc})"
 
 
 def systemctl(*args: str) -> None:
