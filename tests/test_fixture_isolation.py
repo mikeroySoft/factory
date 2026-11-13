@@ -39,3 +39,23 @@ class FixtureIsolationTest(unittest.TestCase):
             self.assertFalse(live.exists())
             rows = (Path(d) / "repo" / ".factory" / "events.jsonl").read_text().splitlines()
             self.assertEqual({json.loads(r)["ticket"] for r in rows}, {None})
+
+    def test_no_systemd_cli_fixtures_ignore_inherited_git_signing(self) -> None:
+        proc = subprocess.run(
+            [
+                sys.executable, "-m", "unittest",
+                "test_macos_without_systemd.DashboardJournalTest."
+                "test_dashboard_json_command_exits_zero_with_version_and_failures",
+                "test_macos_without_systemd.DoctorPortTest."
+                "test_doctor_json_is_valid_with_launchd_timer_and_names_the_port_conflict",
+            ],
+            cwd=ROOT / "tests", capture_output=True, text=True, check=False,
+            env=os.environ | {
+                "PYTHONPATH": str(ROOT),
+                "GIT_CONFIG_COUNT": "3",
+                "GIT_CONFIG_KEY_0": "commit.gpgsign", "GIT_CONFIG_VALUE_0": "true",
+                "GIT_CONFIG_KEY_1": "gpg.format", "GIT_CONFIG_VALUE_1": "openpgp",
+                "GIT_CONFIG_KEY_2": "gpg.program", "GIT_CONFIG_VALUE_2": "/nonexistent-signer",
+            },
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
