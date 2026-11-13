@@ -4,6 +4,10 @@
 [gate]
 protected_paths = [".factory.toml", "mutation-equivalents.json", "**/acceptance/**", "**/*review*prompt*", "TRACKING*", "**/TRACKING*"]
 add_only_paths = ["tests/**"]
+# #801: the `test` check hit the 1200 s default on every Ultron attempt; the full suite takes
+# about 1750 s there (r3-0620 solo runs, 2177 tests) versus about 600 s on Tank. Applies to every
+# check's per-run limit; a check that really hangs is still killed, and budget_min bounds the ticket.
+timeout = 3600
 
 [[gate.check]]
 name = "test"
@@ -72,13 +76,20 @@ theme = ".factory-dashboard.css"
 [dispatch]
 review_rounds = 3
 max_active = 4
-# Mitigation for #761. dispatch treats any commit or handoff as "done" and terminates the worker
-# after exit_grace seconds of quiet (default 300). Workers run their own `factory gate`, which stays
-# quiet for longer than 300 s, so working workers were killed as hung_after_done (6 of 9 Ultron
-# attempts, plus #731 on Tank). budget_min still bounds a truly hung worker and idle_timeout is
-# unchanged. The real fix (no exit_grace while the worker has a live child) stays in #761; drop this
-# override when it lands.
-exit_grace = 1800
+# #761: dispatch treats any commit or handoff as "done" and terminates the worker after exit_grace
+# seconds of quiet (default 300). "Quiet" watches only the worker's own log, HEAD, `git status` and
+# its handoff file (dispatch.py _activity/_watch); the worker's `factory gate` runs as a child whose
+# output goes to the worker, not that log, so it never resets the clock. The gate's test check runs
+# about 1750 s on Ultron, so working workers were killed as hung_after_done (6 of 9 Ultron attempts,
+# plus #731 on Tank). 3600 matches the gate timeout above and is about twice the measured suite time;
+# idle_timeout is unchanged. The real fix (no exit_grace while the worker has a live child) stays in #761.
+exit_grace = 3600
+# budget_min is one wall-clock deadline for the whole ticket: worker time plus the dispatcher's own
+# gate, across all max_attempts (3). Measured per attempt on Ultron: about 8 min of work, one worker
+# gate run (about 29 min) and the dispatcher gate (about 29 min), so 3 x (8 + 29 + 29 + 1) = 202 min;
+# 90 min escalated #517 and #609 as "budget" while their gates were still running (#801). Tank's
+# suite is about 10 min, so this only loosens the bound there.
+budget_min = 210
 
 [release]
 auto = true
