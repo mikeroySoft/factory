@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.13 — 2026-11-12
+
 - Dispatch refuses repositories with host labels or historical trusted claim comments when `host_name` is unset, even after host labels are removed, and rejects differing repository-owner/member/collaborator claim-author logins at ticket admission and election without trusting outsider comments. Doctor scans historical claims and reports blocking host-setup failures using the dispatcher identity. Passes skip before GitHub mutations when GraphQL or REST has fewer than 100 requests remaining or the budget is unreadable. Named hosts avoid scanning repository comment history at pass start (#732).
 - The manager frontier skips an `agent/<n>` PR when a named host's elected host claim for the ticket belongs to another host, as the merge stage already does, so a ticket that moved hosts and has `claimed` rows in both journals is shepherded only by its elected host (#777).
 
