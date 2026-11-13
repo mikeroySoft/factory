@@ -44,10 +44,14 @@ class FixtureIsolationTest(unittest.TestCase):
         proc = subprocess.run(
             [
                 sys.executable, "-m", "unittest",
-                "test_macos_without_systemd.DashboardJournalTest."
-                "test_dashboard_json_command_exits_zero_with_version_and_failures",
-                "test_macos_without_systemd.DoctorPortTest."
-                "test_doctor_json_is_valid_with_launchd_timer_and_names_the_port_conflict",
+                (
+                    "test_macos_without_systemd.DashboardJournalTest."
+                    "test_dashboard_json_command_exits_zero_with_version_and_failures"
+                ),
+                (
+                    "test_macos_without_systemd.DoctorPortTest."
+                    "test_doctor_json_is_valid_with_launchd_timer_and_names_the_port_conflict"
+                ),
             ],
             cwd=ROOT / "tests", capture_output=True, text=True, check=False,
             env=os.environ | {
