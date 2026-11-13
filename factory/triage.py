@@ -253,7 +253,10 @@ def watch_filed(issue: dict) -> bool:
                                if row.get("event") == "watch"}:
         return True
     author = (issue.get("author") or {}).get("login") or ""
-    return bool(author) and author.casefold() == login().casefold()
+    try:
+        return bool(author) and author.casefold() == login().casefold()
+    except subprocess.CalledProcessError:
+        return False
 
 def deterministic_needs_info(body: str, comments: str) -> str | None:
     """Cheap lint before the LLM: obviously under-specified -> needs-info."""
@@ -370,21 +373,29 @@ class EndpointTimeout(SystemExit):
 
 def call_llm(messages: list[dict], execution=None) -> str:
     started = time.monotonic()
-    payload = json.dumps(
-        {
-            "model": LLM_MODEL,
-            "messages": messages,
-            "temperature": 0.1,
-        }
-    ).encode()
+    body = {
+        "model": LLM_MODEL,
+        "messages": messages,
+        "temperature": 0.1,
+        "max_tokens": cfg.triage_max_tokens,
+    }
+    if cfg.triage_chat_template_kwargs is not None:
+        body["chat_template_kwargs"] = cfg.triage_chat_template_kwargs
+    payload = json.dumps(body).encode()
     req = urllib.request.Request(
         LLM_URL,
         data=payload,
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
-            body = json.load(resp)
+        state_home = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+        lock_path = state_home / "factory" / "triage-requests" / hashlib.sha256(LLM_URL.encode()).hexdigest()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Shared across repos and processes, including callers outside a triage pass.
+        with lock_path.open("a+b") as endpoint_lock:
+            fcntl.flock(endpoint_lock, fcntl.LOCK_EX)
+            with urllib.request.urlopen(req, timeout=cfg.triage_timeout) as resp:
+                body = json.load(resp)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         timed_out = isinstance(exc, TimeoutError) or (
             isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
@@ -711,7 +722,14 @@ def execute(args: argparse.Namespace, execution) -> int:
     replay = bool(args.replay)
     from factory.plan import is_initiative  # plan -> evidence -> dashboard: import lazily
 
-    if not (replay or args.dry_run) and (refused := identity_mismatch()):
+    try:
+        refused = None if replay or args.dry_run else identity_mismatch()
+    except subprocess.CalledProcessError as exc:
+        print(f"triage refused to post: GitHub login lookup failed: {exc.stderr.strip()}", file=sys.stderr)
+        if execution:
+            execution.outcome, execution.reason = LifecycleOutcome.MECHANISM_FAILURE, "github_command_failed"
+        return 1
+    if refused:
         print(f"triage refused to post: {refused}. Run it from the factory unit, whose "
               "[install].dispatch_env selects the dispatcher's gh config.", file=sys.stderr)
         if execution:

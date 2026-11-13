@@ -58,7 +58,10 @@ def graphql(*, query: str, variables: dict) -> dict:
 
 @functools.cache
 def _login(env: tuple[tuple[str, str], ...]) -> str:
-    return onboard.gh_login({**os.environ, **dict(env)})
+    try:
+        return onboard.gh_login({**os.environ, **dict(env)})
+    except subprocess.CalledProcessError:
+        return ""
 
 
 def dispatcher_login(c: Config) -> str:

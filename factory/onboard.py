@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, config, lifecycle
+from factory import __version__, config, lifecycle, platform_identity
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -43,9 +43,9 @@ def sh(
 
 
 def gh_login(env: dict[str, str]) -> str:
-    """`gh api user` login under `env`; empty when gh cannot authenticate."""
-    proc = subprocess.run(["gh", "api", "user", "--jq", ".login"], env=env, capture_output=True, text=True, check=False)
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+    """`gh api user` login under `env`; raise if the lookup fails."""
+    proc = subprocess.run(["gh", "api", "user", "--jq", ".login"], env=env, capture_output=True, text=True, check=True)
+    return proc.stdout.strip()
 
 
 def _ssh_key_material(root: Path, configured: str) -> str | None:
@@ -360,6 +360,22 @@ def _listener_conflicts(local: str, target: str) -> bool:
     return listener.is_unspecified or requested.is_unspecified or listener == requested
 
 
+def _wildcard_held(port: int) -> bool:
+    """Whether a wildcard listener covers `port`; raises OSError when it cannot tell."""
+    for family, address in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6:
+                probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            try:
+                probe.bind((address, port))
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE:
+                    raise
+                return True
+    return False
+
+
 def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[bool, str]:
     unit = f"{cfg.unit}-dashboard.service"
     try:
@@ -372,11 +388,19 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
         try:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(target)
-            collision = False
+            # BSD SO_REUSEADDR lets this specific bind succeed beside a listening
+            # wildcard (`0.0.0.0`, dual-stack `::`) that still serves the address.
+            collision = platform_identity.darwin() and _wildcard_held(port)
         except OSError as exc:
             if exc.errno != errno.EADDRINUSE:
                 return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
             collision = True
+
+        # Darwin has no `ss`. There, the target bind plus both wildcard probes
+        # succeeding is the positive evidence that nothing serves host:port.
+        # (A `0.0.0.0` host collides with its own held probe and stays closed.)
+        if not collision and platform_identity.darwin():
+            return True, f"available on {host}"
 
         # Keep a free probe held through `ss`; the later install-to-service bind
         # remains inherently racy. A collision that vanishes here fails closed.
@@ -531,6 +555,10 @@ def doctor(argv: list[str]) -> int:
         report(True, "host_name", cfg.host_name, info=True)
     if cfg.triage_host is not None:
         report(True, "triage_host", cfg.triage_host, info=True)
+    if cfg.land_host is not None:
+        report(True, "land_host", cfg.land_host, info=True)
+    if cfg.release_host is not None:
+        report(True, "release_host", cfg.release_host, info=True)
     if cfg.host_name is not None or any(
         isinstance(section, dict) and "claim_ttl" in section
         for section in effective_host_sections
@@ -555,8 +583,14 @@ def doctor(argv: list[str]) -> int:
         registered, detail = signing
         report(registered, "SSH signing key registered", detail)
     if dispatch_env := cfg.install.get("dispatch_env"):
-        dispatcher = gh_login({**os.environ, **cfg.install["env"], **dispatch_env})
-        dashboard = gh_login(config.dashboard_env(cfg))
+        try:
+            dispatcher = gh_login({**os.environ, **cfg.install["env"], **dispatch_env})
+        except subprocess.CalledProcessError:
+            dispatcher = ""
+        try:
+            dashboard = gh_login(config.dashboard_env(cfg))
+        except subprocess.CalledProcessError:
+            dashboard = ""
         same = dispatcher.casefold() == dashboard.casefold()
         report(
             bool(dispatcher and dashboard) and not same, "GitHub identities",
@@ -605,6 +639,10 @@ def doctor(argv: list[str]) -> int:
 
     for label, argv_t in cfg.workers.items():
         report(which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}", on_path)
+        probe = cfg.worker_probe.get(label)
+        report(True if probe else None, f"worker `{label}` login check", f"probe: {probe[0]}" if probe else (
+            f"no `[workers.{label}] probe`: its login is unverified until a launch fails, "
+            "and the manager cannot choose it"))
     if cfg.worker_wrap:
         report(which(cfg.worker_wrap[0]) is not None, f"worker wrap: {cfg.worker_wrap[0]}", on_path)
     report(which(cfg.reviewer[0]) is not None, f"reviewer: {cfg.reviewer[0]}", on_path)
@@ -649,16 +687,30 @@ def doctor(argv: list[str]) -> int:
         f"{cfg.llm_url} ({detail})" if alive else f"{cfg.llm_url} ({detail}); `factory triage` will not run",
     )
 
-    timer = sh(["systemctl", "--user", "is-active", f"{cfg.unit}.timer"]).stdout.strip()
-    report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
+    def timer_state(unit: str) -> str | None:
+        if shutil.which("systemctl") is None:
+            return None
+        try:
+            return sh(["systemctl", "--user", "is-active", unit]).stdout.strip()
+        except OSError:
+            return None
+
+    timer = timer_state(f"{cfg.unit}.timer")
+    if timer is None:
+        report(None, f"systemd timer {cfg.unit}.timer", "n/a (launchd)", info=True)
+    else:
+        report(True if timer == "active" else None, f"systemd timer {cfg.unit}.timer", timer or "not installed (factory install)")
     if cfg.triage_service:
         probe_timer = f"{cfg.unit}-triage-probe.timer"
-        active = sh(["systemctl", "--user", "is-active", probe_timer]).stdout.strip()
-        report(
-            True if active == "active" else None,
-            "triage liveness probe",
-            f"{probe_timer} {active}" if active else "not installed (factory install)",
-        )
+        active = timer_state(probe_timer)
+        if active is None:
+            report(None, "triage liveness probe", "n/a (launchd)", info=True)
+        else:
+            report(
+                True if active == "active" else None,
+                "triage liveness probe",
+                f"{probe_timer} {active}" if active else "not installed (factory install)",
+            )
     else:
         report(
             None,
@@ -705,7 +757,7 @@ result = {
     "platlib": sysconfig.get_path("platlib"),
 }
 try:
-    for name in ("factory", "factory.cli", "factory.triage", "factory.dispatch", "factory.dashboard"):
+    for name in ("factory", "factory.cli", "factory.drain", "factory.triage", "factory.dispatch", "factory.dashboard"):
         spec = importlib.util.find_spec(name)
         result["origins"][name] = spec.origin if spec else None
         module = importlib.import_module(name)
@@ -713,7 +765,7 @@ try:
     import factory
     result["version"] = getattr(factory, "__version__", "unknown")
     from factory.cli import COMMANDS
-    for command in ("triage", "triage-probe", "dispatch", "dashboard"):
+    for command in ("drain-check", "triage", "triage-probe", "dispatch", "dashboard"):
         entry = COMMANDS.get(command)
         if not entry:
             raise RuntimeError(f"missing {command} command")
@@ -823,7 +875,7 @@ def interpreter_probe(cfg: config.Config) -> tuple[bool, str]:
     identity = f"Factory {version} at {location}" if location else "Factory not importable"
     details = ", ".join(
         f"{name}={origins.get(name)}"
-        for name in ("factory", "factory.cli", "factory.triage", "factory.dispatch", "factory.dashboard")
+        for name in ("factory", "factory.cli", "factory.drain", "factory.triage", "factory.dispatch", "factory.dashboard")
     )
     details += f", purelib={result.get('purelib')}, platlib={result.get('platlib')}"
     identity += f" ({details})"
@@ -832,10 +884,16 @@ def interpreter_probe(cfg: config.Config) -> tuple[bool, str]:
         if not origin:
             continue
         # Check both spellings: resolving alone hides lexical checkout imports,
-        # while lexical checks alone miss symlinks back into the checkout.
-        for resolve in (False, True):
+        # while lexical checks alone miss symlinks back into the checkout. A
+        # directory alias in the origin's spelling (PYTHONPATH, __path__, /var on
+        # Darwin) must not hide a symlinked checkout file, so also resolve each
+        # directory prefix while keeping the rest of the origin lexical.
+        lexical = Path(os.path.abspath(origin))
+        spellings = [(lexical, False), (Path(origin).resolve(), True)] + [
+            (parent.resolve() / lexical.relative_to(parent), True) for parent in lexical.parents
+        ]
+        for loaded, resolve in spellings:
             root = cfg.root.resolve() if resolve else Path(os.path.abspath(cfg.root))
-            loaded = Path(origin).resolve() if resolve else Path(os.path.abspath(origin))
             package_roots = [
                 path.resolve() if resolve else Path(os.path.abspath(path)) for path in installed
             ]
@@ -879,6 +937,7 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
             f"[Unit]\nDescription=factory triage + dispatcher for {cfg.repo} (one pass)\n\n"
             # `-` prefix: an offline triage model must not stop the dispatch pass.
             f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
+            f"ExecCondition={exe} drain-check\n"
             f"ExecStart=-{exe} triage\nExecStart={exe} dispatch\n"
             # Post-pass monitor, after success or failure: systemd hands it $SERVICE_RESULT,
             # so a crashed pass files itself. `-`: the monitor never fails the unit.
@@ -948,6 +1007,10 @@ def install(argv: list[str]) -> int:
         help="dashboard bind address; 0.0.0.0 exposes /api/act (mutates GitHub with your gh credentials) to the LAN",
     )
     parser.add_argument("--print", action="store_true", help="print the units instead of installing them")
+    parser.add_argument(
+        "--enable", action="store_true",
+        help="enable and start installed units even if previously stopped or disabled",
+    )
     cfg = config.load()
     parser.set_defaults(**{k: cfg.install[k] for k in ("every", "dashboard", "host")})
     args = parser.parse_args(argv)
@@ -978,6 +1041,20 @@ def install(argv: list[str]) -> int:
             return 1
 
     udir = unit_dir()
+    prior = {}
+    for name in wanted:
+        enabled = sh(["systemctl", "--user", "is-enabled", name])
+        enabled_state = enabled.stdout.strip()
+        if enabled.returncode != 0 and not enabled_state:
+            # Older systemd reports missing units only on stderr.
+            loaded = sh(["systemctl", "--user", "show", "--property=LoadState", "--value", name])
+            if loaded.returncode != 0 or loaded.stdout.strip() != "not-found":
+                detail = loaded.stderr.strip() or enabled.stderr.strip() or "unit not confirmed missing"
+                raise ConfigError(f"cannot determine prior state of {name}: {detail}")
+            enabled_state = "not-found"
+        active = sh(["systemctl", "--user", "is-active", name])
+        existed = (udir / name).exists() or enabled_state != "not-found"
+        prior[name] = (existed, enabled.returncode == 0, active.returncode == 0)
     udir.mkdir(parents=True, exist_ok=True)
     changed = set()  # existing units whose content differs: these get restarted
     for name, body in wanted.items():
@@ -1007,34 +1084,24 @@ def install(argv: list[str]) -> int:
                 (udir / name).unlink()
                 print(f"removed {udir / name}")
     systemctl("daemon-reload")
-    timer = f"{cfg.unit}.timer"
-    systemctl("enable", "--now", timer)
-    if timer in changed:
-        systemctl("restart", timer)
-    print(f"{'restarted' if timer in changed else 'started'} {timer}")
+    activation = [f"{cfg.unit}.timer"]
     if cfg.triage_service:
-        systemctl("enable", "--now", probe_timer)
-        if probe_timer in changed:
-            systemctl("restart", probe_timer)
-        print(f"{'restarted' if probe_timer in changed else 'started'} {probe_timer}")
+        activation.append(probe_timer)
     if cfg.eval_schedule:
-        systemctl("enable", "--now", eval_timer)
-        if eval_timer in changed:
-            systemctl("restart", eval_timer)
-        print(f"{'restarted' if eval_timer in changed else 'started'} {eval_timer}")
+        activation.append(eval_timer)
     if args.dashboard:
-        systemctl("enable", "--now", dash_unit)
-        if dash_unit in changed:
-            systemctl("restart", dash_unit)
-        print(f"{'restarted' if dash_unit in changed else 'started'} {dash_unit}")
+        activation.append(dash_unit)
+    for name in activation:
+        existed, enabled, active = prior[name]
+        if existed and not args.enable and not (enabled and active):
+            print(f"left paused {name}; resume with: systemctl --user enable --now {name} "
+                  "(or rerun factory install --enable)")
+            continue
+        systemctl("enable", "--now", name)
+        if name in changed:
+            systemctl("restart", name)
+        print(f"{'restarted' if name in changed else 'started'} {name}")
     if sh(["loginctl", "show-user", "--property=Linger", "--value", Path.home().name]).stdout.strip() != "yes":
         print("hint: `loginctl enable-linger` keeps user timers running after logout and at boot")
-    enabled = [f"{cfg.unit}.timer"]
-    if cfg.triage_service:
-        enabled.append(probe_timer)
-    if cfg.eval_schedule:
-        enabled.append(eval_timer)
-    if args.dashboard:
-        enabled.append(dash_unit)
-    print(f"stop with: systemctl --user disable --now {' '.join(enabled)}")
+    print(f"stop with: systemctl --user disable --now {' '.join(activation)}")
     return 0

@@ -131,6 +131,9 @@ class JournalEnumTest(unittest.TestCase):
             {"event": "risk-check", "mutation": "FAIL", "pr_gate": "FAIL"},
             {"event": "comment", "kind": "manager", "decision": "HUMAN", "comment": 123},
             {"event": "viability", "kind": "issue", "verdict": "BUILD"},
+            {"event": "manage-pending", "decision": "FIX", "worker": "default", "reason": "worker unavailable"},
+            {"event": "manage-resume", "decision": "FIX", "round": 1},
+            {"event": "generation", "generation": 1, "intent": "resume"},
         ]
         raw = b"".join(
             json.dumps(row, separators=(",", ":")).encode() + b"\n" for row in source
@@ -145,6 +148,9 @@ class JournalEnumTest(unittest.TestCase):
         self.assertNotIn("primary", rows[1])
         self.assertIs(rows[2]["decision"], ManagerDecision.HUMAN)
         self.assertEqual(rows[3]["verdict"], "BUILD")
+        self.assertIs(rows[4]["decision"], ManagerDecision.FIX)
+        self.assertIs(rows[5]["decision"], ManagerDecision.FIX)
+        self.assertEqual(rows[6]["intent"], "resume")
         self.assertEqual(lifecycle._dump(rows), raw)
 
     def test_unknown_risk_and_manager_receipt_domains_are_rejected_at_boundaries(self) -> None:
@@ -152,6 +158,8 @@ class JournalEnumTest(unittest.TestCase):
             {"event": "risk-check", "primary": "REJECT"},
             {"event": "risk-check", "second": "future_verdict"},
             {"event": "comment", "kind": "manager", "decision": "DEPLOY"},
+            {"event": "manage-pending", "decision": "DEPLOY"},
+            {"event": "manage-resume", "decision": "DEPLOY"},
         )
         for row in cases:
             with self.subTest(row=row), tempfile.TemporaryDirectory() as directory:

@@ -34,6 +34,9 @@ EventKind: TypeAlias = Literal[
     "review-rework", "risk", "risk-check", "risk-requeue", "runner_storage_low",
     "scheduling", "score", "skill-coverage", "skill-load", "triage_stalled",
     "upstream-sync", "viability", "watch", "watch-band",
+    "feedback-watermark", "gate-fixup", "generation", "generation-restart",
+    "learn-blocked", "learn-wait", "manage-pending", "manage-resume",
+    "mutation-proof-wait", "native-proof", "runner-infra", "worker-health", "worker-infra",
 ]
 LifecycleKind: TypeAlias = Literal[
     "enter", "exit", "handoff", "child_start", "child_exit", "check", "result",
@@ -99,7 +102,7 @@ class JournalEvent(EventMetadata):
 
 
 class ManageEvent(EventMetadata, total=False):
-    event: Required[Literal["manage"]]
+    event: Required[Literal["manage", "manage-pending", "manage-resume"]]
     decision: ManagerDecision
 
 
@@ -203,7 +206,7 @@ def parse_event(row: Mapping[str, object]) -> EventRow:
             parsed["outcome"] = LifecycleOutcome(parsed["outcome"])
         if parsed.get("verdict") is not None:
             parsed["verdict"] = ReviewVerdict(parsed["verdict"])
-    elif (event == "manage" or event == "comment" and parsed.get("kind") == "manager") and parsed.get("decision") is not None:
+    elif (event in {"manage", "manage-pending", "manage-resume"} or event == "comment" and parsed.get("kind") == "manager") and parsed.get("decision") is not None:
         parsed["decision"] = ManagerDecision(parsed["decision"])
     elif event == "escalate" and parsed.get("code") is not None:
         parsed["code"] = EscalationCode(parsed["code"])
@@ -226,6 +229,8 @@ def parse_event(row: Mapping[str, object]) -> EventRow:
             ]
     return cast(EventRow, parsed)
 
+
+from factory import darwin_observer, platform_identity
 
 CONTEXT_ENV = "FACTORY_LIFECYCLE_CONTEXT"
 _CURRENT = contextvars.ContextVar("factory_execution", default=None)
@@ -446,6 +451,8 @@ def journal_snapshot(
 
 
 def _boot_id() -> str | None:
+    if platform_identity.darwin():
+        return platform_identity.boot_id()
     try:
         return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None
     except OSError:
@@ -454,6 +461,8 @@ def _boot_id() -> str | None:
 
 def _process(pid: int) -> dict:
     """Read Linux identity; /proc stat starttime is field 22, not process age."""
+    if platform_identity.darwin():
+        return platform_identity.process(pid)
     directory = Path("/proc") / str(pid)
     text = (directory / "stat").read_text()
     fields = text[text.rfind(")") + 2:].split()
@@ -473,6 +482,8 @@ def _identity(pid: int) -> dict:
 
 
 def _process_state(identity: dict | None) -> str:
+    if platform_identity.darwin():
+        return platform_identity.process_state(identity)
     if not isinstance(identity, dict):
         return "unknown"
     if (type(identity.get("pid")) is not int or identity["pid"] <= 0
@@ -536,6 +547,8 @@ def _lock_state(lock: dict) -> str:
 
 
 def _host_id() -> str | None:
+    if platform_identity.darwin():
+        return platform_identity.host_id()
     try:
         machine = Path("/etc/machine-id").read_text().strip()
     except OSError:
@@ -563,6 +576,8 @@ def _lock_holders(lock: dict) -> list[int] | None:
     """Kernel FLOCK owners, not waiters; None means attribution unavailable."""
     if lock["device"] is None or lock["inode"] is None:
         return None
+    if platform_identity.darwin():
+        return platform_identity.lock_holders(lock)
     try:
         lines = Path("/proc/locks").read_text().splitlines()
     except OSError:
@@ -860,53 +875,93 @@ def _lifecycle(row: dict) -> bool:
                        or row["kind"] == "lock_released" and row.get("acquisition_id") is None))))
 
 
-def _descendants(executions: list[dict]) -> dict[str, dict]:
-    """Find tagged/reparented children and ordinary live ancestry in one proc scan."""
+def _open_children(events: list[dict]) -> list[dict]:
+    children = {}
+    for event in events:
+        child = event.get("child_process")
+        if event["kind"] == "child_start" and isinstance(child, dict):
+            children[child.get("pid")] = child
+        elif event["kind"] == "child_exit":
+            children.pop((child or {}).get("pid"), None)
+    return [child for child in children.values() if isinstance(child, dict)]
+
+
+def _descendants(executions: list[dict], recorded: dict | None = None) -> dict[str, dict]:
+    """Find tagged/reparented children and ordinary live ancestry in one proc scan.
+
+    Darwin membership is a context tag or a start-validated ancestor chain.
+    Recorded children supplement that only when their context read is unknown.
+    Same-uid processes that are neither tagged nor on that chain are ignored.
+    """
     found = {entry["execution_id"]: {"processes": [], "complete": True} for entry in executions}
     if not executions:
         return found
+    recorded = recorded or {}
     uids = {(entry.get("process") or {}).get("uid") for entry in executions}
+    origins = []
+    for entry in executions:
+        process = entry.get("process") or {}
+        origins.append({
+            "execution_id": entry.get("execution_id"),
+            "boot_id": process.get("boot_id"),
+            "pid": process.get("pid"),
+            "start_ticks": process.get("start_ticks"),
+            "uid": process.get("uid"),
+        })
     for entry in executions:
         if type((entry.get("process") or {}).get("uid")) is not int:
             found[entry["execution_id"]]["complete"] = False
     processes = {}
     contexts = {}
-    try:
-        directories = list(Path("/proc").iterdir())
-    except OSError:
-        for evidence in found.values():
-            evidence["complete"] = False
-        return found
-    for directory in directories:
-        if not directory.name.isdecimal():
-            continue
+    unknown_context: set[int] = set()
+    # Linux: enumerate /proc and extract CONTEXT_ENV from environ for tagged causality.
+    if not platform_identity.darwin():
         try:
-            if directory.stat().st_uid not in uids:
+            directories = list(Path("/proc").iterdir())
+        except OSError:
+            for evidence in found.values():
+                evidence["complete"] = False
+            return found
+        for directory in directories:
+            if not directory.name.isdecimal():
                 continue
-            process = _process(int(directory.name))
-            if process["state"] in {"Z", "X"}:
-                continue
-            processes[process["pid"]] = process
-            data = (directory / "environ").read_bytes()
-            prefix = CONTEXT_ENV.encode() + b"="
-            for item in data.split(b"\x00"):
-                if item.startswith(prefix):
-                    try:
-                        context = json.loads(item[len(prefix):])
-                        if isinstance(context, dict):
-                            contexts[process["pid"]] = context
-                    except (ValueError, UnicodeError):
-                        pass
-                    break
-        except FileNotFoundError:
-            continue  # A process disappearing during enumeration cannot still be live.
-        except (OSError, ValueError, IndexError):
-            for entry in executions:
-                found[entry["execution_id"]]["complete"] = False
+            try:
+                if directory.stat().st_uid not in uids:
+                    continue
+                process = _process(int(directory.name))
+                if process["state"] in {"Z", "X"}:
+                    continue
+                processes[process["pid"]] = process
+                data = (directory / "environ").read_bytes()
+                prefix = CONTEXT_ENV.encode() + b"="
+                for item in data.split(b"\x00"):
+                    if item.startswith(prefix):
+                        try:
+                            context = json.loads(item[len(prefix):])
+                            if isinstance(context, dict):
+                                contexts[process["pid"]] = context
+                        except (ValueError, UnicodeError, RecursionError):
+                            pass
+                        break
+            except FileNotFoundError:
+                continue  # A process disappearing during enumeration cannot still be live.
+            except (OSError, ValueError, IndexError):
+                for entry in executions:
+                    found[entry["execution_id"]]["complete"] = False
+    else:
+        processes, contexts, unknown_context, complete = darwin_observer.scan(
+            CONTEXT_ENV, uids, origins)
+        if not complete:
+            for evidence in found.values():
+                evidence["complete"] = False
     for entry in executions:
         execution_id = entry["execution_id"]
         owner = entry.get("process") or {}
+        included = []
         for pid, process in processes.items():
+            if type(process.get("start_ticks")) is not int:
+                found[execution_id]["complete"] = False
+                continue
             context = contexts.get(pid, {})
             tagged = (context.get("schema_version") == 1
                       and isinstance(context.get("execution_ids"), list)
@@ -914,7 +969,7 @@ def _descendants(executions: list[dict]) -> dict[str, dict]:
             cursor = process
             seen = set()
             descendant = False
-            while cursor["pid"] not in seen:
+            while cursor is not None and cursor["pid"] not in seen and type(cursor.get("start_ticks")) is int:
                 seen.add(cursor["pid"])
                 if (cursor["pid"] == owner.get("pid")
                         and cursor["start_ticks"] == owner.get("start_ticks")
@@ -922,10 +977,19 @@ def _descendants(executions: list[dict]) -> dict[str, dict]:
                     descendant = pid != owner["pid"]
                     break
                 cursor = processes.get(cursor["ppid"])
-                if cursor is None:
-                    break
             if tagged or descendant:
-                found[execution_id]["processes"].append(process)
+                included.append(process)
+        for child in recorded.get(execution_id, []):
+            pid = child.get("pid")
+            process = processes.get(pid)
+            if (process is None or pid not in unknown_context or process in included
+                    or process.get("start_ticks") != child.get("start_ticks")
+                    or process.get("boot_id") != child.get("boot_id")
+                    or type(process.get("start_ticks")) is not int
+                    or process.get("state") in {"Z", "X"}):
+                continue
+            included.append(process)
+        found[execution_id]["processes"].extend(included)
     return found
 
 
@@ -992,7 +1056,8 @@ def observe(
         launched = [events[0] for events in open_groups if events[0]["execution_id"] in launched_ids]
         descendants = {events[0]["execution_id"]: {"processes": [], "complete": True}
                        for events in open_groups}
-        descendants.update(_descendants(launched))
+        recorded = {events[0]["execution_id"]: _open_children(events) for events in open_groups}
+        descendants.update(_descendants(launched, recorded))
         for execution_id in launched_ids:
             if execution_id in descendants:
                 # Reparented children may exec with a scrubbed environment; a proc scan
@@ -1140,7 +1205,8 @@ def resources(
                 "resource": resource, "state": lock_state,
                 "ownership": "confirmed" if owner else "none" if lock_state == "free" else "unknown",
                 "owner": owner, "requests": pending,
-                "evidence": {"lock_state": lock_state, "attribution": "proc_locks" if holders is not None else "unavailable",
+                "evidence": {"lock_state": lock_state, "attribution": (
+                    "lsof" if platform_identity.darwin() else "proc_locks") if holders is not None else "unavailable",
                              "holder_pids": holders},
             }
             previous = observations.get(key)

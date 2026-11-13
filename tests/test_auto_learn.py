@@ -250,6 +250,7 @@ class PromotionTest(unittest.TestCase):
         AutoLearnTest.setUp(self)
         self.checks = [{"name": "gate", "bucket": "pass"}]
         self.enterContext(mock.patch.object(dispatch, "pr_checks", side_effect=lambda _: self.checks))
+        dispatch.pr_checks.side_effect = lambda _pr, _head: self.checks
         self.run = self.enterContext(mock.patch.object(dispatch, "run"))
         self.open_prs = [{"number": 42, "headRefName": self.BRANCH, "headRefOid": self.HEAD, "baseRefName": "main",
                           "isDraft": False, "reviewDecision": ""}]
@@ -358,10 +359,12 @@ class PromotionTest(unittest.TestCase):
         refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
         self.assertEqual(self.gh_calls(), [])
         self.compare["files"] = [{"filename": ".factory-lessons.md"}]
-        learn.promote_pass(self.open_prs)  # no check reads the lessons file: it merges behind main
-        self.assertEqual(len(self.gh_calls()), 2)
+        with mock.patch.object(learn, "refresh") as refresh:
+            learn.promote_pass(self.open_prs)
+        refresh.assert_called_once_with(self.cfg, 42, self.BRANCH, self.HEAD)
+        self.assertEqual(self.gh_calls(), [])
 
-    def test_refresh_rebases_gates_pushes_with_a_lease_and_reviews_the_new_head(self) -> None:
+    def test_refresh_merges_gates_pushes_normally_and_reviews_the_new_head(self) -> None:
         self.enterContext(mock.patch.object(dispatch, "run", REAL_RUN))
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         origin, repo = root / "origin.git", root / "repo"
@@ -396,7 +399,7 @@ class PromotionTest(unittest.TestCase):
             learn.refresh(cfg, 42, branch, head)
             git("fetch", "-q", "origin")
             new = git("rev-parse", f"origin/{branch}")
-            self.assertEqual(git("rev-parse", f"{new}~1"), tip)
+            self.assertEqual(git("rev-parse", f"{new}^1", f"{new}^2").split(), [head, tip])
             self.assertEqual(git("ls-tree", "-r", "--name-only", new).split(),
                              ["README.md", "factory/landed.py", "tests/test_parser.py"])
             self.assertEqual([(r["branch"], r["head"], r["gate"]) for r in lifecycle.read_events(cfg.factory / "events.jsonl")
@@ -404,7 +407,7 @@ class PromotionTest(unittest.TestCase):
             review.assert_called_once_with(42, tip, new, branch)
             git("push", "-q", "--force", "origin", f"main:{branch}")  # someone else moved the branch
             with self.assertRaises(subprocess.CalledProcessError):
-                learn.refresh(cfg, 42, branch, new)  # the lease on the head promote_pass saw refuses
+                learn.refresh(cfg, 42, branch, new)  # refuse a changed remote head
         self.assertEqual(git("ls-remote", "origin", branch).split()[0], tip)
         review.assert_called_once()
 

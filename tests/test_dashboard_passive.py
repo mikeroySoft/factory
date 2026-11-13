@@ -12,7 +12,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from unittest.mock import patch
 
-from factory import config, dashboard, dispatch, lifecycle
+from factory import config, dashboard, dispatch, lifecycle, platform_identity
 from factory.domain import ReviewVerdict
 
 
@@ -270,9 +270,9 @@ class PassiveDashboardTest(unittest.TestCase):
                     snapshot = dashboard.snapshot()
 
             tickets = {ticket["number"]: ticket for ticket in snapshot["tickets"]}
-            self.assertIs(tickets[7]["lock_held"], True)
+            self.assertIs(tickets[7]["lock_held"], None if platform_identity.darwin() else True)
             self.assertIsNone(tickets[8]["lock_held"])
-            self.assertIs(snapshot["gpu_lock_held"], False)
+            self.assertIs(snapshot["gpu_lock_held"], None if platform_identity.darwin() else False)
             self.assertIsNone(snapshot["active"])
 
 

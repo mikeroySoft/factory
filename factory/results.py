@@ -343,6 +343,7 @@ def _acceptance(cfg: Any, ticket: int, head: str, events: list[dict]) -> tuple[d
             if (
                 evidence.get("event") == "attempt" and evidence.get("head") == head
                 or evidence.get("event") == "refreshed" and evidence.get("gate_head") == head
+                or evidence.get("event") == "gate-fixup" and evidence.get("head") == head
             ):
                 gate = evidence
             elif evidence.get("event") == "review" and evidence.get("head") == head:
@@ -564,10 +565,10 @@ def _validate_manifest(value: object, cfg: Any, ticket: int, head: str) -> dict 
         or type(approved.get("pr")) is not int or approved["pr"] <= 0
         or _parse_time(approved.get("at")) != accepted
         or not _valid_receipt(gate, gate.get("event") if isinstance(gate, dict) else "", ticket)
-        or gate.get("event") not in {"attempt", "refreshed"}
+        or gate.get("event") not in {"attempt", "refreshed", "gate-fixup"}
         or gate.get("gate") != "PASS"
         or gate.get("actual_head") != head
-        or gate.get("head" if gate.get("event") == "attempt" else "gate_head") != head
+        or gate.get("gate_head" if gate.get("event") == "refreshed" else "head") != head
         or not _valid_receipt(review, "review", ticket)
         or review.get("head") != head
         or review.get("actual_head") != head

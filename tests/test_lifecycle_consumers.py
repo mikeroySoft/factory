@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from factory import config, dashboard, dispatch, learn, lifecycle
+from factory import config, dashboard, dispatch, learn, lifecycle, platform_identity
 
 
 class LifecycleConsumersTest(unittest.TestCase):
@@ -171,10 +171,29 @@ class LifecycleConsumersTest(unittest.TestCase):
                  dispatch.ticket_lock(9).open("w") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 snap = dashboard.snapshot()
-            held = [resource for resource in snap["resources"] if resource["state"] == "held"]
-            self.assertEqual(len(held), 1)
-            self.assertEqual(held[0]["ownership"], "unknown")
-            self.assertIsNone(held[0]["owner"])
+            canonical = root.resolve()
+            rows = {resource["resource"]["lock"]["path"]: resource for resource in snap["resources"]}
+            ticket_lock = str(canonical / ".factory" / "locks" / "9.lock")
+            self.assertEqual(len(snap["resources"]), 3)
+            self.assertEqual(set(rows), {
+                str(canonical / "gpu.lock"),
+                str(canonical / ".factory" / "locks" / "merge.lock"),
+                ticket_lock,
+            })
+            if platform_identity.darwin():
+                row = rows[ticket_lock]
+                self.assertEqual((row["state"], row["ownership"]), ("unknown", "unknown"))
+                self.assertIsNone(row["owner"])
+                self.assertEqual(row["evidence"]["attribution"], "unavailable")
+                self.assertIsNone(row["evidence"]["holder_pids"])
+                self.assertEqual(row["observation"], "unavailable")
+                self.assertNotIn(row["state"], ("free", "held"))
+                self.assertNotEqual(row["ownership"], "none")
+            else:
+                held = [resource for resource in snap["resources"] if resource["state"] == "held"]
+                self.assertEqual(len(held), 1)
+                self.assertEqual(held[0]["ownership"], "unknown")
+                self.assertIsNone(held[0]["owner"])
             self.assertEqual(snap["errors"], ["github: offline"])
             self.assertEqual(snap["tickets"], [])
             self.assertEqual(
