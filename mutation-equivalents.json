@@ -168,6 +168,6 @@
   "original": "        return timestamp.tzinfo is not None and timestamp.utcoffset() is not None",
   "mutated": "        return timestamp.tzinfo is not None or timestamp.utcoffset() is not None",
   "argument": "The only producer of timestamp is `timestamp = datetime.fromisoformat(match[3])` (claims.py:26), with datetime the stdlib class (`from datetime import datetime`, claims.py:8; no test patches claims.datetime). fromisoformat returns either a naive datetime (tzinfo None, so utcoffset() is None) or one whose tzinfo is a fixed-offset datetime.timezone, whose utcoffset() is never None. So `timestamp.tzinfo is not None` and `timestamp.utcoffset() is not None` are always equal, neither raises, and A and B == A or B when A == B: _valid_claim returns the same bool for every comment body. Only a custom tzinfo whose utcoffset() returns None could differ, and fromisoformat never constructs one.",
-  "reviewer": "OMP Opus self-review at 3bbcaf3 successors (r3-1330 survivors); pending Factory PM acceptance"
+  "reviewer": "Factory PM ruling r3-1710 accepted Nov 12 2026 (equivalent: fromisoformat yields tzinfo None or fixed-offset timezone, so both clauses always agree)"
  }
 ]
