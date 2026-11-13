@@ -106,3 +106,68 @@ class MergeHoldsTest(unittest.TestCase):
                         else:
                             merge.assert_not_called()
                             self.assertIn("draft" if veto == "draft" else "factory-held", reason)
+
+    def test_lessons_merges_despite_labels_sorting_around_factory_held(self):
+        # learn.py:1647 (early) and :1760 (final pr-view) guards: `== "factory-held"`
+        # mutated to `<=` or `>=` over-blocks a PR carrying labels that sort before
+        # (factory-approved, docs) or after (zzz-other) the held label. The empty-label
+        # success case does not compare any label, so it leaves those mutants alive.
+        labels = [{"name": "factory-approved"}, {"name": "docs"}, {"name": "zzz-other"}]
+        with fixture(test_auto_learn.PromotionTest) as case:
+            listed = {**case.open_prs[0], "labels": copy.deepcopy(labels)}
+            final = {**listed, "state": "OPEN", "labels": copy.deepcopy(labels)}
+            case.journal(*case.evidence())
+            case.gh.side_effect = lambda args: (
+                final if args[:2] == ["pr", "view"] else case.compare
+                if args[0] == "api" and "/compare/" in args[1] else [listed]
+            )
+            learn.promote_pass([listed])
+            self.assertTrue(any("pr merge" in cmd for cmd in case.gh_calls()))
+
+    def test_merge_pass_lands_eligible_pr_listed_after_held_pr(self):
+        # dispatch.py:4795 `continue` -> `break` on the factory-held skip: a held PR
+        # (factory-approved AND factory-held, so it reaches the held check) listed before
+        # the eligible one must not end the candidate scan. The eligible PR also carries
+        # labels sorting before/after factory-held for parity with the other two paths.
+        with fixture(test_land_host.LandHostTest) as case:
+            tank = case.dispatcher("tank")
+            case.claim("tank")
+            head = case.approve(tank)
+            labels = [{"name": "factory-approved"}, {"name": "docs"}, {"name": "zzz-other"}]
+            held = {**case.github.pr(), "number": 101, "headRefName": "agent/8",
+                    "labels": [{"name": "factory-approved"}, {"name": "factory-held"}]}
+            original = tank.gh_json.side_effect
+
+            def read(args):
+                if args[:2] == ["pr", "list"]:
+                    return [held, *original(args)]
+                if args[:2] == ["pr", "view"]:
+                    pr = copy.deepcopy(original(args))
+                    pr["labels"] = copy.deepcopy(labels)
+                    return pr
+                return original(args)
+
+            with mock.patch.object(tank, "gh_json", side_effect=read):
+                tank.merge_pass_locked(False)
+            self.assertTrue(case.github.merged)
+            self.assertEqual([(row["pr"], row["head"]) for row in case.events(tank, "merged")],
+                             [(102, head)])
+
+    def test_release_merges_despite_labels_sorting_around_factory_held(self):
+        # release.py:514 `== "factory-held"` mutated to `<=`, `>=`, or `is not` over-blocks
+        # a release PR labelled with factory-approved/docs (sort before) and zzz-other
+        # (sorts after); `is not` trips on any non-held label. The empty-label success
+        # case compares nothing and leaves all three alive.
+        labels = [{"name": "factory-approved"}, {"name": "docs"}, {"name": "zzz-other"}]
+        with fixture(test_release.ReleaseTest) as case:
+            case.tag_and_advance(None)
+            pull = {"number": 7, "head": {"sha": "abc"}, "mergeable": True,
+                    "mergeable_state": "clean", "draft": False, "labels": copy.deepcopy(labels)}
+            reads = iter((copy.deepcopy(pull), copy.deepcopy(pull)))
+            with mock.patch.object(release, "_pulls", return_value=[{"number": 7}]), \
+                    mock.patch.object(release, "_pull", side_effect=lambda *_: next(reads)), \
+                    mock.patch.object(release, "ci_passes", return_value=True), \
+                    mock.patch.object(release, "_merge_pull", return_value={"merged": True}) as merge:
+                reason = release.run(case.cfg, open_pr=False)
+            merge.assert_called_once_with(case.cfg, 7, "Release 0.0.2")
+            self.assertIn("merged release PR #7", reason)
