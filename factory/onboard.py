@@ -406,14 +406,12 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
         # remains inherently racy. A collision that vanishes here fails closed.
         try:
             listeners = sh(["ss", "-ltnp", f"sport = :{port}"])
-        except FileNotFoundError as exc:
-            if platform_identity.darwin():
+        except OSError as exc:
+            if isinstance(exc, FileNotFoundError) and platform_identity.darwin():
                 # The bind above already proved something holds the port; macOS has no `ss` to name it.
                 return False, dashboard_port_error(
                     cfg, host, port, "is in use by an unknown process (`ss` is not available on this platform)"
                 )
-            return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {exc})")
-        except OSError as exc:
             return False, dashboard_port_error(cfg, host, port, f"could not be checked (ss: {exc})")
         if listeners.returncode != 0:
             detail = listeners.stderr.strip() or str(listeners.returncode)

@@ -187,19 +187,22 @@ class DoctorPortTest(NoSystemdCase):
         self.assertFalse(ok)
         self.assertIn("could not be checked (ss: [Errno 2] No such file or directory: 'ss')", detail)
 
-    def test_doctor_json_is_valid_with_launchd_timer_and_no_exception_rows(self) -> None:
-        probe = socket.socket()
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-        probe.close()
-        repo = self.repo(f"[dashboard]\nport = {port}\n")
+    def test_doctor_json_is_valid_with_launchd_timer_and_names_the_port_conflict(self) -> None:
+        _, port = self.held_port()
+        unreachable = socket.socket()
+        self.addCleanup(unreachable.close)
+        unreachable.bind(("127.0.0.1", 0))  # bound, never listening: the triage endpoint refuses
+        endpoint = f"http://127.0.0.1:{unreachable.getsockname()[1]}/v1/chat/completions"
+        repo = self.repo(f'[dashboard]\nport = {port}\n\n[triage]\nurl = "{endpoint}"\n')
         result = self.run_darwin(repo, "doctor", "--json")
         self.assertNotIn("Traceback", result.stderr)
         report = json.loads(result.stdout)
         rows = {row["label"]: row for row in report["rows"]}
         timer = next(row for label, row in rows.items() if label.startswith("systemd timer "))
         self.assertEqual((timer["status"], timer["detail"]), ("INFO", "n/a (launchd)"))
-        self.assertEqual(rows[f"dashboard port {port}"]["status"], "PASS")
+        conflict = rows[f"dashboard port {port}"]
+        self.assertEqual(conflict["status"], "FAIL")
+        self.assertIn(f"port {port} on 127.0.0.1 is in use", conflict["detail"])
         for row in report["rows"]:
             self.assertNotIn("No such file", row["detail"], row)
 
