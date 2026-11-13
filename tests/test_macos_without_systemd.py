@@ -11,6 +11,7 @@ import io
 import json
 import os
 import shutil
+import site
 import socket
 import subprocess
 import sys
@@ -93,6 +94,8 @@ class NoSystemdCase(unittest.TestCase):
             "PATH": str(self.tools),
             "PYTHONPATH": str(ROOT),
             "HOME": str(self.root),
+            # A pip --user install of the dependencies lives under the real home, not the scratch one.
+            "PYTHONUSERBASE": site.getuserbase(),
             "XDG_CONFIG_HOME": str(self.root / "xdg"),
             "XDG_STATE_HOME": str(self.state),
         }
