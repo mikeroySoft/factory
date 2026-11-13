@@ -95,12 +95,16 @@ def _write_probe_state(path, state: dict) -> None:
 
 
 def _restart_service(service: str) -> bool:
-    result = subprocess.run(
-        ["systemctl", "--user", "restart", service],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "restart", service],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        print(f"triage probe: could not restart {service}: systemctl unavailable ({exc})", file=sys.stderr)
+        return False
     if result.returncode:
         print(
             f"triage probe: could not restart {service}: "

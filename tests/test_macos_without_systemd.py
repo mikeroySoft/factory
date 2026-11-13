@@ -219,7 +219,7 @@ class TriageRestartTest(NoSystemdCase):
         with self.fake_darwin(), contextlib.redirect_stderr(err):
             self.assertIs(triage._restart_service("rocm-serve-ornith.service"), False)
         self.assertIn("rocm-serve-ornith.service", err.getvalue())
-        self.assertIn("not supported on this platform", err.getvalue())
+        self.assertIn("systemctl unavailable", err.getvalue())
 
     def test_probe_survives_every_restart_cooldown_on_a_host_without_systemctl(self) -> None:
         cfg = self.probe_config()
