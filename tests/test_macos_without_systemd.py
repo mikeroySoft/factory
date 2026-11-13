@@ -241,6 +241,17 @@ class TriageRestartTest(NoSystemdCase):
                          [("rocm-serve-ornith.service", False)] * 3)
         self.assertEqual(out.getvalue().count("restart failed for rocm-serve-ornith.service"), 3)
 
+    def test_failed_restart_reports_systemctl_stderr_as_text_without_raising(self) -> None:
+        log = self.stub_tool("systemctl", "echo unit-is-masked >&2; exit 3")
+        err = io.StringIO()
+        with patch.object(sys, "platform", "linux"), contextlib.redirect_stderr(err):
+            self.assertIs(triage._restart_service("rocm-serve-ornith.service"), False)
+        self.assertEqual(log.read_text().splitlines(), ["--user restart rocm-serve-ornith.service"])
+        self.assertEqual(
+            err.getvalue(),
+            "triage probe: could not restart rocm-serve-ornith.service: unit-is-masked\n",
+        )
+
     def test_linux_still_restarts_through_systemctl_user(self) -> None:
         log = self.stub_tool("systemctl", "exit 0")
         with patch.object(sys, "platform", "linux"):
