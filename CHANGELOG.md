@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Land and auto-merge refuse `factory-held` and draft PRs across ticket, lessons/CURATE/revert, and release paths. Fresh pre-merge reads catch holds or drafts applied during CI and eligibility work; held lessons PRs do not receive `factory-approved` (#783).
+- Land and auto-merge refuse `factory-held` and draft PRs across ticket, lessons/CURATE/revert, and release paths. Fresh pre-merge reads catch holds or drafts applied during CI and eligibility work; held lessons PRs do not receive `factory-approved`. The mutation trust fixture pins its offline setup to the suite interpreter instead of selecting an uncached Python from PATH (#783).
 
 ## 0.4.13 — 2026-11-12
 
