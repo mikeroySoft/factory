@@ -179,6 +179,8 @@ class MeasuredRollbackTest(unittest.TestCase):
         return self.git("rev-parse", "HEAD")
 
     def gh(self, args: list[str]) -> dict:
+        if args[-1] == "isDraft,labels":
+            return {"isDraft": self.pr["isDraft"], "labels": self.pr.get("labels", [])}
         if args[:2] == ["pr", "view"]:
             return {"mergeCommit": {"oid": self.merge}}
         return {"behind_by": 0, "files": [{"filename": config.LESSONS_NAME}]}

@@ -511,6 +511,9 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
         if pulls:
             pull = _pull(cfg, pulls[0]["number"])
             number = pull["number"]
+            if pull.get("draft") or any(label["name"] == "factory-held" for label in pull.get("labels", [])):
+                return _finish(cfg, dry_run, _reason(f"release PR #{number} is draft or factory-held", metrics, bar),
+                               metrics, bar, latest_tag)
             state = pull.get("mergeable_state")
             mergeable = pull.get("mergeable")
             if state == "behind":
@@ -538,6 +541,10 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
                     if "404" not in str(exc) and "422" not in str(exc):
                         raise
                 return _finish(cfg, False, _reason(action, metrics, bar), metrics, bar, latest_tag)
+            final = _pull(cfg, number)
+            if final.get("draft") or any(label["name"] == "factory-held" for label in final.get("labels", [])):
+                return _finish(cfg, False, _reason(f"release PR #{number} is draft or factory-held", metrics, bar),
+                               metrics, bar, latest_tag)
             try:
                 merged = _merge_pull(cfg, number, f"Release {next_version}")
             except RuntimeError as exc:

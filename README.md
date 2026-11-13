@@ -1342,6 +1342,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    head, target branch, label, and veto are then re-read immediately before
    `gh pr merge --match-head-commit <sha>`. Missing,
    unbound, legacy, or stale approval evidence never merges.
+   Land and auto-merge skip draft PRs and any PR labeled `factory-held`, even
+   when `factory-approved` is present. Ticket, lessons/CURATE/revert, and release
+   merges re-read labels and draft state before merging; lessons promotions do
+   so before adding approval. GitHub cannot atomically condition a merge on
+   labels, so a hold applied after that final read can still race the merge.
    With `[eval] schedule = true`, a PR changing worker configuration/routing,
    standing prompts, lessons, or skills also needs an `eval-summary` `keep`
    verdict bound to that exact head; a missing or `revert` claim waits without

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Land and auto-merge refuse `factory-held` and draft PRs across ticket, lessons/CURATE/revert, and release paths. Fresh pre-merge reads catch holds or drafts applied during CI and eligibility work; held lessons PRs do not receive `factory-approved` (#783).
+
 ## 0.4.13 — 2026-11-12
 
 - Dispatch refuses repositories with host labels or historical trusted claim comments when `host_name` is unset, even after host labels are removed, and rejects differing repository-owner/member/collaborator claim-author logins at ticket admission and election without trusting outsider comments. Doctor scans historical claims and reports blocking host-setup failures using the dispatcher identity. Passes skip before GitHub mutations when GraphQL or REST has fewer than 100 requests remaining or the budget is unreadable. Named hosts avoid scanning repository comment history at pass start (#732).

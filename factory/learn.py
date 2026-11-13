@@ -1644,6 +1644,8 @@ def _restored_score(cfg: config.Config, pr: dict, events: list[dict]) -> dict | 
 
 def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> None:
     n, branch, head = pr["number"], pr["headRefName"], pr["headRefOid"]
+    if pr.get("isDraft") or any(label["name"] == "factory-held" for label in pr.get("labels", [])):
+        return
     if any(
         row.get("event") == "merged" and row.get("pr") == n and row.get("head") == head
         for row in events
@@ -1751,6 +1753,12 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         return
     if dry_run:
         dispatch.log(f"PR #{n}: would merge {branch}")
+        return
+    final = dispatch.gh_json([
+        "pr", "view", str(n), "--repo", cfg.repo, "--json", "isDraft,labels",
+    ])
+    if final["isDraft"] or any(label["name"] == "factory-held" for label in final["labels"]):
+        dispatch.log(f"PR #{n}: draft or factory-held before promotion; not merging")
         return
     with lifecycle.scope(dispatch.EVENTS, "merge"):
         try:
