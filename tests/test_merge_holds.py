@@ -1,4 +1,5 @@
 """#783: holds and drafts veto every merge path, including late state changes."""
+# ruff: noqa: B023 -- callbacks execute synchronously inside each subtest.
 from __future__ import annotations
 
 import copy
@@ -6,7 +7,7 @@ import unittest
 from contextlib import contextmanager
 from unittest import mock
 
-from factory import dispatch, learn, release
+from factory import learn, release
 from tests import test_auto_learn, test_land_host, test_release
 
 
