@@ -65,6 +65,13 @@ class NoSystemdCase(unittest.TestCase):
             "XDG_CONFIG_HOME": str(self.root / "xdg"),
             lifecycle.CONTEXT_ENV: "",
         }))
+        # Scratch commits must not inherit the worker's SSH-signing overrides.
+        self.enterContext(patch.dict(os.environ))
+        for name in list(os.environ):
+            if name in ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS") or name.startswith(
+                ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+            ):
+                del os.environ[name]
         self.enterContext(patch.dict(dashboard.__dict__))
         self.enterContext(patch.dict(dispatch.__dict__))
         self.enterContext(patch.dict(triage.__dict__))
