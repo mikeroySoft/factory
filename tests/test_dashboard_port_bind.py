@@ -113,7 +113,11 @@ class DashboardPortBindTest(unittest.TestCase):
                     sh.assert_not_called()
                 else:
                     self.assertFalse(ok)
-                    self.assertIn("could not be checked (ss:", detail)
+                    self.assertIn(
+                        "is in use by an unknown process (`ss` is not available on this platform)"
+                        if platform_identity.darwin() else "could not be checked (ss:",
+                        detail,
+                    )
 
 
 if __name__ == "__main__":
