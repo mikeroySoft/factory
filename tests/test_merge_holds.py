@@ -107,6 +107,35 @@ class MergeHoldsTest(unittest.TestCase):
                             merge.assert_not_called()
                             self.assertIn("draft" if veto == "draft" else "factory-held", reason)
 
+    def test_release_premerge_recheck_finishes_with_live_dry_run(self):
+        # release.py:546 is the pre-merge recheck after the :544 `final = _pull`. It passes
+        # `False` (not dry_run) to _finish, so a draft/held PR that only turns bad between the
+        # :514 check and :544 recheck still vetoes the live merge. ReplaceFalseWithTrue there
+        # keeps the same reason and still skips _merge_pull, so reason+merge assertions leave it
+        # alive; spy on the _finish dry_run argument to pin the real False.
+        with fixture(test_release.ReleaseTest) as case:
+            case.tag_and_advance(None)
+            for veto in ("draft", "held"):
+                with self.subTest(veto=veto):
+                    initial = {"number": 7, "head": {"sha": "abc"}, "mergeable": True,
+                               "mergeable_state": "clean", "draft": False, "labels": []}
+                    final = copy.deepcopy(initial)
+                    if veto == "draft":
+                        final["draft"] = True
+                    else:
+                        final["labels"] = [{"name": "factory-held"}]
+                    reads = iter((initial, final))
+                    with mock.patch.object(release, "_pulls", return_value=[{"number": 7}]), \
+                            mock.patch.object(release, "_pull", side_effect=lambda *_: next(reads)), \
+                            mock.patch.object(release, "ci_passes", return_value=True), \
+                            mock.patch.object(release, "_finish", wraps=release._finish) as finish, \
+                            mock.patch.object(release, "_merge_pull", return_value={"merged": True}) as merge:
+                        release.run(case.cfg, open_pr=False)
+                    finish.assert_called_once()
+                    self.assertIs(finish.call_args.args[1], False)
+                    self.assertIn("draft or factory-held", finish.call_args.args[2])
+                    merge.assert_not_called()
+
     def test_lessons_merges_despite_labels_sorting_around_factory_held(self):
         # learn.py:1647 (early) and :1760 (final pr-view) guards: `== "factory-held"`
         # mutated to `<=` or `>=` over-blocks a PR carrying labels that sort before
