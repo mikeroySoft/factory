@@ -81,12 +81,17 @@ class HostClaimRevisionTest(unittest.TestCase):
         transition = ["--remove-label", "ready-for-agent", "--add-label", "ready-for-human"]
         for assignee_last in (False, True):
             with self.subTest(assignee_last=assignee_last):
+                self.github.issue["labels"] = [{"name": "ready-for-agent"}]
                 self.github.calls.clear()
                 single.unclaim(7, *transition, check=True, assignee_last=assignee_last)
                 assignment = ["--remove-assignee", "@me"]
-                args = transition + assignment if assignee_last else assignment + transition
+                addition = ["--add-label", "ready-for-human"]
+                args = addition + assignment if assignee_last else assignment + addition
                 self.assertEqual(self.github.calls, [
+                    (None, ["issue", "view", "7", "--repo", "local/claims", "--json", "labels"]),
                     (None, ["gh", "issue", "edit", "7", "--repo", "local/claims", *args]),
+                    (None, ["gh", "issue", "edit", "7", "--repo", "local/claims",
+                            "--remove-label", "ready-for-agent"]),
                 ])
 
     def test_expired_local_owner_with_matching_nonce_can_unclaim(self):

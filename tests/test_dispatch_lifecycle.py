@@ -1157,8 +1157,12 @@ class LeaseRefusedCLI(unittest.TestCase):
     def assert_escalated(self, foreign):
         edits = self.gh_calls("issue", "edit")
         self.assertEqual(edits[0][-2:], ["--add-assignee", "@me"])
-        self.assertEqual(edits[-1][5:], ["--remove-assignee", "@me", "--remove-label", "ready-for-agent",
-                                         "--add-label", "ready-for-human"])
+        self.assertEqual(edits[1:], [
+            ["issue", "edit", "7", "--repo", "acme/widgets",
+             "--remove-assignee", "@me", "--add-label", "ready-for-human"],
+            ["issue", "edit", "7", "--repo", "acme/widgets",
+             "--remove-label", "ready-for-agent"],
+        ])
         comments = self.gh_calls("issue", "comment")
         self.assertEqual(len(comments), 1)
         self.assertIn("Factory dispatcher escalating: agent/7 push refused", comments[0][-1])

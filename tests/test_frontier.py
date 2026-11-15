@@ -261,7 +261,10 @@ class FrontierTest(unittest.TestCase):
         self.approved_head(H)
         # The pipeline's own approval call does not label and is not an error.
         self.assertTrue(dispatch.approve_pr(79, H))
-        self.assertEqual(self.mutations, [])
+        self.assertEqual(self.mutations, [
+            ["gh", "issue", "comment", "79", "--repo", "example/project", "--body",
+             f"Factory dispatcher waiting: manager approval required for {H}."],
+        ])
         self.manager_output = "DECISION: APPROVE\nLooks right"
         manage.frontier_pass()
         manage_rows = [e for e in self.events() if e.get("event") == "manage"]
@@ -373,7 +376,10 @@ class FrontierTest(unittest.TestCase):
         self.quiet_provider()
         self.approved_head(H)
         self.assertTrue(dispatch.approve_pr(79, H))  # waits: no local manager APPROVE yet
-        self.assertEqual(self.mutations, [])
+        self.assertEqual(self.mutations, [
+            ["gh", "issue", "comment", "79", "--repo", "example/project", "--body",
+             f"Factory dispatcher waiting: manager approval required for {H}."],
+        ])
         self.manager_output = "DECISION: APPROVE\nLooks right"
         self.manage_on("ultron")
         self.assertEqual([(e["pr"], e["head"], e["decision"]) for e in self.events() if e.get("event") == "manage"],

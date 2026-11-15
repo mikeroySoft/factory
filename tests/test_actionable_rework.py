@@ -76,7 +76,16 @@ class ActionableReworkTest(unittest.TestCase):
         self.assertTrue(rows[0]["deferred"])
         self.assertIn("Handle the missing branch", rows[0]["findings"])
         self.assertIn("NumberReplacer", rows[0]["findings"])
-        self.assertIn("--remove-assignee", self.command.call_args.args[0])
+        self.assertEqual(
+            [call.args[0] for call in self.command.call_args_list if call.args[0][:3] == ["gh", "issue", "edit"]],
+            [["gh", "issue", "edit", "7", "--repo", "acme/widgets",
+              "--add-label", "ready-for-agent", "--remove-assignee", "@me"]],
+        )
+        self.assertEqual(
+            [call.args[0] for call in self.command.call_args_list if call.args[0][:3] == ["gh", "issue", "comment"]],
+            [["gh", "issue", "comment", "7", "--repo", "acme/widgets", "--body",
+              f'Factory dispatcher requeued: review rework at {risk_tests.HEAD}.\n\n{rows[0]["findings"]}']],
+        )
         # The next pass receives the packet, and cannot reset the ticket's round budget.
         self.clock = 0
         self.expire = False
