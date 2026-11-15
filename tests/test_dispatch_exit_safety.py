@@ -83,10 +83,10 @@ class EscalationWriteSafetyTest(unittest.TestCase):
             subprocess.CompletedProcess(command, 0, "{}", ""),
         ):
             with self.subTest(returncode=result.returncode, stdout=result.stdout):
-                with mock.patch.object(dispatch, "run", return_value=result) as run:
-                    with self.assertRaises(dispatch.GitHubWriteFailed):
-                        dispatch.unclaim(7, "--add-label", "ready-for-human", check=True)
-                self.assertEqual(run.call_args_list, [mock.call(command)])
+                with mock.patch.object(dispatch, "run", return_value=result) as run, \
+                        self.assertRaises(dispatch.GitHubWriteFailed):
+                    dispatch.unclaim(7, "--add-label", "ready-for-human", check=True)
+                self.assertEqual(run.call_args_list, [mock.call(command, env=None)])
                 self.assertEqual(self.data()["labels"], ["ready-for-agent"])
 
     def data(self):

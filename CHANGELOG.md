@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Dispatcher queue transitions confirm a replacement before removing only queue labels present on the issue. Owned ticket exits post reason comments after claim release or SHA-bound approval retention; escalation writes retry with rate-limit backoff and persistent failures record `github-write-failed` and raise a mechanism error instead of silently completing. Child exits now include redacted argv (including positional reviewer prompts and inline GitHub API comment bodies) and actual return codes across dispatch, workers, gates and triage (#567).
 - CI recovery after #694 verified on main at `720e54b9` ([run 43419482803](https://github.com/mikeroySoft/factory/actions/runs/43419482803)): full-history checkout and mutation-cache warming were already landed, as were #725's isolated uv temporary locks; both unittest discovery suites pass. The earlier [zero-job run 42671561578](https://github.com/mikeroySoft/factory/actions/runs/42671561578) reports a GitHub internal server error (correlation ID `4fd1a7ce-a4bc-4530-bff2-62a56477c6b4`), not a workflow syntax failure; its workflow is identical to the preceding green revision. No-systemd scratch-repository commits now ignore inherited signing requirements, so the restricted fixture PATH does not require a signer; worker commit signing is unchanged (#721).
 
 ## 0.4.13 — 2026-11-12
