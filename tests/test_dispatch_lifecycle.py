@@ -1158,9 +1158,9 @@ class LeaseRefusedCLI(unittest.TestCase):
         edits = self.gh_calls("issue", "edit")
         self.assertEqual(edits[0][-2:], ["--add-assignee", "@me"])
         self.assertEqual(edits[1:], [
-            ["issue", "edit", "7", "--repo", "acme/widgets",
+            ["issue", "edit", "7", "--repo", "local/smoke",
              "--remove-assignee", "@me", "--add-label", "ready-for-human"],
-            ["issue", "edit", "7", "--repo", "acme/widgets",
+            ["issue", "edit", "7", "--repo", "local/smoke",
              "--remove-label", "ready-for-agent"],
         ])
         comments = self.gh_calls("issue", "comment")
