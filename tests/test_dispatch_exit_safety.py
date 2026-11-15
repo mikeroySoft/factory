@@ -75,6 +75,20 @@ class EscalationWriteSafetyTest(unittest.TestCase):
         self.sleep = self.enterContext(mock.patch.object(dispatch.time, "sleep"))
         self.enterContext(mock.patch.object(dispatch, "_ESCALATED", set()))
 
+    def test_unclaim_labels_read_failure_raises_github_error(self):
+        command = ["gh", "issue", "view", "7", "--repo", "local/safety", "--json", "labels"]
+        for result in (
+            subprocess.CompletedProcess(command, 1, "", "HTTP 503"),
+            subprocess.CompletedProcess(command, 0, "", ""),
+            subprocess.CompletedProcess(command, 0, "{}", ""),
+        ):
+            with self.subTest(returncode=result.returncode, stdout=result.stdout):
+                with mock.patch.object(dispatch, "run", return_value=result) as run:
+                    with self.assertRaises(dispatch.GitHubWriteFailed):
+                        dispatch.unclaim(7, "--add-label", "ready-for-human", check=True)
+                self.assertEqual(run.call_args_list, [mock.call(command)])
+                self.assertEqual(self.data()["labels"], ["ready-for-agent"])
+
     def data(self):
         return json.loads(self.state.read_text())
 
