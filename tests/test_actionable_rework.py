@@ -78,8 +78,12 @@ class ActionableReworkTest(unittest.TestCase):
         self.assertIn("NumberReplacer", rows[0]["findings"])
         self.assertEqual(
             [call.args[0] for call in self.command.call_args_list if call.args[0][:3] == ["gh", "issue", "edit"]],
-            [["gh", "issue", "edit", "7", "--repo", "acme/widgets",
-              "--add-label", "ready-for-agent", "--remove-assignee", "@me"]],
+            [
+                ["gh", "issue", "edit", "7", "--repo", "acme/widgets",
+                 "--add-assignee", "@me"],
+                ["gh", "issue", "edit", "7", "--repo", "acme/widgets",
+                 "--add-label", "ready-for-agent", "--remove-assignee", "@me"],
+            ],
         )
         self.assertEqual(
             [call.args[0] for call in self.command.call_args_list if call.args[0][:3] == ["gh", "issue", "comment"]],

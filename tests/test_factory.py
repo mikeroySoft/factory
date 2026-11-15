@@ -2298,6 +2298,7 @@ case "$1 $2" in
     printf '{%s"state":"OPEN","headRefName":"agent/7","headRefOid":"%s","baseRefName":"main","reviewDecision":""}\n' "$number" "$head";;
   "pr checks") echo '[{"name":"unit","bucket":"fail"}]';;
   "issue edit"|"issue comment") exit 0;;
+  "pr edit") exit 0;;
   *) printf 'unexpected argv: %s\n' "$*" >&2; exit 1;;
 esac
 ''',
