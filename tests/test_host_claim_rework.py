@@ -44,10 +44,10 @@ class HostClaimReworkTest(unittest.TestCase):
         self.assertEqual(
             [comment["body"] for comment in self.github.comments],
             [
-                "Factory requeue: nonce=00000000-0000-4000-8000-000000000001\n"
+                ("Factory requeue: nonce=00000000-0000-4000-8000-000000000001\n"
                 "## Reviewer findings, round 1 (carried from the previous pass)\n\n"
                 "Resolve shared.py conflict\n\n"
-                "Address required fixes only on the existing ticket branch. Gate and review run again.\n\n",
+                 "Address required fixes only on the existing ticket branch. Gate and review run again.\n\n"),
                 "Factory dispatcher requeued: review rework at " + "a" * 40
                 + ".\n\nResolve shared.py conflict",
             ],
@@ -78,10 +78,10 @@ class HostClaimReworkTest(unittest.TestCase):
         self.assertEqual(
             [comment["body"] for comment in self.github.comments],
             [before_claim["body"],
-             "Factory requeue: nonce=00000000-0000-4000-8000-000000000001\n"
+             ("Factory requeue: nonce=00000000-0000-4000-8000-000000000001\n"
              "## Reviewer findings, round 1 (carried from the previous pass)\n\n"
              "Resolve shared.py conflict\n\n"
-             "Address required fixes only on the existing ticket branch. Gate and review run again.\n\n",
+              "Address required fixes only on the existing ticket branch. Gate and review run again.\n\n"),
              "Factory dispatcher requeued: review rework at " + "a" * 40
              + ".\n\nResolve shared.py conflict"],
         )
