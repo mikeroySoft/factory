@@ -478,3 +478,56 @@ class EscalationFailureCLITest(unittest.TestCase):
                                  ("mechanism_failure", "github_write_failed"))
                 self.assertEqual(len([row for row in rows if row.get("event") == "github-write-failed"]), 2)
                 self.assertEqual(len([row for row in rows if row.get("event") == "escalate"]), 1)
+
+
+class ReviewExitRegressionTest(unittest.TestCase):
+    setUp = EscalationWriteSafetyTest.setUp
+    data = EscalationWriteSafetyTest.data
+
+    def test_mutation_proof_wait_posts_reason_for_review_and_rereview(self):
+        head = "a" * 40
+        for source in ("review", "re-review"):
+            with self.subTest(source=source):
+                dispatch.defer_mutation_proof(7, head, source)
+                self.assertEqual(self.data()["labels"], ["ready-for-agent"])
+                self.assertEqual(
+                    self.data()["comments"][-1:],
+                    [f"Factory dispatcher requeued: mutation proof base moved during {source} at {head}; retrying next pass."],
+                )
+
+    def test_failed_merge_receipt_still_cleans_up(self):
+        head = "a" * 40
+        pr = {"number": 70, "state": "OPEN", "headRefName": "agent/7", "headRefOid": head,
+              "baseRefName": "main", "reviewDecision": "", "isDraft": False,
+              "labels": [{"name": "factory-approved"}], "title": "change", "files": []}
+
+        def query(args):
+            if args[:2] == ["pr", "list"]:
+                return [pr]
+            if args[:2] == ["pr", "view"]:
+                return pr
+            if args[:2] == ["issue", "view"]:
+                return {"labels": [{"name": "ready-for-agent"}]}
+            if args[0] == "api" and "/compare/" in args[1]:
+                return {"behind_by": 0}
+            raise AssertionError(args)
+
+        real_run = dispatch.run
+
+        def command(cmd, **kwargs):
+            if cmd[0] == "gh":
+                return real_run(cmd, **kwargs)
+            return subprocess.CompletedProcess(cmd, 0, head, "")
+
+        EscalationWriteSafetyTest.inject_failure(self, "comment")
+        dispatch.record("approved", ticket=7, pr=70, head=head, gate_head=head, review_head=head)
+        with mock.patch.object(dispatch, "gh_json", side_effect=query), \
+                mock.patch.object(dispatch, "run", side_effect=command), \
+                mock.patch.object(dispatch, "pr_checks", return_value=[{"name": "CI", "bucket": "pass"}]), \
+                mock.patch.object(dispatch, "_head_evidence_matches", return_value=True), \
+                mock.patch.object(dispatch, "cleanup_after_merge") as cleanup, \
+                mock.patch("factory.learn.promote_pass"):
+            with self.assertRaises(dispatch.GitHubWriteFailed):
+                dispatch.merge_pass_locked(False)
+            cleanup.assert_called_once_with(7, head)
+        self.assertTrue(self.data()["closed"])
