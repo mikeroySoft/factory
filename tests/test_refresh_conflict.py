@@ -163,7 +163,9 @@ class RefreshConflictTest(unittest.TestCase):
             self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
             self.assertEqual(self.github.assignees, [])
             self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
-            self.assertFalse(any(cmd[1:3] == ["issue", "comment"] for cmd in self.github.calls))
+            [comment] = [cmd for cmd in self.github.calls if cmd[1:3] == ["issue", "comment"]]
+            self.assertEqual(comment[comment.index("--body") + 1],
+                             "Factory dispatcher requeued: PR #102 rebase conflicts in shared.txt.")
             [requeue] = self.events("conflict-requeue")
             self.assertEqual((requeue["pr"], requeue["files"], requeue["round"]), (102, ["shared.txt"], 1))
             [decision] = [
@@ -212,7 +214,9 @@ class RefreshConflictTest(unittest.TestCase):
             self.assertIn(config.LABEL_AGENT, self.github.issue_labels)
             self.assertEqual(self.github.assignees, [])
             self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
-            self.assertFalse(any(cmd[1:3] == ["issue", "comment"] for cmd in self.github.calls))
+            [comment] = [cmd for cmd in self.github.calls if cmd[1:3] == ["issue", "comment"]]
+            self.assertEqual(comment[comment.index("--body") + 1],
+                             "Factory dispatcher requeued: PR #102 rebase conflicts in shared.txt.")
             [requeue] = self.events("conflict-requeue")
             self.assertEqual((requeue["head"], requeue["files"], requeue["round"]),
                              (self.approved_head, ["shared.txt"], 1))

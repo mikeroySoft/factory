@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import unittest
 from contextlib import chdir
 from pathlib import Path
@@ -88,9 +89,14 @@ class BudgetEscalationTest(unittest.TestCase):
                 dispatch.configure(config.load(self.repo))
                 self.events.parent.mkdir(exist_ok=True)
                 self.events.write_text("".join(json.dumps(row) + "\n" for row in rows))
-                with mock.patch.object(dispatch, "run") as run:
-                    run.return_value.returncode = 0
-                    run.return_value.stdout = ""
+                def run(cmd, *args, **kwargs):
+                    if cmd[:3] == ["gh", "issue", "view"]:
+                        return subprocess.CompletedProcess(cmd, 0, json.dumps({"labels": [{"name": "ready-for-agent"}]}), "")
+                    if cmd[:3] in (["gh", "issue", "edit"], ["gh", "issue", "comment"]):
+                        return subprocess.CompletedProcess(cmd, 0, "", "")
+                    raise AssertionError(f"Unexpected gh command: {cmd}")
+
+                with mock.patch.object(dispatch, "run", side_effect=run):
                     dispatch.escalate(7, "gate failed after worker", Path("worker.log"), code="gate_failed")
                 escalation, = [
                     row for row in lifecycle.read_events(self.events) if row.get("event") == "escalate"

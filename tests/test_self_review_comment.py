@@ -49,6 +49,7 @@ class SelfReviewCommentTest(unittest.TestCase):
         self.post_rc = 0
         self.post_stderr = ""
         self.reviewer_out = APPROVE_OUT
+        self.reviewer_launches: list[tuple[list[str], str | None]] = []
         self.cfg.reviewer = ["reviewer", "{prompt}"]
 
     def _gh_json(self, args: list[str], env=None):
@@ -63,7 +64,8 @@ class SelfReviewCommentTest(unittest.TestCase):
         return self.open_prs
 
     def _run(
-        self, cmd: list[str], cwd=None, check=True, stdout=None, stderr=None, env=None, timeout=None
+        self, cmd: list[str], cwd=None, check=True, stdout=None, stderr=None, env=None, timeout=None,
+        redact_value=None,
     ):
         if cmd[:4] == ["gh", "api", "--method", "POST"] and cmd[4].endswith("/reviews"):
             proc = subprocess.CompletedProcess(cmd, self.post_rc, "{}", self.post_stderr)
@@ -71,6 +73,7 @@ class SelfReviewCommentTest(unittest.TestCase):
                 proc.check_returncode()
             return proc
         if cmd and cmd[0] == "reviewer":
+            self.reviewer_launches.append((cmd, redact_value))
             return subprocess.CompletedProcess(cmd, 0, self.reviewer_out, "")
         if cmd[:3] == ["gh", "pr", "checks"]:
             return subprocess.CompletedProcess(cmd, 0, "[]", "")
@@ -117,6 +120,8 @@ class SelfReviewCommentTest(unittest.TestCase):
         self.post_rc = 1
         self.post_stderr = "gh: Unprocessable Entity (HTTP 422)"
         dispatch.review_intake_pass(dry_run=False)
+        [(command, redact_value)] = self.reviewer_launches
+        self.assertEqual(redact_value, command[-1])
         intakes = self.rows("review-intake")
         self.assertEqual(len(intakes), 1)
         self.assertEqual(intakes[0]["head"], "h" * 40)
@@ -137,6 +142,8 @@ class SelfReviewCommentTest(unittest.TestCase):
     def test_author_equals_reviewer_posts_comment_event(self) -> None:
         self.open_prs = [self._pr()]
         dispatch.review_intake_pass(dry_run=False)
+        [(command, redact_value)] = self.reviewer_launches
+        self.assertEqual(redact_value, command[-1])
         posts = [
             c.args[0]
             for c in self.run.call_args_list
@@ -239,6 +246,8 @@ class SelfReviewCommentTest(unittest.TestCase):
         self.open_prs = [self._pr()]
         dispatch.record("review-intake", pr=9, head="h" * 40)
         dispatch.review_intake_pass(dry_run=False)
+        [(command, redact_value)] = self.reviewer_launches
+        self.assertEqual(redact_value, command[-1])
         self.assertEqual(len(self.rows("review-intake")), 1)
         [result] = self.rows("review-result")
         self.assertEqual(result["verdict"], "APPROVE")

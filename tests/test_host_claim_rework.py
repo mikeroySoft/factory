@@ -30,6 +30,28 @@ class HostClaimReworkTest(unittest.TestCase):
 
         dispatch._record_rework(7, "a" * 40, "Resolve shared.py conflict", deferred=True)
 
+        self.assertEqual(
+            [args for _, args in self.github.calls if args[:3] == ["gh", "issue", "edit"]],
+            [
+                ["gh", "issue", "edit", "7", "--repo", "local/claims",
+                 "--add-label", "ready-for-agent", "--remove-assignee", "@me"],
+                ["gh", "issue", "edit", "7", "--repo", "local/claims",
+                 "--remove-label", "ready-for-human"],
+                ["gh", "issue", "edit", "7", "--repo", "local/claims",
+                 "--remove-label", "host:tank"],
+            ],
+        )
+        self.assertEqual(
+            [comment["body"] for comment in self.github.comments],
+            [
+                ("Factory requeue: nonce=00000000-0000-4000-8000-000000000001\n"
+                "## Reviewer findings, round 1 (carried from the previous pass)\n\n"
+                "Resolve shared.py conflict\n\n"
+                 "Address required fixes only on the existing ticket branch. Gate and review run again.\n\n"),
+                "Factory dispatcher requeued: review rework at " + "a" * 40
+                + ".\n\nResolve shared.py conflict",
+            ],
+        )
         self.assertEqual(self.github.issue["assignees"], [])
         self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
         self.assertEqual(dispatch.host_claims(7), [])
@@ -44,6 +66,25 @@ class HostClaimReworkTest(unittest.TestCase):
 
         dispatch._record_rework(7, "a" * 40, "Resolve shared.py conflict", deferred=True)
 
+        self.assertEqual(
+            [args for _, args in self.github.calls if args[:3] == ["gh", "issue", "edit"]],
+            [
+                ["gh", "issue", "edit", "7", "--repo", "local/claims",
+                 "--add-label", "ready-for-agent"],
+                ["gh", "issue", "edit", "7", "--repo", "local/claims",
+                 "--remove-label", "ready-for-human"],
+            ],
+        )
+        self.assertEqual(
+            [comment["body"] for comment in self.github.comments],
+            [before_claim["body"],
+             ("Factory requeue: nonce=00000000-0000-4000-8000-000000000001\n"
+             "## Reviewer findings, round 1 (carried from the previous pass)\n\n"
+             "Resolve shared.py conflict\n\n"
+              "Address required fixes only on the existing ticket branch. Gate and review run again.\n\n"),
+             "Factory dispatcher requeued: review rework at " + "a" * 40
+             + ".\n\nResolve shared.py conflict"],
+        )
         self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
         self.assertEqual(dispatch.host_claim_hold(7, self.github.issue, dispatch.host_claims(7)),
                          "host claim (tank)")

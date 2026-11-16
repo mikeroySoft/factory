@@ -148,7 +148,8 @@ class WorkerPlanTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, diff, "")
             raise AssertionError(command)
 
-        def reviewer(command: list[str], *_args: object) -> subprocess.CompletedProcess:
+        def reviewer(command: list[str], *_args: object, prompt: str) -> subprocess.CompletedProcess:
+            self.assertEqual(prompt, command[-1])
             prompts.append(command[-1])
             return subprocess.CompletedProcess(command, 0, reply, "")
 

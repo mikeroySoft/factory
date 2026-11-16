@@ -92,12 +92,19 @@ class HostClaimMutationTest(unittest.TestCase):
         edits = [args for _, args in self.github.calls if args[:3] == ["gh", "issue", "edit"]]
         self.assertEqual(edits, [[
             "gh", "issue", "edit", "7", "--repo", "local/claims",
-            "--remove-label", "ready-for-human", "--add-label", "ready-for-agent",
-            "--remove-assignee", "@me",
+            "--add-label", "ready-for-agent", "--remove-assignee", "@me",
+        ], [
+            "gh", "issue", "edit", "7", "--repo", "local/claims",
+            "--remove-label", "ready-for-human",
         ]])
         self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
         self.assertEqual(self.github.issue["assignees"], [])
-        self.assertEqual(self.github.comments, [])
+        self.assertEqual(
+            [comment["body"] for comment in self.github.comments],
+            [("Factory dispatcher requeued: PR #70 gate failed twice after rebase.\n\n"
+              "## First refresh gate report\n\n- test: FAIL\n\n"
+              "## Refresh gate re-run report\n\n- test: FAIL")],
+        )
         self.assertFalse(any("user" in args or "--slurp" in args for _, args in self.github.calls))
 
 

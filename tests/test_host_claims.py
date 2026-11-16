@@ -106,6 +106,8 @@ class FakeGitHub:
                         self.issue[key] = [row for row in self.issue[key] if row[field] != value]
                     elif not any(row[field] == value for row in self.issue[key]):
                         self.issue[key].append({field: value})
+            elif cmd[:3] == ["gh", "issue", "comment"]:
+                pass
             elif cmd[:2] == ["gh", "api"]:
                 endpoint = next(arg for arg in cmd if arg.startswith("repos/"))
                 comment_id = int(endpoint.rsplit("/", 1)[1])
@@ -123,6 +125,11 @@ class FakeGitHub:
                 pass
             elif cmd[0] != "git":
                 raise AssertionError(cmd)
+        if cmd[:3] == ["gh", "issue", "comment"]:
+            self.json(host, [
+                "api", "repos/local/claims/issues/7/comments", "--method", "POST",
+                "-f", f"body={cmd[cmd.index('--body') + 1]}",
+            ])
         stdout = "1" if "rev-list" in cmd else "a" * 40
         return subprocess.CompletedProcess(cmd, 0, stdout, "")
 
@@ -325,12 +332,11 @@ class HostClaimRaceTest(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
         self.assertEqual(
-            [row["name"] for row in self.github.issue["labels"]
-             if row["name"].startswith("host:")],
-            [],
+            [comment["body"] for comment in self.github.comments],
+            ["Factory dispatcher requeued: worker launch failed (worker disappeared); fix PATH or [workers]."],
         )
-        self.assertEqual(self.github.comments, [])
 
     def test_assignee_failure_releases_host_claim_without_worker_launch(self):
         tank = self.dispatcher("tank")

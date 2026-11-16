@@ -154,6 +154,13 @@ def merge_stage_mocks(origin: Path, pr_number: int, branch: str, title: str, ori
                 git(origin, "merge", "-q", "--squash", branch)
                 git(origin, "commit", "-q", "-m", "Squash PR")
             return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd == [
+            "gh", "issue", "comment", str(ticket), "--repo", "acme/widgets", "--body",
+            f"Factory dispatcher merged PR #{pr_number}: gate, review, approval and CI passed at {head}.",
+        ]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd[:1] == ["gh"]:
+            raise AssertionError(cmd)
         return original_run(cmd, *a, **kw)
 
     return fake_gh_json, fake_run
@@ -2284,12 +2291,19 @@ case "$1 $2" in
   "pr list") echo '[]';;
   "issue list") echo '[{"number":7,"title":"Fix CI","body":"Original","labels":[{"name":"chore"}]}]';;
   "api repos/acme/widgets/issues/7/timeline") cat .factory/timeline.json;;
-  "issue view") echo '{"title":"Fix CI","body":"Original","comments":[]}';;
+  "issue view") echo '{"title":"Fix CI","body":"Original","comments":[],"labels":[{"name":"ready-for-human"}]}';;
   "pr view")
     head=$(git -C .factory/wt-7 rev-parse HEAD)
     case "$*" in *--json*number*) number='"number":9,';; *) number=;; esac
     printf '{%s"state":"OPEN","headRefName":"agent/7","headRefOid":"%s","baseRefName":"main","reviewDecision":""}\n' "$number" "$head";;
   "pr checks") echo '[{"name":"unit","bucket":"fail"}]';;
+  "issue edit"|"issue comment") exit 0;;
+  "pr edit")
+    if [ "$#" -eq 7 ] && [ "$*" = "pr edit 9 --repo acme/widgets --add-label factory-approved" ]; then
+      exit 0
+    fi
+    printf 'unexpected argv: %s\n' "$*" >&2; exit 1;;
+  *) printf 'unexpected argv: %s\n' "$*" >&2; exit 1;;
 esac
 ''',
                     "fix-worker": ('git rebase origin/main || exit 1\n' if rebase else "")
@@ -2926,7 +2940,16 @@ class DispatchTest(unittest.TestCase):
             worker_log = dispatch.LOGS / "7-attempt-1.log"
             worker_log.parent.mkdir()
             worker_log.write_text("worker detail\n")
-            with mock.patch.object(dispatch, "run"):
+            def run(cmd, **kwargs):
+                if cmd[:3] == ["gh", "issue", "view"]:
+                    return subprocess.CompletedProcess(
+                        cmd, 0, '{"labels":[{"name":"ready-for-agent"}]}', "",
+                    )
+                if cmd[:3] in (["gh", "issue", "edit"], ["gh", "issue", "comment"]):
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                raise AssertionError(cmd)
+
+            with mock.patch.object(dispatch, "run", side_effect=run):
                 dispatch.escalate(7, "gate failed", worker_log, code="gate_failed")
 
             packet = dispatch.FACTORY / "escalations" / "7.md"
@@ -2941,7 +2964,7 @@ class DispatchTest(unittest.TestCase):
             escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
             self.assertEqual(escalation["packet"], str(packet))
             self.assertEqual(escalation["round"], 1)
-            with mock.patch.object(dispatch, "run"):
+            with mock.patch.object(dispatch, "run", side_effect=run):
                 dispatch.escalate(7, "gate failed again", worker_log, code="gate_failed")
             escalation = json.loads(dispatch.EVENTS.read_text().splitlines()[-1])
             self.assertEqual(escalation["round"], 2)
