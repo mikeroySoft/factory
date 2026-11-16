@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
@@ -105,7 +106,7 @@ class DispatchLanesTest(unittest.TestCase):
 
     def test_landing_lock_serializes_simultaneous_passes(self):
         entered, release = threading.Event(), threading.Event()
-        merges, errors = [], []
+        merges = []
 
         def merge(_dry_run):
             merges.append(threading.get_ident())
@@ -113,24 +114,16 @@ class DispatchLanesTest(unittest.TestCase):
             if not release.wait(WAIT):
                 raise TimeoutError("landing was not released")
 
-        def landing():
-            try:
-                dispatch.land_pass(False)
-            except Exception as exc:
-                errors.append(exc)
-
-        with patch.object(dispatch, "sync_pass"), patch.object(dispatch, "merge_pass_locked", merge):
-            first = threading.Thread(target=landing)
-            first.start()
+        with patch.object(dispatch, "sync_pass"), patch.object(dispatch, "merge_pass_locked", merge), \
+                ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(dispatch.land_pass, False)
             try:
                 self.assertTrue(entered.wait(WAIT))
                 dispatch.land_pass(False)
                 self.assertEqual(len(merges), 1, "a contender must not enter the merge stage")
             finally:
                 release.set()
-                first.join(WAIT)
-            self.assertFalse(first.is_alive())
-            self.assertEqual(errors, [])
+            first.result(timeout=WAIT)
             dispatch.land_pass(False)
             self.assertEqual(len(merges), 2, "the merge lock must be released for the next pass")
         rows = lifecycle.read_events(self.events)
