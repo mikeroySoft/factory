@@ -210,6 +210,18 @@ def read_events(path: Path) -> list[dict]:
         return []
 
 @contextmanager
+def pr_close_lock(path: Path):
+    """Serialize PR close+record against reconciliation, before taking journal locks."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Separate from the journal flock: the gh runner journals child lifecycle rows.
+    # ponytail: serialize all PR closes; use per-PR locks if close throughput matters.
+    with path.with_suffix(".pr-close.lock").open("a+b") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+@contextmanager
 def journal_snapshot(
     path: Path, *, rows: list[dict] | None = None, handle=None, create: bool = True,
 ):

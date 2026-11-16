@@ -109,70 +109,74 @@ class ManagerResolveTest(unittest.TestCase):
             ], [])
 
     def test_reconciliation_during_manager_close_preserves_attribution(self) -> None:
+        for decision in ("RESOLVE", "CLOSE"):
+            for rotate in (False, True):
+                with self.subTest(decision=decision, rotate=rotate):
+                    self.check_close_reconciliation(decision, rotate)
+
+    def check_close_reconciliation(self, decision: str, rotate: bool) -> None:
         real_flock = fcntl.flock
         now = datetime.now(UTC)
         pr = {"number": 17, "state": "OPEN", "changedFiles": 0, "baseRefName": "main"}
-        for decision in ("RESOLVE", "CLOSE"):
-            for rotate in (False, True):
-                with self.subTest(decision=decision, rotate=rotate), tempfile.TemporaryDirectory() as root:
-                    dispatch.configure(config.Config(Path(root), "acme/widgets"))
-                    dispatch.record("pr-opened", ticket=7, pr=17)
-                    rows = lifecycle.read_events(dispatch.EVENTS)
-                    progress = Event()
-                    reconciler = None
-                    future = None
+        with tempfile.TemporaryDirectory() as root:
+            dispatch.configure(config.Config(Path(root), "acme/widgets"))
+            dispatch.record("pr-opened", ticket=7, pr=17)
+            rows = lifecycle.read_events(dispatch.EVENTS)
+            progress = Event()
+            reconciler = None
+            future = None
 
-                    def flock(handle, operation):
-                        if get_ident() == reconciler and operation == fcntl.LOCK_EX:
-                            try:
-                                return real_flock(handle, operation | fcntl.LOCK_NB)
-                            except BlockingIOError:
-                                # Let the manager finish only once reconciliation is
-                                # blocked on its lock (or has published the wrong row).
-                                progress.set()
-                        return real_flock(handle, operation)
+            def flock(handle, operation):
+                if get_ident() == reconciler and operation == fcntl.LOCK_EX:
+                    try:
+                        return real_flock(handle, operation | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        # Let the manager finish only once reconciliation is
+                        # blocked on its lock (or has published the wrong row).
+                        progress.set()
+                return real_flock(handle, operation)
 
-                    def reconcile():
-                        nonlocal reconciler
-                        reconciler = get_ident()
-                        try:
-                            stats.reconcile_closed_prs(dispatch.EVENTS, rows, now - timedelta(days=7))
-                        finally:
-                            progress.set()
+            def reconcile():
+                nonlocal reconciler
+                reconciler = get_ident()
+                try:
+                    stats.reconcile_closed_prs(dispatch.EVENTS, rows, now - timedelta(days=7))
+                finally:
+                    progress.set()
 
-                    def run(command, **_kwargs):
-                        nonlocal future
-                        if command[1:3] == ["pr", "close"]:
-                            # GitHub has accepted the close, but the manager has not
-                            # returned from gh and cannot yet append its close row.
-                            future = pool.submit(reconcile)
-                            self.assertTrue(progress.wait(timeout=5))
-                        return subprocess.CompletedProcess(command, 0, stdout="https://example.test/comment\n")
+            def run(command, **_kwargs):
+                nonlocal future
+                if command[1:3] == ["pr", "close"]:
+                    # GitHub has accepted the close, but the manager has not
+                    # returned from gh and cannot yet append its close row.
+                    future = pool.submit(reconcile)
+                    self.assertTrue(progress.wait(timeout=5))
+                return subprocess.CompletedProcess(command, 0, stdout="https://example.test/comment\n")
 
-                    closed = [{"number": 17, "closedAt": now.isoformat(), "mergedAt": None}]
-                    with mock.patch.object(dispatch, "gh_json", return_value=pr), \
-                            mock.patch.object(dispatch, "run", side_effect=run), \
-                            mock.patch.object(dispatch, "comment_receipt"), \
-                            mock.patch.object(stats.subprocess, "run", return_value=
-                                              subprocess.CompletedProcess([], 0, json.dumps(closed))), \
-                            mock.patch.object(fcntl, "flock", side_effect=flock), \
-                            mock.patch.object(lifecycle, "MAX_BYTES", 1 if rotate else lifecycle.MAX_BYTES), \
-                            ThreadPoolExecutor(max_workers=1) as pool:
-                        with lifecycle.scope(dispatch.EVENTS, "manager", ticket=7) as execution:
-                            manage.apply(7, {"title": "No change"}, decision, "No change needed.", None, Path("unused"))
-                        future.result(timeout=5)
+            closed = [{"number": 17, "closedAt": now.isoformat(), "mergedAt": None}]
+            with mock.patch.object(dispatch, "gh_json", return_value=pr), \
+                    mock.patch.object(dispatch, "run", side_effect=run), \
+                    mock.patch.object(dispatch, "comment_receipt"), \
+                    mock.patch.object(stats.subprocess, "run", return_value=
+                                      subprocess.CompletedProcess([], 0, json.dumps(closed))), \
+                    mock.patch.object(fcntl, "flock", side_effect=flock), \
+                    mock.patch.object(lifecycle, "MAX_BYTES", 1 if rotate else lifecycle.MAX_BYTES), \
+                    ThreadPoolExecutor(max_workers=1) as pool:
+                with lifecycle.scope(dispatch.EVENTS, "manager", ticket=7) as execution:
+                    manage.apply(7, {"title": "No change"}, decision, "No change needed.", None, Path("unused"))
+                future.result(timeout=5)
 
-                    closes = [row for row in lifecycle.read_events(dispatch.EVENTS)
-                              if row.get("event") == "pr-closed"]
-                    self.assertEqual([{key: row[key] for key in ("pr", "ticket", "by", "reason")}
-                                      for row in closes], [{
-                        "pr": 17, "ticket": 7, "by": "manager", "reason": decision.lower(),
-                    }])
-                    self.assertEqual(closes[0]["execution_id"], execution.execution_id)
-                    self.assertEqual([row for row in rows if row.get("event") == "pr-closed"], closes)
-                    report = stats.weekly_metrics(rows, now - timedelta(days=7),
-                                                  datetime.now(UTC) + timedelta(seconds=1), None)
-                    self.assertEqual(report["closed_unmerged_by"], {"manager": 1})
+            closes = [row for row in lifecycle.read_events(dispatch.EVENTS)
+                      if row.get("event") == "pr-closed"]
+            self.assertEqual([{key: row[key] for key in ("pr", "ticket", "by", "reason")}
+                              for row in closes], [{
+                "pr": 17, "ticket": 7, "by": "manager", "reason": decision.lower(),
+            }])
+            self.assertEqual(closes[0]["execution_id"], execution.execution_id)
+            self.assertEqual([row for row in rows if row.get("event") == "pr-closed"], closes)
+            report = stats.weekly_metrics(rows, now - timedelta(days=7),
+                                          datetime.now(UTC) + timedelta(seconds=1), None)
+            self.assertEqual(report["closed_unmerged_by"], {"manager": 1})
 
     def test_apply_refuses_open_pr_with_changes(self) -> None:
         pr = {"number": 17, "state": "OPEN", "changedFiles": 2, "baseRefName": "main"}

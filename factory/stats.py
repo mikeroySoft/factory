@@ -307,7 +307,7 @@ def reconcile_closed_prs(journal: Path, rows: list[dict], start: datetime) -> No
         return
     if not isinstance(closed, list):
         return
-    with lifecycle.journal_snapshot(journal) as (current, handle):
+    with lifecycle.pr_close_lock(journal), lifecycle.journal_snapshot(journal) as (current, handle):
         for row in current:
             number = row.get("pr")
             if row.get("event") == "pr-closed" and _is_int(number) and number not in seen:
