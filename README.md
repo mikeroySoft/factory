@@ -1429,8 +1429,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 ### Dispatcher exit safety
 
 Owned ticket exits post their reason on the issue: escalation, deferred review
-rework, refresh conflict/gate/risk requeues, worker launch failures, approval or
-manager-approval waits, and merge. Dry runs, admission refusals and another
+rework, mutation-proof waits, refresh conflict/gate/risk requeues, worker launch
+failures, approval or manager-approval waits, and merge. Dry runs, admission refusals and another
 owner's locked/in-flight tickets remain read-only.
 
 Queue transitions add the replacement label in a checked write before removing
@@ -1443,6 +1443,8 @@ and failed-transition notice.
 Requeues release assignment before posting their reason. Approval records its
 SHA-bound evidence and retains the handoff before commenting, so a failed comment
 cannot block claim release or leave a labeled PR without merge evidence.
+Merge records its outcome and cleans up the worktree before posting its receipt;
+a failed receipt remains loud without preventing local cleanup.
 
 Checked exit writes retry once: normally after one second, or at least 60 seconds
 for primary/secondary rate limits (honoring a longer `retry-after` hint).

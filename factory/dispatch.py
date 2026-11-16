@@ -3772,6 +3772,7 @@ def defer_mutation_proof(n: int, head: str, source: str) -> None:
         n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
         assignee_last=True, check=True,
     )
+    ticket_comment(n, f"Factory dispatcher requeued: mutation proof base moved during {source} at {head}; retrying next pass.")
     log(f"#{n}: mutation proof base moved during {source}; retrying next pass")
 
 
@@ -5207,10 +5208,10 @@ def merge_pass_locked(dry_run: bool) -> None:
                     n, pr_num, "merge now", f"gate, review, approval, and CI passed for {head}",
                     head, head, latest_checks, merge_sha=merge_sha,
                 )
-                ticket_comment(n, f"Factory dispatcher merged PR #{pr_num}: gate, review, approval and CI passed at {head}.")
             execution.outcome = "merged"
             log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
             cleanup_after_merge(n, head)
+            ticket_comment(n, f"Factory dispatcher merged PR #{pr_num}: gate, review, approval and CI passed at {head}.")
             return
 
 
