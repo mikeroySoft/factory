@@ -732,6 +732,70 @@ class EvidenceCliTest(unittest.TestCase):
             self.assert_darwin_lock_gap_only(observed)
             self.assert_darwin_lock_gap_only(inspected)
 
+    def test_observe_linux_unreadable_proc_identity_is_partial(self):
+        (self.journal.parent / "locks").mkdir(parents=True)
+        self.journal.touch()
+        (self.journal.parent / "locks/merge.lock").touch()
+        (self.root / "gpu.lock").touch()
+        (self.guard / "sitecustomize.py").write_text(READ_GUARD + '''
+from unittest.mock import patch
+from factory import runtime_events
+
+small = runtime_events._small
+readlink = os.readlink
+
+def read_small(path, limit):
+    if str(path) == "/proc/sys/kernel/random/boot_id":
+        raise PermissionError("boot identity unreadable")
+    if str(path) == "/etc/machine-id":
+        return b"simulated-linux-machine"
+    if str(path) == "/proc/locks":
+        return b""
+    return small(path, limit)
+
+def read_link(path, *args, **kwargs):
+    if str(path) == "/proc/self/ns/pid":
+        raise PermissionError("pid namespace unreadable")
+    return readlink(path, *args, **kwargs)
+
+patch("factory.platform_identity.darwin", return_value=False).start()
+patch("factory.runtime_events._small", side_effect=read_small).start()
+patch("os.readlink", side_effect=read_link).start()
+''')
+        observed = self.invoke("observe", code=1)
+        identity_errors = [
+            {"source": "proc", "scope": "identity", "code": "boot_unavailable"},
+            {"source": "proc", "scope": "identity", "code": "namespace_unavailable"},
+        ]
+        self.assertEqual(observed["errors"], identity_errors)
+        self.assertEqual(observed["coverage"]["status"], "partial")
+        self.assertEqual(observed["error"]["code"], "partial_collection")
+        runtime = next(value for value in self.values(observed)
+                       if isinstance(value, dict) and "executions" in value)
+        self.assertEqual(runtime["errors"], identity_errors)
+
+    def test_observe_darwin_native_identity_has_only_unknown_lock_gap(self):
+        (self.journal.parent / "locks").mkdir(parents=True)
+        self.journal.touch()
+        (self.journal.parent / "locks/merge.lock").touch()
+        (self.root / "gpu.lock").touch()
+        (self.guard / "sitecustomize.py").write_text(READ_GUARD + '''
+from unittest.mock import patch
+
+patch("factory.platform_identity.darwin", return_value=True).start()
+patch("factory.platform_identity.boot_id",
+      return_value="11111111-2222-3333-4444-555555555555").start()
+patch("factory.platform_identity.host_id",
+      return_value="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").start()
+patch("factory.runtime_events._small", side_effect=PermissionError).start()
+''')
+        observed = self.invoke("observe", code=1)
+        self.assert_darwin_lock_gap_only(observed)
+        runtime = next(value for value in self.values(observed)
+                       if isinstance(value, dict) and "executions" in value)
+        self.assertEqual([row["state"] for row in runtime["resources"]], ["unknown"] * 2)
+        self.assertEqual([row["ownership"] for row in runtime["resources"]], ["unknown"] * 2)
+
     def test_unavailable_github_is_unknown_attention_not_empty_success(self):
         self.responses[PREFIX + "issues"] = {"exit": 1, "stderr": "PRIVATE_TOKEN denied"}
         data = self.invoke("observe", code=1)
