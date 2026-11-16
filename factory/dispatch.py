@@ -488,12 +488,16 @@ def frontier() -> list[dict]:
 
 def review_intake_pass(dry_run: bool) -> None:
     """Review opted-in PR revisions, and `factory learn` PRs, without running the issue/merge pipeline."""
+    if pause.guard(cfg, log):
+        return False
     prs = gh_json([
         "pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
         "--json", "number,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefOid,labels,reviewRequests",
     ])
     login = None
     for pr in prs:
+        if pause.guard(cfg, log):
+            return False
         if pr["state"] != "OPEN" or pr["isDraft"]:
             continue
         # Branch-name admission is for the dispatcher's own chore PRs; a fork can name its branch anything.
@@ -2135,7 +2139,7 @@ def push_agent(wt: Path, n: int, lease: str, check: bool = True) -> str | None:
 
 def push_and_pr(
     wt: Path, branch: str, title: str, body: str, label: str = "", ticket: int | None = None,
-    lease: str | None = None,
+    lease: str | None = None, *, pause_override: dict | None = None,
 ) -> bool:
     """Push `branch` and open its PR. False if the branch adds nothing over
     main (nothing to review; a worker that landed its work elsewhere). With `ticket` and
@@ -2153,6 +2157,8 @@ def push_and_pr(
             f"{existing[0].get('baseRefName')!r}, not {cfg.main!r}; not pushing"
         )
         return False
+    if pause.guard(cfg, log, override=pause_override):
+        return False
     if ticket is None or lease is None:
         run(["git", "push", "-u", "origin", branch], cwd=wt)
     else:
@@ -2162,6 +2168,8 @@ def push_and_pr(
         if ticket is not None:
             record("pr-opened", ticket=ticket, pr=existing[0]["number"])
         return True
+    if pause.guard(cfg, log, override=pause_override):
+        return False
     body_file = FACTORY / f"pr-body-{branch.removeprefix('agent/')}.md"
     body_file.write_text(body)
     created = run(
@@ -2400,6 +2408,8 @@ def sync_pass(dry_run: bool) -> None:
     merge pipeline owns it from there. Nothing here moves main. One open sync
     issue, worker- or human-owned, parks the stage until it closes.
     """
+    if pause.guard(cfg, log):
+        return
     if UPSTREAM is None:
         return
     if dry_run:
@@ -2457,6 +2467,9 @@ def sync_pass(dry_run: bool) -> None:
                 detail = (conflicts.strip() or merge.stderr.strip())[-6000:]
                 evidence = f"## Conflicted files when merging the tip\n\n```\n{detail}\n```"
             head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+            if pause.guard(cfg, log):
+                execution.outcome, execution.reason = "not_admitted", "paused"
+                return
             n = sync_issue(tip, count, staged, evidence)
             wt_n = FACTORY / f"wt-{n}"
             run(["git", "worktree", "add", str(wt_n), "-b", f"agent/{n}", head], cwd=ROOT)
@@ -3031,6 +3044,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             refreshed_head=head,
         )
         return False
+    if pause.guard(cfg, log):
+        return False
     if push_agent(wt, n, remote_head, check=False) is None:
         withdraw(
             "remote head changed while refreshed evidence was being produced",
@@ -3097,6 +3112,8 @@ def land_pass(dry_run: bool) -> None:
     merge queue: landing one PR makes the others stale, and the refresh path
     re-earns gate and fresh review evidence before they land.
     """
+    if pause.guard(cfg, log):
+        return False
     # Serialize against concurrent dispatcher runs (timer + manual): two merge
     # stages rebasing the same worktree would corrupt it. Skip, don't wait —
     # the next timer pass retries.
@@ -3162,6 +3179,8 @@ def merge_pass_locked(dry_run: bool) -> None:
             continue
         candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
     for pr_num, n, listed_head in sorted(candidates):
+        if pause.guard(cfg, log):
+            return False
         with nullcontext() if dry_run else lifecycle.scope(
             EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
         ) as execution:
@@ -3689,6 +3708,8 @@ def process_ticket(
             f"run {worker} worker, gate, push, open PR, review"
         )
         return
+    # --ticket bypasses frontier admission; only a hold present at entry can be overridden.
+    overridden_pause = pause.current(ROOT, expire=True) if forced else None
 
     with lifecycle.scope(EVENTS, "ticket", ticket=n) as execution:
         deadline = time.monotonic() + budget_min * 60
@@ -3705,10 +3726,8 @@ def process_ticket(
         claimed = False  # once True, nothing may leave this block without releasing the ticket
         def park_if_paused() -> bool:
             nonlocal claimed
-            if forced:
-                return False
             state = pause.current(ROOT, expire=True)
-            if state is None:
+            if state is None or state == overridden_pause:
                 return False
             detail = "parked and unclaimed" if claimed else "not claimed"
             log(f"#{n}: {pause.message(state)}; {detail}")
@@ -3814,6 +3833,8 @@ def process_ticket(
             if staged is not None:
                 report, gate_head = staged
             for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
+                if park_if_paused():
+                    return
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, attempt, deadline, body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
@@ -3853,7 +3874,10 @@ def process_ticket(
             body = f"Closes #{n}\n\n## Gate report\n\n{report}\n"
             if park_if_paused():
                 return
-            if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n, lease=lease):
+            overrides = {"pause_override": overridden_pause} if overridden_pause is not None else {}
+            if not push_and_pr(wt, f"agent/{n}", f"agent/{n}: {title}", body, ticket=n, lease=lease, **overrides):
+                if park_if_paused():
+                    return
                 escalate(
                     n, f"agent/{n}: PR not published (no commits over main and no handoff, or existing "
                     f"PR targets a base other than {cfg.main}); inspect dispatcher log", logfile,
@@ -3880,6 +3904,8 @@ def process_ticket(
             for bounce in range(1, cfg.review_rounds + 1):
                 if verdict == "APPROVE":
                     break
+                if park_if_paused():
+                    return
                 if time.monotonic() > deadline:
                     escalate(
                         n,

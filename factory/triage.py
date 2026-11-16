@@ -698,6 +698,8 @@ def execute(args: argparse.Namespace, execution) -> int:
             execution.emit("lock_acquired", lock=str(cfg.lock))
         try:
             for number in numbers:
+                if pause.current(cfg, expire=True):
+                    break
                 ticket_execution = None
                 try:
                     with (

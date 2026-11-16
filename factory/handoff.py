@@ -16,7 +16,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from subprocess import CalledProcessError
 
-from factory import dispatch, lifecycle
+from factory import dispatch, lifecycle, pause
 from factory.config import LABEL_AGENT, LABEL_HUMAN
 
 MARK = "factory-handoff"
@@ -151,9 +151,13 @@ def compose(n: int, request: str, token: str, escalation: dict, why: str, observ
 def handoff_pass(dry_run: bool = False) -> None:
     """Publish or reconcile the routed request for every terminal `ready-for-human` escalation."""
     cfg = dispatch.cfg
+    if pause.guard(cfg, dispatch.log):
+        return
     issues = dispatch.gh_json(["issue", "list", "--repo", cfg.repo, "--state", "open", "--label", LABEL_HUMAN,
                                "--json", "number,title,labels", "--limit", "1000"])
     for issue in issues:
+        if pause.current(cfg, expire=True):
+            return
         n = issue["number"]
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dry_run and dispatch.lock_held(lock_path):

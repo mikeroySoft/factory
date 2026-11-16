@@ -649,9 +649,13 @@ def viability_pass(dry_run: bool = False) -> None:
         return
     # A shared issue-number lock also serializes PRs, which share GitHub's namespace.
     for kind, label in (("pr", LABEL_REVIEW), ("issue", LABEL_VIABILITY)):
+        if pause.current(cfg, expire=True):
+            return
         issues = dispatch.gh_json([kind, "list", "--repo", cfg.repo, "--state", "open", "--label", label,
                                    "--json", "number,title,body,labels", "--limit", "1000"])
         for candidate in issues:
+            if pause.current(cfg, expire=True):
+                return
             labels = {item["name"] for item in candidate.get("labels", [])}
             if label not in labels or labels & VIABILITY_BLOCKED:
                 continue
@@ -840,6 +844,8 @@ def frontier_pass(dry_run: bool = False) -> None:
     cfg = dispatch.cfg
     prs = dispatch.gh_json(["pr", "list", "--repo", cfg.repo, "--state", "open", "--limit", "1000", "--json", PR_FIELDS])
     for pr in prs:
+        if pause.current(cfg, expire=True):
+            return
         match = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
         if not match or pr["baseRefName"] != cfg.main or pr["isCrossRepository"] or pr["isDraft"]:
             continue
@@ -999,10 +1005,13 @@ def manage_pass(dry_run: bool = False) -> None:
     try:
         if dispatch.cfg.manager:
             viability_pass(dry_run)
-            frontier_pass(dry_run)
-            escalation_pass(dry_run)
+            if not pause.current(dispatch.cfg, expire=True):
+                frontier_pass(dry_run)
+            if not pause.current(dispatch.cfg, expire=True):
+                escalation_pass(dry_run)
     finally:
-        handoff.handoff_pass(dry_run)
+        if not pause.current(dispatch.cfg, expire=True):
+            handoff.handoff_pass(dry_run)
 
 
 def escalation_pass(dry_run: bool = False) -> None:
@@ -1010,6 +1019,8 @@ def escalation_pass(dry_run: bool = False) -> None:
     issues = dispatch.gh_json(["issue", "list", "--repo", cfg.repo, "--state", "open", "--label", LABEL_HUMAN,
                                "--json", "number,title,body,labels", "--limit", "1000"])
     for issue in issues:
+        if pause.current(cfg, expire=True):
+            return
         n = issue["number"]
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dry_run and dispatch.lock_held(lock_path):

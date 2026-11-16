@@ -673,7 +673,7 @@ def _age(at: str) -> timedelta:
 
 def run_pass(
     cfg: config.Config, dry_run: bool = False, now: datetime | None = None,
-) -> list[dict]:
+) -> list[dict] | bool:
     """Log, diagnose, file/comment, and close configured signals."""
     if pause.guard(cfg, dispatch.log):
         return False
@@ -692,6 +692,8 @@ def run_pass(
     observed_signals = []
     actionable = []
     for signal in current:
+        if pause.current(cfg, expire=True):
+            return observed_signals
         tier = signal.get("tier", "act")
         if tier == "act":
             actionable.append(signal)
@@ -724,6 +726,8 @@ def run_pass(
     listing = None
     filed = []
     for signal in actionable:
+        if pause.current(cfg, expire=True):
+            return observed_signals + filed
         fp = signal["fingerprint"]
         if len(filed) >= MAX_ISSUES:
             dispatch.log(f"watch: deferring {fp} to the next pass (cap {MAX_ISSUES})")
@@ -780,6 +784,8 @@ def run_pass(
 
     closed = 0
     for fp, previous in filings.items():
+        if pause.current(cfg, expire=True):
+            return filed
         if closed >= MAX_ISSUES:
             break
         repo = previous.get("repo", dispatch.REPO)
@@ -837,7 +843,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
     with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
-        run_pass(dispatch.cfg, args.dry_run)
-    if not args.dry_run:
+        result = run_pass(dispatch.cfg, args.dry_run)
+    if not args.dry_run and result is not False:
         lifecycle.record_stage_success(dispatch.EVENTS, "watch")
     return 0

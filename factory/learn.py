@@ -847,8 +847,8 @@ def chore_pr(
     *,
     protected_override: bool = False,
     review_candidate: bool = False,
-) -> None:
-    """Commit, gate and publish a proposal; evaluated candidates also need a local review."""
+) -> bool:
+    """Commit, gate and publish a proposal; return False when publication is refused."""
     wt = cfg.factory / f"wt-{branch.removeprefix('agent/')}"
     dispatch.run(["git", "fetch", "origin", cfg.main], cwd=cfg.root)
     dispatch.run(["git", "worktree", "add", "--force", "-B", branch, str(wt), f"origin/{cfg.main}"], cwd=cfg.root)
@@ -901,7 +901,7 @@ def chore_pr(
                     f"candidate review {result['reason']} (see learn-candidate-review journal row)"
                 )
             pr_body += f"\n\n## Candidate review\n\nHead: `{head}`\n\n{result['findings']}"
-        dispatch.push_and_pr(wt, branch, title, pr_body, label=LABEL_CHORE)
+        return dispatch.push_and_pr(wt, branch, title, pr_body, label=LABEL_CHORE)
     finally:
         dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
 
@@ -1045,10 +1045,10 @@ def curate(
     tickets: list[int],
     notes: str,
     evaluation: dict | None = None,
-) -> str:
+) -> str | None:
     """Apply the manager's CURATE diff on `agent/curate-<date>-t<N>` and open its chore PR.
 
-    Returns the branch, or `rejected: <reason>` when the diff does not apply or leaves the allowlist."""
+    Returns the branch, None when publication stops, or `rejected: <reason>` for an invalid diff."""
     branch = branch_name("curate", tickets)
     patch = cfg.factory / f"{branch.removeprefix('agent/')}.patch"
     patch.write_text(diff if diff.endswith("\n") else diff + "\n")
@@ -1094,7 +1094,7 @@ def curate(
         + f"## Manager notes\n\n{notes or '(none)'}"
     )
     try:
-        chore_pr(
+        published = chore_pr(
             cfg,
             branch,
             edit,
@@ -1103,6 +1103,8 @@ def curate(
             protected_override=True,
             **({"review_candidate": True} if evaluation else {}),
         )
+        if published is False:
+            return None
         result = branch
     except ValueError as exc:
         result = f"rejected: {exc}"
@@ -1125,7 +1127,7 @@ def run(
     """One `factory learn` over the newest `last` finished tickets; `fields` extend its `learn` event.
 
     Returns the recorded event's fields, or None when nothing was recorded (no finished tickets,
-    or a dry run). Raises on a model, `git` or `gh` failure."""
+    a pause, or a dry run). Raises on a model, `git` or `gh` failure."""
     if pause.guard(cfg, dispatch.log):
         return None
     triage.configure(cfg)
@@ -1165,6 +1167,8 @@ def run(
         for kind, result in evaluations.items():
             print(f"{kind} evaluation: {result['status']}"
                   + (f" ({result['reason']})" if result["reason"] else ""))
+    if pause.current(cfg, expire=True):
+        return None
 
     keep_lessons = not enabled or evaluations.get("lessons", {}).get("status") == "kept"
     keep_curate = bool(diff) and (
@@ -1200,10 +1204,12 @@ def run(
             + body
         )
         try:
-            chore_pr(
+            published = chore_pr(
                 cfg, branch, edit, f"{branch}: update {LESSONS_NAME}", pr_body,
                 review_candidate=enabled,
             )
+            if published is False:
+                return None
         except ValueError as exc:
             if not enabled:
                 raise
@@ -1211,12 +1217,17 @@ def run(
             branch = None
         else:
             print(f"opened a {LABEL_CHORE} PR from {branch}")
-    if keep_curate:
+    stopped = pause.current(cfg, expire=True)
+    if stopped and branch is None:
+        return None
+    if keep_curate and not stopped:
         curated = curate(
             cfg, diff, tickets, notes_md,
             evaluations.get("curate") if enabled else None,
         )
-    elif diff and enabled:
+        if curated is None and pause.current(cfg, expire=True) and branch is None:
+            return None
+    elif diff and enabled and not stopped:
         reason = evaluations["curate"]["reason"]
         curated = f"rejected: {reason}"
         _record_curate_decision(
@@ -1294,7 +1305,8 @@ def learn_pass(dry_run: bool = False) -> None:
         dispatch.log(f"learn: failed ({reason})")
         if not dry_run:
             dispatch.record("learn", trigger="auto", status="failed", reason=reason)
-    decide_promotions(cfg, dry_run)  # attempts scored by hand since the last pass
+    if not pause.current(cfg, expire=True):
+        decide_promotions(cfg, dry_run)  # attempts scored by hand since the last pass
 
 
 def _promotion_blocked(
@@ -1389,6 +1401,8 @@ def _reconcile_human_merges(
             )
         ):
             continue
+        if pause.current(cfg, expire=True):
+            return
         seen.add(n)
         recorded_branch = review.get("branch")
         if isinstance(recorded_branch, str) and not LESSONS_BRANCH.match(recorded_branch):
@@ -1442,9 +1456,15 @@ def _reconcile_human_merges(
 def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
     """Merge eligible lessons PRs and reconcile externally merged promotions."""
     cfg = dispatch.cfg
+    if pause.current(cfg, expire=True):
+        return
     events = lifecycle.read_events(dispatch.EVENTS)
     _reconcile_human_merges(cfg, {pr["number"] for pr in prs}, events, dry_run)
+    if pause.current(cfg, expire=True):
+        return
     for pr in sorted(prs, key=lambda p: p["number"]):
+        if pause.current(cfg, expire=True):
+            return
         n, branch = pr["number"], pr["headRefName"]
         if (
             not LESSONS_BRANCH.match(branch)
@@ -1503,7 +1523,11 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         dispatch.log(f"PR #{n}: {branch} {reason}; not merging")
         _promotion_blocked(events, n, branch, head, reason, dry_run)
         return
+    if pause.current(cfg, expire=True):
+        return
     compare = dispatch.gh_json(["api", f"repos/{cfg.repo}/compare/{cfg.main}...{head}"])
+    if pause.current(cfg, expire=True):
+        return
     if compare["behind_by"] and {
         item["filename"] for item in compare["files"]
     } - {LESSONS_NAME}:
@@ -1554,12 +1578,16 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
     if dry_run:
         dispatch.log(f"PR #{n}: would merge {branch}")
         return
+    if pause.current(cfg, expire=True):
+        return
     with lifecycle.scope(dispatch.EVENTS, "merge"):
         try:
             dispatch.run([
                 "gh", "pr", "edit", str(n), "--repo", cfg.repo,
                 "--add-label", dispatch.FACTORY_APPROVED,
             ])
+            if pause.current(cfg, expire=True):
+                return
             dispatch.run([
                 "gh", "pr", "merge", str(n), "--repo", cfg.repo,
                 "--squash", "--match-head-commit", head,
@@ -1602,6 +1630,8 @@ def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
     for i, opened in enumerate(rows):
         if opened.get("event") != "promotion-open" or opened.get("pr") in decided:
             continue
+        if pause.current(cfg, expire=True):
+            return reverts
         # Attempts journaled after the merge; a pre-merge attempt scored late ran on the old prompt.
         ran = {(r.get("ticket"), r.get("attempt"), r.get("transcript")) for r in rows[i + 1:]
                if r.get("event") == "attempt"}
@@ -1618,8 +1648,11 @@ def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
         fields = {}
         try:
             if verdict == "revert":
-                fields["branch"] = revert(cfg, opened, reason, candidate)
-                reverts.append(fields["branch"])
+                branch = revert(cfg, opened, reason, candidate)
+                if branch is None:
+                    return reverts
+                fields["branch"] = branch
+                reverts.append(branch)
         except Exception as exc:  # noqa: BLE001 - e.g. a conflicting revert; never blocks later promotions
             dispatch.log(f"promotion #{opened['pr']}: failed ({type(exc).__name__}: {exc})")
             continue
@@ -1629,7 +1662,7 @@ def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
     return reverts
 
 
-def revert(cfg: config.Config, opened: dict, reason: str, after: dict) -> str:
+def revert(cfg: config.Config, opened: dict, reason: str, after: dict) -> str | None:
     """Open `agent/revert-lessons-<pr>` reverting the promotion's merge commit; the body carries the numbers."""
     pr, branch = opened["pr"], f"{REVERT_BRANCH}{opened['pr']}"
     merge = dispatch.gh_json(["pr", "view", str(pr), "--repo", cfg.repo, "--json", "mergeCommit"])["mergeCommit"]["oid"]
@@ -1645,7 +1678,8 @@ def revert(cfg: config.Config, opened: dict, reason: str, after: dict) -> str:
                       for k in ("efficiency_mean", "compliance_mean", "gate_first_pass_rate"))
     pr_body = (f"{PIPELINE}\n\nReverts #{pr} ({merge[:12]}): {reason}.\n\n"
                f"| metric | before (n={base.get('n')}) | after (n={after['n']}) |\n|---|---|---|\n{table}\n")
-    chore_pr(cfg, branch, edit, f"{branch}: revert #{pr}", pr_body, protected_override=True)
+    if chore_pr(cfg, branch, edit, f"{branch}: revert #{pr}", pr_body, protected_override=True) is False:
+        return None
     return branch
 
 

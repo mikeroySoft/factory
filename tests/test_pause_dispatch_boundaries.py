@@ -44,6 +44,25 @@ class PauseDispatchBoundariesTest(unittest.TestCase):
             self.assertFalse(dispatch.push_and_pr(self.root, "agent/7", "title", "body"))
         self.assertFalse(any(argv[:3] == ["gh", "pr", "create"] for argv in calls))
 
+    def test_publication_override_applies_only_to_the_original_hold(self) -> None:
+        self.hold()
+        original = pause.read(self.cfg)
+        with (
+            mock.patch.object(dispatch, "run", return_value=subprocess.CompletedProcess([], 0, "1\n", "")) as run,
+            mock.patch.object(dispatch, "gh_json", return_value=[]),
+        ):
+            self.assertTrue(dispatch.push_and_pr(
+                self.root, "agent/7", "title", "body", pause_override=original,
+            ))
+            self.assertTrue(any(call.args[0][:3] == ["gh", "pr", "create"] for call in run.call_args_list))
+            pause.resume(self.cfg, who="tester")
+            pause.activate(self.cfg, "new incident", who="tester")
+            run.reset_mock()
+            self.assertFalse(dispatch.push_and_pr(
+                self.root, "agent/7", "title", "body", pause_override=original,
+            ))
+            self.assertFalse(any(call.args[0][:2] == ["git", "push"] for call in run.call_args_list))
+
     def test_explicit_ticket_parks_on_a_new_pause_and_releases_claim(self) -> None:
         issue = {
             "number": 7, "title": "local ticket", "state": "OPEN", "body": "",

@@ -232,10 +232,10 @@ def message(state: dict) -> str:
     return f"paused ({state['reason']}, since {state['at']}, by {state['who']}{expiry})"
 
 
-def guard(value: Config | Path, logger=print) -> bool:
-    """Log one line and return True while paused; consume elapsed expiry."""
+def guard(value: Config | Path, logger=print, *, override: dict | None = None) -> bool:
+    """Log one line while paused, unless this exact hold was explicitly overridden."""
     state = current(value, expire=True)
-    if state is None:
+    if state is None or state == override:
         return False
     logger(message(state))
     return True

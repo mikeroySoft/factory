@@ -321,9 +321,13 @@ def _publish(cfg: config.Config, tag: str) -> str:
     """Create the GitHub Release for a pushed tag unless one exists. A failure is journaled
     as ``publish_failed`` and retried by the next pass; the tag stays."""
     try:
+        if state := pause.current(cfg, expire=True):
+            return pause.message(state)
         if _gh_release(cfg, "view", tag).returncode == 0:
             reason = f"GitHub Release {tag} already exists"
         else:
+            if state := pause.current(cfg, expire=True):
+                return pause.message(state)
             proc = _gh_release(cfg, "create", tag, "--verify-tag", "--latest", "--title", tag,
                                "--notes-file", "-", notes=_notes(cfg, tag))
             if proc.returncode:
@@ -448,7 +452,9 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
                            None, None, None)
         latest_tag = latest["tag"]
         if not dry_run and _unpublished(cfg, latest_tag):
-            _publish(cfg, latest_tag)
+            published = _publish(cfg, latest_tag)
+            if pause.current(cfg, expire=True):
+                return published
         bar = _bar(latest["message"])
         comparison_bar, bar_reset = _reset_legacy_bar(bar, cfg)
         current = _version_at(cfg, f"origin/{cfg.main}")
@@ -488,6 +494,8 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             _git(cfg.root, "tag", "-a", tag, commit, "-m", message)
             pushed = False
             try:
+                if state := pause.current(cfg, expire=True):
+                    return _finish(cfg, False, pause.message(state), metrics, bar, latest_tag)
                 result = _git(cfg.root, "push", "--atomic", "origin", tag,
                               f"{commit}:refs/heads/stable", check=False)
                 pushed = result.returncode == 0
@@ -529,6 +537,8 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
                 action = f"would squash-merge release PR #{number}"
             if dry_run:
                 return _finish(cfg, True, _reason(action, metrics, bar), metrics, bar, latest_tag)
+            if paused := pause.current(cfg, expire=True):
+                return _finish(cfg, False, pause.message(paused), metrics, bar, latest_tag)
             if state == "behind":
                 _gh(cfg, f"repos/{cfg.repo}/pulls/{number}/update-branch", "-X", "PUT")
                 return _finish(cfg, False, _reason(action, metrics, bar), metrics, bar, latest_tag)
@@ -606,6 +616,8 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
                 "docs/index.html",
             )
             _git(worktree, "commit", "-m", f"Release {next_version}")
+            if state := pause.current(cfg, expire=True):
+                return _finish(cfg, False, pause.message(state), metrics, bar, latest_tag)
             pushed = _git(worktree, "push", "--force", "origin",
                           f"HEAD:refs/heads/{branch}", check=False)
             if pushed.returncode:
@@ -615,6 +627,8 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             body = (f"Automated patch release from {latest_tag}.\n\n"
                     f"Metrics: `{json.dumps(metrics, sort_keys=True)}`\n\n"
                     f"Bar: `{json.dumps(bar, sort_keys=True)}`")
+            if state := pause.current(cfg, expire=True):
+                return _finish(cfg, False, pause.message(state), metrics, bar, latest_tag)
             pull = _open_pull(cfg, branch, f"Release {next_version}", body)
             return _finish(cfg, False, f"opened release PR #{pull['number']} for v{next_version}",
                            metrics, bar, latest_tag)
