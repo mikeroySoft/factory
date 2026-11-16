@@ -61,7 +61,7 @@ class DispatchLanesTest(unittest.TestCase):
 
         replacements = {
             "frontier": lambda: issues,
-            "fairness_session": lambda: {},
+            "fairness_session": dict,
             "gh_json": fresh,
             "observe_owner_requeue": lambda *_: None,
             "fallback_worker": lambda *_: "default",
@@ -116,7 +116,7 @@ class DispatchLanesTest(unittest.TestCase):
         def landing():
             try:
                 dispatch.land_pass(False)
-            except BaseException as exc:
+            except Exception as exc:
                 errors.append(exc)
 
         with patch.object(dispatch, "sync_pass"), patch.object(dispatch, "merge_pass_locked", merge):
