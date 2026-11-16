@@ -436,6 +436,55 @@ def print_workers(rows: list[dict]) -> None:
         print(f"{row['worker']:<{width}}  {rate:>15}  {row['attempts']:>8}{tokens}" + f"  {cost}" * costs)
 
 
+def lane_metrics(audit: dict[int, list[dict]]) -> list[dict]:
+    """Aggregate completed claim-to-terminal elapsed time and outcomes by lane."""
+    rows: dict[int | None, dict] = {}
+    outcomes: dict[int | None, list[bool]] = {}
+    counts = {"claimed": "claimed", "attempt": "attempts", "review": "reviews",
+              "merged": "merged", "escalate": "escalations"}
+    for events in audit.values():
+        lane = None
+        start = None
+        for event in events:
+            kind = event.get("event")
+            if kind == "claimed":
+                lane = event.get("lane")
+                lane = lane if type(lane) is int and lane > 0 else None
+                start = _timestamp(event.get("at"))
+            if kind not in counts:
+                continue
+            selected = event.get("lane")
+            selected = lane if selected is None else selected
+            selected = selected if type(selected) is int and selected > 0 else None
+            if selected not in rows:
+                rows[selected] = {
+                    "lane": selected, "claimed": 0, "attempts": 0, "reviews": 0,
+                    "merged": 0, "escalations": 0, "seconds": 0.0, "first_pass": None,
+                }
+                outcomes[selected] = []
+            rows[selected][counts[kind]] += 1
+            if kind == "attempt" and event.get("attempt") == 1 and event.get("gate") in {"PASS", "FAIL"}:
+                outcomes[selected].append(event["gate"] == "PASS")
+            if kind in {"merged", "escalate"}:
+                end = _timestamp(event.get("at"))
+                if start is not None and end is not None:
+                    rows[selected]["seconds"] += (end - start).total_seconds()
+                start = None
+    for lane, gates in outcomes.items():
+        if gates:
+            rows[lane]["first_pass"] = sum(gates) / len(gates)
+    return [rows[lane] for lane in sorted(rows, key=lambda lane: (lane is None, lane))]
+
+
+def print_lanes(rows: list[dict]) -> None:
+    print("lane     claimed  attempts  reviews  merged  escalations  seconds  first-pass")
+    for row in rows:
+        lane = row["lane"] if row["lane"] is not None else "unknown"
+        rate = "n/a" if row["first_pass"] is None else f"{row['first_pass']:.1%}"
+        print(f"{lane!s:<7}  {row['claimed']:>7}  {row['attempts']:>8}  {row['reviews']:>7}"
+              f"  {row['merged']:>6}  {row['escalations']:>11}  {row['seconds']:>7.1f}  {rate:>10}")
+
+
 def brief_metrics(audit: dict[int, list[dict]]) -> list[dict]:
     """First-gate pass rate split by whether attempt 1 carried a brief."""
     outcomes: dict[str, list[bool]] = {"with brief": [], "without brief": []}
@@ -973,6 +1022,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--json", action="store_true", help="print metric rows as JSON")
     parser.add_argument("--week", action="store_true",
                         help="trailing seven-day journal metrics plus one bounded stuck-ticket read")
+    parser.add_argument("--by-lane", action="store_true",
+                        help="split journal outcomes and completed elapsed time by dispatch lane")
     parser.add_argument("--by-worker", action="store_true",
                         help="split gate pass rate, attempts, reported token usage and known cost by claim label")
     parser.add_argument("--by-brief", action="store_true", help="split first-gate pass rate by tickets with/without a brief")
@@ -993,6 +1044,13 @@ def main(argv: list[str]) -> int:
     if not args.escapes and not journal.is_file():
         raise SystemExit(f"factory stats: no journal at {journal}; this is not the dispatcher's root. "
                          f'Set [repo."{cfg.repo}"].path in {config.host_config_path()} or pass --repo owner/name')
+    if args.by_lane:
+        rows = lane_metrics(audit_by_ticket(journal))
+        if args.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            print_lanes(rows)
+        return 0
     if args.week:
         now = _now()
         start = now - timedelta(days=7)

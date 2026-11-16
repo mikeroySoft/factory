@@ -1055,6 +1055,28 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    its lock is released, then the pass exits. Ticket `git fetch` and `git push`
    commands run one at a time, and every dispatcher log line from a ticket is
    tagged `#<n>` after the `[dispatch]` prefix.
+   Each pick also gets a positive integer `lane` in pick order, local to its
+   dispatcher run (`dispatcher_run_id` disambiguates simultaneous passes).
+   A direct `--ticket` run uses lane 1. Nested gates, reviews and subprocesses
+   inherit the lane; scheduling and landing outside a ticket have no lane.
+   `factory stats --by-lane [--json]` reads only the journal and groups claim,
+   attempt, review, merge and escalation counts plus first-gate pass rate.
+   Legacy or invalid lanes appear as `null` in JSON (`unknown` in text);
+   terminal rows outside the worker pipeline fall back to the latest claim's lane.
+   Completed claim-to-merge/escalation elapsed seconds require both timestamps;
+   incomplete claims do not contribute duration.
+
+   **#823 rollout:** on rocm-tank, use the existing repository setting
+   `[dispatch] max_active = 2` for seven full days (a protected configuration
+   change requiring the normal operator approval; this implementation does not
+   change the deployed limit).
+   Before starting, preserve the preceding seven-day `factory stats --week --json`
+   report, `factory stats --escapes --json`, and the main-branch revert count.
+   Record the deployed revision and start/end times; preserve the same reports
+   and `factory stats --by-lane --json` after seven days. Success requires
+   merges/day at least 1.30 times baseline with no increase in escapes or
+   reverts, using the same windows and attribution. Local tests do not establish
+   this production outcome; retain the two-lane cap pending the measured verdict.
 3. **Work.** The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
