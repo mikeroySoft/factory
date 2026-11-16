@@ -14,7 +14,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import binding, config, dispatch, generation, handoff, lifecycle
+from factory import binding, config, dispatch, generation, handoff, lifecycle, pause
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -662,17 +662,23 @@ def parse_viability(output: str, sources: list[dict]) -> tuple[str, str]:
     return "DEFER", "No valid evidence-cited viability verdict was returned. A human must reconsider or re-arm this request."
 
 
-def viability_pass(dry_run: bool = False) -> None:
+def viability_pass(dry_run: bool = False) -> bool:
     from factory import evidence, plan
 
     cfg = dispatch.cfg
+    if pause.check(cfg.root):
+        return True
     if not cfg.manager:
-        return
+        return False
     # A shared issue-number lock also serializes PRs, which share GitHub's namespace.
     for kind, label in (("pr", LABEL_REVIEW), ("issue", LABEL_VIABILITY)):
+        if pause.check(cfg.root):
+            return True
         issues = dispatch.gh_json([kind, "list", "--repo", cfg.repo, "--state", "open", "--label", label,
                                    "--json", "number,title,body,labels", "--limit", "1000"])
         for candidate in issues:
+            if pause.check(cfg.root):
+                return True
             labels = {item["name"] for item in candidate.get("labels", [])}
             if label not in labels or labels & VIABILITY_BLOCKED:
                 continue
@@ -770,6 +776,7 @@ def viability_pass(dry_run: bool = False) -> None:
                     if not dry_run:
                         lock.close()
                         execution.resource("released", lock_path, scope="repository")
+    return False
 
 
 PR_FIELDS = "id,number,title,url,state,headRefName,headRefOid,baseRefName,isCrossRepository,isDraft,labels,reviewDecision,updatedAt"
@@ -916,7 +923,7 @@ def released_at(n: int) -> str:
                 if i.get("event") == "labeled" and i.get("label", {}).get("name") == LABEL_AGENT), default="")
 
 
-def frontier_pass(dry_run: bool = False) -> None:
+def frontier_pass(dry_run: bool = False) -> bool:
     """Shepherd factory-owned `agent/<n>` PRs: CI pending waits; red CI, late feedback and
     staleness escalate once through the ordinary ticket packet; with `manager.review = "all"`
     a gate+review-approved head gets the manager's final decision before the label.
@@ -925,8 +932,12 @@ def frontier_pass(dry_run: bool = False) -> None:
     from datetime import datetime
 
     cfg = dispatch.cfg
+    if pause.check(cfg.root):
+        return True
     prs = dispatch.gh_json(["pr", "list", "--repo", cfg.repo, "--state", "open", "--limit", "1000", "--json", PR_FIELDS])
     for pr in prs:
+        if pause.check(cfg.root):
+            return True
         match = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
         if not match or pr["baseRefName"] != cfg.main or pr["isCrossRepository"] or pr["isDraft"]:
             continue
@@ -1086,6 +1097,8 @@ def frontier_pass(dry_run: bool = False) -> None:
                     apply(n, issue, decision, body, data, packet)
                 else:
                     dispatch.escalate(n, f"PR #{number}: manager requires a human: {body}", None, code="manager_human")
+            except pause.Paused:
+                return True
             except dispatch.WorkerUnavailable as exc:
                 if not dry_run:
                     execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
@@ -1098,29 +1111,42 @@ def frontier_pass(dry_run: bool = False) -> None:
                 if not dry_run:
                     lock.close()
                     execution.resource("released", lock_path, scope="repository")
+    return False
 
 
 def manage_pass(dry_run: bool = False) -> None:
     """Viability (a GitHub-wide label scan) runs on the triage host; frontier and escalation rounds, owned through the local journal, run on every host with a manager; terminal handoffs need no manager."""
+    cfg = dispatch.cfg
+    if pause.check(cfg.root):
+        return
+    stopped = False
     try:
-        cfg = dispatch.cfg
         shared = cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host
         if shared:
             dispatch.log(f"manage: viability skipped, triage host is {cfg.triage_host}")
         if cfg.manager:
-            if not shared:
-                viability_pass(dry_run)
-            frontier_pass(dry_run)
-            escalation_pass(dry_run)
+            if not shared and viability_pass(dry_run) is True:
+                stopped = True
+                return
+            if frontier_pass(dry_run) is True or escalation_pass(dry_run) is True:
+                stopped = True
+                return
+    except pause.Paused:
+        stopped = True
     finally:
-        handoff.handoff_pass(dry_run)
+        if not stopped and not pause.check(cfg.root):
+            handoff.handoff_pass(dry_run)
 
 
-def escalation_pass(dry_run: bool = False) -> None:
+def escalation_pass(dry_run: bool = False) -> bool:
     cfg = dispatch.cfg
+    if pause.check(cfg.root):
+        return True
     issues = dispatch.gh_json(["issue", "list", "--repo", cfg.repo, "--state", "open", "--label", LABEL_HUMAN,
                                "--json", "number,title,body,labels", "--limit", "1000"])
     for issue in issues:
+        if pause.check(cfg.root):
+            return True
         n = issue["number"]
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dry_run and dispatch.lock_held(lock_path):
@@ -1166,6 +1192,8 @@ def escalation_pass(dry_run: bool = False) -> None:
                     execution.commit()
                     try:
                         resume_fix(n, issue, pending, round=round_number)
+                    except pause.Paused:
+                        return True
                     except dispatch.WorkerUnavailable as exc:
                         execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
                         dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
@@ -1225,6 +1253,8 @@ def escalation_pass(dry_run: bool = False) -> None:
                         apply_fix(n, issue, data, packet, round=round_number)
                     else:
                         apply(n, issue, decision, body, data, packet)
+                except pause.Paused:
+                    return True
                 except dispatch.WorkerUnavailable as exc:
                     execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
                     dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
@@ -1238,6 +1268,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                 if not dry_run:
                     lock.close()
                     execution.resource("released", lock_path, scope="repository")
+    return False
 
 
 def main(argv: list[str]) -> int:
@@ -1245,6 +1276,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="list eligible viability requests and escalations without running the manager")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
+    if pause.check(dispatch.cfg.root):
+        return 0
     if not args.dry_run:
         dispatch.worker_health_pass()
     manage_pass(args.dry_run)

@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from factory import config, dispatch, lifecycle, manage, promotion, score, stats, triage
+from factory import config, dispatch, lifecycle, manage, pause, promotion, score, stats, triage
 from factory.config import LABEL_CHORE, LESSONS_NAME
 
 MAX_LESSONS = 10
@@ -676,6 +676,7 @@ def evaluate_candidates(
         baseline_error = "no recent ticket has a recorded replay base and frozen issue snapshot"
     else:
         for case in cases:
+            pause.require_running(cfg.root)
             try:
                 row = replay_ticket(cfg, case, None, deadline)
             except Exception as exc:  # noqa: BLE001 - an unavailable replay is evidence, not escalation
@@ -694,10 +695,12 @@ def evaluate_candidates(
 
     results = {}
     for candidate in candidates:
+        pause.require_running(cfg.root)
         variant: list[dict] = []
         reason = baseline_error
         if not reason:
             for case in cases:
+                pause.require_running(cfg.root)
                 if used_tokens >= cfg.learn_max_tokens:
                     reason = f"learn token budget exhausted ({used_tokens} >= {cfg.learn_max_tokens})"
                     break
@@ -1013,6 +1016,7 @@ def chore_pr(
                     f"candidate review {result['reason']} (see learn-candidate-review journal row)"
                 )
             pr_body += f"\n\n## Candidate review\n\nHead: `{head}`\n\n{result['findings']}"
+        pause.require_running(cfg.root)
         dispatch.push_and_pr(wt, branch, title, pr_body, label=LABEL_CHORE)
     finally:
         dispatch.run(["git", "worktree", "remove", "--force", str(wt)], cwd=cfg.root, check=False)
@@ -1247,6 +1251,8 @@ def run(
 
     Returns the recorded event's fields, or None when nothing was recorded (no finished tickets,
     or a dry run). Raises on a model, `git` or `gh` failure."""
+    if pause.check(cfg.root):
+        return None
     triage.configure(cfg)
     stats.configure(cfg)
     tickets, evidence_md = evidence(last)
@@ -1268,6 +1274,8 @@ def run(
     if diff:
         print(f"manager CURATE diff:\n{diff}", end="")
     if dry_run:
+        return None
+    if pause.check(cfg.root):
         return None
     content = lessons_content(cfg.root, tickets, body)
     enabled = cfg.learn_evaluate if evaluate is None else evaluate
@@ -1331,6 +1339,7 @@ def run(
         else:
             print(f"opened a {LABEL_CHORE} PR from {branch}")
     if keep_curate:
+        pause.require_running(cfg.root)
         curated = curate(
             cfg, diff, tickets, notes_md,
             evaluations.get("curate") if enabled else None,
@@ -1399,6 +1408,8 @@ def _learn_wait(pr: dict | None, dry_run: bool) -> None:
 
 
 def auto_learn(cfg: config.Config, dry_run: bool) -> None:
+    if pause.check(cfg.root):
+        return
     count = finished_since_learn()
     if count < AUTO_EVERY:
         return
@@ -1429,6 +1440,8 @@ def learn_pass(dry_run: bool = False) -> None:
     Learn needs a manager (without one, learn only writes an uncommitted file) and no open lessons,
     curate or revert PR (lessons rewrite the whole file). A failure is journaled, never raised."""
     cfg = dispatch.cfg
+    if pause.check(cfg.root):
+        return
     if cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host:
         dispatch.log(f"learn: skipped, triage host is {cfg.triage_host}")
         return
@@ -1436,11 +1449,15 @@ def learn_pass(dry_run: bool = False) -> None:
         if not dry_run:
             score.run(cfg)
         auto_learn(cfg, dry_run)
+    except pause.Paused:
+        return
     except Exception as exc:  # noqa: BLE001 - isolates learn failures from the dispatcher pass
         reason = f"{type(exc).__name__}: {exc}"
         dispatch.log(f"learn: failed ({reason})")
         if not dry_run:
             dispatch.record("learn", trigger="auto", status="failed", reason=reason)
+    if pause.read(cfg.root) is not None:
+        return
     decide_promotions(cfg, dry_run)  # attempts scored by hand since the last pass
 
 
@@ -1515,9 +1532,11 @@ def _reconcile_human_merges(
     open_prs: set[int],
     events: list[dict],
     dry_run: bool,
-) -> None:
+) -> bool:
     seen: set[int] = set()
     for review in events:
+        if pause.check(cfg.root):
+            return True
         n, head = review.get("pr"), review.get("head")
         if (
             review.get("event") not in {"review-intake", "review-result"}
@@ -1588,14 +1607,20 @@ def _reconcile_human_merges(
             _open_promotion(events, n, branch, current_head, False)
         elif state.get("state") == "CLOSED":
             _promotion_blocked(events, n, branch, current_head, "closed without merge", dry_run)
+    return False
 
 
 def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
     """Merge eligible lessons PRs and reconcile externally merged promotions."""
     cfg = dispatch.cfg
+    if pause.check(cfg.root):
+        return
     events = lifecycle.read_events(dispatch.EVENTS)
-    _reconcile_human_merges(cfg, {pr["number"] for pr in prs}, events, dry_run)
+    if _reconcile_human_merges(cfg, {pr["number"] for pr in prs}, events, dry_run):
+        return
     for pr in sorted(prs, key=lambda p: p["number"]):
+        if pause.check(cfg.root):
+            return
         n, branch = pr["number"], pr["headRefName"]
         if (
             not LESSONS_BRANCH.match(branch)
@@ -1605,6 +1630,8 @@ def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
             continue
         try:
             promote(cfg, pr, events, dry_run)
+        except pause.Paused:
+            return
         except Exception as exc:  # noqa: BLE001 - one stuck chore PR never blocks the others
             dispatch.log(f"PR #{n}: {branch} promotion failed ({type(exc).__name__}: {exc})")
 
@@ -1712,6 +1739,8 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
         if not dry_run:
             try:
                 refresh(cfg, n, branch, head)
+            except pause.Paused:
+                raise
             except Exception:
                 _promotion_blocked(events, n, branch, head, "refresh failed", False)
                 raise
@@ -1752,6 +1781,7 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
     if dry_run:
         dispatch.log(f"PR #{n}: would merge {branch}")
         return
+    pause.require_running(cfg.root)
     with lifecycle.scope(dispatch.EVENTS, "merge"):
         try:
             dispatch.run([
@@ -1762,6 +1792,8 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
                 "gh", "pr", "merge", str(n), "--repo", cfg.repo,
                 "--squash", "--match-head-commit", head,
             ])
+        except pause.Paused:
+            raise
         except Exception as exc:
             detail = _error_text(exc)
             needs_refresh = _strict_base_refusal(detail)
@@ -1778,6 +1810,8 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
                 dispatch.log(f"PR #{n}: refreshing {branch} after strict-base merge refusal")
                 try:
                     refresh(cfg, n, branch, head)
+                except pause.Paused:
+                    raise
                 except Exception:
                     _promotion_blocked(events, n, branch, head, reason, False)
                     raise
@@ -1805,10 +1839,14 @@ def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
     merge commit when efficiency or the first-pass rate fell beyond the baseline window's noise.
     Returns the revert branches opened; a failing promotion is logged and retried next pass while later
     promotions are still decided."""
+    if pause.check(cfg.root):
+        return []
     rows = lifecycle.read_events(dispatch.EVENTS)
     decided = {r.get("pr") for r in rows if r.get("event") in ("promotion-keep", "promotion-revert")}
     reverts = []
     for i, opened in enumerate(rows):
+        if pause.check(cfg.root):
+            return reverts
         if opened.get("event") != "promotion-open" or opened.get("pr") in decided:
             continue
         # Attempts journaled after the merge; a pre-merge attempt scored late ran on the old prompt.
@@ -1829,6 +1867,8 @@ def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
             if verdict == "revert":
                 fields["branch"] = revert(cfg, opened, reason, candidate)
                 reverts.append(fields["branch"])
+        except pause.Paused:
+            return reverts
         except Exception as exc:  # noqa: BLE001 - e.g. a conflicting revert; never blocks later promotions
             dispatch.log(f"promotion #{opened['pr']}: failed ({type(exc).__name__}: {exc})")
             continue
@@ -1874,6 +1914,8 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     cfg = config.load()
     dispatch.configure(cfg)
+    if pause.check(cfg.root):
+        return 0
     if args.promotion:
         claim = json.loads(Path(args.promotion).read_text())
         try:
@@ -1888,6 +1930,8 @@ def main(argv: list[str]) -> int:
         return 0
     try:
         run(cfg, args.last, args.dry_run, True if args.evaluate else None)
+    except pause.Paused:
+        return 0
     except ValueError as exc:
         raise SystemExit(f"factory learn: {exc}")
     return 0

@@ -32,6 +32,12 @@ class PauseTests(unittest.TestCase):
         self.gh = self.enterContext(patch.object(dispatch, "gh_json", side_effect=self.github))
         self.commands = self.enterContext(patch.object(dispatch, "_run", side_effect=self.command))
         self.enterContext(patch("factory.pause.actor", return_value="operator (github: operator-gh)"))
+        self.enterContext(patch.multiple(
+            dispatch, create=True, cfg=self.cfg, ROOT=self.root, REPO=self.cfg.repo,
+            UPSTREAM=None, UPSTREAM_REPO=None, FACTORY=self.cfg.factory,
+            LOGS=self.cfg.factory / "logs", SYNC_LOG=self.cfg.factory / "upstream-sync.jsonl",
+            EVENTS=self.cfg.factory / "events.jsonl", MAX_ACTIVE=2, MAX_ATTEMPTS=self.cfg.max_attempts,
+        ))
         dispatch.configure(self.cfg)
 
     @staticmethod
@@ -174,6 +180,44 @@ class PauseTests(unittest.TestCase):
         with patch.object(dispatch, "_run", return_value=subprocess.CompletedProcess([], 0, "", "")):
             dispatch.unclaim(1)
 
+    def test_every_stage_skips_without_github_or_workers(self):
+        from factory import learn, manage, release, triage, watch
+
+        self.call("pause", "--reason", "incident")
+        with patch.object(manage, "manage_pass") as manager, \
+                patch.object(dispatch, "worker_health_pass") as health, \
+                patch.object(watch, "signals") as signals, \
+                patch.object(triage, "execute") as triage_work, \
+                patch.object(learn, "run") as learning, \
+                patch.object(release, "run") as releasing:
+            for stage in ("manage", "watch", "triage", "learn", "release"):
+                with self.subTest(stage=stage):
+                    code, output = self.call(stage)
+                    self.assertEqual(code, 0)
+                    self.assertEqual(len(output.splitlines()), 1)
+                    self.assertIn("paused (incident", output)
+        for action in (manager, health, signals, triage_work, learning, releasing, self.gh, self.commands):
+            action.assert_not_called()
+        self.assertEqual([row["event"] for row in self.rows()], ["pause"])
+
+    def test_runtime_projection_tracks_pause_without_expiring_it(self):
+        from factory import pause, runtime_local
+
+        self.call("pause", "--reason", "maintenance", "--until", "2000-01-01T00:00:00Z")
+        def local_command(operation, **kwargs):
+            if operation == "schedule":
+                return "[]"
+            return "LoadState=loaded\nActiveState=inactive\n"
+
+        with patch.object(runtime_local, "_command", side_effect=local_command):
+            paused, _ = runtime_local.dispatcher(self.cfg, [], {})
+            self.assertEqual(paused["paused"], pause.read(self.root))
+            self.assertEqual(paused["paused"]["reason"], "maintenance")
+            self.assertEqual([row["event"] for row in self.rows()], ["pause"])
+            self.call("resume")
+            running, _ = runtime_local.dispatcher(self.cfg, [], {})
+            self.assertIsNone(running["paused"])
+
     def test_malformed_state_never_runs_a_pass(self):
         path = self.cfg.factory / "pause.json"
         path.parent.mkdir(parents=True)
@@ -182,6 +226,37 @@ class PauseTests(unittest.TestCase):
             self.call("dispatch")
         self.assertFalse(self.gh.called)
         self.assertFalse(self.commands.called)
+
+
+class PauseClaimTests(unittest.TestCase):
+    # Reuse the hermetic real ticket/host-claim fixture, not a fake process_ticket.
+    from tests.test_host_claims import HostClaimRaceTest as _Harness
+
+    setUp = _Harness.setUp
+    dispatcher = _Harness.dispatcher
+    launch = _Harness.launch
+
+    def test_pause_after_worker_parks_claim_and_preserves_worktree(self):
+        from factory import pause
+
+        for host in (None, "tank"):
+            with self.subTest(host=host):
+                module = self.dispatcher(host)
+                def worker(*args, root=module.ROOT, **kwargs):
+                    pause.set_pause(root, reason="stop after worker")
+                    return True, "gate passed", None, "a" * 40
+
+                with patch.object(pause, "actor", return_value="operator"), \
+                        patch.object(module, "worker_round", side_effect=worker), \
+                        patch.object(module, "push_and_pr") as publish:
+                    module.process_ticket(dict(self.github.issue), 1, False)
+                publish.assert_not_called()
+                self.assertEqual(self.github.issue["assignees"], [])
+                self.assertEqual(self.github.comments, [])
+                self.assertFalse(any(label["name"].startswith("host:") for label in self.github.issue["labels"]))
+                self.assertTrue((module.FACTORY / "wt-7").is_dir())
+                self.assertFalse(module.active_tickets())
+                self.assertFalse(any(row.get("event") == "escalate" for row in lifecycle.read_events(module.EVENTS)))
 
 
 if __name__ == "__main__":

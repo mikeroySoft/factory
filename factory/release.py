@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from factory import config, lifecycle
+from factory import config, lifecycle, pause
 
 SEMVER = re.compile(r"v(\d+)\.(\d+)\.(\d+)\Z")
 JSON_BAR = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -212,6 +212,7 @@ def _pull(cfg: config.Config, number: int) -> dict[str, Any]:
 
 
 def _open_pull(cfg: config.Config, branch: str, title: str, body: str) -> dict[str, Any]:
+    pause.require_running(cfg.root)
     return _gh(
         cfg, f"repos/{cfg.repo}/pulls", "-X", "POST",
         "-f", f"title={title}", "-f", f"head={branch}", "-f", f"base={cfg.main}", "-f", f"body={body}",
@@ -219,6 +220,7 @@ def _open_pull(cfg: config.Config, branch: str, title: str, body: str) -> dict[s
 
 
 def _merge_pull(cfg: config.Config, number: int, title: str) -> dict[str, Any]:
+    pause.require_running(cfg.root)
     return _gh(
         cfg, f"repos/{cfg.repo}/pulls/{number}/merge", "-X", "PUT",
         "-f", "merge_method=squash", "-f", f"commit_title={title}",
@@ -300,6 +302,8 @@ def _finish(cfg: config.Config, dry_run: bool, reason: str, metrics: dict[str, f
 
 
 def _gh_release(cfg: config.Config, *args: str, notes: str | None = None) -> subprocess.CompletedProcess[str]:
+    if args and args[0] == "create":
+        pause.require_running(cfg.root)
     return subprocess.run(["gh", "release", *args, "--repo", cfg.repo], input=notes,
                           text=True, capture_output=True, check=False)
 
@@ -329,6 +333,8 @@ def _publish(cfg: config.Config, tag: str) -> str:
             if proc.returncode:
                 raise RuntimeError(proc.stderr.strip() or f"gh release create {tag} failed")
             reason = f"created GitHub Release {tag}"
+    except pause.Paused:
+        raise
     except Exception as exc:  # noqa: BLE001 - journaled and retried next pass
         reason = f"GitHub Release {tag} failed: {type(exc).__name__}: {exc}"
         _record(cfg, "publish_failed", reason, None, None, tag=tag)
@@ -433,6 +439,8 @@ def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str
 def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
     """Advance the release PR, merge, tag, and stable branch from remote state. With
     `open_pr=False` (the dispatcher's start-of-pass call) a new release PR is never opened."""
+    if pause.check(cfg.root):
+        return "paused"
     metrics: dict[str, float | int | None] | None = None
     bar: dict[str, float | int] | None = None
     comparison_bar: dict[str, float | int] | None = None
@@ -486,6 +494,7 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             _git(cfg.root, "tag", "-a", tag, commit, "-m", message)
             pushed = False
             try:
+                pause.require_running(cfg.root)
                 result = _git(cfg.root, "push", "--atomic", "origin", tag,
                               f"{commit}:refs/heads/stable", check=False)
                 pushed = result.returncode == 0
@@ -604,6 +613,7 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
                 "docs/index.html",
             )
             _git(worktree, "commit", "-m", f"Release {next_version}")
+            pause.require_running(cfg.root)
             pushed = _git(worktree, "push", "--force", "origin",
                           f"HEAD:refs/heads/{branch}", check=False)
             if pushed.returncode:
@@ -620,6 +630,8 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             if added:
                 _git(cfg.root, "worktree", "remove", "--force", str(worktree), check=False)
             shutil.rmtree(temporary, ignore_errors=True)
+    except pause.Paused:
+        return "paused"
     except Exception as exc:  # noqa: BLE001 - the dispatcher must hold, journal, and retry next pass
         reason = _reason(f"release check failed: {type(exc).__name__}: {exc}", metrics, bar)
         return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
@@ -630,6 +642,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print metrics, bar, and verdict as JSON; change nothing")
     args = parser.parse_args(argv)
     cfg = config.load()
+    if pause.check(cfg.root):
+        return 0
     reason = run(cfg, args.dry_run)
     if not args.dry_run:
         print(reason)
