@@ -79,6 +79,19 @@ class LaneMetricsTest(unittest.TestCase):
         ])
 
 
+    def test_null_landing_lane_falls_back_to_latest_claim(self) -> None:
+        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "events.jsonl"
+        with lifecycle.scope(path, "dispatcher", dispatcher=True):
+            with lifecycle.scope(path, "ticket", ticket=7, lane=2):
+                lifecycle.append(path, {"event": "claimed", "ticket": 7})
+            lifecycle.append(path, {"event": "merged", "ticket": 7})
+
+        self.assertEqual(stats.lane_metrics(stats.audit_by_ticket(path)), [
+            {"lane": 2, "claimed": 1, "attempts": 0, "reviews": 0, "merged": 1,
+             "escalations": 0, "seconds": 0.0, "first_pass": None},
+        ])
+
+
 class LaneStatsCommandTest(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
