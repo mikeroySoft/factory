@@ -869,11 +869,28 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
     target = next((label for _, label in additions if label in queues), None)
     if target:
         command = ["issue", "view", str(n), "--repo", REPO, "--json", "labels"]
-        try:
-            current = gh_json(command)
-            present = {label["name"] for label in current["labels"]}
-        except (subprocess.CalledProcessError, ValueError, KeyError) as exc:
-            raise GitHubWriteFailed(1, ["gh", *command], stderr="Queue labels read failed") from exc
+        for attempt in (1, 2):
+            try:
+                current = gh_json(command)
+                present = {label["name"] for label in current["labels"]}
+                break
+            except (subprocess.CalledProcessError, ValueError, KeyError) as exc:
+                if isinstance(exc, subprocess.CalledProcessError):
+                    returncode, tail = exc.returncode, stderr_tail(exc.stderr)
+                else:
+                    returncode, tail = 1, "Queue labels read failed"
+                recorded = lifecycle.redact_command(["gh", *command])
+                record("github-write-failed", ticket=n, command=recorded,
+                       returncode=returncode, stderr_tail=tail, attempt=attempt)
+                log(f"#{n}: GitHub write failed (attempt {attempt}/2, exit {returncode}): {tail}")
+                if attempt == 2:
+                    if execution := lifecycle.current():
+                        execution.outcome, execution.reason = "mechanism_failure", "github_write_failed"
+                    raise GitHubWriteFailed(returncode, recorded, stderr=tail) from exc
+                delay = _review_retry_delay(tail, 1)
+                if re.search(r"rate.?limit|abuse", tail, re.IGNORECASE):
+                    delay = max(60, delay)
+                time.sleep(delay)
         removals = [("--remove-label", label) for label in sorted((queues & present) - {target})]
     # A successful add response confirms the replacement before any old queue is removed.
     operations = [list(pair) for pair in additions + removals]

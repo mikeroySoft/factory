@@ -86,7 +86,7 @@ class EscalationWriteSafetyTest(unittest.TestCase):
                 with mock.patch.object(dispatch, "run", return_value=result) as run, \
                         self.assertRaises(dispatch.GitHubWriteFailed):
                     dispatch.unclaim(7, "--add-label", "ready-for-human", check=True)
-                self.assertEqual(run.call_args_list, [mock.call(command, env=None)])
+                self.assertEqual(run.call_args_list, [mock.call(command, env=None), mock.call(command, env=None)])
                 self.assertEqual(self.data()["labels"], ["ready-for-agent"])
 
     def data(self):

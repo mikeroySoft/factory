@@ -118,7 +118,7 @@
  },
  {
   "file": "factory/dispatch.py",
-  "line": 3277,
+  "line": 3362,
   "operator": "core/ReplaceComparisonOperator_NotEq_IsNot",
   "original": "                if current_base != base_commit and _moved_main_proof(",
   "mutated": "                if current_base is not base_commit and _moved_main_proof(",
@@ -127,7 +127,7 @@
  },
  {
   "file": "factory/dispatch.py",
-  "line": 3291,
+  "line": 3376,
   "operator": "core/ReplaceComparisonOperator_Eq_GtE",
   "original": "                        verdict == \"STALE\" and ok and current_base != base_commit",
   "mutated": "                        verdict >= \"STALE\" and ok and current_base != base_commit",
