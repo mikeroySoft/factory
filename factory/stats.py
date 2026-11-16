@@ -304,19 +304,25 @@ def reconcile_closed_prs(journal: Path, rows: list[dict], start: datetime) -> No
         return
     if not isinstance(closed, list):
         return
-    for pr in closed:
-        number = pr.get("number") if isinstance(pr, dict) else None
-        closed_at = pr.get("closedAt") if isinstance(pr, dict) else None
-        if (not _is_int(number) or number not in opened or number in seen
-                or pr.get("mergedAt") is not None or _timestamp(closed_at) is None):
-            continue
-        row = {
-            "at": closed_at, "event": "pr-closed", "ticket": opened[number], "pr": number,
-            "by": "external", "reason": "closed outside factory",
-        }
-        lifecycle.append(journal, row)
-        rows.append(row)
-        seen.add(number)
+    with lifecycle.journal_snapshot(journal) as (current, handle):
+        for row in current:
+            number = row.get("pr")
+            if row.get("event") == "pr-closed" and _is_int(number) and number not in seen:
+                rows.append(row)
+                seen.add(number)
+        for pr in closed:
+            number = pr.get("number") if isinstance(pr, dict) else None
+            closed_at = pr.get("closedAt") if isinstance(pr, dict) else None
+            if (not _is_int(number) or number not in opened or number in seen
+                    or pr.get("mergedAt") is not None or _timestamp(closed_at) is None):
+                continue
+            row = {
+                "at": closed_at, "event": "pr-closed", "ticket": opened[number], "pr": number,
+                "by": "external", "reason": "closed outside factory",
+            }
+            lifecycle._write(handle, row)
+            rows.append(row)
+            seen.add(number)
 
 
 def weekly_metrics(
