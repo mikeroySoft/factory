@@ -196,6 +196,18 @@ def stub_bin(tmp: Path, **scripts: str) -> str:
     bindir = tmp / "bin"
     bindir.mkdir(exist_ok=True)
     for name, body in scripts.items():
+        if name == "gh":
+            body = '''
+case "$*" in
+  "api rate_limit")
+    echo '{"resources":{"core":{"remaining":5000},"graphql":{"remaining":5000}}}'
+    exit 0;;
+  "api --paginate --slurp repos/"*"/labels?per_page=100" | \
+  "api --paginate --slurp repos/"*"/issues/comments?per_page=100")
+    echo '[[]]'
+    exit 0;;
+esac
+''' + body
         exe = bindir / name
         exe.write_text(f'#!/bin/sh\necho "$@" >> "{bindir / name}.log"\n{body}\n')
         exe.chmod(0o755)
@@ -217,7 +229,7 @@ class ConfigTest(unittest.TestCase):
         from unittest import mock
 
         with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d), "[journal]\nmax_mb = 1\nretention = 4\n")
+            repo = make_repo(Path(d).resolve(), "[journal]\nmax_mb = 1\nretention = 4\n")
             worktree = Path(d) / "worker"
             git(repo, "worktree", "add", "-q", str(worktree), "-b", "agent/1")
             path = repo / ".factory" / "events.jsonl"
@@ -273,7 +285,7 @@ print(json.dumps({
 
     def test_defaults_from_origin(self) -> None:
         with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d))
+            repo = make_repo(Path(d).resolve())
             cfg = config.load(repo)
             self.assertEqual(cfg.repo, "acme/widgets")
             self.assertEqual(cfg.name, "widgets")
@@ -317,7 +329,7 @@ model = "m"
 port = 1
 """
         with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d), toml)
+            repo = make_repo(Path(d).resolve(), toml)
             cfg = config.load(repo)
             self.assertEqual((cfg.repo, cfg.upstream, cfg.main), ("other/name", "up", "trunk"))
             self.assertEqual((cfg.max_active, cfg.signoff, cfg.check_timeout), (5, False, 7))
@@ -878,7 +890,7 @@ class HostConfigTest(unittest.TestCase):
         gh = 'case "$1 $2" in "repo view") echo ADMIN;; "label list") echo "[]";; esac\nexit 0'
         toml = '[triage]\nmodel = "m"\n[dashboard]\ntheme = "t.css"\n[gate]\nlock = "/tmp/l"\ntimeout = 5\n[dispatch]\nmax_atempts = 2\n[manager]\nunknown = true\n'
         with tempfile.TemporaryDirectory() as d:
-            repo = make_repo(Path(d), toml)
+            repo = make_repo(Path(d).resolve(), toml)
             (repo / ".github/ISSUE_TEMPLATE").mkdir(parents=True)
             (repo / ".github/ISSUE_TEMPLATE/agent_task.md").write_text("custom\n")
             proc = factory(repo, "doctor", "--json", path=stub_bin(Path(d), gh=gh, systemctl="echo inactive"))
@@ -2192,6 +2204,7 @@ PY
 head=$(git -C .factory/wt-7 rev-parse HEAD 2>/dev/null || git -C {remote} rev-parse agent/7)
 labels='[]'; [ -e {state}/approved ] && labels='[{{"name":"factory-approved"}}]'
 pr="{{\\"id\\":\\"PR_9\\",\\"number\\":9,\\"title\\":\\"Fix CI\\",\\"url\\":\\"https://github.com/acme/widgets/pull/9\\",\\"state\\":\\"OPEN\\",\\"headRefName\\":\\"agent/7\\",\\"headRefOid\\":\\"$head\\",\\"baseRefName\\":\\"main\\",\\"isCrossRepository\\":false,\\"isDraft\\":false,\\"labels\\":$labels,\\"reviewDecision\\":\\"\\",\\"updatedAt\\":\\"2026-09-12T00:00:00Z\\"}}"
+pr="${{pr%?}},\\"reviewRequests\\":[]}}"
 case "$1 $2" in
   "pr list") case "$*" in *needs-review*) echo '[]';; *) [ -e {state}/merged ] && echo '[]' || echo "[$pr]";; esac;;
   "pr view") echo "$pr";;
@@ -2200,6 +2213,8 @@ case "$1 $2" in
   "pr merge") touch {state}/merged;;
   "issue list") [ -e {state}/fixed ] && echo '[]' || echo '[{{"number":7,"title":"Fix CI","body":"Original","labels":[{{"name":"chore"}}]}}]';;
   "issue view") echo '{{"id":"I_7","number":7,"url":"https://github.com/acme/widgets/issues/7","title":"Fix CI","body":"Original","state":"OPEN","labels":[{{"name":"ready-for-human"}}],"comments":[]}}';;
+  "api repos/acme/widgets/pulls/9") printf '{{"head":{{"sha":"%s"}},"base":{{"ref":"main"}},"mergeable_state":"clean"}}\\n' "$head";;
+  "api repos/acme/widgets/rules/branches/main?per_page=100") echo '[[]]';;
   "api repos/acme/widgets/issues/7/timeline") cat .factory/timeline.json;;
   "api repos/acme/widgets/compare/main...$head") echo '{{"behind_by":0}}';;
   "api repos/acme/widgets") echo '{{"id":"R_1"}}';;
@@ -2447,6 +2462,7 @@ class DispatchTest(unittest.TestCase):
             return real_gh_json(args, *positional, **kwargs)
 
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=github))
+        self.enterContext(mock.patch.object(dispatch, "github_preflight", return_value=None))
 
     def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
         from unittest import mock
@@ -2525,6 +2541,10 @@ class DispatchTest(unittest.TestCase):
 
             def run(cmd, **kwargs):
                 commands.append(cmd)
+                if cmd[:2] == ["gh", "api"]:
+                    value = {"head": {"sha": fresh_head}, "base": {"ref": "main"},
+                             "mergeable_state": "clean"} if "/pulls/" in cmd[2] else [[]]
+                    return subprocess.CompletedProcess(cmd, 0, json.dumps(value), "")
                 if cmd[:3] == ["gh", "pr", "checks"]:
                     self.assertIn("--required", cmd)
                     return subprocess.CompletedProcess(cmd, code, payload, "")
@@ -5072,6 +5092,11 @@ esac
 
 
 class TriageProbeOnboardingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        from unittest.mock import patch
+
+        self.enterContext(patch("factory.claims.repository_host_problem", return_value=None))
+
     def tearDown(self) -> None:
         host_file("")
 

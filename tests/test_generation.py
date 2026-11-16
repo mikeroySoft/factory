@@ -32,6 +32,7 @@ class ProjectionTest(unittest.TestCase):
 
     def test_factory_releases_never_open_a_generation(self) -> None:
         for release in ({"event": "conflict-requeue"}, {"event": "gate-requeue"}, {"event": "risk-requeue"},
+                        {"event": "mutation-proof-wait"},
                         {"event": "review-rework", "deferred": True},
                         {"event": "manage", "decision": "RETRY"}, {"event": "manage", "decision": "ROUTE"}):
             with self.subTest(release=release):

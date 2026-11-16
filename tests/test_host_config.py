@@ -66,6 +66,10 @@ class HostConfigTest(unittest.TestCase):
 
     def doctor_rows(self, cfg: config.Config, host: dict) -> dict[str, dict]:
         def command(argv, **_kwargs):
+            if argv[:3] == ["gh", "api", "--paginate"]:
+                return subprocess.CompletedProcess(argv, 0, "[]", "")
+            if argv == ["gh", "api", "user"]:
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"login": "factory"}), "")
             stdout = ""
             if argv[:3] == ["gh", "repo", "view"]:
                 stdout = "ADMIN\n"
@@ -81,6 +85,7 @@ class HostConfigTest(unittest.TestCase):
         with mock.patch.object(onboard.config, "load", return_value=cfg), \
                 mock.patch.object(onboard.config, "host_config", return_value=host), \
                 mock.patch.object(onboard.config, "host_config_path", return_value=cfg.root / "host.toml"), \
+                mock.patch("factory.claims.repository_host_problem", return_value=None), \
                 mock.patch.object(onboard.config, "engine_drift", return_value=None), \
                 mock.patch.object(onboard, "sh", side_effect=command), \
                 mock.patch.object(onboard, "sha256", return_value=None), \

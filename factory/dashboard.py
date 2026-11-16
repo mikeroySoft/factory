@@ -536,7 +536,10 @@ def upstream_state(gh: dict | None, issues: list[dict]) -> dict:
 
 
 def journal_runs() -> list[dict]:
-    out = sh(["journalctl", "--user", "-u", f"{cfg.unit}.service", "-o", "json", "-n", "3000", "--no-pager"])
+    try:
+        out = sh(["journalctl", "--user", "-u", f"{cfg.unit}.service", "-o", "json", "-n", "3000", "--no-pager"])
+    except OSError:
+        return []  # no systemd journal on this host (macOS): no runs to read, not a crash
     return parse_journal(out)[-100:]
 
 
