@@ -372,6 +372,8 @@ The journal persists this deadline across CLI stages and subsequent timer passes
 so the pass exits rather than sleeping until a distant reset. Already-waiting
 network retries also honor the stop. Three failed reads constituting a majority
 of completed reads stop the pass's remaining reads with `most_reads_failed`.
+Expected absence and CI verdict responses count as completed reads when deciding
+whether failures form a majority.
 
 Each deferred item records `read-skip` with its identity, failure code, exit status,
 redacted stderr tail and quota evidence; `read-summary` journals and prints read,

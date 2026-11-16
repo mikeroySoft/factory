@@ -4,9 +4,9 @@ from __future__ import annotations
 import copy
 import json
 import subprocess
+import sys
 import unittest
 from datetime import UTC, datetime
-import sys
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, reads
@@ -113,7 +113,7 @@ class DispatchReadResumeTest(unittest.TestCase):
                 before = copy.deepcopy(issue)
                 commands = []
 
-                def command(argv, *_args):
+                def command(argv, *_args, commands=commands, status=status):
                     commands.append(argv)
                     if argv[1:3] == ["issue", "list"]:
                         return subprocess.CompletedProcess(argv, 0, json.dumps([issue]), "")

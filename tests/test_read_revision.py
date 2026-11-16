@@ -59,7 +59,8 @@ class ReadRevisionTest(unittest.TestCase):
         ]
         with reads.pass_scope(self.journal, "dispatch") as state:
             for command, code, stdout, stderr in responses:
-                result = reads.run(command, lambda: subprocess.CompletedProcess(command, code, stdout, stderr), check=False)
+                response = subprocess.CompletedProcess(command, code, stdout, stderr)
+                result = reads.run(command, lambda response=response: response, check=False)
                 self.assertEqual((result.returncode, result.stdout), (code, stdout))
             self.assertEqual((state.failed, state.skipped, state.stopped), (0, 0, False))
         self.probe.assert_not_called()

@@ -243,6 +243,8 @@ def run(command, operation, check=True, env=None):
             text = text.decode(errors="replace")
         transient = bool(_NETWORK.search(text))
         if _expected_response(command, result, text, check):
+            with state.lock:
+                state.reads += 1
             if check:
                 result.check_returncode()
             return result
