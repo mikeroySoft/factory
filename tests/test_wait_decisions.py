@@ -26,6 +26,7 @@ class WaitDecisions(unittest.TestCase):
             LOGS=self.cfg.factory / "logs", SYNC_LOG=self.cfg.factory / "upstream-sync.jsonl",
             EVENTS=self.events, MAX_ACTIVE=1, MAX_ATTEMPTS=self.cfg.max_attempts,
         ))
+        self.enterContext(patch.object(dispatch, "github_preflight", return_value=None))
         self.issue = {"number": 7, "title": "local ticket", "labels": []}
 
     def rows(self):

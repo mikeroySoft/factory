@@ -82,7 +82,7 @@ ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engin
 HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "manager", "install", "prices"})
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",),
              "review": ("command", "second_command", "json_mode")}
-HOST_SCALARS = ("host_name", "triage_host", "claim_ttl")
+HOST_SCALARS = ("host_name", "triage_host", "land_host", "release_host", "claim_ttl")
 
 # Every key the loader reads, by table; `factory doctor` reports anything else.
 # `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive, when}.
@@ -99,7 +99,7 @@ KNOWN_KEYS = {
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
-    "gate": ("timeout", "lock", "check", "protected_paths", "add_only_paths"),
+    "gate": ("timeout", "lock", "check", "fixups", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout", "service", "max_tokens", "chat_template_kwargs"),
     "journal": ("max_mb", "retention"),
@@ -111,8 +111,12 @@ KNOWN_KEYS = {
 }
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "cost")
-CHECK_KEYS = ("name", "run", "exclusive", "when")
+CHECK_KEYS = ("name", "run", "exclusive", "when", "proof")
 CHECK_TIERS = ("attempt", "pr", "release")
+# Repository-owned opt-in (`proof = "mutation-v1"` on a `when = "pr"` check): High-risk PR
+# gates then accept that check only from the runner's own completion record, never from
+# its exit status or stdout. Unset (every existing repository) keeps exit-status behaviour.
+MUTATION_PROOF = "mutation-v1"
 BAND_METRICS = frozenset({
     "gate_failure_rate",
     "gate_failures_by_check",
@@ -147,6 +151,7 @@ class Check:
     run: list[str]
     exclusive: bool = False
     when: str = "attempt"
+    proof: str | None = None
 
 
 @dataclass(frozen=True)
@@ -243,6 +248,7 @@ class Config:
     release_bar_floor_human_rate: float = 0.10
     release_bar_floor_first_pass: float = 0.90
     checks: list[Check] = field(default_factory=list)
+    fixups: list[list[str]] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
     add_only_paths: list[str] = field(default_factory=list)
     check_timeout: int = 1200
@@ -270,6 +276,8 @@ class Config:
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
     host_name: str | None = None
     triage_host: str | None = None
+    land_host: str | None = None
+    release_host: str | None = None
     claim_ttl: str = "2h"
 
     @property
@@ -723,7 +731,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
-    for key in ("host_name", "triage_host"):
+    for key in ("host_name", "triage_host", "land_host", "release_host"):
         value = layered.get(key)
         if value is not None and (
             not isinstance(value, str)
@@ -916,6 +924,15 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.prices = price_table(raw.get("prices", {}))
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
+    fixups = gate.get("fixups", [])
+    if not isinstance(fixups, list) or any(
+        not isinstance(argv, list) or not argv
+        or any(not isinstance(arg, str) or "\0" in arg for arg in argv)
+        or not argv[0].strip()
+        for argv in fixups
+    ):
+        raise ConfigError("gate.fixups must be an array of nonempty argv arrays")
+    cfg.fixups = fixups
     for key in ("protected_paths", "add_only_paths"):
         paths = gate.get(key, [])
         if not isinstance(paths, list) or any(not isinstance(p, str) or not p for p in paths):
@@ -927,7 +944,11 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         when = c.get("when", "attempt")
         if when not in CHECK_TIERS:
             raise ConfigError(f'{path}: gate.check[{i}].when ({c.get("name")!r}) must be "attempt", "pr" or "release", got {when!r}')
-        cfg.checks.append(Check(c["name"], list(c["run"]), bool(c.get("exclusive", False)), when))
+        proof = c.get("proof")
+        if proof is not None and (proof != MUTATION_PROOF or when != "pr"):
+            raise ConfigError(f'{path}: gate.check[{i}].proof ({c.get("name")!r}) must be '
+                              f'"{MUTATION_PROOF}" on a when = "pr" check, got {proof!r}')
+        cfg.checks.append(Check(c["name"], list(c["run"]), bool(c.get("exclusive", False)), when, proof))
     names = [c.name for c in cfg.checks]
     if len(set(names)) != len(names) or {"conflict-markers", "leak-scan", "protected-paths"} & set(names):
         raise ConfigError(f"{path}: gate check names must be unique and not conflict-markers/leak-scan/protected-paths")

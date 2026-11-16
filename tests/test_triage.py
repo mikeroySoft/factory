@@ -288,5 +288,172 @@ class TriageLivenessProbe(unittest.TestCase):
 
 
 
+class TriageGithubIdentity(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        self.calls = root / "gh.log"
+        fake = root / "gh"
+        fake.write_text("""#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_GH_LOG"
+if [ "$1 $2" = "api user" ]; then
+    if [ "$FAIL_LOGIN" = all ] || [ "$FAIL_LOGIN" = "$GH_CONFIG_DIR" ]; then
+        echo 'error connecting to api.github.com' >&2
+        exit 1
+    fi
+    if [ "$GH_CONFIG_DIR" = dispatcher ]; then
+        echo factory-bot
+    else
+        echo "$CURRENT_LOGIN"
+    fi
+elif [ "$1 $2" = "issue view" ]; then
+    echo '{"number":7,"title":"bug","body":"short","comments":[],"labels":[],"state":"OPEN"}'
+elif [ "$1 $2" != "issue comment" ] && [ "$1 $2" != "issue edit" ]; then
+    exit 99
+fi
+""")
+        fake.chmod(0o755)
+        self.enterContext(patch.dict(os.environ, {
+            "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_GH_LOG": str(self.calls),
+            "GH_CONFIG_DIR": "current",
+            "CURRENT_LOGIN": "factory-bot",
+            "FAIL_LOGIN": "",
+            lifecycle.CONTEXT_ENV: "",
+        }))
+        self.enterContext(patch.dict(triage.__dict__, LOGIN=None))
+        cfg = Config(root=root, repo="local/triage")
+        cfg.factory.mkdir()
+        cfg.install["dispatch_env"] = {"GH_CONFIG_DIR": "dispatcher"}
+        triage.configure(cfg)
+        self.events = cfg.factory / "events.jsonl"
+
+    def run_pass(self):
+        args = argparse.Namespace(issue=7, replay=None, dry_run=False)
+        with redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()), \
+                lifecycle.scope(self.events, "triage", lazy=True) as execution:
+            code = triage.execute(args, execution)
+        terminal = [row for row in lifecycle.read_events(self.events)
+                    if row.get("stage") == "triage" and row.get("kind") == "exit"][-1]
+        return code, (terminal["outcome"], terminal.get("reason"))
+
+    def test_login_connection_failure_is_github_command_failed(self):
+        for failure in ("all", "current", "dispatcher"):
+            with self.subTest(failure=failure):
+                triage.LOGIN = None
+                os.environ["FAIL_LOGIN"] = failure
+                code, terminal = self.run_pass()
+                self.assertNotEqual(code, 0)
+                self.assertNotIn("issue ", self.calls.read_text())
+                self.assertEqual(terminal, ("mechanism_failure", "github_command_failed"))
+
+    def test_different_logins_refuse_to_post(self):
+        os.environ["CURRENT_LOGIN"] = "owner"
+        code, terminal = self.run_pass()
+        self.assertNotEqual(code, 0)
+        self.assertNotIn("issue ", self.calls.read_text())
+        self.assertEqual(terminal, ("not_admitted", "identity_mismatch"))
+
+    def test_matching_logins_admit_and_post(self):
+        os.environ["CURRENT_LOGIN"] = "FACTORY-BOT"
+        code, terminal = self.run_pass()
+        self.assertEqual(code, 0)
+        self.assertNotEqual(terminal[1], "identity_mismatch")
+        calls = self.calls.read_text()
+        self.assertIn("issue comment 7 --body Triage:", calls)
+        self.assertIn("issue edit 7 --remove-label needs-triage --add-label needs-info", calls)
+
+
+class WatchAuthorshipLookupFailure(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        self.calls = root / "gh.log"
+        fake = root / "gh"
+        fake.write_text("""#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_GH_LOG"
+case "$1 $2" in
+    "api user")
+        echo 'error connecting to api.github.com' >&2
+        exit 1 ;;
+    "issue list")
+        echo '[{"number":7},{"number":8}]' ;;
+    "issue view")
+        cat "$FAKE_ISSUES/$3.json" ;;
+    "issue comment"|"issue edit") ;;
+    *) exit 99 ;;
+esac
+""")
+        fake.chmod(0o755)
+        self.enterContext(patch.dict(os.environ, {
+            "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_GH_LOG": str(self.calls),
+            "FAKE_ISSUES": str(root),
+            lifecycle.CONTEXT_ENV: "",
+        }))
+        self.enterContext(patch.dict(triage.__dict__, LOGIN=None))
+        self.cfg = Config(root=root, repo="local/triage")
+        self.cfg.factory.mkdir()
+        triage.configure(self.cfg)
+        self.events = self.cfg.factory / "events.jsonl"
+        for number in (7, 8):
+            issue = {
+                "number": number,
+                "title": "factory runtime failure: triage" if number == 7 else "ordinary issue",
+                "body": "Fingerprint: abc123\n\nevidence" if number == 7 else "short",
+                "author": {"login": "factory-bot"},
+                "labels": [{"name": "bug"}, {"name": LABEL_TRIAGE}],
+                "comments": [],
+                "state": "OPEN",
+            }
+            (root / f"{number}.json").write_text(json.dumps(issue))
+
+    def test_optional_login_failure_continues_all_admission_bypass_paths(self):
+        for mode in ("no_dispatch_env", "dry_run", "replay"):
+            with self.subTest(mode=mode):
+                self.calls.write_text("")
+                triage.LOGIN = None
+                self.cfg.install["dispatch_env"] = (
+                    {} if mode == "no_dispatch_env" else {"GH_CONFIG_DIR": "dispatcher"}
+                )
+                args = argparse.Namespace(
+                    issue=None, replay="7,8" if mode == "replay" else None, dry_run=mode == "dry_run",
+                )
+                recording = mode == "no_dispatch_env"
+                scope = lifecycle.scope(self.events, "triage", lazy=True) if recording else contextlib.nullcontext()
+                with contextlib.redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()), \
+                        scope as execution:
+                    self.assertEqual(triage.execute(args, execution), 0)
+                calls = self.calls.read_text()
+                self.assertIn("api user --jq .login", calls)
+                self.assertIn("issue view 8 ", calls, "the next ticket must still be fetched")
+                for number in (7, 8):
+                    if recording:
+                        self.assertIn(
+                            f"issue edit {number} --remove-label needs-triage --add-label needs-info", calls,
+                        )
+                    else:
+                        prefix = f"#{number}: " if mode == "replay" else f"#{number} [dry-run] decision: "
+                        line = next(line for line in out.getvalue().splitlines() if line.startswith(prefix))
+                        self.assertEqual(json.loads(line.removeprefix(prefix))["decision"], "needs-info")
+                if recording:
+                    terminal = [row for row in lifecycle.read_events(self.events)
+                                if row.get("stage") == "triage" and row.get("kind") == "exit"][-1]
+                    self.assertEqual((terminal["outcome"], terminal["reason"]),
+                                     ("product_feedback", "triage_feedback"))
+                else:
+                    self.assertNotIn("issue comment", calls)
+                    self.assertNotIn("issue edit", calls)
+
+    def test_journal_recognition_does_not_require_login(self):
+        self.events.write_text(json.dumps({"event": "watch", "issue": 7}) + "\n")
+        decision = triage.triage_issue(triage.fetch_issue(7))
+        self.assertEqual(decision["decision"], LABEL_AGENT)
+        self.assertEqual(decision["brief"], triage.WATCH_BRIEF)
+        self.assertNotIn("api user", self.calls.read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

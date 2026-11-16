@@ -4,12 +4,15 @@ Run: python -m unittest discover -s tests
 """
 from __future__ import annotations
 
+import errno
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from factory import platform_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,6 +53,19 @@ def repo_with_test(tmp: Path, toml: str = TOML) -> Path:
 def commit(repo: Path, message: str = "worker") -> None:
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", message)
+
+
+def stage_name(repo: Path, name: bytes, content: bytes) -> None:
+    """Put ``name`` in git's index without asking the filesystem to create it."""
+    blob = subprocess.run(
+        ["git", "-C", str(repo), "hash-object", "-w", "--stdin"],
+        input=content, capture_output=True, check=True,
+    ).stdout.strip()
+    subprocess.run(
+        [b"git", b"-C", os.fsencode(repo), b"update-index", b"--add", b"--cacheinfo",
+         b"100644," + blob + b"," + name],
+        check=True,
+    )
 
 
 class AddOnlyPathsTest(unittest.TestCase):
@@ -234,14 +250,35 @@ class GateOutputEncodingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             repo = repo_with_test(Path(d), TOML + '\n[leak_scan]\nextra = ["codename"]\n')
             git(repo, "config", "core.quotePath", "false")
-            descriptor = os.open(
-                os.path.join(os.fsencode(repo), b"\xff-leak.txt"),
-                os.O_WRONLY | os.O_CREAT,
-                0o600,
-            )
-            os.write(descriptor, b"codename\n")
-            os.close(descriptor)
-            commit(repo)
+            name = os.path.join(os.fsencode(repo), b"\xff-leak.txt")
+            if platform_identity.darwin():
+                # Darwin filesystems positively refuse a non-UTF-8 name; git still carries it.
+                with self.assertRaises(OSError) as refused:
+                    os.open(name, os.O_WRONLY | os.O_CREAT, 0o600)
+                self.assertEqual(refused.exception.errno, errno.EILSEQ)
+                self.assertFalse(os.path.lexists(name))
+                stage_name(repo, b"\xff-leak.txt", b"codename\n")
+                git(repo, "commit", "-q", "-m", "worker")
+            else:
+                descriptor = os.open(name, os.O_WRONLY | os.O_CREAT, 0o600)
+                os.write(descriptor, b"codename\n")
+                os.close(descriptor)
+                commit(repo)
+
+            code, out, report = gate(repo, "--skip", "conflict-markers")
+
+            self.assertEqual(code, 1, report + out)
+            self.assertIn("- leak-scan: FAIL", report)
+            self.assertIn("\ufffd-leak.txt:1: [codename] codename", report)
+
+    def test_leak_scan_finds_pattern_in_non_utf8_path_from_git_objects(self) -> None:
+        """Portable: the invalid byte reaches the diff from git objects, not the filesystem."""
+        with tempfile.TemporaryDirectory() as d:
+            repo = repo_with_test(Path(d), TOML + '\n[leak_scan]\nextra = ["codename"]\n')
+            git(repo, "config", "core.quotePath", "false")
+            stage_name(repo, b"\xff-leak.txt", b"codename\n")
+            git(repo, "commit", "-q", "-m", "worker")
+            self.assertNotIn(b"\xff-leak.txt", os.listdir(os.fsencode(repo)))
 
             code, out, report = gate(repo, "--skip", "conflict-markers")
 

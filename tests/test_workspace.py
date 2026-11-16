@@ -59,7 +59,7 @@ class WorkspaceHTTPTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.base = Path(self.temporary.name)
+        self.base = Path(self.temporary.name).resolve()
         self.environment = mock.patch.dict(
             os.environ, {"XDG_CONFIG_HOME": str(self.base / "xdg")}
         )

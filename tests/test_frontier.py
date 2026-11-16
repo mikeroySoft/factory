@@ -29,6 +29,11 @@ def pr_row(head=H, labels=(), updated=NOW):
             "reviewDecision": "", "updatedAt": updated}
 
 
+def claim_comment(i: int, host: str, at: datetime) -> dict:
+    return {"id": i, "user": {"login": "factory-bot"}, "created_at": at.isoformat(),
+            "body": f"Factory claim: host={host} nonce=n{i} at={at.isoformat()}"}
+
+
 class FrontierTest(unittest.TestCase):
     """In-process: `gh` reads are faked per call; every mutation is captured, never executed."""
 
@@ -47,6 +52,7 @@ class FrontierTest(unittest.TestCase):
         self.pr = pr_row()
         self.mutations: list[list[str]] = []
         self.manager_output = "DECISION: HUMAN\nnothing"
+        self.claim_comments: list[dict] = []
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=self.gh_json))
         self.enterContext(mock.patch.object(dispatch, "run", side_effect=self.fake_run))
         self.enterContext(mock.patch.object(dispatch, "pr_checks", return_value=[]))
@@ -75,6 +81,10 @@ class FrontierTest(unittest.TestCase):
             return {"id": "I_79", "number": 79, "url": "https://github.com/example/project/issues/79",
                     "title": "Ticket", "body": "Scope", "state": "OPEN",
                     "labels": [{"name": n} for n in self.issue_labels]}
+        if args[:2] == ["api", "user"]:
+            return {"login": "factory-bot"}
+        if args[-1] == "repos/example/project/issues/79/comments":
+            return [self.claim_comments]  # host-claim comments (escalate reads them when host_name is set)
         raise AssertionError(args)
 
     def fake_run(self, cmd, *a, **kw):
@@ -330,6 +340,112 @@ class FrontierTest(unittest.TestCase):
             manage.frontier_pass()
         self.assertFalse(any(e.get("event") == "manage" for e in self.events()))
         self.assertEqual(self.mutations, [])
+
+
+    def manage_on(self, host: str, triage: str = "tank") -> None:
+        """#723 r3-0440: a whole manage_pass on `host`, with only the unrelated passes stubbed."""
+        self.cfg.host_name, self.cfg.triage_host = host, triage
+        with mock.patch.object(manage, "viability_pass") as viability, \
+                mock.patch.object(manage, "escalation_pass"), mock.patch.object(manage.handoff, "handoff_pass"):
+            manage.manage_pass()
+        if host != triage:
+            viability.assert_not_called()
+        else:
+            viability.assert_called_once_with(False)
+
+    def test_non_triage_host_escalates_ci_failure_on_its_own_claimed_pr(self) -> None:
+        dispatch.record("claimed", ticket=79)  # this host's journal owns the PR
+        self.quiet_provider()
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+                {"name": "gate", "bucket": "fail", "completedAt": "2026-10-07T18:52:10Z"}]):
+            self.manage_on("ultron")
+        self.assertEqual([e["reason"] for e in self.escalations()], ["PR #80: CI failed (gate)"])
+
+    def test_non_triage_host_escalates_a_stale_pr_it_claimed(self) -> None:
+        dispatch.record("claimed", ticket=79)
+        self.quiet_provider()
+        self.pr = pr_row(updated="2026-01-01T00:00:00Z")
+        self.manage_on("ultron")
+        self.assertEqual(len(self.escalations()), 1)
+
+    def test_non_triage_host_gets_its_local_manager_approve_under_review_all(self) -> None:
+        self.cfg.manager_review = "all"
+        self.quiet_provider()
+        self.approved_head(H)
+        self.assertTrue(dispatch.approve_pr(79, H))  # waits: no local manager APPROVE yet
+        self.assertEqual(self.mutations, [])
+        self.manager_output = "DECISION: APPROVE\nLooks right"
+        self.manage_on("ultron")
+        self.assertEqual([(e["pr"], e["head"], e["decision"]) for e in self.events() if e.get("event") == "manage"],
+                         [(80, H, "APPROVE")])
+        self.assertTrue(any("--add-label" in cmd and "factory-approved" in cmd for cmd in self.mutations))
+
+    def test_pr_claimed_only_by_the_other_host_gets_no_frontier_action(self) -> None:
+        self.quiet_provider()  # no local `claimed` row: the other host's journal owns ticket 79
+        logs: list[str] = []
+        with mock.patch.object(dispatch, "pr_checks", return_value=[
+                {"name": "gate", "bucket": "fail", "completedAt": "2026-10-07T18:52:10Z"}]), \
+                mock.patch.object(dispatch, "log", side_effect=logs.append):
+            self.manage_on("ultron")
+        # The frontier did look at the PR on this host and refused it for lack of a local claim.
+        self.assertTrue(any(m.startswith("PR #80: not factory-owned") for m in logs), logs)
+        self.assertEqual(self.escalations(), [])
+        self.assertEqual(self.mutations, [])
+
+    def shepherd_moved_ticket(self, expired: str, elected: str) -> dict:
+        # #777: ticket 79 moved `expired` -> `elected`, so both hosts' journals hold a `claimed` row;
+        # the issue's elected host claim (the live one) decides frontier ownership.
+        old, now = datetime.now(UTC) - timedelta(days=2), datetime.now(UTC)
+        self.claim_comments = [claim_comment(1, expired, old), claim_comment(2, elected, now)]
+        escalated = {}
+        for host in ("tank", "ultron"):
+            journal = tempfile.TemporaryDirectory()
+            self.addCleanup(journal.cleanup)
+            (Path(journal.name) / ".factory").mkdir()
+            self.cfg = config.Config(Path(journal.name), "example/project", manager=["manager-stub"], manager_stale_days=7)
+            dispatch.configure(self.cfg)
+            dispatch.record("claimed", ticket=79)  # this host's own journal claims ticket 79
+            self.quiet_provider()
+            self.mutations.clear()
+            with mock.patch.object(dispatch, "pr_checks", return_value=[
+                    {"name": "gate", "bucket": "fail", "completedAt": "2026-10-07T18:52:10Z"}]):
+                self.manage_on(host)
+            escalated[host] = ([e["reason"] for e in self.escalations()], bool(self.mutations))
+        return escalated
+
+    def test_moved_ticket_claimed_in_both_journals_is_shepherded_only_by_the_elected_host(self) -> None:
+        self.assertEqual(self.shepherd_moved_ticket("tank", "ultron"),
+                         {"tank": ([], False), "ultron": (["PR #80: CI failed (gate)"], True)})
+
+    def test_elected_host_sorting_before_this_host_still_owns_the_frontier(self) -> None:
+        # "tank" < "ultron": the skip is host inequality, not name order.
+        self.assertEqual(self.shepherd_moved_ticket("ultron", "tank"),
+                         {"tank": (["PR #80: CI failed (gate)"], True), "ultron": ([], False)})
+
+    def test_skipping_another_hosts_pr_still_shepherds_the_next_pr(self) -> None:
+        # PR #82 (ticket 81, elected tank) is listed before PR #80 (ticket 79, claimed here).
+        other = {**pr_row(), "id": "PR_82", "number": 82, "headRefName": "agent/81",
+                 "url": "https://github.com/example/project/pull/82"}
+        fixture = self.gh_json
+
+        def gh_json(args):
+            if args[:2] == ["pr", "list"]:
+                return [other, self.pr]
+            if args[-1] == "repos/example/project/issues/81/comments":
+                return [[claim_comment(1, "tank", datetime.now(UTC))]]
+            return fixture(args)
+
+        dispatch.record("claimed", ticket=79)
+        self.quiet_provider()
+        logs: list[str] = []
+        with mock.patch.object(dispatch, "gh_json", side_effect=gh_json), \
+                mock.patch.object(dispatch, "log", side_effect=logs.append), \
+                mock.patch.object(dispatch, "pr_checks", return_value=[
+                    {"name": "gate", "bucket": "fail", "completedAt": "2026-10-07T18:52:10Z"}]):
+            self.manage_on("ultron")
+        self.assertIn("PR #82: skipped, elected claim belongs to host tank", logs)
+        self.assertEqual([e["reason"] for e in self.escalations()], ["PR #80: CI failed (gate)"])
+
 
 
 class CloseDecisionTest(unittest.TestCase):
