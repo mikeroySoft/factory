@@ -5435,7 +5435,7 @@ def process_ticket(
     if lock_held(lock_path):
         log(f"#{n}: skipped (in flight, lock held on {lock_path})")
         if not dry_run:
-            with lifecycle.scope(EVENTS, "ticket", ticket=n) as execution:
+            with lifecycle.scope(EVENTS, "ticket", ticket=n, lane=issue.get("_factory_lane", 1)) as execution:
                 request = execution.resource("requested", lock_path, scope="repository")
                 execution.wait("ticket_lock_contended", mode="retry_next_pass", resource=request["resource"])
         return
@@ -5459,7 +5459,7 @@ def process_ticket(
         )
         return
 
-    with lifecycle.scope(EVENTS, "ticket", ticket=n) as execution:
+    with lifecycle.scope(EVENTS, "ticket", ticket=n, lane=issue.get("_factory_lane", 1)) as execution:
         if failure := runner.preflight(ROOT):
             record("runner-infra", ticket=n, **failure)
             execution.outcome, execution.reason = "mechanism_failure", failure["reason"]
@@ -5936,7 +5936,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
             # record("scheduling") has committed, so no thread flushes a shared lazy buffer.
             # The next pick is ranked only once this one is claimed (or gone).
             admitted = threading.Event()
-            ticket = {**issue, "_factory_admission_id": admission, "_factory_admitted": admitted}
+            ticket = {**issue, "_factory_admission_id": admission, "_factory_admitted": admitted,
+                      "_factory_lane": len(pipelines) + 1}
             pipelines.append((issue["number"], pool.submit(contextvars.copy_context().run, work, ticket)))
             admitted.wait()
         pool.shutdown()  # wait for every pipeline here, where a Ctrl-C is handled below

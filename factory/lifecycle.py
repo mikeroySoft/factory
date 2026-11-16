@@ -193,6 +193,9 @@ def _rotate(path: Path, handle) -> None:
 
 def append(path: Path, row: dict) -> None:
     """Append a legacy or versioned row without interleaving concurrent writers."""
+    execution = current()
+    if execution is not None:
+        row = {**row, "lane": execution.lane}
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as handle:
@@ -403,7 +406,7 @@ def current():
 
 class Execution:
     def __init__(self, path: Path, stage: str, *, ticket=None, attempt=None,
-                 review_round=None, dispatcher=False, lock=None, lazy=False):
+                 review_round=None, lane=None, dispatcher=False, lock=None, lazy=False):
         parent = current()
         inherited = parent._context() if parent is not None else _inherited()
         self.path = Path(inherited.get("path", path)).absolute()
@@ -414,6 +417,9 @@ class Execution:
         self.ticket = inherited.get("ticket") if ticket is None else ticket
         self.attempt = inherited.get("attempt") if attempt is None else attempt
         self.review_round = inherited.get("review_round") if review_round is None else review_round
+        self.lane = inherited.get("lane") if lane is None else lane
+        if self.lane is not None and (type(self.lane) is not int or self.lane <= 0):
+            raise ValueError("lane must be a positive integer")
         self.stage = stage
         self.outcome = "completed"
         self.reason = None
@@ -441,7 +447,7 @@ class Execution:
             "root_execution_id": self.root_execution_id,
             "parent_execution_id": self.execution_id,
             "ticket": self.ticket, "attempt": self.attempt, "review_round": self.review_round,
-            "execution_ids": self.execution_ids, "locks": self.locks,
+            "lane": self.lane, "execution_ids": self.execution_ids, "locks": self.locks,
         }
 
     def emit(self, kind: str, **fields) -> dict:
@@ -462,6 +468,7 @@ class Execution:
                 self.reason = "scope exited before its registered children were reaped"
         row = {
             **fields, **{key: getattr(self, key) for key in _IDENTITY_FIELDS},
+            "lane": self.lane,
             "event": "lifecycle", "schema_version": 1, "event_id": str(uuid.uuid4()),
             "kind": kind, "at": _now(), "outcome": self.outcome if kind == "exit" else None,
             "reason": self.reason if kind == "exit" else None,
@@ -560,9 +567,9 @@ class Execution:
 
 @contextmanager
 def scope(path: Path, stage: str, *, ticket=None, attempt=None, review_round=None,
-          dispatcher=False, lock=None, lazy=False, **enter):
+          lane=None, dispatcher=False, lock=None, lazy=False, **enter):
     execution = Execution(path, stage, ticket=ticket, attempt=attempt, review_round=review_round,
-                          dispatcher=dispatcher, lock=lock, lazy=lazy)
+                          lane=lane, dispatcher=dispatcher, lock=lock, lazy=lazy)
     execution.emit("enter", **enter)
     token = _CURRENT.set(execution)
     try:
@@ -634,6 +641,8 @@ def _lifecycle(row: dict) -> bool:
                     for key in ("dispatcher_run_id", "parent_execution_id", "outcome", "reason"))
             and all(row[key] is None or type(row[key]) is int
                     for key in ("ticket", "attempt", "review_round"))
+            and ("lane" not in row or row["lane"] is None
+                 or type(row["lane"]) is int and row["lane"] > 0)
             and _valid_process(row["process"])
             and isinstance(row["locks"], list)
             and all(isinstance(lock, dict) and isinstance(lock.get("path"), str)
@@ -850,6 +859,7 @@ def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[
                 if state == "interrupted":
                     terminal = {
                         **{key: events[-1].get(key) for key in _IDENTITY_FIELDS},
+                        "lane": events[-1].get("lane"),
                         "event": "lifecycle", "schema_version": 1,
                         "event_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"factory:interrupted:{execution_id}")),
                         "sequence": events[-1]["sequence"] + 1, "kind": "exit", "at": _now(),
@@ -874,6 +884,7 @@ def observe(path: Path, *, rows: list[dict] | None = None, handle=None) -> list[
                         pending_wait = None
             result.append({
                 **{key: events[-1].get(key) for key in _IDENTITY_FIELDS},
+                "lane": entry.get("lane"),
                 "state": state, "entered_at": entry.get("at"),
                 "ended_at": terminal.get("at") if terminal else None,
                 "outcome": terminal.get("outcome") if terminal else None,
@@ -890,6 +901,7 @@ def _observation_row(path: Path, stage: str, key: str, previous: dict | None, at
     return {
         **dict.fromkeys(_IDENTITY_FIELDS), **fields,
         "execution_id": execution_id, "root_execution_id": execution_id, "stage": stage,
+        "lane": None,
         "event": "lifecycle", "schema_version": 1, "event_id": str(uuid.uuid4()),
         "sequence": previous["sequence"] + 1 if previous else 1,
         "kind": stage.replace("-", "_"), "at": at, "outcome": None, "reason": None,
