@@ -520,5 +520,69 @@ class WeeklyBehaviorRegressionTest(unittest.TestCase):
         self.assertEqual(result["first_pass"], 1.0)
         self.assertEqual(result["first_pass_denominator"], 1)
 
+
+class WeeklyReconciliationRaceTest(unittest.TestCase):
+    def test_manager_close_during_query_preserves_attribution_after_rotation(self) -> None:
+        from factory import lifecycle
+
+        journal = Path(self.enterContext(tempfile.TemporaryDirectory())) / "events.jsonl"
+        lifecycle.append(journal, {
+            "at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17,
+        })
+        rows = lifecycle.read_events(journal)
+        manager_close = {
+            "at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": 7, "pr": 17,
+            "by": "manager", "reason": "resolve",
+        }
+
+        def query(*_args, **_kwargs):
+            with mock.patch.object(lifecycle, "MAX_BYTES", 1):
+                lifecycle.append(journal, manager_close)
+            return subprocess.CompletedProcess([], 0, json.dumps([
+                {"number": 17, "closedAt": manager_close["at"], "mergedAt": None},
+            ]), "")
+
+        with mock.patch.object(stats.subprocess, "run", side_effect=query):
+            stats.reconcile_closed_prs(journal, rows, NOW - timedelta(days=7))
+
+        self.assertEqual(lifecycle.read_events(journal), [rows[0], manager_close])
+        self.assertEqual(rows, lifecycle.read_events(journal))
+        result = stats.weekly_metrics(rows, NOW - timedelta(days=7), NOW, None)
+        self.assertEqual(result["closed_unmerged_by"], {"manager": 1})
+
+    def test_concurrent_weekly_queries_record_one_close_and_refresh_both_reports(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        from factory import lifecycle
+
+        journal = Path(self.enterContext(tempfile.TemporaryDirectory())) / "events.jsonl"
+        lifecycle.append(journal, {
+            "at": at(timedelta(days=-6)), "event": "pr-opened", "ticket": 7, "pr": 17,
+        })
+        snapshots = [lifecycle.read_events(journal), lifecycle.read_events(journal)]
+        queried = Barrier(2)
+
+        def query(*_args, **_kwargs):
+            queried.wait(timeout=5)
+            return subprocess.CompletedProcess([], 0, json.dumps([
+                {"number": 17, "closedAt": at(timedelta(days=-1)), "mergedAt": None},
+            ]), "")
+
+        with mock.patch.object(stats.subprocess, "run", side_effect=query), \
+             ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(
+                lambda rows: stats.reconcile_closed_prs(journal, rows, NOW - timedelta(days=7)),
+                snapshots,
+            ))
+
+        recorded = lifecycle.read_events(journal)
+        self.assertEqual([row for row in recorded if row.get("event") == "pr-closed"], [{
+            "at": at(timedelta(days=-1)), "event": "pr-closed", "ticket": 7, "pr": 17,
+            "by": "external", "reason": "closed outside factory",
+        }])
+        for rows in snapshots:
+            self.assertEqual(rows, recorded)
+
 if __name__ == "__main__":
     unittest.main()
