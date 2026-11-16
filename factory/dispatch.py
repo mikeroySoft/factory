@@ -891,7 +891,7 @@ def frontier() -> list[dict]:
                     issue["_factory_resume"] = True
                 elif cfg.host_name and (held := host_claim_hold(n, issue, claims)):
                     issue["held"] = held
-                elif issue["assignees"]:
+                elif issue["assignees"] and not (cfg.host_name and claims):
                     issue["held"] = "assigned"
                 if "held" not in issue:
                     if blockers := open_blockers(n, issue.get("body", "")):

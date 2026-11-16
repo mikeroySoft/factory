@@ -48,6 +48,8 @@ elif a[:2] == ["pr", "merge"]:
     p.write_text(json.dumps(s))
 elif a[0] == "api" and "/compare/" in a[1]:
     print(json.dumps({"behind_by": 0}))
+elif a[0] == "api" and a[1].endswith("/dependencies/blocked_by"):
+    print("[]")
 elif a[:2] not in (["issue", "edit"], ["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):
     raise SystemExit("Unexpected external operation: " + repr(a))
 '''

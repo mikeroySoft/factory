@@ -2438,6 +2438,20 @@ class DispatchTest(unittest.TestCase):
             return real_gh_json(args, *positional, **kwargs)
 
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=github))
+        real_run = dispatch.run
+
+        def run(command, *positional, **kwargs):
+            if command[:3] == ["gh", "pr", "checks"] and command[-1] == "name,bucket,link":
+                return subprocess.CompletedProcess(command, 0, json.dumps([
+                    {"name": "ci", "bucket": "pass", "link": ""},
+                ]), "")
+            if command[:3] == ["gh", "pr", "view"] and command[-1] == "headRefOid":
+                return subprocess.CompletedProcess(
+                    command, 0, json.dumps({"headRefOid": f"head-{command[3]}"}), "",
+                )
+            return real_run(command, *positional, **kwargs)
+
+        self.enterContext(mock.patch.object(dispatch, "run", side_effect=run))
 
     def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
         from unittest import mock
