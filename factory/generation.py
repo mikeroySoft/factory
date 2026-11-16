@@ -20,7 +20,7 @@ INTENTS = ("resume", "fresh")
 # row is journaled before the edit.
 RELEASING_DECISIONS = frozenset({"RETRY", "REWRITE", "AUTHORIZE", "ROUTE"})
 # The dispatcher journals these immediately before it relabels the ticket ready-for-agent.
-REQUEUE_EVENTS = frozenset({"conflict-requeue", "gate-requeue", "risk-requeue"})
+REQUEUE_EVENTS = frozenset({"conflict-requeue", "gate-requeue", "risk-requeue", "mutation-proof-wait"})
 # Statuses of a guarded `requeue_agent` decision whose label edit may have happened.
 _APPLIED = frozenset({"success", "partial", "uncertain"})
 

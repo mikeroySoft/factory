@@ -16,7 +16,7 @@ from unittest import mock
 from factory import binding, config, dispatch, lifecycle
 
 ROOT = Path(__file__).resolve().parents[1]
-GH = '''#!/usr/bin/python
+GH = '#!' + sys.executable + '''
 import json, os, sys
 from pathlib import Path
 p = Path(os.environ['BINDING_STATE'])
@@ -30,6 +30,15 @@ if a[:2] == ['issue', 'view']:
     print(json.dumps(s['tickets'][a[2]]))
 elif a[:2] == ['issue', 'list']:
     print(json.dumps([i for i in s['tickets'].values() if flag('--label') in [v['name'] for v in i['labels']]]))
+elif a == ['api', 'rate_limit']:
+    print(json.dumps({'resources': {
+        name: {'remaining': 5000, 'reset': 0} for name in ('graphql', 'core')
+    }}))
+elif a in (
+    ['api', '--paginate', '--slurp', 'repos/acme/widgets/labels?per_page=100'],
+    ['api', '--paginate', '--slurp', 'repos/acme/widgets/issues/comments?per_page=100'],
+):
+    print('[[]]')
 elif a[:2] == ['pr', 'list']:
     print('[]')
 elif a[:2] == ['pr', 'view']:
@@ -61,6 +70,8 @@ elif a[:2] == ['issue', 'comment']:
 else:
     sys.exit('unexpected external operation: ' + repr(a))
 '''
+# Use the test runner's interpreter; the retained shebang below becomes a comment.
+GH = f'#!{sys.executable}\n' + GH
 WORKER = '''import json, os, subprocess, sys
 from pathlib import Path
 prompt = Path(sys.argv[1])
@@ -225,3 +236,17 @@ class BindingCli(unittest.TestCase):
         ):
             dispatch.build_prompt(7, self.repo)
         self.assertFalse((self.repo / '.factory/brief-7.md').exists())
+
+    def test_local_baseline_and_unchanged_drift(self):
+        baseline = self.proposed()
+        self.assertEqual(baseline['initiative'], 50)
+        self.assertEqual(baseline['sections']['Outcome'], 'Ship bounded work')
+        self.ticket(8, baseline)
+        admitted = self.cli('dispatch', '--ticket', '8')
+        self.assertEqual(admitted.returncode, 0, admitted.stdout + admitted.stderr)
+        result = self.cli('plan', 'drift', '8')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        drift = json.loads(result.stdout)['drift']
+        self.assertEqual(drift['status'], 'unchanged')
+        self.assertEqual(drift['changed_sections'], [])
+        self.assertEqual(drift['observed']['sha256'], baseline['sha256'])

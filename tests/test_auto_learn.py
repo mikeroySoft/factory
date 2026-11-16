@@ -62,6 +62,7 @@ class AutoLearnTest(unittest.TestCase):
             SYNC_LOG=self.cfg.factory / "upstream-sync.jsonl", EVENTS=self.events,
             MAX_ACTIVE=1, MAX_ATTEMPTS=self.cfg.max_attempts,
         ))
+        self.enterContext(mock.patch.object(dispatch, "github_preflight", return_value=None))
         self.enterContext(mock.patch("factory.stats.gh", return_value=[]))
         self.open_prs: list[dict] = []
         self.gh = self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=lambda _: self.open_prs))
@@ -250,6 +251,7 @@ class PromotionTest(unittest.TestCase):
         AutoLearnTest.setUp(self)
         self.checks = [{"name": "gate", "bucket": "pass"}]
         self.enterContext(mock.patch.object(dispatch, "pr_checks", side_effect=lambda _: self.checks))
+        dispatch.pr_checks.side_effect = lambda _pr, _head: self.checks
         self.run = self.enterContext(mock.patch.object(dispatch, "run"))
         self.open_prs = [{"number": 42, "headRefName": self.BRANCH, "headRefOid": self.HEAD, "baseRefName": "main",
                           "isDraft": False, "reviewDecision": ""}]

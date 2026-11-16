@@ -90,6 +90,14 @@ class FakeGitHub:
         if cmd[0] != "gh":
             return self.real_run(cmd, *args, **kwargs)
         self.calls.append(cmd)
+        if cmd[1] == "api" and "/pulls/" in cmd[2]:
+            value = {"head": {"sha": self.head()}, "base": {"ref": "main"},
+                     "mergeable_state": "dirty" if git(
+                         self.origin, "rev-list", "--count", f"{self.head()}..main",
+                     ) != "0" else "clean"}
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(value), "")
+        if cmd[1] == "api" and "/rules/branches/" in cmd[2]:
+            return subprocess.CompletedProcess(cmd, 0, "[[]]", "")
         if cmd[1] == "api":  # issue dependencies: none
             return subprocess.CompletedProcess(cmd, 0, "[]", "")
         flags = dict(pairwise(cmd))

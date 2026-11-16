@@ -17,6 +17,7 @@ class StageSuccessTest(unittest.TestCase):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.cfg = config.Config(self.root, "acme/widgets")
         self.journal = self.cfg.factory / "events.jsonl"
+        self.enterContext(mock.patch.object(dispatch, "github_preflight", return_value=None))
 
     def test_latest_success_per_installed_stage_is_preserved(self) -> None:
         with mock.patch.object(lifecycle, "_now", side_effect=[

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from factory import lifecycle
+from factory import lifecycle, platform_identity
 
 BYTE_LIMIT = 1024 * 1024
 EVENT_LIMIT = 512
@@ -177,7 +177,7 @@ def _recorded_resource_state(row) -> dict | None:
                          "requested_at": request["requested_at"], "blocking": request["blocking"]})
     evidence = row.get("evidence")
     if (not isinstance(evidence, dict) or evidence.get("lock_state") not in ("held", "free", "unknown")
-            or evidence.get("attribution") not in ("proc_locks", "unavailable")):
+            or evidence.get("attribution") not in ("proc_locks", "lsof", "unavailable")):
         return None
     holders = evidence.get("holder_pids")
     if holders is not None and (not isinstance(holders, list) or len(holders) > EVENT_LIMIT
@@ -417,6 +417,13 @@ class _Observation:
         self.lock_files = {}
         self.kernel = None
         self.kernel_read = False
+        if platform_identity.darwin():
+            self.boot = lifecycle._boot_id()
+            self.namespace = "darwin"
+            self.host = lifecycle._host_id()
+            if self.boot is None:
+                _error(errors, "process", "identity", "boot_unavailable")
+            return
         try:
             self.boot = _small(Path("/proc/sys/kernel/random/boot_id"), 128).decode().strip() or None
         except (OSError, UnicodeError):
@@ -436,6 +443,18 @@ class _Observation:
         self.absence = None
 
     def process_state(self, identity) -> str:
+        if platform_identity.darwin():
+            if not lifecycle._valid_process(identity) or identity is None:
+                return "unknown"
+            key = tuple(identity.get(field) for field in PROCESS_FIELDS)
+            if key not in self.processes:
+                if len(self.processes) >= PROC_LIMIT:
+                    _error(self.errors, "process", "identity", "process_limit")
+                    return "unknown"
+                self.processes[key] = lifecycle._process_state(identity)
+                if self.processes[key] == "unknown":
+                    _error(self.errors, "process", "identity", "process_unavailable")
+            return self.processes[key]
         if (not isinstance(identity, dict) or identity.get("start_ticks") is None
                 or not identity.get("boot_id") or not identity.get("pid_namespace") or self.boot is None):
             return "unknown"
@@ -507,6 +526,14 @@ class _Observation:
     def holders(self, lock: dict):
         if lock["device"] is None or lock["inode"] is None:
             return None
+        if platform_identity.darwin():
+            holders = lifecycle._lock_holders(lock)
+            if holders is None:
+                _error(self.errors, "lsof", "resources", "locks_unavailable")
+            elif len(holders) > PROC_LIMIT:
+                _error(self.errors, "lsof", "resources", "holder_limit")
+                return None
+            return holders
         if not self.kernel_read:
             self.kernel_read = True
             try:
@@ -539,6 +566,8 @@ class _Observation:
         if (lock["device"], lock["inode"]) != (current["device"], current["inode"]):
             return "unknown", None
         holders = self.holders(current)
+        if platform_identity.darwin():
+            return ("held", holders) if holders else ("unknown", None)
         return ("unknown", None) if holders is None else ("held" if holders else "free", holders)
 
 
@@ -724,7 +753,8 @@ def _resources(path: Path, paths, retained: list, executions: list, groups: dict
         value = {"resource": resource, "state": state,
                  "ownership": "confirmed" if owner else "none" if state == "free" else "unknown",
                  "owner": owner, "requests": pending,
-                 "evidence": {"lock_state": state, "attribution": "proc_locks" if holders is not None else "unavailable",
+                 "evidence": {"lock_state": state, "attribution": (
+                     "lsof" if platform_identity.darwin() else "proc_locks") if holders is not None else "unavailable",
                               "holder_pids": holders}}
         previous = recorded.get(resource_id)
         matching = previous is not None and all(previous.get(key) == field for key, field in value.items())
