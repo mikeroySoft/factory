@@ -373,6 +373,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or `wontfix-proposal` (proposal comment and label; a human closes). An issue unchanged since its last triage comment is skipped. After two consecutive unparseable model decisions, it comments once, records `triage_stalled`, and keeps the issue for retry. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory triage-probe` | Sends `GET <triage base>/models` with a three-second timeout. A 503 `Loading model` response is alive. After three consecutive failures it restarts `[triage].service` at most once per 15 minutes; failures and restarts are lifecycle-journaled. With no service configured it reports only. |
 | `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets, worked concurrently → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
+| `factory mode [normal\|maintenance\|feature-drive N]` | Prints or changes the repository-local operating mode. Feature-drive requires an open ready ticket or initiative in this repository; no GitHub writes. |
 | `factory explain N [--json] [--since ISO]` | Reads the live `.factory/events.jsonl` and retained `events.jsonl.N.gz` segments without writing. JSON mode returns `{ticket,nodes,edges,loops,cost,frontier,frontier_stage,coverage}`; `cost` totals the ticket and each retry loop has its own total. `frontier_stage` distinguishes gate, review, manager, human, merge eligibility, and blocker waits; merged and wontfix tickets have a null frontier. Text mode prints a compact decision tree. Legacy `claimed`, `attempt`, `review`, `approved`, `merged`, and `escalate` rows become `synthesized: true` nodes, while `coverage` names part-1 stages with no structured record. Output is bounded to the runtime projection's 1 MiB limit. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
@@ -1038,6 +1039,28 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `capacity` is the slots left for that pick; its admission `decision` row
    names the Plan baseline sha256 it was ranked against.
    `--dry-run` logs the same plan and writes nothing.
+   Operating modes live in gitignored `.factory/mode.json`, independent of timer
+   installation and pause. With no state or presets, `normal` preserves existing
+   `[dispatch]` and `[manager]` values. `maintenance` uses low pace (one active
+   ticket by default), admitting only `bug`, `chore`, or extra
+   `[throttle].maintenance_labels`; other tickets remain labelled and are held
+   with a reason visible in `factory explain`. `feature-drive N` uses normal pace,
+   reserves one available slot for N or a descendant in the journal's `parents`
+   map ahead of NOW work, then follows ordinary order. Feature admissions do not
+   advance or reset the fairness streak; experiment and eligibility limits remain.
+   Only feature tickets receive high aggression (five review/manager rounds,
+   four attempts, 150 minutes); other tickets retain normal limits.
+   `[throttle.pace.low|normal|high].max_active` overrides capacity, clamped by
+   `manager.max_active_cap`; zero means no new claims, not a full pause.
+   `[throttle.aggression.low|normal|high]` overrides `review_rounds`,
+   `manager_rounds`, `max_attempts` and `budget_min`; see the shipped template.
+   Presets are repository-owned in protected `.factory.toml`, while switching
+   mode is local and survives configuration deployment. Review intake, landing,
+   manager recovery and already-running tickets continue at pace zero.
+   The next pass returns to normal only after N and all native/journal-linked
+   descendants close, journaling `who: "auto"`. Idempotent mode changes append
+   one `mode` row (`who`, `mode`, `feature`, `at`); scheduling rows carry the
+   active mode and feature. The dashboard header shows both.
    Capacity, locks and
    dependencies are never overridden. The dispatcher then re-reads the issue
    (search-backed listings lag), assigns itself, takes a per-ticket `flock`,

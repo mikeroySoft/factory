@@ -84,6 +84,10 @@
   function repoPicker(repo) {
     return `<label class="repo-picker"><span class="sr-only">Repository</span><select data-repository>${repositories().map(row => `<option value="${esc(row.slug)}"${row.slug === repo?.slug ? ' selected' : ''}>${esc(row.slug || 'unregistered')}</option>`).join('')}</select></label>`;
   }
+  function throttleMarkup(repo) {
+    const value=object(repo?.throttle),mode=value.mode||'unavailable',feature=positive(value.feature);
+    return `<span class="badge" data-throttle-mode="${esc(mode)}">Mode · ${esc(mode)}${mode==='feature-drive'&&feature?` · Feature #${feature}`:''}</span>`;
+  }
   function nav(view) {
     return `<nav class="workspace-nav" aria-label="Workspace views">${VIEWS.map(item => `<button type="button" data-view="${slugify(item)}"${item === view ? ' aria-current="page"' : ''}>${item}</button>`).join('')}</nav>`;
   }
@@ -332,7 +336,7 @@
     const previousTool=app.querySelector('[data-native-tool]');
     const keep=previousTool&&previousTool.dataset.nativeTool===current.view.toLowerCase()&&previousTool.dataset.repository===repo?.slug;
     if(keep)previousTool.remove(); else WorkspaceTools.dispose();
-    app.innerHTML=`<div class="workspace-shell"><aside class="rail"><div><strong class="wordmark">Factory</strong><span>Outcome workspace</span></div>${nav(current.view)}<div class="rail-tools"><button class="btn shortcut" type="button" data-palette>Jump <kbd>${navigator.platform.includes('Mac')?'⌘':'Ctrl'} K</kbd></button>${themePicker()}<button class="btn" type="button" data-chat aria-expanded="${state.chatOpen}">FM dock</button></div><footer>${repo?`<strong>${esc(repo.slug)}</strong><small>${esc(repo.root||'registered root withheld')}</small>`:'No repository'}${signal(coverage(observation(repo)).status||'unobserved')}</footer></aside><div class="workspace-main"><header class="toolbar">${repoPicker(repo)}${collectionMarkup(repo)}</header><main id="main" tabindex="-1">${state.loading&&!repo?'<p class="empty">Loading registered repositories…</p>':state.error&&!repo?`<p class="error">${esc(state.error)}</p>`:content(current.view,repo)}</main></div></div>`;
+    app.innerHTML=`<div class="workspace-shell"><aside class="rail"><div><strong class="wordmark">Factory</strong><span>Outcome workspace</span></div>${nav(current.view)}<div class="rail-tools"><button class="btn shortcut" type="button" data-palette>Jump <kbd>${navigator.platform.includes('Mac')?'⌘':'Ctrl'} K</kbd></button>${themePicker()}<button class="btn" type="button" data-chat aria-expanded="${state.chatOpen}">FM dock</button></div><footer>${repo?`<strong>${esc(repo.slug)}</strong><small>${esc(repo.root||'registered root withheld')}</small>`:'No repository'}${signal(coverage(observation(repo)).status||'unobserved')}</footer></aside><div class="workspace-main"><header class="toolbar"><div class="cluster">${repoPicker(repo)}${throttleMarkup(repo)}</div>${collectionMarkup(repo)}</header><main id="main" tabindex="-1">${state.loading&&!repo?'<p class="empty">Loading registered repositories…</p>':state.error&&!repo?`<p class="error">${esc(state.error)}</p>`:content(current.view,repo)}</main></div></div>`;
     if(current.view==='Overview')app.querySelector('#main .workspace-head')?.insertAdjacentHTML('afterend',journeyMarkup());
     app.querySelector('#main')?.insertAdjacentHTML('beforeend',evidenceNotices(repo));
     for(const node of app.querySelectorAll('[data-action-choice]')){const chosen=choices.get(node.dataset.actionChoice);if(chosen){const index=JSON.parse(node.dataset.actionOptions).findIndex(option=>JSON.stringify(option)===chosen);if(index>=0)node.value=String(index);}}
