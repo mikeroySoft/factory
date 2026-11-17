@@ -251,6 +251,27 @@ class PauseTests(unittest.TestCase):
                     self.assertIsNotNone(pause.read(self.root))
                     self.assertTrue(pause.check(self.root, log=lambda _: None))
 
+    def test_repause_expired_state_stops_dispatch_and_journals_both_transitions(self):
+        from factory import pause
+
+        self.call("pause", "--reason", "window", "--until", "2000-01-01T00:00:00Z")
+        self.assertEqual(self.call("pause", "--reason", "incident")[0], 0)
+        state = pause.read(self.root)
+        self.assertEqual((state["reason"], state["until"]), ("incident", None))
+        self.assertEqual(self.call("pause", "--reason", "ignored")[0], 0)
+        self.assertEqual(pause.read(self.root), state)
+        code, output = self.call("dispatch")
+        self.assertEqual(code, 0)
+        self.assertIn("paused (incident", output)
+        self.gh.assert_not_called()
+        self.commands.assert_not_called()
+        rows = self.rows()
+        self.assertEqual([row["event"] for row in rows], ["pause", "resume", "pause"])
+        self.assertEqual((rows[1]["who"], rows[1]["reason"]), ("expiry", "window"))
+        self.assertEqual((rows[2]["who"], rows[2]["reason"]),
+                         ("operator (github: operator-gh)", "incident"))
+
+
 
 class PauseClaimTests(unittest.TestCase):
     # Reuse the hermetic real ticket/host-claim fixture, not a fake process_ticket.
@@ -281,6 +302,104 @@ class PauseClaimTests(unittest.TestCase):
                 self.assertTrue((module.FACTORY / "wt-7").is_dir())
                 self.assertFalse(module.active_tickets())
                 self.assertFalse(any(row.get("event") == "escalate" for row in lifecycle.read_events(module.EVENTS)))
+
+
+class PauseManagerFixTests(unittest.TestCase):
+    from tests.test_frontier import FrontierTest as _Harness
+
+    read = _Harness.read
+    events = _Harness.events
+    approved_head = _Harness.approved_head
+    quiet_provider = _Harness.quiet_provider
+
+    def setUp(self):
+        real_run = dispatch.run
+        self._Harness.setUp(self)
+        self.enterContext(patch.object(dispatch, "run", real_run))
+        self.enterContext(patch.object(dispatch, "_run", side_effect=self.fake_run))
+        self.enterContext(patch("factory.pause.actor", return_value="operator"))
+        self.local_head = self.pr["headRefOid"]
+        self.assigned = True
+
+    def gh_json(self, args):
+        if args[:2] == ["issue", "list"]:
+            return [self.gh_json(["issue", "view"])]
+        return self._Harness.gh_json(self, args)
+
+    def fake_run(self, cmd, *args):
+        if cmd[:3] == ["git", "branch", "--show-current"]:
+            output = "agent/79"
+        elif cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            output = self.local_head
+        elif cmd[:2] == ["git", "merge-base"]:
+            output = ""
+        elif cmd[:2] == ["git", "push"]:
+            self.mutations.append(cmd)
+            self.pr["headRefOid"] = self.local_head
+            output = ""
+        else:
+            if cmd[:3] == ["gh", "issue", "edit"] and "--remove-assignee" in cmd:
+                self.assigned = False
+            return self._Harness.fake_run(self, cmd)
+        return subprocess.CompletedProcess(cmd, 0, output, "")
+
+    def park_and_resume(self, stage):
+        from factory import manage, pause
+        from tests.test_frontier import H2
+
+        self.cfg.manager_review = "all"
+        self.cfg.workers = {"droid": ["worker-stub"]}
+        self.quiet_provider()
+        old_head = self.pr["headRefOid"]
+        self.approved_head(old_head)
+        wt = self.cfg.factory / "wt-79"
+        wt.mkdir()
+        packet = self.cfg.factory / "packet.md"
+        packet.write_text("Evidence")
+        self.manager_output = 'DECISION: FIX\n{"worker": "droid", "guidance": "fix boundary"}'
+        decided = {"pr": 80, "head": old_head} if stage == "frontier" else {"round": 1, "pr": None}
+        if stage == "escalation":
+            self.issue_labels = [config.LABEL_HUMAN]
+            dispatch.record("escalate", ticket=79, round=1, packet=str(packet), reason="gate_failed")
+        run_pass = manage.frontier_pass if stage == "frontier" else manage.escalation_pass
+
+        def worker(*args, **kwargs):
+            self.local_head = H2
+            dispatch.record("attempt", ticket=79, attempt=1, gate="PASS", head=H2)
+            if worker_mock.call_count == 1:
+                pause.set_pause(self.repo, reason="incident")
+            return True, "gate passed", None, H2
+
+        with patch.object(manage, "selectable_workers", return_value=self.cfg.workers), \
+                patch.object(manage, "human_activity", return_value=False), \
+                patch.object(dispatch, "escalation_packet", return_value=(packet, "")), \
+                patch.object(dispatch, "worker_round", side_effect=worker) as worker_mock, \
+                patch.object(dispatch, "record_risk"), \
+                patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "approved", False)), \
+                patch.object(dispatch, "pr_comment"), \
+                patch.object(dispatch, "approve_pr", return_value=True) as approve:
+            self.assertTrue(run_pass())
+            self.assertFalse(self.assigned, "parked manager FIX must release its assignment")
+            pending = manage.pending_fix(self.events(), **decided)
+            self.assertIsNotNone(pending, "parked manager FIX must remain resumable")
+            self.assertEqual((pending["worker"], pending["guidance"]), ("droid", "fix boundary"))
+            self.assertTrue(wt.is_dir())
+            self.assertEqual(self.pr["headRefOid"], old_head)
+            self.assertFalse(any(cmd[:2] == ["git", "push"] for cmd in self.mutations))
+            self.assertTrue(run_pass())  # still paused: no second worker
+            self.assertEqual(worker_mock.call_count, 1)
+            pause.resume(self.repo)
+            run_pass()
+            self.assertEqual(self.pr["headRefOid"], H2)
+            approve.assert_called_once_with(79, H2)
+            self.assertIsNone(manage.pending_fix(self.events(), **decided))
+        self.assertEqual(len([row for row in self.events() if row["event"] == "manage"]), 1)
+
+    def test_frontier_fix_paused_before_push_releases_assignment_and_resumes(self):
+        self.park_and_resume("frontier")
+
+    def test_escalation_fix_paused_before_push_releases_assignment_and_resumes(self):
+        self.park_and_resume("escalation")
 
 
 if __name__ == "__main__":
