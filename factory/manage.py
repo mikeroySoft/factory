@@ -872,10 +872,46 @@ def resume_fix(n: int, issue: dict, pending: dict, **decided: object) -> None:
     The resume is journaled first: an interrupted resume is a human's call, never replayed."""
     if dispatch.fallback_worker(pending["worker"]) is None:
         raise dispatch.WorkerUnavailable(f"worker `{pending['worker']}` is still unavailable")
-    dispatch.record("manage-resume", ticket=n, decision="FIX", **decided)
-    dispatch.log(f"#{n}: resuming the pending manager FIX")
-    apply_fix(n, issue, {"worker": pending["worker"], "guidance": pending["guidance"]},
-              Path(pending["packet"]), **decided)
+    cfg = dispatch.cfg
+    pause.require_running(cfg.root)
+    fresh = dispatch.gh_json(["issue", "view", str(n), "--repo", cfg.repo,
+                              "--json", "state,labels,assignees,title,body"])
+    if fresh["state"] != "OPEN":
+        dispatch.log(f"#{n}: pending manager FIX waits (ticket is no longer open)")
+        return
+    if fresh.get("assignees") and any(
+        row["login"].casefold() != dispatch.host_claim_login() for row in fresh["assignees"]
+    ):
+        dispatch.log(f"#{n}: pending manager FIX waits (assigned to another user)")
+        return
+    claim = None
+    claims = dispatch.host_claims(n) if cfg.host_name else []
+    if cfg.host_name:
+        if dispatch.owned_host_claim(n, claims) is None:
+            claim = dispatch.acquire_host_claim(n, fresh, claims, forced=True)
+            if claim is None:
+                return
+        elif n not in dispatch._HOST_CLAIMS:
+            claim = dispatch.HostClaim(n, dispatch.owned_host_claim(n, claims))
+            dispatch._HOST_CLAIMS[n] = claim
+            claim.thread.start()
+    try:
+        try:
+            dispatch.run(["gh", "issue", "edit", str(n), "--repo", cfg.repo, "--add-assignee", "@me"])
+        except BaseException:
+            if claim is not None:
+                claim.release()
+            raise
+        if claim is not None:
+            fresh = dispatch.release_stale_claims(n, fresh, claims, replacement=claim.comment["id"])
+        dispatch.record("manage-resume", ticket=n, decision="FIX", **decided)
+        dispatch.log(f"#{n}: resuming the pending manager FIX")
+        apply_fix(n, {**issue, **fresh}, {"worker": pending["worker"], "guidance": pending["guidance"]},
+                  Path(pending["packet"]), **decided)
+    finally:
+        if claim is not None:
+            claim.stop()
+            dispatch._HOST_CLAIMS.pop(n, None)
 
 
 def selectable_workers(cfg: config.Config) -> dict[str, list[str]]:

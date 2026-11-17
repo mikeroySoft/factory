@@ -102,6 +102,9 @@ A pause set during a pass prevents the dispatcher from starting another ticket.
 Work already inside a stage may finish that checkpoint, then is safely parked
 and unclaimed before any PR creation, merge, or push. A paused manager FIX retains
 its pending decision and worktree for the next pass without another manager round.
+Before resuming that FIX, the manager reacquires the assignment and host claim;
+competing ownership leaves the decision pending. A resumed, approved FIX stays
+claimed so the subsequent ticket pass cannot run another worker on its head.
 Resume starts no work by itself; the next timer pass continues from durable GitHub
 and worktree state.
 
