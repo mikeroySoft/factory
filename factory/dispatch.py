@@ -4773,7 +4773,7 @@ def merge_pass_locked(dry_run: bool) -> None:
             "--state",
             "open",
             "--limit",
-            str(list_limit + 1),
+            "1001",
             "--json",
             "number,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision",
         ]
