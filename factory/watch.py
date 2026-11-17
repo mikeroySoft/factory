@@ -471,20 +471,22 @@ def _unchanged_test_rows(test_id: str, rows: list[dict]) -> list[dict]:
 
 def band_signals(
     cfg: config.Config, events: list[dict], now: datetime | None = None,
+    unavailable_metrics: frozenset[str] = frozenset(),
 ) -> list[dict]:
-    if not cfg.watch_bands:
+    bands = [band for band in cfg.watch_bands if band.metric not in unavailable_metrics]
+    if not bands:
         return []
     current = now or datetime.now(UTC)
     today = current.date()
     available = _history_days(events, today)
-    start = today - timedelta(days=max(band.window_days for band in cfg.watch_bands))
+    start = today - timedelta(days=max(band.window_days for band in bands))
     metrics = metric_series(events, start, today)
     pr_by_ticket = {
         row.get("ticket"): row.get("pr") for row in events
         if row.get("event") == "pr-opened" and isinstance(row.get("pr"), int)
     }
     alarms = []
-    for band in cfg.watch_bands:
+    for band in bands:
         if available < band.window_days:
             continue
         names = [
@@ -577,6 +579,7 @@ def _diagnose(cfg: config.Config, signal: dict) -> None:
 
 def signals(
     cfg: config.Config, events: list[dict], now: datetime | None = None,
+    unavailable_metrics: frozenset[str] = frozenset(),
 ) -> list[dict]:
     """Every observed failure, newest journal evidence first within each fingerprint."""
     found: dict[str, dict] = {}
@@ -647,7 +650,7 @@ def signals(
                       "excerpt": "\n".join(f"- #{r.get('ticket')}: {r.get('reason')} ({r.get('packet')})" for r in rows),
                       "command": "zcat -f .factory/events.jsonl* | grep -F "
                       f"{shlex.quote(json.dumps({'code': code}, separators=(',', ':'))[1:-1])}"}
-    for alarm in band_signals(cfg, events, now):
+    for alarm in band_signals(cfg, events, now, unavailable_metrics):
         found[alarm["fingerprint"]] = alarm
     for signal in found.values():
         signal["rows"] = signal["rows"][-MAX_ROWS:]
@@ -749,13 +752,20 @@ def run_pass(
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
+    unavailable_metrics = frozenset()
     if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
         try:
             events.extend(stats.escape_events(stats.escapes()))
+        except gh_reads.ReadFailed:
+            if (reads := gh_reads.current()) is not None and reads.stopped:
+                raise
+            unavailable_metrics = frozenset({"revert_rate_by_tier"})
+            dispatch.log("watch: escape attribution unavailable (ReadFailed)")
         except (
             OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, SystemExit,
         ) as exc:
+            unavailable_metrics = frozenset({"revert_rate_by_tier"})
             dispatch.log(f"watch: escape attribution unavailable ({type(exc).__name__})")
     rows = [r for r in events if r.get("event") == "watch"]
     filings = {r["fingerprint"]: r for r in rows}
@@ -763,7 +773,7 @@ def run_pass(
     opened = {(r["fingerprint"], r["issue"], r.get("repo", dispatch.REPO))
               for r in rows if not r.get("commented") and not r.get("closed")}
     engine, install = cfg.watch_engine_repo, cfg.repo
-    current = signals(cfg, events, now)
+    current = signals(cfg, events, now, unavailable_metrics)
     observations = {
         row["fingerprint"]: row for row in events
         if row.get("event") == "watch-band" and isinstance(row.get("fingerprint"), str)
@@ -872,8 +882,11 @@ def run_pass(
     for fp, previous in gh_reads.items(filings.items()):
         if closed >= MAX_ISSUES:
             break
+        # ponytail: old watch rows omit their metric, so an unavailable metric keeps every
+        # band filing open; journal the metric if this becomes too conservative.
         repo = previous.get("repo", dispatch.REPO)
         if (fp in failed_fingerprints or previous.get("closed")
+                or (unavailable_metrics and fp.startswith("band:"))
                 or (fp, previous["issue"], repo) not in opened):
             continue
         # A signal stays in the journal window long after it stops happening, so judge by the
@@ -930,7 +943,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
-    with gh_reads.scope(dispatch.EVENTS, "watch") as reads:
+    with gh_reads.scope(dispatch.EVENTS, "watch", persistent=not args.dry_run) as reads:
         if not reads.stopped:
             with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
                 run_pass(dispatch.cfg, args.dry_run)
