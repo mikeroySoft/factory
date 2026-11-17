@@ -188,6 +188,80 @@ class SharedReadBoundaryTest(unittest.TestCase):
         [skip] = [r for r in lifecycle.read_events(self.journal) if r["event"] == "gh-read-skipped"]
         self.assertEqual((skip["code"], skip["returncode"], skip["ticket"]), ("gh_read_failed", 1, 7))
 
+    def test_manager_resolve_absent_branch_preserves_expected_404(self):
+        from factory import manage
+
+        dispatch.configure(config.Config(self.journal.parent, "acme/widgets"))
+        calls = []
+
+        def command(cmd, *args, **kwargs):
+            calls.append(cmd)
+            if cmd[1:3] == ["pr", "view"]:
+                raise subprocess.CalledProcessError(1, cmd, stderr="no pull requests found for branch agent/7")
+            if cmd[1] == "api":
+                raise subprocess.CalledProcessError(1, cmd, stderr="gh: Not Found (HTTP 404)")
+            return subprocess.CompletedProcess(cmd, 0, "https://example.test/comment", "")
+
+        with mock.patch.object(dispatch, "_run", side_effect=command), \
+                mock.patch.object(dispatch, "comment_receipt"), \
+                self.reads.scope(self.journal, "manage"), self.reads.item(7):
+            manage.apply(7, {"title": "Already shipped"}, "RESOLVE", "Present on main.", None, Path("unused"))
+        self.assertTrue(any(cmd[1:3] == ["issue", "close"] for cmd in calls))
+        self.assertTrue(any("--remove-label" in cmd for cmd in calls))
+        self.assertFalse(any(row["event"] == "gh-read-skipped" for row in lifecycle.read_events(self.journal)))
+        self.probe.assert_not_called()
+
+    def test_release_absence_publishes_but_transport_failure_defers(self):
+        from factory import release
+
+        cfg = config.Config(self.journal.parent, "acme/widgets")
+        dispatch.configure(cfg)
+        for diagnostic, published in (("release not found", True), ("connection refused", False)):
+            with self.subTest(diagnostic=diagnostic):
+                calls = []
+
+                def command(cmd, **kwargs):
+                    calls.append(cmd)
+                    if cmd[:3] == ["gh", "api", "rate_limit"]:
+                        return self.probe.return_value
+                    if cmd[1:3] == ["release", "view"]:
+                        return subprocess.CompletedProcess(cmd, 1, "", diagnostic)
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+                self.probe.side_effect = command
+                with mock.patch.object(release, "_notes", return_value="Shipped."), \
+                        self.reads.scope(self.journal, "release"):
+                    release._publish(cfg, "v1.2.3")
+                self.assertEqual(any(cmd[1:3] == ["release", "create"] for cmd in calls), published)
+        rows = lifecycle.read_events(self.journal)
+        self.assertTrue(any(row.get("outcome") == "published" for row in rows))
+        self.assertEqual([row["code"] for row in rows if row["event"] == "gh-read-skipped"], ["gh_read_failed"])
+
+    def test_rest_release_limit_uses_core_reset_and_persists_backoff(self):
+        from factory import release
+
+        cfg = config.Config(self.journal.parent, "acme/widgets")
+        calls = []
+
+        def command(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:3] == ["gh", "api", "rate_limit"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"resources": {
+                    "core": {"remaining": 0, "reset": 4102444800},
+                    "graphql": {"remaining": 5000, "reset": 4102444900},
+                }}), "")
+            return subprocess.CompletedProcess(cmd, 1, "", "API rate limit exceeded (HTTP 403)")
+
+        self.probe.side_effect = command
+        with self.reads.scope(self.journal, "release"):
+            release._gh_release(cfg, "view", "v1.2.3")
+        with self.reads.scope(self.journal, "release") as state:
+            self.assertTrue(state.stopped)
+            self.assertEqual(state.reset, 4102444800)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(any(row["event"] == "gh-read-backoff" and row["reset"] == 4102444800
+                            for row in lifecycle.read_events(self.journal)))
+
 
 class DispatchClaimReadTest(unittest.TestCase):
     def test_admission_read_failure_preserves_labels_assignee_and_host_claim(self):
