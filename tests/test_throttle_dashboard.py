@@ -135,3 +135,72 @@ class ThrottleDashboardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+from tests import test_workspace_trace as workspace_trace
+
+
+@unittest.skipUnless(workspace_trace.shutil.which("node"), "Node is required for browser asset checks")
+class SchedulingHoldChronologyTest(unittest.TestCase):
+    def test_latest_hold_keeps_journal_order_without_joining_pipeline(self) -> None:
+        review = workspace_trace.decision("review", "REVISE", "2026-10-23T10:00:00Z")
+        retry = workspace_trace.decision(
+            "worker_select",
+            "default",
+            "2026-10-23T10:02:00Z",
+            causes=[{"decision_id": review["decision_id"], "relation": "retries"}],
+        )
+        terminal = workspace_trace.decision("merge", "merge now", "2026-10-23T10:04:00Z")
+        holds = [
+            {
+                "event": "scheduling",
+                "mode": "maintenance",
+                "at": at,
+                "explained": [{"ticket": 7, "decision": "held", "reason": reason}],
+            }
+            for at, reason in (
+                ("2026-10-23T10:01:00Z", "old reason"),
+                ("2026-10-23T10:03:00Z", "latest reason"),
+            )
+        ]
+        baseline = workspace_trace.trace.explain([review, retry, terminal], 7)
+
+        graph = workspace_trace.trace.explain([review, holds[0], retry, holds[1], terminal], 7)
+
+        self.assertEqual(
+            [node["decision_id"] for node in graph["nodes"]],
+            [
+                review["decision_id"],
+                retry["decision_id"],
+                "scheduling:7:3",
+                terminal["decision_id"],
+            ],
+        )
+        self.assertEqual(
+            [node["rationale"] for node in graph["nodes"] if node["chosen"] == "held"],
+            ["maintenance: latest reason"],
+        )
+        for key in ("edges", "loops", "cost", "frontier", "frontier_stage", "coverage"):
+            self.assertEqual(graph[key], baseline[key], key)
+
+    def test_terminal_banner_and_replay_time_survive_hold_then_terminal(self) -> None:
+        hold = {
+            "event": "scheduling",
+            "mode": "maintenance",
+            "at": "2026-10-23T10:01:00Z",
+            "explained": [{"ticket": 7, "decision": "held", "reason": "capacity reserved"}],
+        }
+        terminal_at = "2026-10-23T10:02:00Z"
+        terminals = (
+            ("merged", {"event": "merged", "ticket": 7, "at": terminal_at}),
+            ("wontfix", workspace_trace.decision("wontfix", "duplicate", terminal_at)),
+            ("escalated", workspace_trace.decision("escalate", "protected_path", terminal_at)),
+        )
+
+        for kind, terminal in terminals:
+            with self.subTest(kind=kind):
+                graph = workspace_trace.trace.explain([hold, terminal], 7)
+                html = workspace_trace.WorkspaceTraceRenderTest.render(self, graph)
+
+                self.assertIn(f'data-terminal="{kind}"', html)
+                self.assertIn(f"<output data-trace-time>{terminal_at}</output>", html)
