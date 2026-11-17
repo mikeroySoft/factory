@@ -716,7 +716,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     recording = not (args.replay or args.dry_run)
-    with gh_reads.scope(cfg.factory / "events.jsonl", "triage") as reads:
+    with gh_reads.scope(cfg.factory / "events.jsonl", "triage", persistent=recording) as reads:
         result = 0
         if not reads.stopped:
             with (

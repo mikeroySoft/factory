@@ -234,7 +234,8 @@ class SharedReadBoundaryTest(unittest.TestCase):
                     release._publish(cfg, "v1.2.3")
                 self.assertEqual(any(cmd[1:3] == ["release", "create"] for cmd in calls), published)
         rows = lifecycle.read_events(self.journal)
-        self.assertTrue(any(row.get("outcome") == "published" for row in rows))
+        self.assertTrue(any(row.get("outcome") == "published"
+                            for row in lifecycle.read_events(cfg.factory / "events.jsonl")))
         self.assertEqual([row["code"] for row in rows if row["event"] == "gh-read-skipped"], ["gh_read_failed"])
 
     def test_rest_release_limit_uses_core_reset_and_persists_backoff(self):

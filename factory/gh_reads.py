@@ -50,15 +50,15 @@ def current():
 
 
 class Pass:
-    def __init__(self, journal, stage):
-        self.journal, self.stage = journal, stage
+    def __init__(self, journal, stage, *, persistent=True):
+        self.journal, self.stage, self.persistent = journal, stage, persistent
         self.lock = threading.Lock()
         self.reads = self.failed_reads = self.skipped = 0
         self.codes = {"rate_limited": 0, "gh_read_failed": 0}
         self.reason = None
         self.failed_tickets = set()
         self.reset = None
-        for row in lifecycle.read_events(journal):
+        for row in lifecycle.read_events(journal) if persistent else ():
             if row.get("event") == "gh-read-backoff" and row.get("reset", 0) > time.time():
                 self.reset = max(self.reset or 0, row["reset"])
                 self.reason = "rate_limited"
@@ -68,6 +68,8 @@ class Pass:
         return self.reason is not None
 
     def emit(self, event, **fields):
+        if not self.persistent:
+            return
         execution = lifecycle.current()
         if execution:
             execution.commit()
@@ -109,9 +111,11 @@ class Pass:
         code = "rate_limited" if limited else "gh_read_failed"
         reset = None
         if limited:
-            # JSON gh commands use GraphQL; REST endpoints use core. Do not borrow an
-            # unrelated exhausted resource's reset to explain a network/auth failure.
-            resource = "core" if cmd[1] == "api" and "graphql" not in cmd else "graphql"
+            # Release commands and PR diffs use REST, unlike JSON issue/PR reads.
+            resource = "core" if (
+                cmd[1] in {"api", "release"} and "graphql" not in cmd
+                or cmd[1:3] == ["pr", "diff"]
+            ) else "graphql"
             budget = probe.get(resource, {})
             if budget.get("remaining") == 0 and budget.get("reset", 0) > time.time():
                 reset = budget["reset"]
@@ -153,6 +157,16 @@ def _identity(cmd):
 def _expected_result(cmd, result, check):
     if result.returncode == 0:
         return True
+    detail = result.stderr or ""
+    if result.returncode == 1:
+        if cmd[1:3] == ["pr", "view"] and "no pull requests found" in detail.lower():
+            return True
+        if cmd[1] == "api" and any("/compare/" in arg for arg in cmd[2:]) and re.search(r"HTTP 404\b", detail):
+            return True
+        if not check and cmd[1:3] == ["release", "view"] and re.fullmatch(
+            r"release not found\.?\s*", detail, re.IGNORECASE,
+        ):
+            return True
     if check:
         return False
     # These nonzero results describe data, not a failed read. Preserve callers'
@@ -181,12 +195,14 @@ def run(cmd, invoke, *, env=None, check=True):
     try:
         result = invoke()
         if _expected_result(cmd, result, check):
+            if check:
+                result.check_returncode()
             return result
         result.check_returncode()
     except subprocess.CalledProcessError as exc:
-        if cmd[1:3] == ["pr", "view"] and "no pull requests found" in (exc.stderr or "").lower():
-            # A missing branch PR is a successful absence lookup; callers decide
-            # whether absence is valid for their operation.
+        if _expected_result(cmd, exc, check):
+            # An expected absence is still raised for checked callers; their
+            # operation decides whether the missing resource is acceptable.
             raise
         if exc.returncode < 0:
             raise
@@ -216,11 +232,11 @@ def items(rows):
 
 
 @contextmanager
-def scope(journal, stage):
-    if current() is not None:
+def scope(journal, stage, *, persistent=True, isolated=False):
+    if current() is not None and not isolated:
         yield current()
         return
-    state = Pass(journal, stage)
+    state = Pass(journal, stage, persistent=persistent)
     token = _CURRENT.set(state)
     try:
         yield state
