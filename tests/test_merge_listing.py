@@ -52,13 +52,36 @@ class MergeListingTest(unittest.TestCase):
                              for row in lifecycle.read_events(self.events)))
 
     def test_listing_at_limit_journals_and_logs_warning(self):
-        self.prs = self.open_prs(1000)
+        self.prs = self.open_prs(1001)
 
         dispatch.merge_pass_locked(False)
 
         warnings = [row for row in lifecycle.read_events(self.events)
                     if row.get("event") == "merge-list-limit"]
-        self.assertEqual([(row["limit"], row["count"]) for row in warnings], [(1000, 1000)])
+        self.assertEqual([(row["limit"], row["count"]) for row in warnings], [(1000, 1001)])
+        self.assertTrue(any("warning" in call.args[0].lower()
+                            and "1000" in call.args[0]
+                            and "truncat" in call.args[0].lower()
+                            for call in self.log.call_args_list))
+
+    def test_exactly_list_limit_does_not_warn(self):
+        self.prs = self.open_prs(1000)
+
+        dispatch.merge_pass_locked(False)
+
+        self.assertFalse(any(row.get("event") == "merge-list-limit"
+                             for row in lifecycle.read_events(self.events)))
+        self.assertFalse(any("warning" in call.args[0].lower()
+                             for call in self.log.call_args_list))
+
+    def test_listing_above_limit_dry_run_warns_without_journaling(self):
+        self.prs = self.open_prs(1001)
+        self.prs[-1]["labels"] = [{"name": dispatch.FACTORY_APPROVED}]
+
+        dispatch.merge_pass_locked(True)
+
+        self.checks.assert_called_once_with(1, "head-1")
+        self.assertFalse(self.events.exists())
         self.assertTrue(any("warning" in call.args[0].lower()
                             and "1000" in call.args[0]
                             and "truncat" in call.args[0].lower()
