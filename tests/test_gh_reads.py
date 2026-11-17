@@ -386,7 +386,7 @@ class SharedReadBoundaryTest(unittest.TestCase):
                 self.reads.scope(self.journal, "manage"), self.reads.item(7):
             observed = roadmap._child(reader, result, 7)
         self.assertIsNotNone(observed)
-        row, body, complete = observed
+        row, _body, complete = observed
         self.assertTrue(complete)
         self.assertEqual([blocker["number"] for blocker in row["blockers"]], [9])
         self.assertEqual(result["errors"], [])
