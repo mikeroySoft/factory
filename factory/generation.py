@@ -18,7 +18,7 @@ from dataclasses import dataclass
 INTENTS = ("resume", "fresh")
 # `manage.apply` relabels the ticket ready-for-agent after these decisions; their `manage`
 # row is journaled before the edit.
-RELEASING_DECISIONS = frozenset({"RETRY", "REWRITE", "AUTHORIZE", "ROUTE"})
+RELEASING_DECISIONS = frozenset({"RETRY", "REWRITE", "ROUTE"})
 # The dispatcher journals these immediately before it relabels the ticket ready-for-agent.
 REQUEUE_EVENTS = frozenset({"conflict-requeue", "gate-requeue", "risk-requeue", "mutation-proof-wait"})
 # Statuses of a guarded `requeue_agent` decision whose label edit may have happened.

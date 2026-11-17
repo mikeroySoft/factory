@@ -91,8 +91,6 @@ class AddOnlyOverrideTest(unittest.TestCase):
             (repo / "tests" / "test_old.py").write_text("# obsolete test removed\n")
             git(repo, "add", "-A")
             git(repo, "commit", "-q", "-m", "delete obsolete test")
-            labels = {"bug", config.LABEL_ADD_ONLY_OVERRIDE}
-            flags = dispatch.gate_flags(None, labels)
 
             code, report = run_gate(
                 repo,
@@ -102,7 +100,6 @@ class AddOnlyOverrideTest(unittest.TestCase):
                 "--add-only-override",
             )
 
-            self.assertTrue(flags["add_only_override"])
             self.assertEqual(code, 0, report)
             self.assertNotIn("- protected-paths: FAIL", report)
             self.assertNotIn("- protected-tests: FAIL", report)
@@ -257,12 +254,6 @@ class AddOnlyOverrideTest(unittest.TestCase):
              "--remove-label", config.LABEL_AGENT, "--add-label", config.LABEL_HUMAN]
         )
         self.assertLess(comment_index, grant_index)
-
-    def test_gate_flags_maps_add_only_override_label(self) -> None:
-        self.assertEqual(
-            dispatch.gate_flags(None, {config.LABEL_ADD_ONLY_OVERRIDE}),
-            {"protected_override": False, "add_only_override": True},
-        )
 
 
 if __name__ == "__main__":

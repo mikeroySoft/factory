@@ -761,12 +761,13 @@ Factory adds or replaces `--mode json` and parses its JSONL verdict and usage.
 It defaults to true only when the reviewer program is named `omp`; set it to
 false to disable that default.
 AUTHORIZE uses `{"justification":"...","guidance":"..."}` to record why an
-existing add-only file must change, add `factory-add-only-override`, and return
-the ticket to `ready-for-agent`. It is limited to required add-only edits or
-removal of obsolete wording-only assertions, and never authorizes protected
-paths. The label alone no longer bypasses the gate: a reviewer must record
-the exact resulting head/base/blobs using the Gate receipt below. The normal
-gate and independent review run again. FIX uses
+existing add-only file must change and add `factory-add-only-override` as an
+approval request. It leaves the ticket `ready-for-human` and publishes a human
+handoff, rather than requeueing a worker without authority. It is limited to
+required add-only edits or removal of obsolete wording-only assertions, and
+never authorizes protected paths. A reviewer must approve the kept head/base/blobs
+using the Gate receipt below, then requeue the ticket. The normal gate and
+independent review run again. FIX uses
 `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
 in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels.
 A kept head ahead of the remote PR head is pushed first
@@ -818,7 +819,7 @@ review-bounce rounds and conflict, gate and risk requeue rounds, so the ticket g
 full budget again. A factory release never opens a generation. The dispatcher and
 manager journal each of their own releases before relabeling: `conflict-requeue`,
 `gate-requeue`, `risk-requeue`, `mutation-proof-wait`, deferred `review-rework`, and RETRY, REWRITE,
-AUTHORIZE or ROUTE `manage` rows. A ticket that is back in `ready-for-agent` and
+or ROUTE `manage` rows. A ticket that is back in `ready-for-agent` and
 unassigned after its latest escalation, with none of those rows after it, was released
 by a human. A journal with no `generation` row is generation 0 and counts exactly as
 before.
@@ -1092,10 +1093,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    or any removed or changed line fails as `add-only`. For in-place text edits,
    its escalation names `factory-add-only-override` as the request label. The
    manager may use `AUTHORIZE`, with an auditable justification and worker
-   guidance, to apply that label and requeue the ticket when the ticket requires
-   the existing add-only edit or an obsolete wording-only assertion must be
-   removed from a retained file. Dispatch requires the pinned reviewer receipt
-   below before relaxing either deleted-lines or existing-test protection.
+   guidance, to apply that label and leave the ticket `ready-for-human` when the
+   ticket requires the existing add-only edit or an obsolete wording-only assertion
+   must be removed from a retained file. A reviewer must record the pinned receipt
+   below for the kept head and requeue it before dispatch relaxes either
+   deleted-lines or existing-test protection.
    File deletions, renames, mode changes and binary changes still fail with that label and
    require human-only `factory-protected-override`. Their escalations name that
    label instead. If `factory-add-only-override` is already present and protection
@@ -1136,9 +1138,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    files, establish the receipt's scope and reviewer authority. Review the
    committed blob contents before posting. All listed paths are one approval:
    include every protected/add-only pin needed for that head in the same comment.
-   Dispatch selects the latest valid receipt matching the current head and
-   merge-base, without requiring an override label. The add-only label also
-   requests receipt lookup, but cannot supply unpinned authority.
+   At each ticket attempt gate, dispatch fetches live comments and selects the
+   latest valid receipt matching the current head and merge-base, including receipts
+   posted during the worker round. The add-only label tracks approval requests;
+   neither that label nor an earlier comment snapshot is required for lookup.
+   Explicit protected/test blanket overrides take precedence and skip receipt lookup,
+   so dispatch never combines mutually exclusive authority flags.
 
    Dispatch passes `--protected-allow mutation-equivalents.json=<blob>` and/or
    the existing add-only flags, plus `--approval-ticket <issue-number>` and
@@ -1403,8 +1408,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `factory-protected-override`, when `review_rounds` conflict requeues are
    already used up, or when the ticket is not open.
    Conflicts in `add_only_paths` go to the worker; the gate's add-only check
-   judges the resolution (`factory-add-only-override` or manager `AUTHORIZE`
-   to rewrite existing lines).
+   judges the resolution. Rewriting existing lines needs a reviewer receipt pinned
+   to the resolved head/base/blobs; the label or manager `AUTHORIZE` only requests it.
    A gate failure on the clean refreshed head is re-run once before any handoff.
    A passing re-run continues the normal push and review path and journals both
    reports in `gate-rerun`. If the re-run also fails, a `gate-requeue` row records

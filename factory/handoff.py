@@ -1,7 +1,7 @@
 """Durable routed human handoffs: one public-safe request per terminal escalation generation.
 
 A request is published only once automatic manager recovery is terminal for the latest
-escalation (manager `HUMAN`, transport failure, rounds exhausted, or no manager). Its
+escalation (manager `HUMAN`/`AUTHORIZE`, transport failure, rounds exhausted, or no manager). Its
 identity is `<ticket>/<round>` (`<ticket>/g<generation>/<round>` after an owner requeue,
 since rounds restart per generation); intent is journaled before the comment, the comment id
 after. Uncertain publication is reconciled from GitHub before any retry, and a failed
@@ -60,7 +60,7 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
         return None
     if any(e.get("event") == "escalate" and e.get("reason") == "manager_failed" and e.get("round") == r for e in events):
         return "the manager could not run, so there is no automatic diagnosis; the cause is unknown until a human looks"
-    if any(e.get("decision") == "HUMAN" for e in decided):
+    if any(e.get("decision") in {"HUMAN", "AUTHORIZE"} for e in decided):
         return "the manager asked for a human decision"
     since = events[events.index(escalation):] if escalation in events else events
     if pending_fix(since, round=r, pr=None) is not None:

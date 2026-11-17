@@ -101,11 +101,13 @@ Split anything with two outcomes into two tickets. Order them with a `Blocked by
 line (the dispatcher skips blocked tickets until the blocker closes). Add the `chore`
 label for mechanical work (renames, doc sync, bumps) to route it to the chore worker.
 Before filing, compare **Touches** against `[gate].protected_paths` and
-`[gate].add_only_paths` in `.factory.toml`: a ticket that adds or edits a protected
-file must carry `factory-protected-override` at filing, or the first attempt escalates
-at the gate before any check runs. This repository keeps `tests/**` add-only: new test
-files and appended lines need no label; changing existing test lines needs
-`factory-add-only-override` at filing (or a manager may grant it via `AUTHORIZE`).
+`[gate].add_only_paths` in `.factory.toml`. Protected edits need human authority;
+`mutation-equivalents.json` alone supports a pinned reviewer receipt (README **Gate**)
+instead of the blanket `factory-protected-override` label. This repository keeps
+`tests/**` add-only: new test files and appended lines need no approval; changing
+existing lines needs a reviewer receipt pinning the resulting head/base/blobs.
+`factory-add-only-override` and manager `AUTHORIZE` only request that receipt.
+`AUTHORIZE` leaves the ticket ready-for-human; after review, post the receipt and requeue.
 Label bug fixes `bug`; the worker must commit the reproducing test first and name it as
 `Repro test: <test ID>` in the handoff. If that is impractical, the ticket author can
 add `No repro test: <reason>` to the body, or the authenticated triage account can

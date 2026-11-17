@@ -191,6 +191,27 @@ class PinnedApprovalTest(unittest.TestCase):
                 if not expected_ok:
                     self.assertIn("protected-paths: FAIL", report)
 
+    def test_owner_requeue_after_approval_request_opens_a_generation(self):
+        from factory import generation
+
+        release = generation.owner_requeue([
+            {"event": "escalate", "ticket": 7, "reason": "gate failed"},
+            {"event": "manage", "ticket": 7, "decision": "AUTHORIZE"},
+        ], 7)
+        self.assertIsNotNone(release)
+        self.assertEqual((release["generation"], release["source"]), (1, "label"))
+
+    def test_approval_request_needs_a_terminal_human_handoff(self):
+        from factory import handoff
+
+        cfg = config.Config(self.repo, "acme/widgets", manager=["manager"])
+        escalation = {"event": "escalate", "ticket": 7, "round": 1}
+        reason = handoff.terminal(cfg, [
+            escalation,
+            {"event": "manage", "ticket": 7, "round": 1, "decision": "AUTHORIZE"},
+        ], escalation)
+        self.assertIsNotNone(reason)
+
     def test_dispatch_stale_approval_cannot_authorize_new_head(self):
         (self.repo / "new.txt").write_text("new head\n")
         commit(self.repo)

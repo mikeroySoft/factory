@@ -2265,12 +2265,11 @@ def _reviewed_gate_flags(wt: Path, ticket: int, head: str, base: str) -> list[st
 
 def run_gate(
     wt: Path, n: int | str, skip: str = "", protected_override: bool = False,
-    test_override: bool = False, add_only_override: bool = False,
+    test_override: bool = False,
     tier: str = "attempt", upstream: list[str] = (), bug: bool = False,
     repro_test: str | None = None, no_repro_test: str | None = None,
     base: str | None = None, timeout: float | None = None, blocking_mutation: bool = False,
     mutation_proof: bool = False, mutation_duration: float | None = None,
-    gate_approval: bool = False,
 ) -> tuple[bool, str]:
     report_rel = f".factory/gate-report-{n}.md"
     (wt / ".factory").mkdir(exist_ok=True)
@@ -2299,8 +2298,8 @@ def run_gate(
         cmd.append("--protected-override")
     if test_override:
         cmd.append("--test-override")
-    if tier == "attempt" and (gate_approval or add_only_override) and str(n).isdigit():
-        # The legacy label requests a pinned receipt, never a blanket deleted-lines/test waiver.
+    if tier == "attempt" and str(n).isdigit() and not (protected_override or test_override):
+        # Read live comments: the reviewed head's receipt may post during the worker round.
         cmd += _reviewed_gate_flags(wt, int(n), head, base or f"origin/{cfg.main}")
     if bug:
         cmd.append("--bug")
@@ -3656,13 +3655,7 @@ def gate_flags(
     comments: list[dict] | None = None,
 ) -> dict:
     """`run_gate` keywords for a ticket, including bug-test evidence declarations."""
-    from factory.gate import APPROVAL_MARKER
-
     flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels}
-    if LABEL_ADD_ONLY_OVERRIDE in labels:
-        flags["add_only_override"] = True
-    if any((comment.get("body") or "").startswith(APPROVAL_MARKER) for comment in comments or []):
-        flags["gate_approval"] = True
     if "bug" in labels:
         explicit_override = _ticket_line(body, LABEL_PROTECTED_OVERRIDE)
         if explicit_override is not None and not flags["protected_override"]:
