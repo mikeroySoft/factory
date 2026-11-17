@@ -437,11 +437,15 @@ class HandoffCli(unittest.TestCase):
         self.configure(collaboration='[collaboration.reasons]\nci = "@acme/ci"\n')
         self.escalate("PR #9: CI failed (unit)", 1)
         self.manage(mode="HUMAN", fail_repo=True)  # owner type unreadable: unknown, not authorization
-        body = self.requests()[0]["body"]
-        self.assertIn("&#64;acme/ci: team destinations could not be verified", body)
-        self.assertNotIn("@acme/ci", body)
-        self.assertNotIn("unassigned", body)
-        self.assertEqual(self.events("handoff")[0]["target"], "selected")
+        self.assertEqual((self.requests(), self.events("handoff")), ([], []))
+        [skipped] = self.events("gh-read-skipped")
+        self.assertEqual((skipped["code"], skipped["ticket"]), ("gh_read_failed", 7))
+        self.assertEqual(self.calls("issue", "edit"), [])
+        self.assertEqual(self.state["issue"]["labels"], [{"name": "ready-for-human"}])
+        self.manage(owner_type="Organization")
+        self.assertEqual(len(self.requests()), 1)
+        self.assertIn("@acme/ci — you own this decision", self.requests()[0]["body"])
+        self.assertEqual(self.events("handoff")[0]["target"], "@acme/ci")
 
     def test_each_terminal_manager_path_publishes_once_and_recovery_never_notifies(self) -> None:
         proc = self.manage("--dry-run", mode="HUMAN")
@@ -530,9 +534,12 @@ class HandoffCli(unittest.TestCase):
         self.assertEqual(self.events("handoff")[0]["target"], "invalid")
 
     def test_unreadable_routing_defers_publication_until_the_ticket_can_be_read(self) -> None:
-        proc = self.manage(mode="HUMAN", fail_read=True)
-        self.assertIn("deferred; the ticket could not be read for routing", proc.stdout)
+        self.manage(mode="HUMAN", fail_read=True)
+        [skipped] = self.events("gh-read-skipped")
+        self.assertEqual((skipped["code"], skipped["ticket"]), ("gh_read_failed", 7))
         self.assertEqual((self.requests(), self.events("handoff")), ([], []))
+        self.assertEqual(self.calls("issue", "edit"), [])
+        self.assertEqual(self.state["issue"]["labels"], [{"name": "ready-for-human"}])
         self.manage()
         self.assertEqual(len(self.requests()), 1)
         self.assertIn("@auth-owner — you own this decision", self.requests()[0]["body"])
