@@ -13,6 +13,7 @@ from unittest import mock
 
 from factory import config, dashboard, throttle
 from factory.workspace import Handler, Server, Workspace
+from tests import test_workspace_trace as workspace_trace
 
 
 class ThrottleDashboardTest(unittest.TestCase):
@@ -135,9 +136,6 @@ class ThrottleDashboardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-from tests import test_workspace_trace as workspace_trace
 
 
 @unittest.skipUnless(workspace_trace.shutil.which("node"), "Node is required for browser asset checks")

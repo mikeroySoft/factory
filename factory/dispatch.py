@@ -6076,7 +6076,10 @@ def main(argv: list[str]) -> int:
     ):
         if (preflight := github_preflight(args.dry_run)) is not None:
             return preflight
-        throttle.refresh(cfg, dry_run=args.dry_run)
+        try:
+            throttle.refresh(cfg, dry_run=args.dry_run)
+        except (config.ConfigError, OSError, subprocess.TimeoutExpired) as exc:
+            log(f"mode refresh failed; keeping current mode ({type(exc).__name__}: {exc})")
         if stale:
             log(f"engine-stale: installed {installed}, District target {target}")
             if not args.dry_run:
