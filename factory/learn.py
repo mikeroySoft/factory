@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from factory import config, dispatch, lifecycle, manage, promotion, score, stats, triage
+from factory import config, dispatch, gh_reads, lifecycle, manage, promotion, score, stats, triage
 from factory.config import LABEL_CHORE, LESSONS_NAME
 
 MAX_LESSONS = 10
@@ -1236,7 +1236,7 @@ def curate(
     return result
 
 
-def run(
+def _run(
     cfg: config.Config,
     last: int = 10,
     dry_run: bool = False,
@@ -1365,6 +1365,17 @@ def run(
     return event
 
 
+def run(
+    cfg: config.Config,
+    last: int = 10,
+    dry_run: bool = False,
+    evaluate: bool | None = None,
+    **fields: object,
+) -> dict | None:
+    guarded = gh_reads.guarded(lambda: cfg.factory / "events.jsonl", "learn")
+    return guarded(_run)(cfg, last, dry_run, evaluate, **fields)
+
+
 def finished_since_learn() -> int:
     """Tickets whose latest `merged`/`escalate` row is newer than the newest non-failed `learn` row
     (any, if none): failed runs keep the count, so the next pass retries."""
@@ -1398,6 +1409,7 @@ def _learn_wait(pr: dict | None, dry_run: bool) -> None:
                         at=lifecycle._now())
 
 
+@gh_reads.guarded(lambda: dispatch.EVENTS, "learn")
 def auto_learn(cfg: config.Config, dry_run: bool) -> None:
     count = finished_since_learn()
     if count < AUTO_EVERY:
@@ -1422,6 +1434,7 @@ def auto_learn(cfg: config.Config, dry_run: bool) -> None:
     run(cfg, AUTO_EVERY, trigger="auto")
 
 
+@gh_reads.guarded(lambda: dispatch.EVENTS, "learn")
 def learn_pass(dry_run: bool = False) -> None:
     """Score unscored finished attempts every pass, then learn after each batch of 10 tickets
     and decide open promotions from the recorded scores.
@@ -1517,7 +1530,7 @@ def _reconcile_human_merges(
     dry_run: bool,
 ) -> None:
     seen: set[int] = set()
-    for review in events:
+    for review in gh_reads.items(events):
         n, head = review.get("pr"), review.get("head")
         if (
             review.get("event") not in {"review-intake", "review-result"}
@@ -1544,13 +1557,18 @@ def _reconcile_human_merges(
         recorded_branch = review.get("branch")
         if isinstance(recorded_branch, str) and not LESSONS_BRANCH.match(recorded_branch):
             continue
-        try:
-            state = dispatch.gh_json([
-                "pr", "view", str(n), "--repo", cfg.repo,
-                "--json", "state,mergedBy,headRefName,headRefOid",
-            ])
-        except Exception as exc:  # noqa: BLE001 - reconciliation never blocks the merge stage
-            dispatch.log(f"PR #{n}: could not reconcile promotion state ({type(exc).__name__}: {exc})")
+        unread = object()
+        state = unread
+        with gh_reads.item(pr=n):
+            try:
+                state = dispatch.gh_json([
+                    "pr", "view", str(n), "--repo", cfg.repo,
+                    "--json", "state,mergedBy,headRefName,headRefOid",
+                ])
+            except Exception as exc:  # noqa: BLE001 - reconciliation never blocks the merge stage
+                dispatch.log(f"PR #{n}: could not reconcile promotion state ({type(exc).__name__}: {exc})")
+                continue
+        if state is unread:
             continue
         branch = state.get("headRefName")
         if not isinstance(branch, str) or not LESSONS_BRANCH.match(branch):
@@ -1590,12 +1608,13 @@ def _reconcile_human_merges(
             _promotion_blocked(events, n, branch, current_head, "closed without merge", dry_run)
 
 
+@gh_reads.guarded(lambda: dispatch.EVENTS, "learn")
 def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
     """Merge eligible lessons PRs and reconcile externally merged promotions."""
     cfg = dispatch.cfg
     events = lifecycle.read_events(dispatch.EVENTS)
     _reconcile_human_merges(cfg, {pr["number"] for pr in prs}, events, dry_run)
-    for pr in sorted(prs, key=lambda p: p["number"]):
+    for pr in gh_reads.items(sorted(prs, key=lambda p: p["number"])):
         n, branch = pr["number"], pr["headRefName"]
         if (
             not LESSONS_BRANCH.match(branch)
@@ -1603,10 +1622,11 @@ def promote_pass(prs: list[dict], dry_run: bool = False) -> None:
             or pr["baseRefName"] != cfg.main
         ):
             continue
-        try:
-            promote(cfg, pr, events, dry_run)
-        except Exception as exc:  # noqa: BLE001 - one stuck chore PR never blocks the others
-            dispatch.log(f"PR #{n}: {branch} promotion failed ({type(exc).__name__}: {exc})")
+        with gh_reads.item(pr=n):
+            try:
+                promote(cfg, pr, events, dry_run)
+            except Exception as exc:  # noqa: BLE001 - one stuck chore PR never blocks the others
+                dispatch.log(f"PR #{n}: {branch} promotion failed ({type(exc).__name__}: {exc})")
 
 
 def _restored_score(cfg: config.Config, pr: dict, events: list[dict]) -> dict | None:
@@ -1808,7 +1828,7 @@ def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
     rows = lifecycle.read_events(dispatch.EVENTS)
     decided = {r.get("pr") for r in rows if r.get("event") in ("promotion-keep", "promotion-revert")}
     reverts = []
-    for i, opened in enumerate(rows):
+    for i, opened in enumerate(gh_reads.items(rows)):
         if opened.get("event") != "promotion-open" or opened.get("pr") in decided:
             continue
         # Attempts journaled after the merge; a pre-merge attempt scored late ran on the old prompt.
@@ -1825,12 +1845,17 @@ def decide_promotions(cfg: config.Config, dry_run: bool = False) -> list[str]:
             dispatch.log(f"promotion #{opened['pr']}: would {verdict} ({reason})")
             continue
         fields = {}
-        try:
-            if verdict == "revert":
-                fields["branch"] = revert(cfg, opened, reason, candidate)
-                reverts.append(fields["branch"])
-        except Exception as exc:  # noqa: BLE001 - e.g. a conflicting revert; never blocks later promotions
-            dispatch.log(f"promotion #{opened['pr']}: failed ({type(exc).__name__}: {exc})")
+        completed = False
+        with gh_reads.item(pr=opened["pr"]):
+            try:
+                if verdict == "revert":
+                    fields["branch"] = revert(cfg, opened, reason, candidate)
+                    reverts.append(fields["branch"])
+            except Exception as exc:  # noqa: BLE001 - e.g. a conflicting revert; never blocks later promotions
+                dispatch.log(f"promotion #{opened['pr']}: failed ({type(exc).__name__}: {exc})")
+                continue
+            completed = True
+        if not completed:
             continue
         dispatch.record(f"promotion-{verdict}", pr=opened["pr"], head=opened.get("head"),
                         baseline=opened.get("baseline"), after=candidate, reason=reason, **fields)

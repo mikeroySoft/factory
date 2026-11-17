@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 
-from factory import config, dispatch, lifecycle, runtime_events, stats
+from factory import config, dispatch, gh_reads, lifecycle, runtime_events, stats
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
@@ -743,6 +743,7 @@ def _age(at: str) -> timedelta:
     return datetime.now(UTC) - datetime.fromisoformat(at)
 
 
+@gh_reads.guarded(lambda: dispatch.EVENTS, "watch", fallback=list)
 def run_pass(
     cfg: config.Config, dry_run: bool = False, now: datetime | None = None,
 ) -> list[dict]:
@@ -801,67 +802,79 @@ def run_pass(
     }
     listing = None
     filed = []
-    for signal in actionable:
+    failed_fingerprints = set()
+    for signal in gh_reads.items(actionable):
         fp = signal["fingerprint"]
         if len(filed) >= MAX_ISSUES:
             dispatch.log(f"watch: deferring {fp} to the next pass (cap {MAX_ISSUES})")
             break
         previous = filings.get(fp)
-        if previous is not None and signal["latest"] is not None and signal["latest"] <= previous["at"]:
-            continue
-        if dry_run:
-            verb = f"re-check #{previous['issue']} for" if previous else "would file or comment"
-            print(f"[watch] {verb} {fp} in {engine}: {title(signal)}")
+        with gh_reads.item(
+            ticket=previous.get("issue") if previous else None,
+            fingerprint=fp,
+            repo=previous.get("repo", dispatch.REPO) if previous else engine,
+        ):
+            if previous is not None and signal["latest"] is not None and signal["latest"] <= previous["at"]:
+                continue
+            if dry_run:
+                verb = f"re-check #{previous['issue']} for" if previous else "would file or comment"
+                print(f"[watch] {verb} {fp} in {engine}: {title(signal)}")
+                filed.append(signal)
+                continue
+            issue = None
+            if previous is not None:
+                repo = previous.get("repo", dispatch.REPO)
+                failed_fingerprints.add(fp)
+                state = dispatch.gh_json(["issue", "view", str(previous["issue"]), "--repo", repo,
+                                          "--json", "state,closedAt,body"])
+                failed_fingerprints.discard(fp)
+                if state["state"].upper() == "OPEN":
+                    if repo != engine:
+                        continue  # a filing from before routing covers it until it closes
+                    issue = {"number": previous["issue"], "body": state.get("body")}
+                # ponytail: gh reports closedAt to the second; a recurrence inside that second refiles once.
+                elif signal["latest"] is not None and (
+                        datetime.fromisoformat(signal["latest"]) <= datetime.fromisoformat(state["closedAt"])):
+                    continue  # closed by its fix or a human; nothing newer since
+            if issue is None:
+                if listing is None:
+                    failed_fingerprints.add(fp)
+                    listing = open_filings(engine)
+                    failed_fingerprints.discard(fp)
+                issue = listing.get(fp)
+            if issue is None:
+                url = dispatch.run([
+                    "gh", "issue", "create", "--repo", engine, "--title", title(signal),
+                    "--label", HOST_LABELS if signal["kind"] == "host" else LABELS,
+                    "--body", body(signal, install),
+                ]).stdout.strip().splitlines()[-1]
+                number = int(url.rstrip("/").rsplit("/", 1)[-1])
+                dispatch.record("watch", fingerprint=fp, issue=number, repo=engine,
+                                latest=signal["latest"], at=lifecycle._now())
+                dispatch.log(f"watch: filed {engine}#{number} for {fp} ({title(signal)})")
+            else:
+                if (previous is not None and (previous["issue"], previous.get("repo", dispatch.REPO)) == (issue["number"], engine)
+                        and _age(previous["at"]) < QUIET_PERIOD):
+                    continue  # this install reported on it within the window
+                number = issue["number"]
+                dispatch.run(["gh", "issue", "comment", str(number), "--repo", engine, "--body", comment(signal, install)])
+                # ponytail: read-modify-write; two installs editing in the same second can drop one name.
+                listed = observed(issue["body"], install) if isinstance(issue.get("body"), str) else None
+                if listed is not None:
+                    dispatch.run(["gh", "issue", "edit", str(number), "--repo", engine, "--body", listed])
+                dispatch.record("watch", fingerprint=fp, issue=number, repo=engine, latest=signal["latest"],
+                                commented=True, at=lifecycle._now())
+                dispatch.log(f"watch: commented on {engine}#{number} for {fp}")
             filed.append(signal)
-            continue
-        issue = None
-        if previous is not None:
-            repo = previous.get("repo", dispatch.REPO)
-            state = dispatch.gh_json(["issue", "view", str(previous["issue"]), "--repo", repo,
-                                      "--json", "state,closedAt,body"])
-            if state["state"].upper() == "OPEN":
-                if repo != engine:
-                    continue  # a filing from before routing covers it until it closes
-                issue = {"number": previous["issue"], "body": state.get("body")}
-            # ponytail: gh reports closedAt to the second; a recurrence inside that second refiles once.
-            elif signal["latest"] is not None and (
-                    datetime.fromisoformat(signal["latest"]) <= datetime.fromisoformat(state["closedAt"])):
-                continue  # closed by its fix or a human; nothing newer since
-        if issue is None:
-            listing = open_filings(engine) if listing is None else listing
-            issue = listing.get(fp)
-        if issue is None:
-            url = dispatch.run([
-                "gh", "issue", "create", "--repo", engine, "--title", title(signal),
-                "--label", HOST_LABELS if signal["kind"] == "host" else LABELS,
-                "--body", body(signal, install),
-            ]).stdout.strip().splitlines()[-1]
-            number = int(url.rstrip("/").rsplit("/", 1)[-1])
-            dispatch.record("watch", fingerprint=fp, issue=number, repo=engine,
-                            latest=signal["latest"], at=lifecycle._now())
-            dispatch.log(f"watch: filed {engine}#{number} for {fp} ({title(signal)})")
-        else:
-            if (previous is not None and (previous["issue"], previous.get("repo", dispatch.REPO)) == (issue["number"], engine)
-                    and _age(previous["at"]) < QUIET_PERIOD):
-                continue  # this install reported on it within the window
-            number = issue["number"]
-            dispatch.run(["gh", "issue", "comment", str(number), "--repo", engine, "--body", comment(signal, install)])
-            # ponytail: read-modify-write; two installs editing in the same second can drop one name.
-            listed = observed(issue["body"], install) if isinstance(issue.get("body"), str) else None
-            if listed is not None:
-                dispatch.run(["gh", "issue", "edit", str(number), "--repo", engine, "--body", listed])
-            dispatch.record("watch", fingerprint=fp, issue=number, repo=engine, latest=signal["latest"],
-                            commented=True, at=lifecycle._now())
-            dispatch.log(f"watch: commented on {engine}#{number} for {fp}")
-        filed.append(signal)
     filed = observed_signals + filed
 
     closed = 0
-    for fp, previous in filings.items():
+    for fp, previous in gh_reads.items(filings.items()):
         if closed >= MAX_ISSUES:
             break
         repo = previous.get("repo", dispatch.REPO)
-        if previous.get("closed") or (fp, previous["issue"], repo) not in opened:
+        if (fp in failed_fingerprints or previous.get("closed")
+                or (fp, previous["issue"], repo) not in opened):
             continue
         # A signal stays in the journal window long after it stops happening, so judge by the
         # newest evidence, not presence; `latest is None` means it is failing right now.
@@ -870,42 +883,45 @@ def run_pass(
         evidence_at = max(latest_by_fingerprint.get(fp) or "", previous.get("latest") or "", previous["at"])
         if _age(evidence_at) < QUIET_PERIOD:
             continue
-        if dry_run:
-            print(f"[watch] would close #{previous['issue']} in {repo} for {fp} if it is still open, unassigned, "
-                  f"not with a human and quiet in every install (no newer evidence than {evidence_at})")
-            closed += 1
-            continue
-        try:
-            state = dispatch.gh_json([
-                "issue", "view", str(previous["issue"]), "--repo", repo,
-                "--json", "state,assignees,labels,comments",
-            ])
-            labels = {label["name"] for label in state.get("labels", [])}
-            if state["state"].upper() != "OPEN":
-                # Closed by its fix or a human: stop re-checking it every pass.
+        with gh_reads.item(
+            ticket=previous["issue"], fingerprint=fp, repo=repo,
+        ):
+            if dry_run:
+                print(f"[watch] would close #{previous['issue']} in {repo} for {fp} if it is still open, unassigned, "
+                      f"not with a human and quiet in every install (no newer evidence than {evidence_at})")
+                closed += 1
+                continue
+            try:
+                state = dispatch.gh_json([
+                    "issue", "view", str(previous["issue"]), "--repo", repo,
+                    "--json", "state,assignees,labels,comments",
+                ])
+                labels = {label["name"] for label in state.get("labels", [])}
+                if state["state"].upper() != "OPEN":
+                    # Closed by its fix or a human: stop re-checking it every pass.
+                    dispatch.record("watch", fingerprint=fp, issue=previous["issue"], repo=repo, latest=evidence_at,
+                                    closed=True, at=lifecycle._now())
+                    continue
+                if state.get("assignees") or not labels & CLOSABLE:
+                    continue  # claimed by a worker, or handed to a human
+                if any(c.get("body", "").startswith(COMMENT_PREFIX) and _age(c["createdAt"]) < QUIET_PERIOD
+                       for c in state.get("comments") or []):
+                    continue  # another install still reports it
+                commit = (config.engine_commit() or "unknown")[:12]
+                note = (
+                    f"factory watch: fingerprint {fp} has not recurred since {evidence_at} on engine "
+                    f"{commit}; closing. A recurrence reopens tracking with a new issue."
+                )
+                dispatch.run([
+                    "gh", "issue", "close", str(previous["issue"]), "--repo", repo,
+                    "--reason", "completed", "--comment", note,
+                ])
                 dispatch.record("watch", fingerprint=fp, issue=previous["issue"], repo=repo, latest=evidence_at,
                                 closed=True, at=lifecycle._now())
-                continue
-            if state.get("assignees") or not labels & CLOSABLE:
-                continue  # claimed by a worker, or handed to a human
-            if any(c.get("body", "").startswith(COMMENT_PREFIX) and _age(c["createdAt"]) < QUIET_PERIOD
-                   for c in state.get("comments") or []):
-                continue  # another install still reports it
-            commit = (config.engine_commit() or "unknown")[:12]
-            note = (
-                f"factory watch: fingerprint {fp} has not recurred since {evidence_at} on engine "
-                f"{commit}; closing. A recurrence reopens tracking with a new issue."
-            )
-            dispatch.run([
-                "gh", "issue", "close", str(previous["issue"]), "--repo", repo,
-                "--reason", "completed", "--comment", note,
-            ])
-            dispatch.record("watch", fingerprint=fp, issue=previous["issue"], repo=repo, latest=evidence_at,
-                            closed=True, at=lifecycle._now())
-            dispatch.log(f"watch: closed {repo}#{previous['issue']} for {fp}")
-            closed += 1
-        except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
-            dispatch.log(f"watch: could not close {repo}#{previous['issue']} for {fp}: {exc}")
+                dispatch.log(f"watch: closed {repo}#{previous['issue']} for {fp}")
+                closed += 1
+            except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError) as exc:
+                dispatch.log(f"watch: could not close {repo}#{previous['issue']} for {fp}: {exc}")
     return filed
 
 
@@ -914,8 +930,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
-    with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
-        run_pass(dispatch.cfg, args.dry_run)
-    if not args.dry_run:
+    with gh_reads.scope(dispatch.EVENTS, "watch") as reads:
+        if not reads.stopped:
+            with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
+                run_pass(dispatch.cfg, args.dry_run)
+    if not args.dry_run and not reads.failed_reads and not reads.stopped:
         lifecycle.record_stage_success(dispatch.EVENTS, "watch")
     return 0

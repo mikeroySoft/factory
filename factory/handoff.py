@@ -17,7 +17,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from subprocess import CalledProcessError
 
-from factory import dispatch, generation, lifecycle
+from factory import dispatch, generation, gh_reads, lifecycle
 from factory.config import LABEL_AGENT, LABEL_HUMAN
 
 MARK = "factory-handoff"
@@ -163,12 +163,13 @@ def compose(n: int, request: str, token: str, escalation: dict, why: str, observ
     ])
 
 
+@gh_reads.guarded(lambda: dispatch.EVENTS, "handoff")
 def handoff_pass(dry_run: bool = False) -> None:
     """Publish or reconcile the routed request for every terminal `ready-for-human` escalation."""
     cfg = dispatch.cfg
     issues = dispatch.gh_json(["issue", "list", "--repo", cfg.repo, "--state", "open", "--label", LABEL_HUMAN,
                                "--json", "number,title,labels", "--limit", "1000"])
-    for issue in issues:
+    for issue in gh_reads.items(issues):
         n = issue["number"]
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dry_run and dispatch.lock_held(lock_path):
@@ -178,6 +179,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                 dispatch.EVENTS, "manage", ticket=n, lazy=True
             )) as execution,
             (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
+            gh_reads.item(ticket=n),
         ):
             if not dry_run:
                 request = execution.resource("requested", lock_path, scope="repository")

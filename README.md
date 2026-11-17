@@ -1633,9 +1633,29 @@ Before any GitHub mutation, dispatch reads `gh api rate_limit` and requires at
 least **100 remaining** in both GraphQL and REST (`core`). Below either floor,
 or if the budget cannot be verified, it skips the whole pass (exit 0), logs the
 reason and reset time when available, and journals `pass-skipped` with reason
-`github_rate_limit`. Dry runs log without journaling. This is a pass-start
-safety margin, not a reservation: other hosts and clients can consume the shared
-account's budget after the check.
+`github_rate_limit` and code `rate_limited` or `gh_read_failed`. Dry-run budget
+preflight logs without journaling. This is a pass-start safety margin, not a
+reservation: other hosts and clients can consume the shared account's budget
+after the check.
+
+During engine passes, a failed `gh` read aborts only its ticket/PR/signal. It does
+not initiate label edits, claim release, or escalation; writes already completed
+before the failure remain intact. The next pass retries from fresh evidence.
+`gh-read-skipped` records the bounded, token-redacted stderr, exit code, ticket,
+and a bounded-time `gh api rate_limit` probe using the same credentials/host.
+Explicit rate-limit/HTTP 429 diagnostics use code `rate_limited`; network,
+authentication and other read errors use `gh_read_failed`, even if an unrelated
+API budget is exhausted. Probe failures are recorded, not treated as proof of
+rate limiting. Writes and programming errors keep their existing failure paths.
+
+A rate limit ends the pass immediately. A reported resource reset or Retry-After
+is journaled as `gh-read-backoff`; subsequent passes make no GitHub calls until
+that time. Without a reported reset, the next scheduled pass can try again.
+Other read failures end the pass as `gh_reads_unavailable` once at least three
+reads were attempted and more than half failed. There are no inline retries.
+Each affected pass logs and journals `pass-summary` with attempted/failed reads,
+skip counts, per-code counts, and its stop reason; partial passes do not advance
+the last-successful-stage marker. Unattempted work remains for the next pass.
 
 Dispatch inspects paginated repository labels at pass start. Any `host:*` label
 requires `host_name`. When `host_name` is unset, dispatch also scans all paginated

@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from factory import config, lifecycle
+from factory import config, gh_reads, lifecycle
 
 SEMVER = re.compile(r"v(\d+)\.(\d+)\.(\d+)\Z")
 JSON_BAR = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -195,7 +195,12 @@ def _reset_legacy_bar(
 
 
 def _gh(cfg: config.Config, endpoint: str, *args: str) -> Any:
-    proc = subprocess.run(["gh", "api", *args, endpoint], text=True, capture_output=True, check=False)
+    cmd = ["gh", "api", *args, endpoint]
+    proc = gh_reads.run(
+        cmd,
+        lambda: subprocess.run(cmd, text=True, capture_output=True, check=False),
+        check=False,
+    )
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or f"gh api {endpoint} failed")
     return json.loads(proc.stdout) if proc.stdout.strip() else None
@@ -300,8 +305,12 @@ def _finish(cfg: config.Config, dry_run: bool, reason: str, metrics: dict[str, f
 
 
 def _gh_release(cfg: config.Config, *args: str, notes: str | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["gh", "release", *args, "--repo", cfg.repo], input=notes,
-                          text=True, capture_output=True, check=False)
+    cmd = ["gh", "release", *args, "--repo", cfg.repo]
+    return gh_reads.run(
+        cmd,
+        lambda: subprocess.run(cmd, input=notes, text=True, capture_output=True, check=False),
+        check=False,
+    )
 
 
 def _notes(cfg: config.Config, tag: str) -> str:
@@ -430,7 +439,7 @@ def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str
     page.write_text(page_text)
 
 
-def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
+def _run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
     """Advance the release PR, merge, tag, and stable branch from remote state. With
     `open_pr=False` (the dispatcher's start-of-pass call) a new release PR is never opened."""
     metrics: dict[str, float | int | None] | None = None
@@ -623,6 +632,15 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
     except Exception as exc:  # noqa: BLE001 - the dispatcher must hold, journal, and retry next pass
         reason = _reason(f"release check failed: {type(exc).__name__}: {exc}", metrics, bar)
         return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
+
+
+def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
+    guarded = gh_reads.guarded(
+        lambda: cfg.factory / "events.jsonl",
+        "release",
+        fallback="GitHub read failed; release deferred",
+    )
+    return guarded(_run)(cfg, dry_run, open_pr)
 
 
 def main(argv: list[str]) -> int:
