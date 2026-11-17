@@ -263,6 +263,86 @@ class SharedReadBoundaryTest(unittest.TestCase):
         self.assertTrue(any(row["event"] == "gh-read-backoff" and row["reset"] == 4102444800
                             for row in lifecycle.read_events(self.journal)))
 
+    def test_standalone_dry_runs_ignore_backoff_without_journaling_failures(self):
+        from factory import learn, manage, release
+
+        for stage in ("manage", "release", "learn"):
+            for saved_backoff in (False, True):
+                with self.subTest(stage=stage, saved_backoff=saved_backoff):
+                    cfg = config.Config(self.journal.parent / f"{stage}-{saved_backoff}",
+                                        "acme/widgets", manager=["unused"])
+                    dispatch.configure(cfg)
+                    journal = cfg.factory / "events.jsonl"
+                    lifecycle.append(journal, {"event": "merged", "ticket": 7,
+                                               "at": "2026-11-01T00:00:00+00:00"})
+                    if saved_backoff:
+                        lifecycle.append(journal, {"event": "gh-read-backoff", "reset": 4102444800})
+                    before = journal.read_bytes()
+                    calls = []
+
+                    def command(cmd, *args, **kwargs):
+                        calls.append(cmd)
+                        if cmd[:3] == ["gh", "api", "rate_limit"]:
+                            return subprocess.CompletedProcess(cmd, 0, json.dumps({"resources": {
+                                name: {"remaining": 0, "reset": 4102444800}
+                                for name in ("core", "graphql")
+                            }}), "")
+                        return subprocess.CompletedProcess(cmd, 1, "", "API rate limit exceeded (HTTP 403)")
+
+                    self.probe.side_effect = command
+                    with (
+                        mock.patch.object(config, "load", return_value=cfg),
+                        mock.patch.object(dispatch, "_run", side_effect=command),
+                        mock.patch.object(release, "_git", return_value=subprocess.CompletedProcess([], 0, "2", "")),
+                        mock.patch.object(release, "_latest", return_value={
+                            "tag": "v1.0.0", "version": (1, 0, 0), "message": "",
+                            "date": "2026-10-01T00:00:00+00:00", "sha": "old",
+                        }),
+                        mock.patch.object(release, "_version_at", return_value=(1, 0, 0)),
+                    ):
+                        if stage == "manage":
+                            manage.main(["--dry-run"])
+                        elif stage == "release":
+                            release.main(["--dry-run"])
+                        else:
+                            learn.run(cfg, dry_run=True)
+                    self.assertTrue(any(cmd[0] == "gh" and cmd[1:3] != ["api", "rate_limit"]
+                                        for cmd in calls), calls)
+                    self.assertEqual(journal.read_bytes(), before)
+
+    def test_inaccessible_actions_job_defers_merge_without_mutations(self):
+        cfg = config.Config(self.journal.parent, "acme/widgets")
+        dispatch.configure(cfg)
+        pr = {"number": 70, "headRefName": "agent/7", "headRefOid": "head",
+              "baseRefName": "main", "isDraft": False,
+              "labels": [{"name": "factory-approved"}], "reviewDecision": "APPROVED"}
+        calls = []
+
+        def command(cmd, *args, **kwargs):
+            calls.append(cmd)
+            if cmd[1:3] == ["pr", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps([pr]), "")
+            if cmd[1] == "api" and "/actions/jobs/" in cmd[2]:
+                return subprocess.CompletedProcess(cmd, 1, "", "gh: Not Found (HTTP 404)")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with (
+            mock.patch.object(dispatch, "_run", side_effect=command),
+            mock.patch.object(dispatch, "initiative_kind", return_value=None),
+            mock.patch.object(dispatch, "pr_checks", return_value=[{
+                "name": "compile", "bucket": "cancel",
+                "link": "https://github.com/acme/widgets/actions/runs/123/job/456",
+            }]),
+            mock.patch.object(dispatch, "escalate") as escalate,
+            mock.patch.object(dispatch, "cleanup_after_merge") as cleanup,
+        ):
+            dispatch.merge_pass_locked(False)
+        self.assertFalse(any(self.reads.is_read(cmd) is False for cmd in calls), calls)
+        escalate.assert_not_called()
+        cleanup.assert_not_called()
+        [skip] = [row for row in lifecycle.read_events(dispatch.EVENTS) if row["event"] == "gh-read-skipped"]
+        self.assertEqual((skip["ticket"], skip["code"], skip["returncode"]), (7, "gh_read_failed", 1))
+
 
 class DispatchClaimReadTest(unittest.TestCase):
     def test_admission_read_failure_preserves_labels_assignee_and_host_claim(self):
