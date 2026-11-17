@@ -830,5 +830,129 @@ class ControlBandWatchTest(unittest.TestCase):
         self.assertEqual(model.call_count, 1)
         self.assertEqual(self.gh.calls, [])
 
+
+
+class WatchEscapeReadFailureTest(unittest.TestCase):
+    NOW = datetime(2026, 11, 17, 12, tzinfo=UTC)
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.cfg = config.Config(Path(self.temporary.name), REPO)
+        self.cfg.factory.mkdir()
+        self.cfg.watch_engine_repo = REPO
+        self.cfg.watch_bands = [config.Band(
+            metric="revert_rate_by_tier",
+            window_days=1,
+            rules=(config.BandRule(
+                kind="sigma", tier="act", sigma=3.0, count=1, span=1,
+            ),),
+        )]
+        dispatch.configure(self.cfg)
+        self.gh = FakeGh()
+        for patch in (
+            mock.patch.object(dispatch, "run", self.gh),
+            mock.patch.object(watch, "failed_units", return_value=[]),
+            mock.patch.object(watch, "runtime_errors", return_value=[]),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def journal(self, *rows: dict) -> None:
+        for row in rows:
+            lifecycle.append(dispatch.EVENTS, row)
+
+    def test_optional_escape_read_failure_keeps_independent_signal_without_revert_data(self) -> None:
+        from factory import stats
+
+        self.journal(exit_row("manage", "mechanism_failure", "engine exploded", at=self.NOW.isoformat()))
+
+        def subprocess_run(cmd, **kwargs):
+            if cmd[:3] == ["gh", "api", "rate_limit"]:
+                budgets = {
+                    name: {"remaining": 5000, "reset": 0}
+                    for name in ("core", "graphql")
+                }
+                return subprocess.CompletedProcess(
+                    cmd, 0, json.dumps({"resources": budgets}), "",
+                )
+            self.assertEqual(cmd[:3], ["gh", "issue", "view"])
+            return subprocess.CompletedProcess(cmd, 1, "", "network unavailable")
+
+        def escapes():
+            return stats.gh("issue", "view", "7", "--json", "number")
+
+        with mock.patch.object(stats, "escapes", side_effect=escapes), \
+                mock.patch.object(
+                    watch, "metric_series",
+                    side_effect=AssertionError("unavailable escape data is not a zero-valued series"),
+                ), \
+                mock.patch.object(subprocess, "run", side_effect=subprocess_run):
+            filed = watch.run_pass(self.cfg, now=self.NOW)
+
+        self.assertEqual([(signal["kind"], signal["key"]) for signal in filed],
+                         [("lifecycle", "engine exploded")])
+        self.assertEqual(len(self.gh.created), 1)
+        skipped = [
+            row for row in lifecycle.read_events(dispatch.EVENTS)
+            if row.get("event") == "gh-read-skipped"
+        ]
+        self.assertEqual([(row["code"], row["ticket"]) for row in skipped],
+                         [("gh_read_failed", 7)])
+        self.assertFalse(any(
+            call[:3] in (["gh", "issue", "comment"], ["gh", "issue", "edit"])
+            and call[3] == "7"
+            for call in self.gh.calls
+        ))
+
+    def test_escape_read_global_stop_still_aborts_independent_signals(self) -> None:
+        from factory import gh_reads, stats
+
+        self.journal(exit_row("manage", "mechanism_failure", "engine exploded", at=self.NOW.isoformat()))
+        for reason in ("rate_limited", "gh_reads_unavailable"):
+            def stopped(reason=reason):
+                state = gh_reads.current()
+                state.reason = reason
+                raise gh_reads.ReadFailed(reason)
+
+            with self.subTest(reason=reason), mock.patch.object(stats, "escapes", side_effect=stopped):
+                self.assertEqual(watch.run_pass(self.cfg, now=self.NOW), [])
+            self.assertEqual(self.gh.calls, [])
+
+    def test_dry_run_rate_limited_attribution_leaves_journal_unchanged(self) -> None:
+        from factory import stats
+
+        self.journal({"event": "baseline", "at": self.NOW.isoformat()})
+        before = dispatch.EVENTS.read_bytes()
+        reset = 4_102_444_800
+
+        def subprocess_run(cmd, **kwargs):
+            if cmd[:3] == ["gh", "api", "rate_limit"]:
+                budgets = {
+                    name: {"remaining": 0, "reset": reset}
+                    for name in ("core", "graphql")
+                }
+                return subprocess.CompletedProcess(
+                    cmd, 0, json.dumps({"resources": budgets}), "",
+                )
+            self.assertEqual(cmd[:3], ["gh", "issue", "view"])
+            return subprocess.CompletedProcess(
+                cmd, 1, "", "GraphQL: API rate limit exceeded",
+            )
+
+        def escapes():
+            return stats.gh("issue", "view", "7", "--json", "number")
+
+        with mock.patch.object(watch.config, "load", return_value=self.cfg), \
+                mock.patch.object(stats, "escapes", side_effect=escapes), \
+                mock.patch.object(subprocess, "run", side_effect=subprocess_run):
+            self.assertEqual(watch.main(["--dry-run"]), 0)
+
+        self.assertEqual(dispatch.EVENTS.read_bytes(), before)
+        self.assertFalse(any(
+            row.get("event") == "gh-read-backoff"
+            for row in lifecycle.read_events(dispatch.EVENTS)
+        ))
+
 if __name__ == "__main__":
     unittest.main()
