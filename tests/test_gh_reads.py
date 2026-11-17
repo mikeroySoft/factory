@@ -220,7 +220,7 @@ class SharedReadBoundaryTest(unittest.TestCase):
             with self.subTest(diagnostic=diagnostic):
                 calls = []
 
-                def command(cmd, **kwargs):
+                def command(cmd, *, calls=calls, diagnostic=diagnostic, **kwargs):
                     calls.append(cmd)
                     if cmd[:3] == ["gh", "api", "rate_limit"]:
                         return self.probe.return_value

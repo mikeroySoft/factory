@@ -445,14 +445,14 @@ class HostClaimRaceTest(unittest.TestCase):
                     side_effect=lambda cmd, *args, **kwargs: (
                         mutations.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
                     ),
-                ), mock.patch("factory.gh_reads.subprocess.run", return_value=healthy):
-            with gh_reads.scope(tank.EVENTS, "dispatch") as pipeline:
-                claim = tank.HostClaim(7, {"id": 1, "nonce": "claim-nonce"})
-                claim.stopped = TwoTicks()
-                claim.thread.start()
-                claim.thread.join(timeout=5)
-                self.assertFalse(claim.thread.is_alive())
-                self.assertEqual((pipeline.failed_reads, pipeline.failed_tickets), (0, set()))
+                ), mock.patch("factory.gh_reads.subprocess.run", return_value=healthy), \
+                gh_reads.scope(tank.EVENTS, "dispatch") as pipeline:
+            claim = tank.HostClaim(7, {"id": 1, "nonce": "claim-nonce"})
+            claim.stopped = TwoTicks()
+            claim.thread.start()
+            claim.thread.join(timeout=5)
+            self.assertFalse(claim.thread.is_alive())
+            self.assertEqual((pipeline.failed_reads, pipeline.failed_tickets), (0, set()))
 
         self.assertEqual(len(attempts), 2)
         self.assertEqual(len(mutations), 1)
@@ -497,14 +497,14 @@ class HostClaimRaceTest(unittest.TestCase):
                     side_effect=lambda cmd, *args, **kwargs: (
                         mutations.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
                     ),
-                ), mock.patch("factory.gh_reads.subprocess.run", return_value=limited):
-            with gh_reads.scope(tank.EVENTS, "dispatch") as pipeline:
-                claim = tank.HostClaim(7, {"id": 1, "nonce": "claim-nonce"})
-                claim.stopped = ThreeTicks()
-                claim.thread.start()
-                claim.thread.join(timeout=5)
-                self.assertFalse(claim.thread.is_alive())
-                self.assertEqual((pipeline.failed_reads, pipeline.failed_tickets), (0, set()))
+                ), mock.patch("factory.gh_reads.subprocess.run", return_value=limited), \
+                gh_reads.scope(tank.EVENTS, "dispatch") as pipeline:
+            claim = tank.HostClaim(7, {"id": 1, "nonce": "claim-nonce"})
+            claim.stopped = ThreeTicks()
+            claim.thread.start()
+            claim.thread.join(timeout=5)
+            self.assertFalse(claim.thread.is_alive())
+            self.assertEqual((pipeline.failed_reads, pipeline.failed_tickets), (0, set()))
 
         self.assertEqual(len(invokes), 1)
         self.assertEqual(mutations, [])
