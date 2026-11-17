@@ -255,6 +255,7 @@ class RefreshFailureIsolationTest(unittest.TestCase):
             foreign = [[{
                 "number": 12, "repository_url": "https://api.github.com/repos/acme/other",
             }]]
+            stages = []
             for failure in (
                 config.ConfigError("GitHub unavailable"),
                 subprocess.TimeoutExpired(["gh", "api"], 30),
@@ -262,9 +263,9 @@ class RefreshFailureIsolationTest(unittest.TestCase):
                 foreign,
             ):
                 with self.subTest(failure=failure):
-                    stages = []
+                    stages.clear()
 
-                    def github(_cfg, endpoint, **_kwargs):
+                    def github(_cfg, endpoint, failure=failure, **_kwargs):
                         if isinstance(failure, BaseException):
                             raise failure
                         return foreign if "/sub_issues" in endpoint else {"number": 9, "state": "open"}
