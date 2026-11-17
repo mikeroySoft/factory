@@ -905,6 +905,42 @@ class WatchEscapeReadFailureTest(unittest.TestCase):
             for call in self.gh.calls
         ))
 
+    def test_unavailable_escape_data_does_not_close_existing_revert_band_filing(self) -> None:
+        from factory import gh_reads, stats
+
+        rule = self.cfg.watch_bands[0].rules[0]
+        fingerprint = (
+            "band:"
+            + watch.fingerprint("revert_rate_by_tier:High", watch._rule_name(rule))
+        )
+        old = (self.NOW - timedelta(days=2)).isoformat()
+        self.journal({
+            "event": "watch", "fingerprint": fingerprint, "issue": 7,
+            "repo": REPO, "latest": old, "at": old,
+        })
+        calls = []
+
+        def github(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:3] == ["gh", "issue", "view"]:
+                issue = {
+                    "state": "OPEN", "closedAt": None, "body": "",
+                    "labels": [{"name": "needs-triage"}],
+                    "assignees": [], "comments": [],
+                }
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(issue), "")
+            if cmd[:3] == ["gh", "issue", "close"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            raise AssertionError(cmd)
+
+        with mock.patch.object(
+                stats, "escapes", side_effect=gh_reads.ReadFailed("gh_read_failed"),
+        ), mock.patch.object(dispatch, "run", side_effect=github), \
+                mock.patch.object(watch, "_age", return_value=timedelta(days=2)):
+            self.assertEqual(watch.run_pass(self.cfg, now=self.NOW), [])
+
+        self.assertEqual(calls, [])
+
     def test_escape_read_global_stop_still_aborts_independent_signals(self) -> None:
         from factory import gh_reads, stats
 
