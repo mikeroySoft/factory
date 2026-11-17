@@ -16,6 +16,7 @@ import re
 import shlex
 import subprocess
 import tomllib
+from copy import deepcopy
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
@@ -84,6 +85,19 @@ HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",),
              "review": ("command", "second_command", "json_mode")}
 HOST_SCALARS = ("host_name", "triage_host", "land_host", "release_host", "claim_ttl")
 
+THROTTLE_BANDS = ("low", "normal", "high")
+THROTTLE_PACE_KEYS = ("max_active",)
+THROTTLE_AGGRESSION_KEYS = ("review_rounds", "manager_rounds", "max_attempts", "budget_min")
+DEFAULT_THROTTLE = {
+    "maintenance_labels": [],
+    "pace": {"low": {"max_active": 1}, "normal": {}, "high": {"max_active": 3}},
+    "aggression": {
+        "low": {"review_rounds": 3, "manager_rounds": 3, "max_attempts": 3, "budget_min": 90},
+        "normal": {},
+        "high": {"review_rounds": 5, "manager_rounds": 5, "max_attempts": 4, "budget_min": 150},
+    },
+}
+
 # Every key the loader reads, by table; `factory doctor` reports anything else.
 # `workers` is label-keyed, `gate.check` is a list of {name, run, exclusive, when}.
 KNOWN_KEYS = {
@@ -107,6 +121,7 @@ KNOWN_KEYS = {
     "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
     "collaboration": ("fallback", "reasons", "components"),
     "prices": None,
+    "throttle": ("maintenance_labels", "pace", "aggression"),
     "watch": ("engine_repo", "host_failure_minutes"),
 }
 # Normalized numeric fields of an `llm-usage` event; a worker profile maps each to JSON paths.
@@ -273,6 +288,7 @@ class Config:
     watch_engine_repo: str = ENGINE_REPO
     watch_host_failure_minutes: int = 60
     watch_bands: list[Band] = field(default_factory=list)
+    throttle: dict = field(default_factory=lambda: throttle_settings({}))
     raw_repo: dict = field(default_factory=dict)  # the committed file alone, before host layering
     host_name: str | None = None
     triage_host: str | None = None
@@ -514,6 +530,19 @@ def unknown_keys(raw: dict) -> list[str]:
         if known is None or not isinstance(val, dict):
             continue
         out += [f"{table}.{k}" for k in val if k not in known]
+        if table == "throttle":
+            groups = (("pace", THROTTLE_PACE_KEYS), ("aggression", THROTTLE_AGGRESSION_KEYS))
+            for group, keys in groups:
+                bands = val.get(group, {})
+                if not isinstance(bands, dict):
+                    continue
+                out += [f"throttle.{group}.{band}" for band in bands if band not in THROTTLE_BANDS]
+                for band, settings in bands.items():
+                    if band in THROTTLE_BANDS and isinstance(settings, dict):
+                        out += [
+                            f"throttle.{group}.{band}.{key}"
+                            for key in settings if key not in keys
+                        ]
         if table == "gate":
             for i, c in enumerate(val.get("check", [])):
                 out += [f"gate.check[{i}].{k}" for k in c if k not in CHECK_KEYS]
@@ -614,6 +643,45 @@ def manager_settings(table: dict) -> tuple[list[str] | None, str | None]:
     ):
         raise ConfigError("manager.model must be a nonempty model selector (≤ 200 chars, no whitespace)")
     return command, model
+
+
+def throttle_settings(table: object) -> dict:
+    """Validate and fill the repository's three pace/aggression presets."""
+    if not isinstance(table, dict):
+        raise ConfigError("[throttle] must be a table")
+    if unknown := unknown_keys({"throttle": table}):
+        raise ConfigError(f"unknown throttle keys: {', '.join(unknown)}")
+    labels = table.get("maintenance_labels", DEFAULT_THROTTLE["maintenance_labels"])
+    if (
+        not isinstance(labels, list)
+        or any(
+            not isinstance(label, str)
+            or not label.strip()
+            or any(ord(char) < 32 for char in label)
+            for label in labels
+        )
+    ):
+        raise ConfigError("throttle.maintenance_labels must be an array of non-empty labels")
+    result = deepcopy(DEFAULT_THROTTLE)
+    result["maintenance_labels"] = list(labels)
+    for group, keys in (("pace", THROTTLE_PACE_KEYS), ("aggression", THROTTLE_AGGRESSION_KEYS)):
+        configured = table.get(group, {})
+        if not isinstance(configured, dict):
+            raise ConfigError(f"throttle.{group} must be a table")
+        for band, values in configured.items():
+            if band not in THROTTLE_BANDS:
+                continue
+            if not isinstance(values, dict):
+                raise ConfigError(f"throttle.{group}.{band} must be a table")
+            for key, value in values.items():
+                if key not in keys:
+                    continue
+                minimum = 0 if group == "pace" else 1
+                if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                    qualifier = "a non-negative" if minimum == 0 else "a positive"
+                    raise ConfigError(f"throttle.{group}.{band}.{key} must be {qualifier} integer")
+                result[group][band][key] = value
+    return result
 
 
 def band_settings(path: Path) -> list[Band]:
@@ -923,6 +991,7 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if "collaboration" in raw:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.prices = price_table(raw.get("prices", {}))
+    cfg.throttle = throttle_settings(raw.get("throttle", {}))
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
     fixups = gate.get("fixups", [])
     if not isinstance(fixups, list) or any(

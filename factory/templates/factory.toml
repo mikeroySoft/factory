@@ -25,6 +25,38 @@
 # each attempt and summed into .factory/events.jsonl and the dashboard.
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'      # Claude Code
 
+
+[throttle]
+# Local mode lives in gitignored .factory/mode.json. `factory mode normal` keeps
+# the existing [dispatch]/[manager] values; maintenance selects low pace, and
+# feature-drive keeps normal pace while applying high aggression only to that
+# feature's recursive children. Omitted preset values use the defaults shown.
+# maintenance_labels = []  # extra admitted labels in addition to bug and chore
+#
+# [throttle.pace.low]
+# max_active = 1
+# Set any pace max_active to 0 to pause new ticket admission at that pace.
+# [throttle.pace.normal]
+# max_active = 2     # omitted: use dispatch.max_active
+# [throttle.pace.high]
+# max_active = 3
+#
+# [throttle.aggression.low]
+# review_rounds = 3
+# manager_rounds = 3
+# max_attempts = 3
+# budget_min = 90
+# [throttle.aggression.normal]
+# review_rounds = 1  # omitted: use dispatch.review_rounds
+# manager_rounds = 1 # omitted: use manager.rounds
+# max_attempts = 3   # omitted: use dispatch.max_attempts
+# budget_min = 90    # omitted: use dispatch.budget_min
+# [throttle.aggression.high]
+# review_rounds = 5
+# manager_rounds = 5
+# max_attempts = 4
+# budget_min = 150
+
 [engine]
 # Emit engine-stale using District's recorded host target, not a separate ref/CI lookup.
 # When enabled, finish land/review intake, then exit without claims, manager or learning work.
@@ -141,7 +173,7 @@
 # Commands run once in order, without a shell; stop on failure. Changed files are
 # committed and re-gated. Default []: no commands run. Uses the check timeout.
 # Review policy is read from the base ref, so a PR cannot change its own review rules.
-protected_paths = ["REVIEW.md"]
+protected_paths = ["REVIEW.md", ".factory.toml"]
 
 # Checks run in order inside the worktree; nonzero exit = FAIL. Built-ins
 # `conflict-markers` (first) and `leak-scan` (last) are always on. Mark
