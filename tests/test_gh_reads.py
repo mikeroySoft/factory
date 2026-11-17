@@ -10,6 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, watch
+from tests import test_manager_close_journal as manager_fixture
+from tests import test_watch as watch_fixture
 
 
 class PassReadTest(unittest.TestCase):
@@ -343,6 +345,54 @@ class SharedReadBoundaryTest(unittest.TestCase):
         [skip] = [row for row in lifecycle.read_events(dispatch.EVENTS) if row["event"] == "gh-read-skipped"]
         self.assertEqual((skip["ticket"], skip["code"], skip["returncode"]), (7, "gh_read_failed", 1))
 
+    def test_dependency_api_absence_keeps_body_blockers_but_other_failures_defer(self):
+        dispatch.configure(config.Config(self.journal.parent, "acme/widgets"))
+        for diagnostic, expected in (("gh: Not Found (HTTP 404)", [9]), ("connection refused", None)):
+            with self.subTest(diagnostic=diagnostic):
+                observed = None
+
+                def command(cmd, *args, diagnostic=diagnostic, **kwargs):
+                    if cmd[1] == "api":
+                        return subprocess.CompletedProcess(cmd, 1, "", diagnostic)
+                    return subprocess.CompletedProcess(cmd, 0, '{"state":"OPEN"}', "")
+
+                with mock.patch.object(dispatch, "_run", side_effect=command), \
+                        self.reads.scope(self.journal, "dispatch"), self.reads.item(7):
+                    observed = dispatch.open_blockers(7, "Blocked by: #9")
+                self.assertEqual(observed, expected)
+        self.assertEqual([row["code"] for row in lifecycle.read_events(self.journal)
+                          if row["event"] == "gh-read-skipped"], ["gh_read_failed"])
+
+    def test_dependency_404_keeps_roadmap_evidence_complete_inside_pass(self):
+        import os
+        import sys
+
+        from factory import plan, roadmap
+        from tests.test_roadmap import issue
+
+        command = self.journal.parent / "gh"
+        command.write_text(
+            f"#!{sys.executable}\nimport sys\n"
+            "print('gh: Not Found (HTTP 404)', file=sys.stderr)\nsys.exit(1)\n"
+        )
+        command.chmod(0o755)
+        cfg = config.Config(self.journal.parent, "acme/widgets")
+        result = {"sources": [], "errors": [], "coverage": {"notices": []}}
+        reader = plan.Reader(cfg, result)
+        reader.cache[f"{reader.prefix}/issues/7"] = issue(7, "Blocked by: #9")
+        reader.cache[f"{reader.prefix}/issues/9"] = issue(9, "Prerequisite")
+        observed = None
+        with mock.patch.dict(os.environ, {"PATH": f"{command.parent}{os.pathsep}{os.environ['PATH']}"}), \
+                self.reads.scope(self.journal, "manage"), self.reads.item(7):
+            observed = roadmap._child(reader, result, 7)
+        self.assertIsNotNone(observed)
+        row, body, complete = observed
+        self.assertTrue(complete)
+        self.assertEqual([blocker["number"] for blocker in row["blockers"]], [9])
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(lifecycle.read_events(self.journal), [])
+        self.probe.assert_not_called()
+
 
 class DispatchClaimReadTest(unittest.TestCase):
     def test_admission_read_failure_preserves_labels_assignee_and_host_claim(self):
@@ -377,3 +427,64 @@ class DispatchClaimReadTest(unittest.TestCase):
         rows = lifecycle.read_events(module.EVENTS)
         self.assertFalse(any(row.get("event") == "escalate" for row in rows))
         self.assertTrue(any(row.get("event") == "gh-read-skipped" and row["ticket"] == 7 for row in rows))
+
+
+class ManagerReadRetryTest(unittest.TestCase):
+    setUp = manager_fixture.ManagerCloseJournalTest.setUp
+    scenario = manager_fixture.ManagerCloseJournalTest.scenario
+    run_manager = manager_fixture.ManagerCloseJournalTest.run_manager
+
+    def test_close_read_failure_retries_next_pass_without_publishing_handoff(self):
+        repo, stubs, state_path = self.scenario(fail="pr view", error="connection refused")
+        before = json.loads(state_path.read_text())
+        rows, state = self.run_manager(repo, stubs, state_path)
+        self.assertEqual(state, before)
+        self.assertFalse(any(row.get("event") == "handoff" for row in rows))
+        state["fail"] = None
+        state_path.write_text(json.dumps(state))
+        rows, state = self.run_manager(repo, stubs, state_path)
+        self.assertIn({"name": config.LABEL_WONTFIX}, state["issue"]["labels"])
+        self.assertEqual(state["comments"], [
+            {"subject": "issue", "body": "Factory manager: No change should land."},
+        ])
+        self.assertFalse(any(row.get("event") == "handoff" for row in rows))
+        _, after = self.run_manager(repo, stubs, state_path)
+        self.assertEqual(after, state)
+
+    def test_partial_close_write_failure_is_not_replayed(self):
+        repo, stubs, state_path = self.scenario(fail="issue edit", error="write denied")
+        _, state = self.run_manager(repo, stubs, state_path)
+        self.assertEqual([comment for comment in state["comments"]
+                          if comment["body"] == "Factory manager: No change should land."], [
+            {"subject": "issue", "body": "Factory manager: No change should land."},
+        ])
+        state["fail"] = None
+        state_path.write_text(json.dumps(state))
+        _, after = self.run_manager(repo, stubs, state_path)
+        self.assertEqual(after["comments"], state["comments"])
+        self.assertEqual(after["issue"], state["issue"])
+
+
+class WatchReadHostConditionTest(unittest.TestCase):
+    setUp = watch_fixture.WatchTest.setUp
+    journal = watch_fixture.WatchTest.journal
+
+    def test_github_read_reasons_obey_host_threshold_and_recovery(self):
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(UTC)
+        for reason in ("gh_read_failed", "rate_limited"):
+            with self.subTest(reason=reason):
+                self.cfg.watch_host_failure_minutes = 15
+                self.journal(watch_fixture.exit_row("dispatch", "mechanism_failure", reason,
+                                                   at=(now - timedelta(minutes=20)).isoformat()))
+                self.assertEqual(watch.run_pass(self.cfg), [])
+                self.journal(watch_fixture.exit_row("dispatch", "mechanism_failure", reason,
+                                                   at=(now - timedelta(minutes=10)).isoformat()),
+                             watch_fixture.exit_row("dispatch", "mechanism_failure", reason,
+                                                   at=now.isoformat()))
+                filed = watch.run_pass(self.cfg)
+                self.assertEqual([(row["kind"], row["key"]) for row in filed], [("host", reason)])
+                create = self.gh.created[-1]
+                self.assertEqual(create[create.index("--label") + 1], "bug,host,needs-triage")
+                self.journal(watch_fixture.exit_row("dispatch", "completed", None))
