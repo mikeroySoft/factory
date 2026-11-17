@@ -35,6 +35,7 @@ LABEL_INFO = "needs-info"
 LABEL_AGENT = "ready-for-agent"
 LABEL_HUMAN = "ready-for-human"
 LABEL_APPROVED = "factory-approved"
+LABEL_HELD = "factory-held"
 LABEL_PROTECTED_OVERRIDE = "factory-protected-override"
 LABEL_ADD_ONLY_OVERRIDE = "factory-add-only-override"
 LABEL_CHORE = "chore"
@@ -50,6 +51,7 @@ LABELS = {
     LABEL_AGENT: ("0E8A16", "Fully specified and ready for an AFK agent"),
     LABEL_HUMAN: ("B60205", "Requires human implementation"),
     LABEL_APPROVED: ("0E8A16", "Reviewer APPROVE recorded by the factory; merge-stage precondition"),
+    LABEL_HELD: ("B60205", "Manager hold; draft PR until the hold is lifted through approval policy"),
     LABEL_CHORE: ("C2E0C6", "Mechanical maintenance work routed to the chore worker"),
     LABEL_PROTECTED_OVERRIDE: ("B60205", "Human authorization for worker edits to protected paths"),
     LABEL_ADD_ONLY_OVERRIDE: ("B60205", "Manager or human authorization for edits to existing files under gate.add_only_paths"),

@@ -109,6 +109,9 @@ class HoldLiftTest(unittest.TestCase):
 
     def test_unchanged_hold_lift_restores_approval_and_merge_candidate(self) -> None:
         self.approved_hold()
+        count = len(self.calls)
+        self.action("hold_pr")
+        self.assertEqual(len(self.calls), count)
         self.check_lock = True
         preview = self.prepare("lift_hold", ruling_id="r3-0911")
         receipt = self.apply(preview)
@@ -127,8 +130,8 @@ class HoldLiftTest(unittest.TestCase):
         self.assertEqual(len(self.calls), count)
         self.assertEqual(len(self.events("hold-lifted")), 1)
         with (
-            mock.patch.object(dispatch, "cfg", self.cfg),
-            mock.patch.object(dispatch, "REPO", self.cfg.repo),
+            mock.patch.object(dispatch, "cfg", self.cfg, create=True),
+            mock.patch.object(dispatch, "REPO", self.cfg.repo, create=True),
             mock.patch.object(dispatch, "gh_json", return_value=[dict(self.pr)]),
             mock.patch("factory.learn.promote_pass"),
             mock.patch.object(dispatch, "initiative_kind", return_value=True) as candidate,
@@ -178,6 +181,7 @@ class HoldLiftTest(unittest.TestCase):
         count = len(self.calls)
         with (self.cfg.factory / "locks" / "merge.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(self.prepare("lift_hold")["error"]["code"], "target_busy")
             result = self.apply(preview)
         self.assertEqual(result["error"]["code"], "target_busy")
         self.assertEqual(len(self.calls), count)
@@ -192,7 +196,8 @@ class HoldLiftTest(unittest.TestCase):
         self.assertEqual(self.prepare("approve_pr", add=[config.LABEL_APPROVED])["error"]["code"],
                          "approval_evidence")
         for args in ({"add": ["ready-for-agent"]}, {"remove": [config.LABEL_APPROVED]},
-                     {"add": [config.LABEL_APPROVED, "wontfix"]}, {"add": "factory-approved"}):
+                     {"add": [config.LABEL_APPROVED, "wontfix"]}, {"add": "factory-approved"},
+                     {}, {"comment": "not an approval effect"}):
             self.assertEqual(self.prepare("approve_pr", **args)["error"]["code"], "invalid_args")
         self.evidence()
         preview = self.prepare("approve_pr", add=[config.LABEL_APPROVED])
@@ -212,6 +217,46 @@ class HoldLiftTest(unittest.TestCase):
         self.assertEqual(result["status"], "failure")
         self.assertNotIn(config.LABEL_APPROVED, self.labels())
         self.assertEqual(self.events("approved"), [])
+
+    def test_explicit_approval_can_lift_draft_hold_but_refuses_missing_evidence(self) -> None:
+        self.approved_hold()
+        args = {"add": [config.LABEL_APPROVED], "remove": ["factory-held"]}
+        self.action("approve_pr", **args)
+        self.assertFalse(self.pr["isDraft"])
+        self.assertEqual(self.labels(), {config.LABEL_APPROVED})
+        self.assertEqual(self.events("approved")[-1]["caller"], "mcp")
+        self.action("hold_pr")
+        (self.cfg.factory / "events.jsonl").unlink()
+        count = len(self.calls)
+        self.assertEqual(self.prepare("approve_pr", **args)["error"]["code"], "approval_evidence")
+        self.assertTrue(self.pr["isDraft"])
+        self.assertEqual(self.labels(), {"factory-held"})
+        self.assertEqual(len(self.calls), count)
+
+    def test_dashboard_hold_and_lift_use_the_same_policy_and_snapshot(self) -> None:
+        self.evidence()
+        for request in (
+            {"add": [config.LABEL_APPROVED]},
+            {"add": ["factory-held"]},
+            {"remove": ["factory-held"]},
+        ):
+            preview = decisions.prepare(self.cfg, [{"op": "pr", "number": 17, **request}])
+            result = decisions.apply(self.cfg, preview["proposal_id"], preview["confirmation"])
+            self.assertEqual(result["status"], "success", result)
+        self.assertEqual(self.labels(), {config.LABEL_APPROVED})
+        self.assertFalse(self.pr["isDraft"])
+        self.assertEqual(self.events("approved")[-1]["caller"], "dashboard")
+
+    def test_hold_does_not_rebind_an_old_approval_to_the_current_head(self) -> None:
+        self.evidence()
+        self.action("approve_pr", add=[config.LABEL_APPROVED])
+        self.pr["headRefOid"] = "b" * 40
+        self.evidence("b" * 40)
+        self.action("hold_pr")
+        self.assertEqual(self.events("held")[-1]["approved_head"], self.head)
+        self.action("lift_hold")
+        self.assertEqual(self.labels(), set())
+        self.assertEqual(self.events("hold-lifted")[-1]["reason"], "head_moved")
 
 
 if __name__ == "__main__":

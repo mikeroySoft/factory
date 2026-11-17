@@ -3229,6 +3229,9 @@ two MCP tools call that same function. Nothing else composes these label edits.
 | `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
 | `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
 | `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
+| `hold_pr` | PR `number`, `ruling_id?`, `comment?` | open `agent/<n>` PR targeting main | draft, remove `factory-approved`, add `factory-held`; journal the previously recorded approved head |
+| `lift_hold` | PR `number`, `ruling_id?`, `comment?` | open `agent/<n>` PR targeting main | remove `factory-held`, mark ready; restore approval only for the unchanged recorded approved head with matching policy evidence |
+| `approve_pr` | PR `number`, `add?` (`["factory-approved"]`), `remove?` (`["factory-held"]`), `ruling_id?`, `comment?` | at least one label effect; approval requires the dashboard's exact-head policy | only those two label changes; explicit approval refuses missing/mismatched evidence before lifting |
 
 Preconditions run against the exact target the proposal binds to, so `apply`'s
 stale-target check guarantees they still held when the effect ran. Refusals are
@@ -3237,6 +3240,28 @@ structured `{ok: false, error: {code, message}}` with the same `code` on both pa
 `decisions` code. Every proposal records `caller` (`dashboard` or `mcp`) and
 `action` (`{name, args}`); the `human-decision` journal rows for `prepared`,
 `started` and the final status, and the receipt, carry both.
+
+PR holds and lifts run under both the ticket lock and `merge.lock`. The `held`
+event records `approved_head` from the existing approval journal, never by
+rebinding an old approval to a newer head. A conditional lift records
+`hold-lifted` with the current head, authenticated actor, caller, optional
+`ruling_id`, `approval_restored` and a reason (`head_moved`,
+`hold_evidence_missing`, or the approval policy refusal code). Moved heads and
+missing evidence release the hold without approval and remain subject to normal
+review. Repeating a completed lift has no further PR effects or lift event.
+
+Use `factory_prepare_action` with, for example,
+`{"repository":"owner/repo","action":"lift_hold","args":{"number":833,"ruling_id":"r3-0910"}}`,
+then pass the returned `proposal_id` and `confirmation` to `factory_apply_action`.
+For a legacy hold already lifted without a recorded hold snapshot, use
+`approve_pr` with `add:["factory-approved"]`: it still requires the same
+`decisions.apply` → `_approve` → `_approval_policy` checks as the dashboard.
+Approval events record the real `caller`/`source` (`mcp` or `dashboard`) and
+authenticated GitHub `actor`. No arbitrary label or actor can be supplied.
+External command failures retain the existing partial/uncertain receipt behavior;
+`merge.lock` serializes Factory operations, not remote pushes. Approval rechecks
+the head after labeling and withdraws a raced approval. The merge stage logs
+`missing factory-approved` when an otherwise eligible PR lacks that label.
 
 ## Read-only Factory Manager console (`factory chat`)
 
