@@ -11,6 +11,61 @@ from unittest.mock import patch
 from factory import config, dispatch, handoff, lifecycle, manage, throttle, trace
 from tests import test_risk_merge as pipeline
 from tests.test_schedule import REPO, ticket
+from tests.test_trace import decision
+
+
+class SchedulingHoldTraceTest(unittest.TestCase):
+    AT = "2026-10-23T10:00:00Z"
+
+    def test_scheduling_holds_preserve_pipeline_frontier_and_coverage(self):
+        triage = decision(
+            7, "triage", "ready-for-agent", self.AT,
+            causes=[{"ticket": 3, "relation": "blocked_by"}],
+        )
+        for stage, chosen, expected in (
+            ("binding", "unbound", "blocker"),
+            ("claim", "claimed", "plan"),
+            ("review", "APPROVE", "merge eligibility"),
+            ("merge", "ci-infra", "merge eligibility"),
+            ("merge", "merge now", None),
+        ):
+            rows = [triage, decision(7, stage, chosen, self.AT)]
+            baseline = trace.explain(rows, 7)
+            for mode, reason in (
+                ("normal", "assigned"),
+                ("normal", "blocked by #3"),
+                ("maintenance", "maintenance mode: not a bug/chore ticket"),
+            ):
+                with self.subTest(stage=stage, chosen=chosen, mode=mode, reason=reason):
+                    hold = {
+                        "event": "scheduling", "mode": mode, "at": self.AT,
+                        "explained": [{"ticket": 7, "decision": "held", "reason": reason}],
+                    }
+                    graph = trace.explain([*rows, hold], 7)
+                    self.assertEqual(graph["frontier_stage"], expected)
+                    self.assertEqual(graph["frontier"], baseline["frontier"])
+                    self.assertEqual(graph["coverage"], baseline["coverage"])
+                    self.assertEqual(graph["edges"], baseline["edges"])
+                    self.assertIn(reason, graph["nodes"][-1]["rationale"])
+
+    def test_repeated_holds_keep_latest_reason_without_evicting_decisions(self):
+        review = decision(7, "review", "APPROVE", self.AT)
+        holds = [
+            {
+                "event": "scheduling", "mode": "normal", "at": self.AT,
+                "explained": [{"ticket": 7, "decision": "held", "reason": f"assigned pass {index}"}],
+            }
+            for index in range(100)
+        ]
+        with patch.object(trace.runtime_events, "BYTE_LIMIT", 4096):
+            graph = trace.explain([review, *holds], 7)
+        self.assertIn(review, graph["nodes"])
+        self.assertEqual(graph["frontier"], review["decision_id"])
+        self.assertEqual(graph["frontier_stage"], "merge eligibility")
+        self.assertEqual(
+            [node["rationale"] for node in graph["nodes"] if node["chosen"] == "held"],
+            ["normal: assigned pass 99"],
+        )
 
 
 class AdmissionTest(unittest.TestCase):
