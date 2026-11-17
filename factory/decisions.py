@@ -1101,7 +1101,7 @@ def _withdraw_approval(cfg: Config, target: dict, deadline: float) -> None:
 
 def _hold(cfg: Config, step: dict, deadline: float) -> dict:
     """Hold/lift effects and conditional approval share apply's ticket and merge locks."""
-    target = step["target"]
+    target = _pr_target(cfg, step["target"]["number"], deadline)[0]
     holding = step["kind"] == "hold"
     labels = target["labels"]
     receipt = {
@@ -1121,6 +1121,7 @@ def _hold(cfg: Config, step: dict, deadline: float) -> dict:
         and previous.get("gate_head") == previous.get("head") == previous.get("review_head")
         else previous.get("approved_head") if not holding and previous.get("event") == "held" else None
     )
+    approval_error = None
 
     def mutate(argv: list[str]) -> None:
         _mutation(cfg, {**step, "argv": argv, "cwd": None}, deadline)
@@ -1143,7 +1144,7 @@ def _hold(cfg: Config, step: dict, deadline: float) -> dict:
         restored = False
         if not approved_head:
             reason = "hold_evidence_missing"
-        elif approved_head != fresh["head"] or fresh["head"] != target["head"]:
+        elif approved_head != fresh["head"] or fresh["head"] != step["target"]["head"]:
             reason = "head_moved"
         elif not step["restore"]:
             reason = "explicit_approval"
@@ -1152,6 +1153,15 @@ def _hold(cfg: Config, step: dict, deadline: float) -> dict:
                 _approve(cfg, {**step, "target": fresh}, deadline)
             except DecisionError as exc:
                 reason = exc.code
+            except (_FailedStep, _AmbiguousCommand) as exc:
+                approval_error = exc
+                reason = "approval_uncertain" if isinstance(exc, _AmbiguousCommand) else "approval_failed"
+                try:
+                    fresh = _pr_target(cfg, target["number"], deadline)[0]
+                except DecisionError:
+                    fresh = {**fresh, "head": None}
+                if isinstance(exc, _FailedStep) and fresh["head"] and fresh["head"] != target["head"]:
+                    reason = "head_moved"
             else:
                 restored, reason = True, "approval_restored"
     try:
@@ -1165,6 +1175,8 @@ def _hold(cfg: Config, step: dict, deadline: float) -> dict:
         })
     except OSError as exc:
         raise _AmbiguousCommand("hold audit could not be recorded") from exc
+    if approval_error is not None:
+        raise approval_error
     return {**receipt, "status": "applied", "output": reason}
 
 
