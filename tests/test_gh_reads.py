@@ -280,7 +280,7 @@ class SharedReadBoundaryTest(unittest.TestCase):
                     before = journal.read_bytes()
                     calls = []
 
-                    def command(cmd, *args, **kwargs):
+                    def command(cmd, *args, calls=calls, **kwargs):
                         calls.append(cmd)
                         if cmd[:3] == ["gh", "api", "rate_limit"]:
                             return subprocess.CompletedProcess(cmd, 0, json.dumps({"resources": {

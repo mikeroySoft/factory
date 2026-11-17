@@ -169,14 +169,13 @@ def _expected_result(cmd, result, check):
             return True
     if check:
         return False
-    # These nonzero results describe data, not a failed read. Preserve callers'
-    # existing optional-resource and CI-state contracts.
+    # Pending/failing CI states describe data, not a failed read.
     if cmd[1:3] == ["pr", "checks"] and result.returncode in (1, 8):
         try:
             return isinstance(json.loads(result.stdout), list)
         except (ValueError, TypeError):
             return False
-    return bool(re.search(r"HTTP 404|no pull requests found|no checks reported", result.stderr or "", re.IGNORECASE))
+    return False
 
 
 def run(cmd, invoke, *, env=None, check=True):
@@ -251,11 +250,11 @@ def scope(journal, stage, *, persistent=True, isolated=False):
         _CURRENT.reset(token)
 
 
-def guarded(journal, stage, fallback=None):
+def guarded(journal, stage, fallback=None, *, persistent=True):
     def decorate(function):
         @wraps(function)
         def wrapped(*args, **kwargs):
-            with scope(journal(), stage) as state:
+            with scope(journal(), stage, persistent=persistent) as state:
                 if not state.stopped:
                     try:
                         return function(*args, **kwargs)

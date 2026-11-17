@@ -1372,7 +1372,7 @@ def run(
     evaluate: bool | None = None,
     **fields: object,
 ) -> dict | None:
-    guarded = gh_reads.guarded(lambda: cfg.factory / "events.jsonl", "learn")
+    guarded = gh_reads.guarded(lambda: cfg.factory / "events.jsonl", "learn", persistent=not dry_run)
     return guarded(_run)(cfg, last, dry_run, evaluate, **fields)
 
 

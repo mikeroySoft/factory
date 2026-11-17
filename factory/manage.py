@@ -1259,5 +1259,6 @@ def main(argv: list[str]) -> int:
     dispatch.configure(config.load())
     if not args.dry_run:
         dispatch.worker_health_pass()
-    manage_pass(args.dry_run)
+    with gh_reads.scope(dispatch.EVENTS, "manage", persistent=not args.dry_run):
+        manage_pass(args.dry_run)
     return 0

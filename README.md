@@ -1650,8 +1650,10 @@ and a bounded-time `gh api rate_limit` probe using the same credentials/host.
 Explicit rate-limit/HTTP 429 diagnostics use code `rate_limited`; network,
 authentication and other read errors use `gh_read_failed`, even if an unrelated
 API budget is exhausted. Probe failures are recorded, not treated as proof of
-rate limiting. Expected missing optional resources retain their callers' absence
-handling. Writes and programming errors keep their existing failure paths.
+rate limiting. Expected missing PRs, releases and compare branches retain their
+callers' absence handling; a 404 on required resources (including Actions jobs)
+is a read failure, not evidence of failed CI. Writes and programming errors keep
+their existing failure paths.
 Once a merge succeeds, a failed metadata read cannot erase its receipt or permit
 a second merge in the same pass.
 
@@ -1663,8 +1665,8 @@ reads were attempted and more than half failed. There are no inline retries.
 Each affected pass logs and journals `pass-summary` with attempted/failed reads,
 skip counts, per-code counts, and its stop reason; partial passes do not advance
 the last-successful-stage marker. Unattempted work remains for the next pass.
-Dry-run/replay read accounting neither journals failures nor reads or persists
-production backoff.
+Dry-run/replay read accounting, including standalone manage, release and learn,
+neither journals failures nor reads or persists production backoff.
 
 Dispatch inspects paginated repository labels at pass start. Any `host:*` label
 requires `host_name`. When `host_name` is unset, dispatch also scans all paginated

@@ -639,6 +639,7 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
         lambda: cfg.factory / "events.jsonl",
         "release",
         fallback="GitHub read failed; release deferred",
+        persistent=not dry_run,
     )
     return guarded(_run)(cfg, dry_run, open_pr)
 
