@@ -55,7 +55,7 @@ def actor() -> str:
 
 
 def read(root: Path) -> dict | None:
-    """Passive atomic snapshot; only a pass or explicit resume resolves expiry."""
+    """Passive atomic snapshot; pause commands and stage checks resolve expiry."""
     try:
         value = json.loads((root / ".factory" / "pause.json").read_text())
     except FileNotFoundError:
@@ -95,7 +95,9 @@ def set_pause(root: Path, *, reason: str = "", until: str | None = None) -> dict
     with _locked(root) as directory:
         current = read(root)
         if current is not None:
-            return current
+            if not current.get("until") or _timestamp(current["until"]) > datetime.now(UTC):
+                return current
+            _resume(directory, current, "expiry")
         state = {"reason": reason, "at": datetime.now(UTC).isoformat(), "who": actor(), "until": until}
         temporary = directory / "pause.json.tmp"
         try:

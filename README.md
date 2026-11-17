@@ -93,14 +93,17 @@ the timer's pace. It does not disable the timer: scheduled passes observe the
 flag and stop before new side effects. `--reason` is optional and displays as
 `no reason` when omitted. Without `--until`, an explicit `factory resume` is
 required; a duration or RFC 3339 timestamp resumes admission after its deadline
-is resolved by a stage check. Re-running `factory install` or applying
-Factory through District leaves the local flag in place. Fleet-wide District
-pause controls are outside Factory's repository pause.
+is resolved by a stage check. Pausing again after an expired deadline journals
+the expiry and starts the new pause; repeating an active pause is a no-op.
+Re-running `factory install` or applying Factory through District leaves the local
+flag in place. Fleet-wide District pause controls are outside Factory's repository pause.
 
 A pause set during a pass prevents the dispatcher from starting another ticket.
 Work already inside a stage may finish that checkpoint, then is safely parked
-and unclaimed before any PR creation, merge, or push. Resume starts no work by
-itself; the next timer pass continues from durable GitHub and worktree state.
+and unclaimed before any PR creation, merge, or push. A paused manager FIX retains
+its pending decision and worktree for the next pass without another manager round.
+Resume starts no work by itself; the next timer pass continues from durable GitHub
+and worktree state.
 
 The only pause override is `factory dispatch --ticket N --force`. It applies to
 that explicit ticket invocation without clearing the flag; `--force` without

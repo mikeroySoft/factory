@@ -853,13 +853,14 @@ CI_KINDS = ("check_run", "commit_status")
 
 
 def apply_fix(n: int, issue: dict, data: dict, packet: Path, **decided: object) -> None:
-    """Execute a journaled FIX. One that finds no healthy worker is a host defect (#662): it
-    stays pending for `resume_fix`, never a spent or failed decision."""
+    """Execute a journaled FIX; unavailable workers and pauses leave it pending for resume."""
     try:
         apply(n, issue, "FIX", "", data, packet)
-    except dispatch.WorkerUnavailable as exc:
+    except (dispatch.WorkerUnavailable, pause.Paused) as exc:
         dispatch.record("manage-pending", ticket=n, decision="FIX", worker=data["worker"],
                         guidance=data["guidance"], packet=str(packet), reason=str(exc), **decided)
+        if isinstance(exc, pause.Paused):
+            dispatch.unclaim(n)
         raise
 
 
@@ -872,7 +873,7 @@ def resume_fix(n: int, issue: dict, pending: dict, **decided: object) -> None:
     if dispatch.fallback_worker(pending["worker"]) is None:
         raise dispatch.WorkerUnavailable(f"worker `{pending['worker']}` is still unavailable")
     dispatch.record("manage-resume", ticket=n, decision="FIX", **decided)
-    dispatch.log(f"#{n}: resuming the manager FIX that waited for a healthy worker")
+    dispatch.log(f"#{n}: resuming the pending manager FIX")
     apply_fix(n, issue, {"worker": pending["worker"], "guidance": pending["guidance"]},
               Path(pending["packet"]), **decided)
 
