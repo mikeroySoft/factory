@@ -4773,12 +4773,12 @@ def merge_pass_locked(dry_run: bool) -> None:
             "--state",
             "open",
             "--limit",
-            str(list_limit),
+            str(list_limit + 1),
             "--json",
             "number,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision",
         ]
     )
-    if len(prs) == list_limit:
+    if len(prs) > list_limit:
         log(f"merge: WARNING: open PR listing reached limit {list_limit}; results may be truncated")
         if not dry_run:
             record("merge-list-limit", limit=list_limit, count=len(prs))
