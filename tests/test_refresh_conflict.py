@@ -815,3 +815,133 @@ class TriageExemptionRegateTest(unittest.TestCase):
             self.assertTrue(dispatch.refresh_pr_branch(9, 102, False))
 
         self.assert_triage_flags(gate)
+
+
+class RefreshPauseRecoveryTest(unittest.TestCase):
+    setUp = RefreshGateFailureRecoveryTest.setUp
+    patched = RefreshGateFailureRecoveryTest.patched
+    events = RefreshGateFailureRecoveryTest.events
+
+    def configure_pausing_gate(self) -> None:
+        import shutil
+        import venv
+
+        runner = self.tmp / "gate-runner"
+        venv.EnvBuilder(with_pip=False).create(runner)
+        self.gate_python = runner / "bin" / "python"
+        purelib = subprocess.run(
+            [
+                str(self.gate_python),
+                "-c",
+                "import sysconfig; print(sysconfig.get_path('purelib'))",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        shutil.copytree(Path(dispatch.__file__).parent, Path(purelib) / "factory")
+        self.candidate = self.tmp / "refresh-candidate"
+        check = self.tmp / "pause-during-gate.py"
+        check.write_text(
+            "import json, subprocess, sys\n"
+            "from datetime import UTC, datetime\n"
+            "from pathlib import Path\n"
+            "root, candidate = map(Path, sys.argv[1:])\n"
+            "if not candidate.exists():\n"
+            "    candidate.write_text(subprocess.run(\n"
+            "        ['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True,\n"
+            "    ).stdout.strip())\n"
+            "    directory = root / '.factory'\n"
+            "    directory.mkdir(exist_ok=True)\n"
+            "    now = datetime.now(UTC).isoformat()\n"
+            "    (directory / 'pause.json').write_text(json.dumps({\n"
+            "        'reason': 'pause during refresh gate', 'at': now, 'who': 'test', 'until': None,\n"
+            "    }) + '\\n')\n"
+        )
+        gate_config = (
+            '[repo]\nslug = "acme/widgets"\n'
+            '[leak_scan]\npattern = ""\n'
+            '[gate]\nlock = ' + json.dumps(str(self.tmp / "gate.lock")) + '\n'
+            '[[gate.check]]\nname = "pause-at-gate"\n'
+            'run = ' + json.dumps([sys.executable, str(check), str(self.root), str(self.candidate)]) + '\n'
+        )
+        (self.origin / ".factory.toml").write_text(gate_config)
+        (self.root / ".factory.toml").write_text(gate_config)
+        git(self.origin, "add", ".factory.toml")
+        git(self.origin, "commit", "-qm", "configure real gate")
+        self.cfg.reviewer = [
+            sys.executable,
+            "-c",
+            "print('```json\\n{\"verdict\":\"APPROVE\",\"findings\":[]}\\n```\\nVERDICT: APPROVE')",
+        ]
+
+    def assert_parked(self, remote_head: str, *, approval_restored: bool) -> str:
+        wt = dispatch.FACTORY / "wt-9"
+        report = (wt / ".factory" / "gate-report-9.md").read_text()
+        self.assertTrue(self.candidate.exists(), report)
+        candidate = self.candidate.read_text()
+        evidence = f"refs/factory-evidence/9-refreshed-{candidate[:12]}"
+        self.assertNotEqual(candidate, self.pr_head)
+        self.assertEqual(git(wt, "rev-parse", "HEAD"), remote_head)
+        self.assertEqual(git(wt, "rev-parse", evidence), candidate)
+        self.assertEqual(git(self.origin, "rev-parse", "agent/9"), remote_head)
+        self.assertIn("- pause-at-gate: PASS", (wt / ".factory" / "gate-report-9.md").read_text())
+        self.assertEqual(self.github.assignees, [])
+        self.assertEqual(config.LABEL_APPROVED in self.github.pr_labels, approval_restored)
+        self.assertFalse(self.github.merged)
+        self.assertFalse(any(cmd[1:3] == ["pr", "merge"] for cmd in self.github.calls))
+        self.assertEqual(self.events("escalate"), [])
+        return candidate
+
+    def test_pause_during_real_refresh_gate_parks_and_later_merge_pass_recovers(self) -> None:
+        from factory import pause
+
+        self.configure_pausing_gate()
+        with mock.patch.object(dispatch.sys, "executable", str(self.gate_python)), self.patched():
+            dispatch.merge_pass_locked(False)
+
+        parked = self.assert_parked(self.pr_head, approval_restored=True)
+        with mock.patch.object(pause, "actor", return_value="operator"):
+            self.assertTrue(pause.resume(self.root))
+        with mock.patch.object(dispatch.sys, "executable", str(self.gate_python)), self.patched():
+            dispatch.merge_pass_locked(False)
+            refreshed = self.github.head()
+            self.assertNotEqual(refreshed, self.pr_head)
+            self.assertNotEqual(refreshed, parked)
+            self.assertFalse(self.github.merged)
+            dispatch.merge_pass_locked(False)
+
+        self.assertTrue(self.github.merged)
+        self.assertEqual(self.events("escalate"), [])
+
+    def test_pause_with_changed_remote_head_does_not_restore_stale_approval(self) -> None:
+        from factory import pause
+
+        self.configure_pausing_gate()
+        moved = None
+
+        def run(cmd, *args, **kwargs):
+            nonlocal moved
+            result = self.github.run(cmd, *args, **kwargs)
+            if moved is None and cmd[:1] == [sys.executable] and "gate" in cmd:
+                git(self.origin, "checkout", "-q", "agent/9")
+                (self.origin / "concurrent.txt").write_text("concurrent push\n")
+                git(self.origin, "add", "concurrent.txt")
+                git(self.origin, "commit", "-qm", "concurrent push")
+                moved = git(self.origin, "rev-parse", "HEAD")
+                git(self.origin, "checkout", "-q", "main")
+            return result
+
+        with mock.patch.object(dispatch.sys, "executable", str(self.gate_python)), \
+                mock.patch.multiple(dispatch, gh_json=self.github.gh_json, run=run):
+            dispatch.merge_pass_locked(False)
+
+        self.assertIsNotNone(moved)
+        self.assert_parked(moved, approval_restored=False)
+        with mock.patch.object(pause, "actor", return_value="operator"):
+            self.assertTrue(pause.resume(self.root))
+        with mock.patch.object(dispatch.sys, "executable", str(self.gate_python)), self.patched():
+            dispatch.merge_pass_locked(False)
+        self.assertEqual(self.github.head(), moved)
+        self.assertFalse(self.github.merged)
+        self.assertEqual(self.events("escalate"), [])
