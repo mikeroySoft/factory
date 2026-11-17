@@ -34,12 +34,13 @@ import tomllib
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext, suppress
+from dataclasses import replace
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 from urllib.parse import quote
 
-from factory import __version__, brief, config, generation, lifecycle, risk, runner
+from factory import __version__, brief, config, generation, lifecycle, risk, runner, throttle
 from factory.claims import HostSetupError, host_setup_problem, repository_host_problem
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
@@ -4385,6 +4386,7 @@ def refresh_requeue_context(n: int) -> str:
 
 def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     """Refresh, gate, push, and independently review the resulting immutable head."""
+    limits = throttle.effective(cfg, n)
     target = gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", "baseRefName"])
     if target.get("baseRefName") != cfg.main:
         log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
@@ -4472,7 +4474,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         ]
         why = (
             f"protected paths without `{LABEL_PROTECTED_OVERRIDE}`" if protected
-            else f"after {rounds} conflict-resolution round(s)" if rounds >= cfg.review_rounds
+            else f"after {rounds} conflict-resolution round(s)" if rounds >= limits.review_rounds
             else "ticket is not open" if issue.get("state") != "OPEN"
             else ""
         )
@@ -4592,7 +4594,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 ["issue", "view", str(n), "--repo", REPO, "--json", "state"]
             ).get("state")
             why = (
-                f"after {rounds} gate-resolution round(s)" if rounds >= cfg.review_rounds
+                f"after {rounds} gate-resolution round(s)" if rounds >= limits.review_rounds
                 else "ticket is not open" if issue_state != "OPEN"
                 else ""
             )
@@ -4666,7 +4668,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                      extra=f"{guidance}\n\n{findings}")
             return False
         if _actionable_review(n, head, verdict, findings, pr_failed):
-            if _review_rounds_used(n) < cfg.review_rounds and issue_is_open(n):
+            if _review_rounds_used(n) < limits.review_rounds and issue_is_open(n):
                 _record_rework(n, head, findings, deferred=True)
             else:
                 withdraw("review round budget exhausted after refresh", "review_revise", extra=findings)
@@ -5428,6 +5430,14 @@ def process_ticket(
     worker runs: `ticket_pass` ranks its next pick only then."""
     admission_id = admission_id or issue.get("_factory_admission_id")
     n, title = issue["number"], issue["title"]
+    mode = throttle.read(cfg)
+    limits = throttle.effective(replace(cfg, max_attempts=MAX_ATTEMPTS), n, state=mode)
+    if limits.max_active == 0:
+        log(f"#{n}: skipped (pace 0: no new claims)")
+        return
+    max_attempts = limits.max_attempts
+    if budget_min == cfg.budget_min:
+        budget_min = limits.budget_min
     labels = {label["name"] for label in issue.get("labels", [])}
     wt = FACTORY / f"wt-{n}"
     worker_key = cfg.worker_key(labels)
@@ -5496,6 +5506,12 @@ def process_ticket(
                     "state,labels,assignees,title,body,comments",
                 ]
             )
+            if mode["mode"] == "maintenance" and not {"bug", "chore", *cfg.throttle["maintenance_labels"]}.intersection(
+                label["name"] for label in fresh.get("labels", [])
+            ):
+                log(f"#{n}: held (maintenance mode: not a bug/chore ticket)")
+                execution.outcome, execution.reason = "not_admitted", "maintenance mode: not a bug/chore ticket"
+                return
             if is_initiative(fresh):
                 log(f"#{n}: refused (initiative records are never executed)")
                 execution.outcome = "not_admitted"
@@ -5597,6 +5613,7 @@ def process_ticket(
                 "claimed", ticket=n, title=title, labels=sorted(labels),
                 worker=worker_key, worker_version=cfg.worker_version.get(worker_key),
                 priority=tier, priority_source=why, experiment=schedule.is_experiment(fresh),
+                feature_drive=issue.get("_factory_feature_drive", False),
                 base=replay_base, generation=ticket_generation.number,
                 issue={key: fresh.get(key) for key in ("title", "body", "comments")},
             )
@@ -5607,7 +5624,7 @@ def process_ticket(
             restart = receipt is not None and lease == receipt["remote"]
             LOGS.mkdir(parents=True, exist_ok=True)
 
-            # Attempts 1..MAX_ATTEMPTS: worker + gate, feeding the failed report back. A sync
+            # Worker attempts feed failed gate reports back until this ticket's limit. A sync
             # candidate the dispatcher's own gate passed at this exact head needs no worker,
             # unless a refresh conflict or repeated refresh gate failure requeued it.
             local_context = "" if restart else refresh_requeue_context(n)
@@ -5619,11 +5636,11 @@ def process_ticket(
             staged = None if resolve else sync_staged(n, wt)
             if staged is not None:
                 report, gate_head = staged
-            for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
+            for attempt in range(1, max_attempts + 1 if staged is None else 1):
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, attempt, deadline, body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
-                    fixups=attempt == MAX_ATTEMPTS,
+                    fixups=attempt == max_attempts,
                 )
                 if ok:
                     break
@@ -5646,8 +5663,8 @@ def process_ticket(
             else:
                 if staged is None:
                     stuck = report.startswith("worker stuck")
-                    failed = (f"idle_timeout fired (worker stuck) on attempt {MAX_ATTEMPTS}"
-                              if stuck else f"gate failed {MAX_ATTEMPTS} times")
+                    failed = (f"idle_timeout fired (worker stuck) on attempt {max_attempts}"
+                              if stuck else f"gate failed {max_attempts} times")
                     escalate(n, f"{failed}; worktree kept at {wt}", logfile,
                              code="worker_stuck" if stuck else "gate_failed")
                     return
@@ -5699,7 +5716,7 @@ def process_ticket(
             if verdict is None:
                 log(
                     f"#{n}: reviewer unavailable; not a REVISE verdict after "
-                    f"{cfg.review_rounds} review round(s)"
+                    f"{limits.review_rounds} review round(s)"
                 )
                 escalate(
                     n, "reviewer unavailable after retries", logfile,
@@ -5708,14 +5725,14 @@ def process_ticket(
                 return
             # Durable charges survive pass boundaries; a deferred round is paid before requeue.
             rounds_used = _review_rounds_used(n)
-            for bounce in range(1, cfg.review_rounds + 2):
+            for bounce in range(1, limits.review_rounds + 2):
                 if pr_failed and (guidance := _protected_gate_guidance(findings, labels)):
                     escalate(n, "PR gate blocked by protected paths", logfile,
                              extra=f"{guidance}\n\n{findings}", code="protected_paths")
                     return
                 actionable = _actionable_review(n, gate_head, verdict, findings, pr_failed)
                 if verdict in {"APPROVE", "REJECT"} or (
-                    rounds_used >= cfg.review_rounds and (actionable or risk_disagreement_head is None)
+                    rounds_used >= limits.review_rounds and (actionable or risk_disagreement_head is None)
                 ):
                     break
                 if time.monotonic() > deadline:
@@ -5745,7 +5762,7 @@ def process_ticket(
                     record_worker_selection(n, labels, cause=retry_decision, relation="retries")
                     record_claim_decision(n, True, retry_decision, relation="retries")
                 ok, report, logfile, gate_head = worker_round(
-                    n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline,
+                    n, wt, labels, title, extra, max_attempts + bounce, deadline,
                     body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
                 )
@@ -5804,7 +5821,7 @@ def process_ticket(
                 escalate(n, "pr checks failed", logfile, extra="## PR-tier gate report\n\n" + findings,
                          code="pr_checks_failed")
             elif verdict != "APPROVE":
-                escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile, code="review_revise")
+                escalate(n, f"REVISE verdict after {limits.review_rounds} review round(s)", logfile, code="review_revise")
             elif approve_pr(n, gate_head):
                 log(f"#{n}: done (approved at {gate_head[:12]})")
             else:
@@ -5878,15 +5895,17 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
     An interrupt (Ctrl-C) stops every in-flight pipeline first, as it stopped the one before #579.
     """
     from factory import schedule
+    mode = throttle.read(cfg)
+    limits = throttle.effective(replace(cfg, max_active=MAX_ACTIVE), state=mode)
 
     with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
         active = active_tickets()
-        capacity = MAX_ACTIVE - len(active)
+        capacity = limits.max_active - len(active)
         log(f"active tickets: {len(active)}, capacity: {max(capacity, 0)}")
         if capacity <= 0:
             log("at capacity, nothing to do")
             if execution:
-                execution.wait("capacity_reached", mode="admission", active=len(active), max_active=MAX_ACTIVE)
+                execution.wait("capacity_reached", mode="admission", active=len(active), max_active=limits.max_active)
             return
         events = lifecycle.read_events(EVENTS)
         parents = {
@@ -5897,6 +5916,7 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
         session = fairness_session()
         streak = schedule.explicit_streak(events, session=session)
         experiments = schedule.active_experiments(events, set(active))
+    feature_slot = not any(schedule.feature_ticket(n, mode["feature"], parents) for n in active)
     picked = set()  # a skipped or dry-run pick can still be in the frontier
     pipelines = []
 
@@ -5917,6 +5937,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
                     break
                 decided = schedule.plan(
                     rows, remaining, repo=REPO, streak=streak, experiments=experiments, parents=parents,
+                    mode=mode["mode"], feature=mode["feature"], feature_slot=feature_slot,
+                    maintenance_labels=cfg.throttle.get("maintenance_labels", []),
                 )
                 for row in decided["explained"]:
                     log(f"#{row['ticket']}: {row['decision']} ({row['reason']})")
@@ -5926,17 +5948,21 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
                         record("decision", **payload)
                         admission = payload["decision_id"]
                     record("scheduling", capacity=remaining, active=active, explained=decided["explained"],
-                           fairness_session=session)
+                           fairness_session=session, mode=mode["mode"], feature=mode["feature"])
             if not decided["selected"]:
                 break
             issue = decided["selected"][0]
             picked.add(issue["number"])
             streak, experiments = schedule.advance(streak, experiments, decided["explained"][0])
+            feature_drive = decided["explained"][0].get("feature_drive", False)
+            if feature_drive:
+                feature_slot = False
             # A fresh context copy per ticket: its scope parents to the dispatcher's, which
             # record("scheduling") has committed, so no thread flushes a shared lazy buffer.
             # The next pick is ranked only once this one is claimed (or gone).
             admitted = threading.Event()
-            ticket = {**issue, "_factory_admission_id": admission, "_factory_admitted": admitted}
+            ticket = {**issue, "_factory_admission_id": admission, "_factory_admitted": admitted,
+                      "_factory_feature_drive": feature_drive}
             pipelines.append((issue["number"], pool.submit(contextvars.copy_context().run, work, ticket)))
             admitted.wait()
         pool.shutdown()  # wait for every pipeline here, where a Ctrl-C is handled below
@@ -6051,6 +6077,7 @@ def main(argv: list[str]) -> int:
     ):
         if (preflight := github_preflight(args.dry_run)) is not None:
             return preflight
+        throttle.refresh(cfg, dry_run=args.dry_run)
         if stale:
             log(f"engine-stale: installed {installed}, District target {target}")
             if not args.dry_run:

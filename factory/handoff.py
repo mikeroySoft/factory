@@ -17,7 +17,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from subprocess import CalledProcessError
 
-from factory import dispatch, generation, lifecycle
+from factory import dispatch, generation, lifecycle, throttle
 from factory.config import LABEL_AGENT, LABEL_HUMAN
 
 MARK = "factory-handoff"
@@ -194,7 +194,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                                    and e.get("reason") != "manager_failed"), None)
                 if not escalation or escalation.get("upstream") or not escalation.get("packet"):
                     continue
-                why = terminal(cfg, events, escalation)
+                why = terminal(throttle.effective(cfg, n), events, escalation)
                 if why is None:
                     if dry_run:
                         dispatch.log(f"#{n}: automatic recovery still eligible; routing stays advisory (`factory plan route {n}`)")

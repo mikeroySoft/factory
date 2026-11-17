@@ -14,7 +14,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import binding, config, dispatch, generation, handoff, lifecycle
+from factory import binding, config, dispatch, generation, handoff, lifecycle, throttle
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -403,7 +403,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         else:
             data = _split_bodies(n, issue.get("body") or "", data)
     if decision == "FIX":
-        cfg = dispatch.cfg
+        cfg = throttle.effective(dispatch.cfg, n)
         wt = cfg.factory / f"wt-{n}"
         already_human = any(
             label.get("name") == LABEL_HUMAN for label in issue.get("labels", [])
@@ -933,6 +933,7 @@ def frontier_pass(dry_run: bool = False) -> None:
         if pr["reviewDecision"] == "CHANGES_REQUESTED":
             continue  # human veto; the merge stage refuses it too
         n, number = int(match[1]), pr["number"]
+        cfg = throttle.effective(dispatch.cfg, n)
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dispatch.lock_held(lock_path):
             continue
@@ -1122,6 +1123,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                                "--json", "number,title,body,labels", "--limit", "1000"])
     for issue in issues:
         n = issue["number"]
+        cfg = throttle.effective(dispatch.cfg, n)
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dry_run and dispatch.lock_held(lock_path):
             continue
