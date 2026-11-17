@@ -240,3 +240,60 @@ class ManagerLimitTest(unittest.TestCase):
             self.assertIsNone(handoff.terminal(throttle.effective(cfg, 7),
                                               [{"event": "comment", "kind": "escalation", "at": "1"}], escalation))
             self.assertIn("exhausted", handoff.terminal(throttle.effective(cfg, 8), [], escalation))
+
+
+class RefreshFailureIsolationTest(unittest.TestCase):
+    def test_refresh_errors_preserve_mode_and_continue_dispatch_stages(self):
+        import subprocess
+
+        pipeline.isolate_journal(self)
+        self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config.Config(Path(directory), REPO, release_auto=True)
+            throttle.set_mode(cfg, "feature-drive", 9, who="alice")
+            before = (cfg.factory / "mode.json").read_bytes()
+            foreign = [[{
+                "number": 12, "repository_url": "https://api.github.com/repos/acme/other",
+            }]]
+            for failure in (
+                config.ConfigError("GitHub unavailable"),
+                subprocess.TimeoutExpired(["gh", "api"], 30),
+                OSError("cannot execute gh"),
+                foreign,
+            ):
+                with self.subTest(failure=failure):
+                    stages = []
+
+                    def github(_cfg, endpoint, **_kwargs):
+                        if isinstance(failure, BaseException):
+                            raise failure
+                        return foreign if "/sub_issues" in endpoint else {"number": 9, "state": "open"}
+
+                    with patch.object(config, "load", return_value=cfg), \
+                            patch.object(dispatch, "pin_root", return_value=[]), \
+                            patch.object(dispatch, "github_preflight", return_value=None), \
+                            patch.object(dispatch, "_sweep_stale_factory_tempdirs"), \
+                            patch.object(config, "engine_commit", return_value=None), \
+                            patch.object(config, "engine_target", return_value=None), \
+                            patch.object(dispatch, "worker_health_pass"), \
+                            patch("factory.results.prune", return_value={"status": "complete"}), \
+                            patch.object(throttle, "_github", side_effect=github), \
+                            patch("factory.release.run", side_effect=lambda *_a, **kw: stages.append(
+                                "release-open" if kw["open_pr"] else "release-land")), \
+                            patch.object(dispatch, "land_pass", side_effect=lambda _: stages.append("land")), \
+                            patch.object(dispatch, "review_intake_pass", side_effect=lambda _: stages.append("review")), \
+                            patch.object(manage, "manage_pass", side_effect=lambda _: stages.append("manager")), \
+                            patch("factory.learn.learn_pass", side_effect=lambda _: stages.append("learn")), \
+                            patch.object(dispatch, "frontier", return_value=[ticket(9, "1")]), \
+                            patch.object(dispatch, "process_ticket", side_effect=lambda *_a, **_kw: stages.append("ticket")), \
+                            patch.object(dispatch, "log") as log:
+                        self.assertEqual(dispatch.main([]), 0)
+                    self.assertEqual(stages, ["release-land", "land", "review", "manager",
+                                              "ticket", "learn", "release-open"])
+                    self.assertEqual((cfg.factory / "mode.json").read_bytes(), before)
+                    self.assertEqual(
+                        [row["mode"] for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+                         if row.get("event") == "mode"],
+                        ["feature-drive"],
+                    )
+                    self.assertTrue(any("mode refresh" in call.args[0] for call in log.call_args_list))
