@@ -227,6 +227,30 @@ class PauseTests(unittest.TestCase):
         self.assertFalse(self.gh.called)
         self.assertFalse(self.commands.called)
 
+    def test_forced_ticket_stale_engine_never_runs_unrelated_stages(self):
+        from factory import pause
+
+        self.call("pause", "--reason", "maintenance")
+        with patch.object(self.cfg, "engine_yield_for_update", True), \
+                patch.object(config, "engine_commit", return_value="a" * 40), \
+                patch.object(config, "engine_target", return_value="b" * 40), \
+                patch.object(dispatch, "github_preflight", return_value=None), \
+                patch.object(dispatch, "process_ticket") as process, \
+                patch.object(dispatch, "land_pass") as land, \
+                patch.object(dispatch, "review_intake_pass") as review, \
+                patch("factory.release.run") as release:
+            for options in ([], ["--dry-run"]):
+                with self.subTest(options=options):
+                    code, output = self.call("dispatch", "--ticket", "1", "--force", *options)
+                    land.assert_not_called()
+                    review.assert_not_called()
+                    release.assert_not_called()
+                    process.assert_not_called()
+                    self.assertNotEqual(code, 0)
+                    self.assertIn("engine-stale", output)
+                    self.assertIsNotNone(pause.read(self.root))
+                    self.assertTrue(pause.check(self.root, log=lambda _: None))
+
 
 class PauseClaimTests(unittest.TestCase):
     # Reuse the hermetic real ticket/host-claim fixture, not a fake process_ticket.
