@@ -6,6 +6,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from itertools import pairwise
 from pathlib import Path
 from unittest import mock
 
@@ -47,15 +48,17 @@ class HoldLiftTest(unittest.TestCase):
         if argv[:3] == ["gh", "pr", "view"]:
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.pr), "")
         if self.check_lock:
-            with (self.cfg.factory / "locks" / "merge.lock").open("a") as lock:
-                with self.assertRaises(BlockingIOError):
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with (
+                (self.cfg.factory / "locks" / "merge.lock").open("a") as lock,
+                self.assertRaises(BlockingIOError),
+            ):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.calls.append(argv)
         labels = self.labels()
         if argv[:3] == ["gh", "pr", "ready"]:
             self.pr["isDraft"] = "--undo" in argv
         elif argv[:3] == ["gh", "pr", "edit"]:
-            for flag, label in zip(argv, argv[1:]):
+            for flag, label in pairwise(argv):
                 if flag == "--add-label":
                     labels.add(label)
                     if label == config.LABEL_APPROVED and self.push_on_approve:
