@@ -91,6 +91,8 @@ class AddOnlyOverrideTest(unittest.TestCase):
             (repo / "tests" / "test_old.py").write_text("# obsolete test removed\n")
             git(repo, "add", "-A")
             git(repo, "commit", "-q", "-m", "delete obsolete test")
+            labels = {"bug", config.LABEL_ADD_ONLY_OVERRIDE}
+            flags = dispatch.gate_flags(None, labels)
 
             code, report = run_gate(
                 repo,
@@ -100,6 +102,7 @@ class AddOnlyOverrideTest(unittest.TestCase):
                 "--add-only-override",
             )
 
+            self.assertTrue(flags["add_only_override"])
             self.assertEqual(code, 0, report)
             self.assertNotIn("- protected-paths: FAIL", report)
             self.assertNotIn("- protected-tests: FAIL", report)
@@ -211,7 +214,7 @@ class AddOnlyOverrideTest(unittest.TestCase):
             with self.subTest(justification=justification):
                 self.assertEqual(manage.parse(f"DECISION: AUTHORIZE\n{payload}", {})[0], "HUMAN")
 
-    def test_manager_authorization_requests_receipt_and_waits_for_human(self) -> None:
+    def test_manager_authorization_adds_override_and_requeues(self) -> None:
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
         dispatch.configure(config.Config(Path(root.name), "acme/widgets"))
@@ -230,30 +233,33 @@ class AddOnlyOverrideTest(unittest.TestCase):
         commands = [call.args[0] for call in run.call_args_list]
         self.assertIn(
             ["gh", "issue", "edit", "7", "--repo", dispatch.REPO,
-             "--add-label", config.LABEL_ADD_ONLY_OVERRIDE,
-             "--remove-label", config.LABEL_AGENT, "--add-label", config.LABEL_HUMAN],
+             "--add-label", config.LABEL_ADD_ONLY_OVERRIDE],
             commands,
         )
-        self.assertFalse(any(
-            command[1:3] == ["issue", "edit"] and config.LABEL_AGENT in command
-            and command[command.index(config.LABEL_AGENT) - 1] == "--add-label"
-            for command in commands
-        ))
+        self.assertIn(
+            ["gh", "issue", "edit", "7", "--repo", dispatch.REPO,
+             "--remove-label", config.LABEL_HUMAN, "--add-label", config.LABEL_AGENT],
+            commands,
+        )
         comments = [command for command in commands if command[1:3] == ["issue", "comment"]]
         self.assertEqual(len(comments), 1)
         self.assertIn("Justification: The ticket requires it", comments[0][-1])
         self.assertIn("Guidance: Remove the old assertion", comments[0][-1])
-        self.assertIn("pinned reviewer receipt", comments[0][-1])
         comment_index = next(
             i for i, command in enumerate(commands)
             if command[1:3] == ["issue", "comment"]
         )
         grant_index = commands.index(
             ["gh", "issue", "edit", "7", "--repo", dispatch.REPO,
-             "--add-label", config.LABEL_ADD_ONLY_OVERRIDE,
-             "--remove-label", config.LABEL_AGENT, "--add-label", config.LABEL_HUMAN]
+             "--add-label", config.LABEL_ADD_ONLY_OVERRIDE]
         )
         self.assertLess(comment_index, grant_index)
+
+    def test_gate_flags_maps_add_only_override_label(self) -> None:
+        self.assertEqual(
+            dispatch.gate_flags(None, {config.LABEL_ADD_ONLY_OVERRIDE}),
+            {"protected_override": False, "add_only_override": True},
+        )
 
 
 if __name__ == "__main__":

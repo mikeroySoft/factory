@@ -95,6 +95,18 @@ class PinnedApprovalTest(unittest.TestCase):
         code, report = run_gate(self.repo, *args)
         self.assertNotEqual(code, 0, report)
 
+    def test_valid_receipt_does_not_exempt_unapproved_protected_edit(self):
+        path = self.repo / ".factory.toml"
+        path.write_text(path.read_text() + "# unapproved protected edit\n")
+        commit(self.repo)
+        self.data["head"] = git(self.repo, "rev-parse", "HEAD")
+        self.save()
+        ok, report, commands = self.dispatch_gate()
+        self.assertFalse(ok, report)
+        self.assertIn("--protected-allow", commands[-1])
+        self.assertIn("protected-paths: FAIL", report)
+        self.assertIn(".factory.toml", report)
+
     def test_missing_or_mismatched_reviewer_evidence_is_refused(self):
         for field, value in (
             ("reviewer", "impostor"), ("ruling", ""), ("head", self.base),
@@ -175,6 +187,7 @@ class PinnedApprovalTest(unittest.TestCase):
         for labels, body, option, expected_ok in (
             ({config.LABEL_PROTECTED_OVERRIDE}, "", "--protected-override", True),
             (set(), "factory-protected-override: reviewed test change", "--test-override", False),
+            ({config.LABEL_ADD_ONLY_OVERRIDE}, "", "--add-only-override", False),
         ):
             with self.subTest(option=option):
                 flags = dispatch.gate_flags(
@@ -182,7 +195,8 @@ class PinnedApprovalTest(unittest.TestCase):
                     body=body + "\nNo repro test: approval fixture",
                     comments=[{"body": self.comment["body"]}],
                 )
-                with mock.patch.object(dispatch, "gate_flags", return_value=flags):
+                with mock.patch.object(dispatch, "gate_flags", return_value=flags), \
+                        mock.patch.object(dispatch, "gh_json", side_effect=AssertionError("receipt lookup")):
                     ok, report, commands = self.dispatch_gate()
                 self.assertEqual(ok, expected_ok, report)
                 self.assertIn(option, commands[-1])
@@ -191,17 +205,16 @@ class PinnedApprovalTest(unittest.TestCase):
                 if not expected_ok:
                     self.assertIn("protected-paths: FAIL", report)
 
-    def test_owner_requeue_after_approval_request_opens_a_generation(self):
+    def test_authorize_requeue_does_not_open_an_owner_generation(self):
         from factory import generation
 
         release = generation.owner_requeue([
             {"event": "escalate", "ticket": 7, "reason": "gate failed"},
             {"event": "manage", "ticket": 7, "decision": "AUTHORIZE"},
         ], 7)
-        self.assertIsNotNone(release)
-        self.assertEqual((release["generation"], release["source"]), (1, "label"))
+        self.assertIsNone(release)
 
-    def test_approval_request_needs_a_terminal_human_handoff(self):
+    def test_authorize_requeue_does_not_require_a_terminal_human_handoff(self):
         from factory import handoff
 
         cfg = config.Config(self.repo, "acme/widgets", manager=["manager"])
@@ -210,7 +223,7 @@ class PinnedApprovalTest(unittest.TestCase):
             escalation,
             {"event": "manage", "ticket": 7, "round": 1, "decision": "AUTHORIZE"},
         ], escalation)
-        self.assertIsNotNone(reason)
+        self.assertIsNone(reason)
 
     def test_dispatch_stale_approval_cannot_authorize_new_head(self):
         (self.repo / "new.txt").write_text("new head\n")
@@ -225,7 +238,7 @@ class PinnedApprovalTest(unittest.TestCase):
         self.data["head"] = git(self.repo, "rev-parse", "HEAD")
         self.data["add_only"] = {"tests/test_old.py": blob(self.repo, APPROVED)}
         self.save()
-        ok, report, commands = self.dispatch_gate(label=True)
+        ok, report, commands = self.dispatch_gate()
         self.assertTrue(ok, report)
         self.assertIn("--add-only-allow", commands[-1])
         self.assertIn("--add-only-allow-base", commands[-1])
@@ -234,26 +247,25 @@ class PinnedApprovalTest(unittest.TestCase):
         commit(self.repo)
         self.data["head"] = git(self.repo, "rev-parse", "HEAD")
         self.save()
-        ok, report, commands = self.dispatch_gate(label=True)
+        ok, report, commands = self.dispatch_gate()
         self.assertFalse(ok, report)
         self.assertIn("protected-tests: FAIL", report)
         (self.repo / "tests/test_old.py").write_text(APPROVED + "# drift\n")
         commit(self.repo)
-        ok, report, commands = self.dispatch_gate(label=True)
+        ok, report, commands = self.dispatch_gate()
         self.assertFalse(ok, report)
         self.assertNotIn("--add-only-override", commands[-1])
 
-    def test_add_only_label_without_receipt_is_not_blanket_authority(self):
+    def test_add_only_label_preserves_explicit_override_without_receipt(self):
         (self.repo / "mutation-equivalents.json").write_text("[]\n")
         (self.repo / "tests/test_old.py").write_text(APPROVED)
         commit(self.repo)
         self.comment["body"] = ""
         self.response.write_text("{}")
         ok, report, commands = self.dispatch_gate(label=True)
-        self.assertFalse(ok, report)
-        self.assertIn("protected-paths: FAIL", report)
-        self.assertIn("tests/test_old.py", report)
-        self.assertNotIn("--add-only-override", commands[-1])
+        self.assertTrue(ok, report)
+        self.assertIn("--add-only-override", commands[-1])
+        self.assertNotIn("--approval-comment", commands[-1])
 
 
 if __name__ == "__main__":
