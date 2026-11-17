@@ -737,15 +737,18 @@ class HostClaim:
     def heartbeat(self) -> None:
         while not self.stopped.wait(cfg.claim_ttl_seconds / 4):
             try:
-                with lifecycle.scope(EVENTS, "claim-heartbeat", ticket=self.n, lazy=True):
-                    owned = owned_host_claim(self.n)
-                    if owned is None or owned["nonce"] != self.comment["nonce"]:
-                        log(f"#{self.n}: host claim heartbeat stopped (ownership lost)")
-                        return
-                    run(["gh", "api", f"repos/{REPO}/issues/comments/{self.comment['id']}",
-                         "--method", "PATCH", "-f", f"body={self.body()}"])
-            except gh_reads.ReadFailed:
-                return
+                with gh_reads.scope(EVENTS, "claim-heartbeat", isolated=True) as reads:
+                    if reads.stopped:
+                        continue
+                    with gh_reads.item(self.n), lifecycle.scope(
+                        EVENTS, "claim-heartbeat", ticket=self.n, lazy=True,
+                    ):
+                        owned = owned_host_claim(self.n)
+                        if owned is None or owned["nonce"] != self.comment["nonce"]:
+                            log(f"#{self.n}: host claim heartbeat stopped (ownership lost)")
+                            return
+                        run(["gh", "api", f"repos/{REPO}/issues/comments/{self.comment['id']}",
+                             "--method", "PATCH", "-f", f"body={self.body()}"])
             except (OSError, subprocess.CalledProcessError) as exc:
                 log(f"#{self.n}: host claim heartbeat failed ({exc})")
 
@@ -817,6 +820,47 @@ def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
     return None
 
 
+def recoverable_single_host_assignment(n: int, issue: dict) -> bool:
+    """A local claim interrupted by a failed read may resume only as the same GitHub user."""
+    if cfg.host_name or not issue.get("assignees"):
+        return False
+    claim_execution = None
+    interrupted = False
+    for row in lifecycle.read_events(EVENTS):
+        if (
+            row.get("event") == "decision"
+            and row.get("ticket") == n
+            and row.get("stage") == "claim"
+        ):
+            execution_id = row.get("execution_id")
+            claim_execution = (
+                execution_id
+                if row.get("chosen") == "claimed" and isinstance(execution_id, str)
+                else None
+            )
+            interrupted = False
+        elif (
+            claim_execution is not None
+            and row.get("event") == "ticket-read-deferred"
+            and row.get("ticket") == n
+            and row.get("execution_id") == claim_execution
+        ):
+            interrupted = True
+    if not interrupted:
+        return False
+    identity = None
+    with gh_reads.item(n):
+        current = gh_json(["api", "user"])
+        if isinstance(current, dict) and isinstance(current.get("login"), str):
+            identity = current["login"].casefold()
+    return bool(identity) and all(
+        isinstance(assignee, dict)
+        and isinstance(assignee.get("login"), str)
+        and assignee["login"].casefold() == identity
+        for assignee in issue["assignees"]
+    )
+
+
 def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
     """Apply lifecycle transitions; release host resources only when this host owns them."""
     claims = host_claims(n) if cfg.host_name else []
@@ -871,7 +915,9 @@ def frontier() -> list[dict]:
                 issue["held"] = "initiative record"
             elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
                 issue["held"] = held
-            elif issue["assignees"] and not (cfg.host_name and claims):
+            elif issue["assignees"] and not (
+                (cfg.host_name and claims) or recoverable_single_host_assignment(n, issue)
+            ):
                 issue["held"] = "assigned"
             elif blockers := open_blockers(n, issue.get("body", "")):
                 issue["held"] = f"blocked by {', '.join(f'#{b}' for b in blockers)}"
@@ -5148,7 +5194,10 @@ def merge_pass_locked(dry_run: bool) -> None:
                         ])
                         merge_commit = merged_pr.get("mergeCommit") if isinstance(merged_pr, dict) else None
                         merge_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
-                    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+                    except (
+                        gh_reads.ReadFailed, subprocess.CalledProcessError,
+                        json.JSONDecodeError, OSError,
+                    ):
                         merge_sha = None
                     record(
                         "merged", ticket=n, pr=pr_num, method=method[2:], head=head,
@@ -5160,7 +5209,10 @@ def merge_pass_locked(dry_run: bool) -> None:
                     )
                 execution.outcome = "merged"
                 log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
-                cleanup_after_merge(n, head)
+                try:
+                    cleanup_after_merge(n, head)
+                except gh_reads.ReadFailed:
+                    log(f"PR #{pr_num}: merged; cleanup deferred after a failed GitHub read")
                 return
 
 
@@ -5540,11 +5592,17 @@ def process_ticket(
             if cfg.host_name:
                 claims, shared_context = host_claim_state(n, require_shared_login=True)
                 fresh = release_stale_claims(n, fresh, claims)
+            recovering_assignment = (
+                not forced and recoverable_single_host_assignment(n, fresh)
+            )
+            assigned_elsewhere = bool(fresh["assignees"]) and not (
+                (cfg.host_name and claims) or recovering_assignment
+            )
             if not forced and (
                 fresh["state"].upper() != "OPEN"
                 # Authenticated claims arbitrate a shared bot assignment below;
                 # stale recovery must not clear a replacement's assignment.
-                or (fresh["assignees"] and not (cfg.host_name and claims))
+                or assigned_elsewhere
                 or LABEL_AGENT not in {label["name"] for label in fresh["labels"]}
             ):
                 log(f"#{n}: skipped (state changed since frontier query)")
@@ -5836,6 +5894,11 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except gh_reads.ReadFailed as exc:
+            if claimed:
+                execution.outcome, execution.reason = "mechanism_failure", exc.code
+                record("ticket-read-deferred", ticket=n, code=exc.code)
+            raise
         except HostSetupError as exc:
             log(f"#{n}: refused ({exc})")
             execution.outcome, execution.reason = "not_admitted", "host_setup"
@@ -6079,10 +6142,12 @@ def main(argv: list[str]) -> int:
     yield_for_update = stale and cfg.engine_yield_for_update
 
     # Lazy: an idle pass (nothing claimed, merged, waited on or failed) journals no lifecycle rows.
-    with gh_reads.scope(EVENTS, "dispatch") as reads, (nullcontext() if args.dry_run else lifecycle.scope(
-        EVENTS, "dispatcher", dispatcher=True, lazy=True,
-        engine_version=__version__, engine_commit=installed,
-    )):
+    with gh_reads.scope(EVENTS, "dispatch", persistent=not args.dry_run) as reads, (
+        nullcontext() if args.dry_run else lifecycle.scope(
+            EVENTS, "dispatcher", dispatcher=True, lazy=True,
+            engine_version=__version__, engine_commit=installed,
+        )
+    ):
         if reads.stopped:
             return 0
         if (preflight := github_preflight(args.dry_run)) is not None:
