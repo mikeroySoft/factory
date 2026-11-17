@@ -303,6 +303,44 @@ class PauseClaimTests(unittest.TestCase):
                 self.assertFalse(module.active_tickets())
                 self.assertFalse(any(row.get("event") == "escalate" for row in lifecycle.read_events(module.EVENTS)))
 
+    def test_resume_fix_reacquires_host_ownership_before_applying(self):
+        from factory import manage
+
+        module = self.dispatcher("tank")
+        pending = {"worker": "default", "guidance": "fix boundary", "packet": "packet.md"}
+        module.record("manage-pending", ticket=7, decision="FIX", **pending)
+
+        def apply_owned(*args, **kwargs):
+            self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+            self.assertIsNotNone(module.owned_host_claim(7))
+            self.assertTrue(module._HOST_CLAIMS[7].thread.is_alive())
+
+        with patch.object(manage, "dispatch", module), \
+                patch.object(module, "fallback_worker", return_value="default"), \
+                patch.object(manage, "apply_fix", side_effect=apply_owned) as apply:
+            manage.resume_fix(7, self.github.issue, pending)
+        apply.assert_called_once()
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertEqual(len(self.github.comments), 1)
+        self.assertEqual(module._HOST_CLAIMS, {})
+        self.assertIsNone(manage.pending_fix(lifecycle.read_events(module.EVENTS)))
+
+    def test_resume_fix_leaves_pending_when_another_host_owns_ticket(self):
+        from factory import manage
+
+        module = self.dispatcher("tank")
+        self.github.add_claim("ultron", datetime.now(UTC))
+        pending = {"worker": "default", "guidance": "fix boundary", "packet": "packet.md"}
+        module.record("manage-pending", ticket=7, decision="FIX", **pending)
+        with patch.object(manage, "dispatch", module), \
+                patch.object(module, "fallback_worker", return_value="default"), \
+                patch.object(manage, "apply_fix") as apply:
+            manage.resume_fix(7, self.github.issue, pending)
+        apply.assert_not_called()
+        self.assertEqual(len(self.github.comments), 1)
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertIsNotNone(manage.pending_fix(lifecycle.read_events(module.EVENTS)))
+
 
 class PauseManagerFixTests(unittest.TestCase):
     from tests.test_frontier import FrontierTest as _Harness
@@ -400,6 +438,30 @@ class PauseManagerFixTests(unittest.TestCase):
 
     def test_escalation_fix_paused_before_push_releases_assignment_and_resumes(self):
         self.park_and_resume("escalation")
+
+    def test_resumed_frontier_fix_is_not_claimed_again_by_ticket_pass(self):
+        def fresh_issue(args):
+            result = self.gh_json(args)
+            for issue in result if args[:2] == ["issue", "list"] else [result]:
+                if args[0] == "issue":
+                    issue["assignees"] = [{"login": "factory-bot"}] if self.assigned else []
+            return result
+
+        def run(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "issue", "edit"] and "--add-assignee" in cmd:
+                self.assigned = True
+            return self.fake_run(cmd, *args)
+
+        with patch.object(dispatch, "gh_json", side_effect=fresh_issue), \
+                patch.object(dispatch, "_run", side_effect=run):
+            self.park_and_resume("frontier")
+            with patch.object(dispatch, "active_tickets", return_value=[]), \
+                    patch.object(dispatch, "fairness_session", return_value={}), \
+                    patch.object(dispatch, "open_blockers", return_value=[]), \
+                    patch.object(dispatch, "process_ticket") as process:
+                dispatch.ticket_pass(1, False)
+            process.assert_not_called()
+            self.assertTrue(self.assigned)
 
 
 if __name__ == "__main__":
