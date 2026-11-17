@@ -313,19 +313,18 @@ def explain(rows: list[dict], ticket: int) -> dict:
     nodes = []
     decisions = []
     ordered = []
+    latest_hold = None
     for index, row in enumerate(rows):
         if isinstance(row, dict) and row.get("event") == "scheduling":
             explanation = next((r for r in row.get("explained", [])
                                 if r.get("ticket") == ticket and r.get("decision") == "held"), None)
             if explanation:
-                node = {
+                latest_hold = {
                     "decision_id": f"scheduling:{ticket}:{index}", "ticket": ticket,
                     "stage": "admission", "at": row.get("at", "unknown"), "chosen": "held",
                     "rationale": _text(f"{row.get('mode', 'normal')}: {explanation['reason']}"),
                     "synthesized": True,
                 }
-                nodes.append(node)
-                ordered.append(node)
         if not isinstance(row, dict) or row.get("ticket") != ticket:
             continue
         if row.get("event") == "decision":
@@ -341,6 +340,9 @@ def explain(rows: list[dict], ticket: int) -> dict:
             node = _legacy(row, index)
             nodes.append(node)
             ordered.append(node)
+    # Holds explain eligibility, not transitions through the ticket's pipeline.
+    if latest_hold:
+        nodes.append(latest_hold)
 
     edges = []
     seen_edges = set()

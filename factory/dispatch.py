@@ -81,7 +81,6 @@ _ESCALATED: set[int] = set()
 PR_GATE_WAIT = "WAIT"
 
 
-
 def configure(c: Config) -> None:
     global cfg, ROOT, REPO, UPSTREAM, UPSTREAM_REPO, FACTORY, LOGS, SYNC_LOG, EVENTS
     global MAX_ACTIVE, MAX_ATTEMPTS
