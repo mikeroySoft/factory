@@ -60,6 +60,24 @@ class TriageReadFailureTest(unittest.TestCase):
                      if row.get("event") == "gh-read-skipped"]
         self.assertEqual((skipped["code"], skipped["ticket"]), ("gh_read_failed", 2))
 
+    def test_dry_run_failure_never_persists_backoff_or_journal(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cfg = config.Config(root, "acme/widgets")
+
+        def command(cmd, **kwargs):
+            if cmd[:3] == ["gh", "api", "rate_limit"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"resources": {
+                    name: {"remaining": 0, "reset": 4102444800} for name in ("core", "graphql")
+                }}), "")
+            return subprocess.CompletedProcess(cmd, 1, "", "GraphQL: API rate limit exceeded")
+
+        with mock.patch.object(config, "load", return_value=cfg), \
+                mock.patch("subprocess.run", side_effect=command):
+            triage.main(["--dry-run", "--issue", "7"])
+        self.assertFalse((cfg.factory / "events.jsonl").exists())
+        with gh_reads.scope(cfg.factory / "events.jsonl", "triage") as state:
+            self.assertFalse(state.stopped)
+
 
 if __name__ == "__main__":
     unittest.main()
