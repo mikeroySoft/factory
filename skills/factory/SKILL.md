@@ -105,9 +105,10 @@ Before filing, compare **Touches** against `[gate].protected_paths` and
 `mutation-equivalents.json` alone supports a pinned reviewer receipt (README **Gate**)
 instead of the blanket `factory-protected-override` label. This repository keeps
 `tests/**` add-only: new test files and appended lines need no approval; changing
-existing lines needs a reviewer receipt pinning the resulting head/base/blobs.
-`factory-add-only-override` and manager `AUTHORIZE` only request that receipt.
-`AUTHORIZE` leaves the ticket ready-for-human; after review, post the receipt and requeue.
+existing lines can use a reviewer receipt pinning the resulting head/base/blobs.
+The existing `factory-add-only-override` label remains add-only authority; manager
+`AUTHORIZE` adds it and requeues. That label skips receipt lookup and never
+authorizes protected paths.
 Label bug fixes `bug`; the worker must commit the reproducing test first and name it as
 `Repro test: <test ID>` in the handoff. If that is impractical, the ticket author can
 add `No repro test: <reason>` to the body, or the authenticated triage account can

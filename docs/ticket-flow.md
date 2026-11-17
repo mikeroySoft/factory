@@ -128,7 +128,7 @@ flowchart TB
   RFH -->|"packet and manager rounds left: manage.escalation_pass"| MGR
   RFH -->|"terminal, routed request published: handoff.handoff_pass"| HUMAN
   MGR -->|"RETRY, REWRITE, or ROUTE: manage.apply"| RFA
-  MGR -->|"AUTHORIZE requests pinned reviewer receipt; waits for human review and requeue: manage.apply"| RFH
+  MGR -->|"AUTHORIZE adds add-only authority before requeue: manage.apply"| RFA
   MGR -->|"SPLIT, children opened, parent stays: manage.apply"| NT
   MGR -->|"FIX: worker round, gate, review: manage.apply"| FA
   MGR -->|"FIX pr-tier mutation proof base moved: no round charged: dispatch.defer_mutation_proof"| RFA
@@ -213,7 +213,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
 | `learn.promote` | — | `factory-approved` | `factory learn` PR (lessons, curate, revert-lessons) with head-bound gate PASS, reviewer APPROVE and green CI, then squash merge (`learn.promote_pass` runs it per PR); lessons/curate merges open a `promotion-open` that `learn.decide_promotions` keeps or reverts |
-| `manage.apply` | `ready-for-human`, `ready-for-agent`, `*` | `factory-add-only-override`, `ready-for-human`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE requests a pinned receipt and waits for human review/requeue; RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
+| `manage.apply` | `ready-for-human`, `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only edits before requeue; RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |
 | `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, `ready-for-human`, or `wontfix-proposal` |
 | `watch.run_pass` | — | `*` | New `bug` + `needs-triage` issue per runtime-failure fingerprint (`watch.LABELS`) |

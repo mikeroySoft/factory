@@ -2234,38 +2234,9 @@ def commit_leftovers(wt: Path, n: int, title: str) -> None:
         run(["git", "commit", *flags, "-m", f"agent/{n}: {title}"], cwd=wt)
 
 
-def _reviewed_gate_flags(wt: Path, ticket: int, head: str, base: str) -> list[str]:
-    """Fetch ticket-owned authority; the gate independently re-fetches the selected receipt."""
-    from factory import gate
-
-    common = run(["git", "merge-base", base, "HEAD"], cwd=wt, check=False).stdout.strip()
-    try:
-        pages = gh_json([
-            "api", "--paginate", "--slurp",
-            f"repos/{REPO}/issues/{ticket}/comments?per_page=100",
-        ])
-    except (OSError, ValueError, subprocess.CalledProcessError):
-        return []
-    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
-        return []
-    for comment in reversed([row for page in pages for row in page]):
-        try:
-            data = gate.reviewed_approval(comment, REPO, ticket, head, common)
-        except (TypeError, ValueError):
-            continue
-        flags = ["--approval-ticket", str(ticket), "--approval-comment", str(comment["id"])]
-        for scope, option in (("protected", "--protected-allow"), ("add_only", "--add-only-allow")):
-            for path, sha in sorted(data[scope].items()):
-                flags += [option, f"{path}={sha}"]
-        if data["add_only"]:
-            flags += ["--add-only-allow-base", data["base"]]
-        return flags
-    return []
-
-
 def run_gate(
     wt: Path, n: int | str, skip: str = "", protected_override: bool = False,
-    test_override: bool = False,
+    test_override: bool = False, add_only_override: bool = False,
     tier: str = "attempt", upstream: list[str] = (), bug: bool = False,
     repro_test: str | None = None, no_repro_test: str | None = None,
     base: str | None = None, timeout: float | None = None, blocking_mutation: bool = False,
@@ -2298,9 +2269,8 @@ def run_gate(
         cmd.append("--protected-override")
     if test_override:
         cmd.append("--test-override")
-    if tier == "attempt" and str(n).isdigit() and not (protected_override or test_override):
-        # Read live comments: the reviewed head's receipt may post during the worker round.
-        cmd += _reviewed_gate_flags(wt, int(n), head, base or f"origin/{cfg.main}")
+    cmd += _reviewed_gate_flags(wt, n, head, base or f"origin/{cfg.main}",
+                               tier, protected_override or test_override, add_only_override)
     if bug:
         cmd.append("--bug")
     if repro_test:
@@ -3650,12 +3620,50 @@ def _ticket_line(text: str, name: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def _reviewed_gate_flags(
+    wt: Path, ticket: int | str, head: str, base: str,
+    tier: str, blanket_override: bool, add_only_override: bool,
+) -> list[str]:
+    """Read live receipts at gate time, unless existing blanket authority takes precedence."""
+    if add_only_override:
+        return ["--add-only-override"]
+    if blanket_override or tier != "attempt" or not str(ticket).isdigit():
+        return []
+    from factory import gate
+
+    common = run(["git", "merge-base", base, "HEAD"], cwd=wt, check=False).stdout.strip()
+    try:
+        pages = gh_json([
+            "api", "--paginate", "--slurp",
+            f"repos/{REPO}/issues/{ticket}/comments?per_page=100",
+        ])
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return []
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        return []
+    for comment in reversed([row for page in pages for row in page]):
+        try:
+            data = gate.reviewed_approval(comment, REPO, int(ticket), head, common)
+        except (TypeError, ValueError):
+            continue
+        flags = ["--approval-ticket", str(ticket), "--approval-comment", str(comment["id"])]
+        for scope, option in (("protected", "--protected-allow"), ("add_only", "--add-only-allow")):
+            for path, sha in sorted(data[scope].items()):
+                flags += [option, f"{path}={sha}"]
+        if data["add_only"]:
+            flags += ["--add-only-allow-base", data["base"]]
+        return flags
+    return []
+
+
 def gate_flags(
     sync: dict | None, labels: set[str], body: str = "", handoff: str = "",
     comments: list[dict] | None = None,
 ) -> dict:
     """`run_gate` keywords for a ticket, including bug-test evidence declarations."""
     flags = {"protected_override": LABEL_PROTECTED_OVERRIDE in labels}
+    if LABEL_ADD_ONLY_OVERRIDE in labels:
+        flags["add_only_override"] = True
     if "bug" in labels:
         explicit_override = _ticket_line(body, LABEL_PROTECTED_OVERRIDE)
         if explicit_override is not None and not flags["protected_override"]:
@@ -5432,9 +5440,8 @@ def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
     if (protected_tests or add_only) and LABEL_ADD_ONLY_OVERRIDE in labels:
         return (
             f"Failed check: `{check}`. `{LABEL_ADD_ONLY_OVERRIDE}` is already present "
-            "and cannot clear this failure alone; repeating manager AUTHORIZE cannot help. "
-            "Record a current-head reviewed blob receipt for in-place add-only edits. "
-            f"Human-only blanket authority remains label `{LABEL_PROTECTED_OVERRIDE}`."
+            "and cannot clear this failure; repeating manager AUTHORIZE cannot help. "
+            f"Human-only authority: add label `{LABEL_PROTECTED_OVERRIDE}` to clear it."
         )
     if structural or not (protected_tests or add_only):
         return (
@@ -5444,8 +5451,8 @@ def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
         )
     return (
         f"Failed check: `{check}`. For in-place text edits, manager AUTHORIZE "
-        f"can add label `{LABEL_ADD_ONLY_OVERRIDE}` to request a pinned reviewer receipt; "
-        "the label alone grants no deleted-lines or existing-test waiver."
+        f"can add label `{LABEL_ADD_ONLY_OVERRIDE}` to clear it. "
+        "Alternatively, record a reviewer receipt pinning only the required add-only edits."
     )
 
 def process_ticket(
