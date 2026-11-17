@@ -888,6 +888,7 @@ class RefreshPauseRecoveryTest(unittest.TestCase):
         self.assertIn("- pause-at-gate: PASS", (wt / ".factory" / "gate-report-9.md").read_text())
         self.assertEqual(self.github.assignees, [])
         self.assertEqual(config.LABEL_APPROVED in self.github.pr_labels, approval_restored)
+        self.assertEqual(config.LABEL_AGENT in self.github.issue_labels, not approval_restored)
         self.assertFalse(self.github.merged)
         self.assertFalse(any(cmd[1:3] == ["pr", "merge"] for cmd in self.github.calls))
         self.assertEqual(self.events("escalate"), [])
@@ -900,15 +901,17 @@ class RefreshPauseRecoveryTest(unittest.TestCase):
         with mock.patch.object(dispatch.sys, "executable", str(self.gate_python)), self.patched():
             dispatch.merge_pass_locked(False)
 
-        parked = self.assert_parked(self.pr_head, approval_restored=True)
+        self.assert_parked(self.pr_head, approval_restored=True)
         with mock.patch.object(pause, "actor", return_value="operator"):
             self.assertTrue(pause.resume(self.root))
         with mock.patch.object(dispatch.sys, "executable", str(self.gate_python)), self.patched():
             dispatch.merge_pass_locked(False)
             refreshed = self.github.head()
             self.assertNotEqual(refreshed, self.pr_head)
-            self.assertNotEqual(refreshed, parked)
             self.assertFalse(self.github.merged)
+            with mock.patch.object(dispatch, "process_ticket") as worker:
+                dispatch.ticket_pass(1, False)
+            worker.assert_not_called()
             dispatch.merge_pass_locked(False)
 
         self.assertTrue(self.github.merged)

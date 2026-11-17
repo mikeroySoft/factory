@@ -105,6 +105,12 @@ its pending decision and worktree for the next pass without another manager roun
 Before resuming that FIX, the manager reacquires the assignment and host claim;
 competing ownership leaves the decision pending. A resumed, approved FIX stays
 claimed so the subsequent ticket pass cannot run another worker on its head.
+A refresh paused before its push preserves the candidate in a
+`refs/factory-evidence/` ref and restores the live PR head in the worktree.
+It restores the withdrawn approval only while that PR head remains unchanged,
+releases ownership, and removes the ticket from the worker frontier. The next
+unpaused merge pass refreshes and re-reviews it normally. A concurrently changed
+PR head stays unapproved and worker-eligible instead of inheriting stale approval.
 Resume starts no work by itself; the next timer pass continues from durable GitHub
 and worktree state.
 

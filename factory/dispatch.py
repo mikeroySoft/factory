@@ -4427,6 +4427,44 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         )
         return evidence_ref
 
+    def restore_approval(expected_head: str) -> bool:
+        """Restore only the approval removed from this still-unchanged PR head."""
+        fields = "state,headRefName,headRefOid,baseRefName,isDraft,reviewDecision"
+
+        def unchanged(state: dict) -> bool:
+            return isinstance(state, dict) and (
+                state.get("state") == "OPEN"
+                and state.get("headRefName") == f"agent/{n}"
+                and state.get("headRefOid") == expected_head
+                and state.get("baseRefName") == cfg.main
+                and not state.get("isDraft")
+                and state.get("reviewDecision") != "CHANGES_REQUESTED"
+            )
+
+        added = False
+        try:
+            if not unchanged(gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", fields])):
+                return False
+            changed = run(
+                ["gh", "pr", "edit", str(pr), "--repo", REPO,
+                 "--add-label", FACTORY_APPROVED],
+                check=False,
+            )
+            if changed.returncode:
+                return False
+            added = True
+            if unchanged(gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", fields])):
+                return True
+        except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+            pass
+        if added:
+            run(
+                ["gh", "pr", "edit", str(pr), "--repo", REPO,
+                 "--remove-label", FACTORY_APPROVED],
+                check=False,
+            )
+        return False
+
     def withdraw(
         reason: str,
         code: str,
@@ -4633,7 +4671,23 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             refreshed_head=head,
         )
         return False
-    if push_agent(wt, n, remote_head, check=False) is None:
+    try:
+        pushed = push_agent(wt, n, remote_head, check=False)
+    except pause.Paused:
+        evidence_ref = restore_pr_head(head)
+        parked_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        approval_restored = parked_head == remote_head and restore_approval(remote_head)
+        record(
+            "refresh-paused", ticket=n, pr=pr, head=parked_head, refreshed_head=head,
+            evidence_ref=evidence_ref, approval_restored=approval_restored,
+        )
+        unclaim(n, *(("--remove-label", LABEL_AGENT) if approval_restored else ()))
+        log(
+            f"#{n}: PR #{pr} refresh paused; candidate kept at {evidence_ref}, "
+            f"worktree restored to {parked_head[:12]}, ownership released"
+        )
+        return False
+    if pushed is None:
         withdraw(
             "remote head changed while refreshed evidence was being produced",
             "refresh_head",
