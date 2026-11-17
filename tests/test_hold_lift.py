@@ -265,6 +265,58 @@ class HoldLiftTest(unittest.TestCase):
         self.assertEqual(self.labels(), set())
         self.assertEqual(self.events("hold-lifted")[-1]["reason"], "head_moved")
 
+    def test_batch_hold_transitions_observe_previous_effects(self) -> None:
+        self.approved_hold()
+        for transitions, held in (
+            (("remove", "add"), True),
+            (("add", "remove"), False),
+        ):
+            with self.subTest(transitions=transitions):
+                preview = decisions.prepare(self.cfg, [
+                    {"op": "pr", "number": 17, transition: [config.LABEL_HELD]}
+                    for transition in transitions
+                ])
+                result = decisions.apply(self.cfg, preview["proposal_id"], preview["confirmation"])
+                self.assertEqual(result["status"], "success", result)
+                self.assertEqual(self.pr["isDraft"], held)
+                self.assertEqual(self.labels(), {config.LABEL_HELD if held else config.LABEL_APPROVED})
+
+    def test_lift_racing_push_preserves_current_head_audit(self) -> None:
+        self.approved_hold()
+        self.check_lock = True
+        self.push_on_approve = True
+        preview = self.prepare("lift_hold", ruling_id="r3-race")
+        result = self.apply(preview)
+        self.assertEqual(result["status"], "failure", result)
+        self.assertFalse(self.pr["isDraft"])
+        self.assertEqual(self.labels(), set())
+        lifted = self.events("hold-lifted")
+        self.assertEqual(len(lifted), 1)
+        self.assertEqual(
+            {key: lifted[0][key] for key in (
+                "head", "approved_head", "approval_restored", "reason", "actor", "caller", "ruling_id",
+            )},
+            {"head": "b" * 40, "approved_head": self.head, "approval_restored": False,
+             "reason": "head_moved", "actor": "robot-agent", "caller": "mcp", "ruling_id": "r3-race"},
+        )
+        count = len(self.calls)
+        self.assertEqual(self.apply(preview), result)
+        self.action("lift_hold")
+        self.assertEqual(len(self.calls), count)
+        self.assertEqual(self.events("hold-lifted"), lifted)
+
+    def test_lift_uncertain_approval_preserves_audit_and_receipt(self) -> None:
+        self.approved_hold()
+        with mock.patch.object(decisions, "_approve", side_effect=decisions._AmbiguousCommand("lost result")):
+            result = self.apply(self.prepare("lift_hold"))
+        self.assertEqual(result["status"], "uncertain", result)
+        self.assertFalse(self.pr["isDraft"])
+        self.assertNotIn(config.LABEL_HELD, self.labels())
+        lifted = self.events("hold-lifted")[-1]
+        self.assertEqual(lifted["head"], self.head)
+        self.assertEqual(lifted["reason"], "approval_uncertain")
+        self.assertFalse(lifted["approval_restored"])
+
 
 if __name__ == "__main__":
     unittest.main()
