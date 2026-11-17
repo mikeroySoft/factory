@@ -6101,6 +6101,9 @@ def _dispatch_pass(args: argparse.Namespace) -> int:
             if not args.dry_run:
                 record("engine-stale", installed_commit=installed, target_commit=target,
                        yield_for_update=cfg.engine_yield_for_update)
+        if args.force and yield_for_update:
+            log("engine-stale: refusing forced ticket while yielding for update; no stages run")
+            return 1
         if not args.dry_run:
             from factory import results
 

@@ -105,6 +105,8 @@ itself; the next timer pass continues from durable GitHub and worktree state.
 The only pause override is `factory dispatch --ticket N --force`. It applies to
 that explicit ticket invocation without clearing the flag; `--force` without
 `--ticket` is rejected, and scheduled or untargeted passes cannot bypass pause.
+If the engine is stale and `engine.yield_for_update` is enabled, the forced-ticket
+invocation refuses without running release, landing, or review intake.
 
 `factory doctor` reports the reason, actor, start and expiry (or `not paused`)
 as an informational row; unreadable or invalid pause state is blocking. Runtime
