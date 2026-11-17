@@ -354,8 +354,9 @@ ignores only protected-path hits whose content equals the dispatcher's staged
 candidate's, or the upstream tip's for a path upstream itself changed; a
 fork-only protected file the worker deletes, resets to upstream's version, or
 edits still fails `protected-paths` unless a human applies
-`factory-protected-override`. Add-only edits require
-`factory-add-only-override`, which the manager or a human may grant.
+`factory-protected-override` or a matching reviewed blob receipt for
+`mutation-equivalents.json` (Gate, below). In-place add-only edits require a
+reviewed blob receipt; `factory-add-only-override` requests that pinned authority.
 It leak-scans the diff from the tip, so
 anything the worker writes is scanned while upstream's already-public content
 is not. A passing gate is rejected unless the head still contains the recorded
@@ -763,7 +764,9 @@ AUTHORIZE uses `{"justification":"...","guidance":"..."}` to record why an
 existing add-only file must change, add `factory-add-only-override`, and return
 the ticket to `ready-for-agent`. It is limited to required add-only edits or
 removal of obsolete wording-only assertions, and never authorizes protected
-paths. The normal gate and independent review run again. FIX uses
+paths. The label alone no longer bypasses the gate: a reviewer must record
+the exact resulting head/base/blobs using the Gate receipt below. The normal
+gate and independent review run again. FIX uses
 `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
 in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels.
 A kept head ahead of the remote PR head is pushed first
@@ -1087,35 +1090,71 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    a new file passes, a modified file passes only when `git diff --numstat`
    shows no deleted lines, and a deletion, rename, mode change, binary change,
    or any removed or changed line fails as `add-only`. For in-place text edits,
-   its escalation names `factory-add-only-override` as the clearing label. The
+   its escalation names `factory-add-only-override` as the request label. The
    manager may use `AUTHORIZE`, with an auditable justification and worker
    guidance, to apply that label and requeue the ticket when the ticket requires
    the existing add-only edit or an obsolete wording-only assertion must be
-   removed from a retained file; a human may apply it directly. File deletions,
-   renames, mode changes and binary changes still fail with that label and
+   removed from a retained file. Dispatch requires the pinned reviewer receipt
+   below before relaxing either deleted-lines or existing-test protection.
+   File deletions, renames, mode changes and binary changes still fail with that label and
    require human-only `factory-protected-override`. Their escalations name that
    label instead. If `factory-add-only-override` is already present and protection
    still fails, the escalation explicitly rules out repeated manager `AUTHORIZE`.
-   The add-only override does not authorize `[gate].protected_paths`. On `bug`
+   The add-only request does not authorize `[gate].protected_paths`. On `bug`
    tickets the attempt gate also compares every existing Python test function and
    every Rust `#[test]` function (including tests inside `src/*.rs`) with the base. Deleting
    or changing one, including adding `@unittest.skip`, pytest skip/xfail, or
    Rust `#[ignore]`, fails as `protected-tests`; other languages retain the
-   configured path-based add-only policy. `factory-add-only-override` bypasses
-   that function check as well, so manager authorization also works on bug
-   tickets. The `factory-protected-override` label bypasses both path and
+   configured path-based add-only policy. Local explicit `--add-only-override`
+   still bypasses that function check; dispatch never passes it. The
+   `factory-protected-override` label bypasses both path and
    function protection; a ticket line `factory-protected-override: <reason>`
    bypasses only function protection on bug tickets. An `upstream sync:`
    ticket's worker otherwise gets no override; only upstream-authored content
    is exempt (`--upstream`, above).
-   Local gate runs only (the dispatcher does not pass it): `factory gate
-   --add-only-allow <path>=<blob> --add-only-allow-base <commit>` exempts exactly
-   the named add-only files from both checks when a human supplies the reviewed
-   blob ids. Each path must be canonical, inside `add_only_paths` and outside
+   `factory gate --add-only-allow <path>=<blob> --add-only-allow-base <commit>`
+   exempts exactly the named add-only files from both checks when a human
+   supplies the reviewed blob ids. Dispatch also passes these pins from a
+   verified ticket approval receipt (below).
+   Each path must be canonical, inside `add_only_paths` and outside
    `protected_paths`, an in-place regular-file text edit, and both its committed
    blob and its working-tree bytes (`git hash-object --no-filters`) must equal the
    approved blob; `<commit>` must be the merge-base. Any refusal fails
    `protected-paths`; every other add-only file and test stays protected.
+
+   **Pinned ticket approvals.** A repository owner, member or collaborator records
+   one issue comment starting exactly `Factory gate approval: ` followed by JSON
+   with these fields (full lowercase Git object ids, not abbreviated SHAs):
+
+   ```text
+   Factory gate approval: {"reviewer":"github-login","ruling":"r3-0850","head":"<reviewed-head-sha>","base":"<reviewed-merge-base-sha>","protected":{"mutation-equivalents.json":"<reviewed-blob-sha>"},"add_only":{"tests/test_example.py":"<reviewed-blob-sha>"}}
+   ```
+
+   Use `{}` for an unused scope; at least one map must be nonempty. `reviewer`
+   must match the comment's GitHub author; the ruling must be a nonempty id.
+   GitHub's ticket URL and author association, not JSON claims or worker-local
+   files, establish the receipt's scope and reviewer authority. Review the
+   committed blob contents before posting. All listed paths are one approval:
+   include every protected/add-only pin needed for that head in the same comment.
+   Dispatch selects the latest valid receipt matching the current head and
+   merge-base, without requiring an override label. The add-only label also
+   requests receipt lookup, but cannot supply unpinned authority.
+
+   Dispatch passes `--protected-allow mutation-equivalents.json=<blob>` and/or
+   the existing add-only flags, plus `--approval-ticket <issue-number>` and
+   `--approval-comment <REST-comment-id>`. Gate independently fetches that exact
+   comment through authenticated `gh api`, checks the ticket, author, ruling,
+   head, merge-base and complete blob maps, and records the receipt and pins
+   in its report. Missing, unreadable, stale or mismatched evidence grants no
+   exemption. A new head or merge-base requires a new matching receipt, including
+   after fixups or refresh. No worker handoff or local JSON file grants authority.
+   Local use of `--protected-allow` requires the same receipt flags.
+   Only `mutation-equivalents.json` can appear in the protected map; it must be an
+   in-place non-executable regular-file edit with matching committed and working
+   bytes. Every other protected path still fails. This route does not bypass
+   `--bug` existing-test protection; only explicitly pinned add-only files are
+   exempted from that check. Receipt flags cannot combine with blanket overrides.
+
    A bug worker must add the reproducing test in its own commit before the fix
    and put `Repro test: <test ID>` in its handoff. The test may be added during
    a later retry, review bounce, or manager FIX, not just the first branch commit.

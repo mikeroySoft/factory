@@ -5,14 +5,13 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch
 from tests.test_add_only_allow import APPROVED, ROOT, blob, commit, git, repository, run_gate
-
-import tempfile
-from pathlib import Path
 
 MARKER = "Factory gate approval: "
 
@@ -140,18 +139,18 @@ class PinnedApprovalTest(unittest.TestCase):
         dispatch.configure(config.load(self.repo))
         seen = []
 
-        def run(cmd, cwd=None, check=True, **kwargs):
+        def run(cmd, cwd=None, check=True, env=None, **kwargs):
             if cmd[:4] == [sys.executable, "-P", "-E", "-m"]:
                 seen.append(cmd)
                 cmd = [sys.executable, *cmd[3:]]
             return subprocess.run(
                 cmd, cwd=cwd, check=check, capture_output=True, text=True,
-                env={**os.environ, "PYTHONPATH": str(ROOT)}, **kwargs,
+                env={**(env or os.environ), "PYTHONPATH": str(ROOT)}, **kwargs,
             )
 
         flags = dispatch.gate_flags(
-            None, {config.LABEL_ADD_ONLY_OVERRIDE} if label else set(),
-            comments=[{"body": self.comment["body"]}],
+            None, {"bug"} | ({config.LABEL_ADD_ONLY_OVERRIDE} if label else set()),
+            body="No repro test: approval fixture", comments=[{"body": self.comment["body"]}],
         )
         with mock.patch.object(dispatch, "run", side_effect=run), mock.patch.object(dispatch, "_record_gate_decision"):
             ok, report = dispatch.run_gate(self.repo, 7, **flags)
@@ -181,10 +180,29 @@ class PinnedApprovalTest(unittest.TestCase):
         self.assertIn("--add-only-allow", commands[-1])
         self.assertIn("--add-only-allow-base", commands[-1])
         self.assertNotIn("--add-only-override", commands[-1])
+        (self.repo / "tests/test_other.py").write_text("def test_other():\n    assert True\n    assert 2\n")
+        commit(self.repo)
+        self.data["head"] = git(self.repo, "rev-parse", "HEAD")
+        self.save()
+        ok, report, commands = self.dispatch_gate(label=True)
+        self.assertFalse(ok, report)
+        self.assertIn("protected-tests: FAIL", report)
         (self.repo / "tests/test_old.py").write_text(APPROVED + "# drift\n")
         commit(self.repo)
         ok, report, commands = self.dispatch_gate(label=True)
         self.assertFalse(ok, report)
+        self.assertNotIn("--add-only-override", commands[-1])
+
+    def test_add_only_label_without_receipt_is_not_blanket_authority(self):
+        (self.repo / "mutation-equivalents.json").write_text("[]\n")
+        (self.repo / "tests/test_old.py").write_text(APPROVED)
+        commit(self.repo)
+        self.comment["body"] = ""
+        self.response.write_text("{}")
+        ok, report, commands = self.dispatch_gate(label=True)
+        self.assertFalse(ok, report)
+        self.assertIn("protected-paths: FAIL", report)
+        self.assertIn("tests/test_old.py", report)
         self.assertNotIn("--add-only-override", commands[-1])
 
 
