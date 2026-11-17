@@ -160,6 +160,34 @@ class SharedReadBoundaryTest(unittest.TestCase):
             self.assertEqual(state.failed_reads, 0)
         self.probe.assert_not_called()
 
+    def test_bounded_evidence_failure_aborts_before_partial_data_fallback(self):
+        import os
+        import sys
+        import time
+
+        from factory import evidence
+
+        command = self.journal.parent / "gh"
+        command.write_text(
+            f"#!{sys.executable}\nimport sys\n"
+            "print('error connecting to api.github.com', file=sys.stderr)\nsys.exit(1)\n"
+        )
+        command.chmod(0o755)
+        changes = []
+        with (
+            mock.patch.dict(os.environ, {"PATH": f"{command.parent}{os.pathsep}{os.environ['PATH']}"}),
+            self.reads.scope(self.journal, "manage"),
+            self.reads.item(7),
+        ):
+            try:
+                evidence.github_read("repos/acme/widgets/issues/7", time.monotonic() + 5)
+            except evidence.EvidenceError:
+                changes.append("partial-data fallback")
+            changes.append("label changed")
+        self.assertEqual(changes, [])
+        [skip] = [r for r in lifecycle.read_events(self.journal) if r["event"] == "gh-read-skipped"]
+        self.assertEqual((skip["code"], skip["returncode"], skip["ticket"]), ("gh_read_failed", 1, 7))
+
 
 class DispatchClaimReadTest(unittest.TestCase):
     def test_admission_read_failure_preserves_labels_assignee_and_host_claim(self):
