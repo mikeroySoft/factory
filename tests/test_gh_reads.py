@@ -118,9 +118,8 @@ class SharedReadBoundaryTest(unittest.TestCase):
 
     def test_network_failure_is_not_rate_limit_even_with_exhausted_budget(self):
         cmd = ["gh", "issue", "view", "7", "--json", "state"]
-        with self.reads.scope(self.journal, "dispatch"):
-            with self.reads.item(7):
-                self.reads.run(cmd, lambda: subprocess.CompletedProcess(cmd, 1, "", "TLS handshake timeout"))
+        with self.reads.scope(self.journal, "dispatch"), self.reads.item(7):
+            self.reads.run(cmd, lambda: subprocess.CompletedProcess(cmd, 1, "", "TLS handshake timeout"))
         [skip] = [r for r in lifecycle.read_events(self.journal) if r["event"] == "gh-read-skipped"]
         self.assertEqual(skip["code"], "gh_read_failed")
         self.assertIsNone(skip["reset"])
@@ -134,7 +133,7 @@ class SharedReadBoundaryTest(unittest.TestCase):
             with self.reads.item(7):
                 try:
                     self.reads.run(cmd, lambda: subprocess.CompletedProcess(cmd, 1, "", "connection refused"))
-                except Exception:
+                except Exception:  # noqa: BLE001 - emulate the engine's mutation-on-error fallback
                     changed.append("escalated")
             # Later stages must not mutate a ticket skipped earlier in this pass.
             with self.reads.item(7):
@@ -147,9 +146,8 @@ class SharedReadBoundaryTest(unittest.TestCase):
              subprocess.CalledProcessError(1, ["gh"], stderr="write denied")),
             (["gh", "issue", "view", "7"], ValueError("programming defect")),
         ):
-            with self.subTest(cmd=cmd), self.reads.scope(self.journal, "dispatch"):
-                with self.assertRaises(type(error)):
-                    self.reads.run(cmd, mock.Mock(side_effect=error))
+            with self.subTest(cmd=cmd), self.reads.scope(self.journal, "dispatch"), self.assertRaises(type(error)):
+                self.reads.run(cmd, mock.Mock(side_effect=error))
         self.probe.assert_not_called()
         self.assertEqual(lifecycle.read_events(self.journal), [])
 
@@ -158,7 +156,7 @@ class SharedReadBoundaryTest(unittest.TestCase):
         with self.reads.scope(self.journal, "dispatch") as state:
             for code, bucket in ((1, "fail"), (8, "pending")):
                 result = subprocess.CompletedProcess(cmd, code, json.dumps([{"bucket": bucket}]), "")
-                self.assertEqual(self.reads.run(cmd, lambda: result, check=False).returncode, code)
+                self.assertEqual(self.reads.run(cmd, lambda result=result: result, check=False).returncode, code)
             self.assertEqual(state.failed_reads, 0)
         self.probe.assert_not_called()
 

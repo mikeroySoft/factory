@@ -104,7 +104,7 @@ class Pass:
         detail = stderr_tail(getattr(exc, "stderr", None) or str(exc))
         status = getattr(exc, "returncode", None)
         limited = status != 4 and bool(re.search(
-            r"rate[ -]?limit|HTTP\s+429|status(?: code)?\s+429", detail, re.I,
+            r"rate[ -]?limit|HTTP\s+429|status(?: code)?\s+429", detail, re.IGNORECASE,
         ))
         code = "rate_limited" if limited else "gh_read_failed"
         reset = None
@@ -115,7 +115,7 @@ class Pass:
             budget = probe.get(resource, {})
             if budget.get("remaining") == 0 and budget.get("reset", 0) > time.time():
                 reset = budget["reset"]
-            elif match := re.search(r"retry[- ]after[:= ]+(\d+)", detail, re.I):
+            elif match := re.search(r"retry[- ]after[:= ]+(\d+)", detail, re.IGNORECASE):
                 reset = time.time() + int(match[1])
         identity = _identity(cmd)
         with self.lock:
@@ -162,7 +162,7 @@ def _expected_result(cmd, result, check):
             return isinstance(json.loads(result.stdout), list)
         except (ValueError, TypeError):
             return False
-    return bool(re.search(r"HTTP 404|no pull requests found|no checks reported", result.stderr or "", re.I))
+    return bool(re.search(r"HTTP 404|no pull requests found|no checks reported", result.stderr or "", re.IGNORECASE))
 
 
 def run(cmd, invoke, *, env=None, check=True):
@@ -184,6 +184,10 @@ def run(cmd, invoke, *, env=None, check=True):
             return result
         result.check_returncode()
     except subprocess.CalledProcessError as exc:
+        if cmd[1:3] == ["pr", "view"] and "no pull requests found" in (exc.stderr or "").lower():
+            # A missing branch PR is a successful absence lookup; callers decide
+            # whether absence is valid for their operation.
+            raise
         if exc.returncode < 0:
             raise
         state.failure(cmd, exc, env)

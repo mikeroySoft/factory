@@ -214,7 +214,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                     # Uncertain publication: only GitHub can say whether the comment exists.
                     try:
                         items = timeline(n)
-                    except (CalledProcessError, ValueError):
+                    except (gh_reads.ReadFailed, CalledProcessError, ValueError):
                         dispatch.log(f"#{n}: handoff publication uncertain and GitHub could not be read; nothing posted")
                         continue
                     for intent in pending:
