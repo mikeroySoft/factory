@@ -37,6 +37,13 @@ def timeline(n: int) -> list[dict]:
     return [item for page in pages for item in page] if pages and isinstance(pages[0], list) else pages
 
 
+def manager_decisions(events: list[dict], **identity: object) -> list[dict]:
+    deferred = {row["execution_id"] for row in events if row.get("event") == "manage-deferred"}
+    return [row for row in events if row.get("event") == "manage"
+            and row.get("execution_id") not in deferred
+            and all(row.get(key) == value for key, value in identity.items())]
+
+
 def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     """Why no automatic recovery remains for this escalation; None while the manager may still act.
 
@@ -49,7 +56,7 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
         return "review-intake escalations are never managed; the opted-in PR needs a human review decision"
     if not 1 <= r <= cfg.manager_rounds:
         return f"the manager's {cfg.manager_rounds} allowed round(s) are exhausted"
-    decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r and not e.get("pr")]
+    decided = manager_decisions(events, round=r, pr=None)
     if not decided:
         if not Path(escalation["packet"]).is_file():
             return "the escalation packet is missing on the runner, so the manager cannot run"

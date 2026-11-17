@@ -54,6 +54,7 @@ class Pass:
         self.journal, self.stage, self.persistent = journal, stage, persistent
         self.lock = threading.Lock()
         self.reads = self.failed_reads = self.skipped = 0
+        self.writes = {}
         self.codes = {"rate_limited": 0, "gh_read_failed": 0}
         self.reason = None
         self.failed_tickets = set()
@@ -158,10 +159,15 @@ def _expected_result(cmd, result, check):
     if result.returncode == 0:
         return True
     detail = result.stderr or ""
+    if isinstance(detail, bytes):
+        detail = detail.decode("utf-8", errors="replace")
     if result.returncode == 1:
         if cmd[1:3] == ["pr", "view"] and "no pull requests found" in detail.lower():
             return True
-        if cmd[1] == "api" and any("/compare/" in arg for arg in cmd[2:]) and re.search(r"HTTP 404\b", detail):
+        if cmd[1] == "api" and re.search(r"HTTP 404\b", detail) and any(
+            "/compare/" in arg or re.fullmatch(r"repos/[^/]+/[^/]+/issues/\d+/dependencies/blocked_by", arg)
+            for arg in cmd[2:]
+        ):
             return True
         if not check and cmd[1:3] == ["release", "view"] and re.fullmatch(
             r"release not found\.?\s*", detail, re.IGNORECASE,
@@ -189,6 +195,8 @@ def run(cmd, invoke, *, env=None, check=True):
         read = is_read(cmd)
         if read:
             state.reads += 1
+        else:
+            state.writes[identity["ticket"]] = state.writes.get(identity["ticket"], 0) + 1
     if not read:
         return invoke()
     try:

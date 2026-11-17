@@ -39,7 +39,7 @@ STREAKED_REASONS = ("unparseable_decision",)
 # Host conditions are ignored until their current uninterrupted failure streak crosses
 # `[watch].host_failure_minutes`.
 HOST_REASONS = ("worker_exit:", "triage_endpoint_", "github_command_failed",
-                "runner_storage_low", "runner_storage_unavailable")
+                "gh_read_failed", "rate_limited", "runner_storage_low", "runner_storage_unavailable")
 REPEAT_MIN = 3  # distinct tickets one escalation code must hit...
 REPEAT_DAYS = 7  # ...inside this trailing window to count as a factory defect
 # Ticket outcomes, not factory defects: `budget` means a ticket exhausted its configured

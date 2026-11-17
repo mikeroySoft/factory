@@ -393,6 +393,45 @@ class SharedReadBoundaryTest(unittest.TestCase):
         self.assertEqual(lifecycle.read_events(self.journal), [])
         self.probe.assert_not_called()
 
+    def test_manager_read_failure_after_a_write_does_not_replay_partial_application(self):
+        from factory import handoff, manage
+
+        cfg = config.Config(self.journal.parent, "acme/widgets", manager=["manager"])
+        dispatch.configure(cfg)
+        packet = cfg.factory / "packet.md"
+        packet.parent.mkdir(parents=True, exist_ok=True)
+        packet.write_text("Gate failed.")
+        escalation = {"event": "escalate", "ticket": 7, "round": 1, "packet": str(packet),
+                      "at": "2026-11-17T00:00:00Z", "reason": "gate_failed"}
+        lifecycle.append(dispatch.EVENTS, escalation)
+
+        def command(cmd, *args, **kwargs):
+            if cmd[0] == "manager":
+                return subprocess.CompletedProcess(cmd, 0, "DECISION: CLOSE\nAlready handled.", "")
+            if cmd[1:3] == ["issue", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, json.dumps([
+                    {"number": 7, "title": "Ticket", "body": "", "labels": []},
+                ]), "")
+            if cmd[1:3] == ["issue", "view"]:
+                return subprocess.CompletedProcess(cmd, 1, "", "connection refused")
+            self.assertEqual(cmd[1:3], ["issue", "comment"])
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        def partial_apply(*args):
+            dispatch.run(["gh", "issue", "comment", "7", "--body", "Already handled."])
+            dispatch.gh_json(["issue", "view", "7", "--json", "state"])
+
+        with mock.patch.object(dispatch, "_run", side_effect=command), \
+                mock.patch.object(dispatch, "initiative_kind", return_value=False), \
+                mock.patch.object(manage, "human_activity", return_value=False), \
+                mock.patch.object(manage, "apply", side_effect=partial_apply) as apply:
+            manage.escalation_pass()
+            manage.escalation_pass()
+        apply.assert_called_once()
+        rows = lifecycle.read_events(dispatch.EVENTS)
+        self.assertFalse(any(row["event"] == "manage-deferred" for row in rows))
+        self.assertIn("never replayed", handoff.terminal(cfg, rows, escalation))
+
 
 class DispatchClaimReadTest(unittest.TestCase):
     def test_admission_read_failure_preserves_labels_assignee_and_host_claim(self):
@@ -466,7 +505,7 @@ class ManagerReadRetryTest(unittest.TestCase):
 
 
 class WatchReadHostConditionTest(unittest.TestCase):
-    setUp = watch_fixture.WatchTest.setUp
+    setUp = watch_fixture.PersistentHostConditionTest.setUp
     journal = watch_fixture.WatchTest.journal
 
     def test_github_read_reasons_obey_host_threshold_and_recovery(self):
@@ -488,3 +527,6 @@ class WatchReadHostConditionTest(unittest.TestCase):
                 create = self.gh.created[-1]
                 self.assertEqual(create[create.index("--label") + 1], "bug,host,needs-triage")
                 self.journal(watch_fixture.exit_row("dispatch", "completed", None))
+                with mock.patch.object(watch, "QUIET_PERIOD", timedelta(0)):
+                    self.assertEqual(watch.run_pass(self.cfg), [])
+                self.assertEqual(self.gh.issues[self.gh.next_issue]["state"], "CLOSED")

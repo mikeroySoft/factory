@@ -1160,9 +1160,9 @@ def escalation_pass(dry_run: bool = False) -> None:
                 round_number = escalation.get("round", 0)
                 pending = pending_fix(events[events.index(escalation):], round=round_number, pr=None)
                 # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.
-                if not 1 <= round_number <= cfg.manager_rounds or (pending is None and any(
-                    e.get("event") == "manage" and e.get("round") == round_number and not e.get("pr") for e in events
-                )):
+                if not 1 <= round_number <= cfg.manager_rounds or (
+                    pending is None and handoff.manager_decisions(events, round=round_number, pr=None)
+                ):
                     continue
                 packet = Path(escalation["packet"])
                 if dispatch.initiative_kind(n):
@@ -1232,11 +1232,18 @@ def escalation_pass(dry_run: bool = False) -> None:
                 )
                 dispatch.record("manage", ticket=n, decision=decision, round=round_number,
                                 packet=str(packet), notes=status, rejected=rejected)
+                read_pass = gh_reads.current()
+                writes = read_pass.writes.get(n, 0)
                 try:
                     if decision == "FIX":
                         apply_fix(n, issue, data, packet, round=round_number)
                     else:
                         apply(n, issue, decision, body, data, packet)
+                except gh_reads.ReadFailed:
+                    if read_pass.writes.get(n, 0) == writes:
+                        dispatch.record("manage-deferred", ticket=n, round=round_number,
+                                        reason="github_read_unavailable")
+                    raise
                 except dispatch.WorkerUnavailable as exc:
                     execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
                     dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")

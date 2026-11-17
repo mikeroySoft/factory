@@ -364,7 +364,14 @@ def _github_read(command: list[str], endpoint: str, deadline: float, *, text: bo
         value = _bounded_github_read(command, endpoint, deadline, text=text)
         return subprocess.CompletedProcess(command, 0)
 
-    gh_reads.run(command, invoke)
+    try:
+        gh_reads.run(command, invoke)
+    except subprocess.CalledProcessError as exc:
+        # Only operation-specific absences escape the pass guard unchanged.
+        diagnostic = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr or ""
+        if re.search(r"HTTP 404\b", diagnostic):
+            raise EvidenceError("github_not_found", "GitHub source is unavailable.", endpoint) from None
+        raise
     return value
 
 
