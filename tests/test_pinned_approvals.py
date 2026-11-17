@@ -162,6 +162,35 @@ class PinnedApprovalTest(unittest.TestCase):
         self.assertIn("--protected-allow", commands[-1])
         self.assertNotIn("--protected-override", commands[-1])
 
+    def test_dispatch_discovers_receipt_posted_after_ticket_snapshot(self):
+        flags = dispatch.gate_flags(
+            None, {"bug"}, body="No repro test: approval fixture", comments=[],
+        )
+        with mock.patch.object(dispatch, "gate_flags", return_value=flags):
+            ok, report, commands = self.dispatch_gate()
+        self.assertTrue(ok, report)
+        self.assertIn("--protected-allow", commands[-1])
+
+    def test_dispatch_blanket_overrides_do_not_mix_with_receipts(self):
+        for labels, body, option, expected_ok in (
+            ({config.LABEL_PROTECTED_OVERRIDE}, "", "--protected-override", True),
+            (set(), "factory-protected-override: reviewed test change", "--test-override", False),
+        ):
+            with self.subTest(option=option):
+                flags = dispatch.gate_flags(
+                    None, {"bug"} | labels,
+                    body=body + "\nNo repro test: approval fixture",
+                    comments=[{"body": self.comment["body"]}],
+                )
+                with mock.patch.object(dispatch, "gate_flags", return_value=flags):
+                    ok, report, commands = self.dispatch_gate()
+                self.assertEqual(ok, expected_ok, report)
+                self.assertIn(option, commands[-1])
+                self.assertNotIn("--approval-comment", commands[-1])
+                self.assertNotIn("gate runner did not write", report)
+                if not expected_ok:
+                    self.assertIn("protected-paths: FAIL", report)
+
     def test_dispatch_stale_approval_cannot_authorize_new_head(self):
         (self.repo / "new.txt").write_text("new head\n")
         commit(self.repo)

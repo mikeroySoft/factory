@@ -214,7 +214,7 @@ class AddOnlyOverrideTest(unittest.TestCase):
             with self.subTest(justification=justification):
                 self.assertEqual(manage.parse(f"DECISION: AUTHORIZE\n{payload}", {})[0], "HUMAN")
 
-    def test_manager_authorization_adds_override_and_requeues(self) -> None:
+    def test_manager_authorization_requests_receipt_and_waits_for_human(self) -> None:
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
         dispatch.configure(config.Config(Path(root.name), "acme/widgets"))
@@ -233,25 +233,28 @@ class AddOnlyOverrideTest(unittest.TestCase):
         commands = [call.args[0] for call in run.call_args_list]
         self.assertIn(
             ["gh", "issue", "edit", "7", "--repo", dispatch.REPO,
-             "--add-label", config.LABEL_ADD_ONLY_OVERRIDE],
+             "--add-label", config.LABEL_ADD_ONLY_OVERRIDE,
+             "--remove-label", config.LABEL_AGENT, "--add-label", config.LABEL_HUMAN],
             commands,
         )
-        self.assertIn(
-            ["gh", "issue", "edit", "7", "--repo", dispatch.REPO,
-             "--remove-label", config.LABEL_HUMAN, "--add-label", config.LABEL_AGENT],
-            commands,
-        )
+        self.assertFalse(any(
+            command[1:3] == ["issue", "edit"] and config.LABEL_AGENT in command
+            and command[command.index(config.LABEL_AGENT) - 1] == "--add-label"
+            for command in commands
+        ))
         comments = [command for command in commands if command[1:3] == ["issue", "comment"]]
         self.assertEqual(len(comments), 1)
         self.assertIn("Justification: The ticket requires it", comments[0][-1])
         self.assertIn("Guidance: Remove the old assertion", comments[0][-1])
+        self.assertIn("pinned reviewer receipt", comments[0][-1])
         comment_index = next(
             i for i, command in enumerate(commands)
             if command[1:3] == ["issue", "comment"]
         )
         grant_index = commands.index(
             ["gh", "issue", "edit", "7", "--repo", dispatch.REPO,
-             "--add-label", config.LABEL_ADD_ONLY_OVERRIDE]
+             "--add-label", config.LABEL_ADD_ONLY_OVERRIDE,
+             "--remove-label", config.LABEL_AGENT, "--add-label", config.LABEL_HUMAN]
         )
         self.assertLess(comment_index, grant_index)
 
