@@ -361,10 +361,11 @@ class HostClaimRaceTest(unittest.TestCase):
             if not failed:
                 failed = True
                 cmd = ["gh", "issue", "view", "7", "--repo", single.REPO, "--json", "labels"]
-                gh_reads.run(
-                    cmd,
-                    lambda: subprocess.CompletedProcess(cmd, 1, "", "connection reset"),
-                )
+                with lifecycle.scope(single.EVENTS, "review", ticket=7):
+                    gh_reads.run(
+                        cmd,
+                        lambda: subprocess.CompletedProcess(cmd, 1, "", "connection reset"),
+                    )
             return 1, "fixture"
 
         healthy = subprocess.CompletedProcess(
@@ -378,9 +379,14 @@ class HostClaimRaceTest(unittest.TestCase):
             self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
             self.assertIn({"name": "ready-for-agent"}, self.github.issue["labels"])
             self.assertEqual(self.launched, [])
+            rows = lifecycle.read_events(single.EVENTS)
             self.assertTrue(any(
                 row.get("event") == "gh-read-skipped" and row.get("ticket") == 7
-                for row in lifecycle.read_events(single.EVENTS)
+                for row in rows
+            ))
+            self.assertTrue(any(
+                row.get("event") == "ticket-read-deferred" and row.get("ticket") == 7
+                for row in rows
             ))
 
             [recovered] = single.frontier()
