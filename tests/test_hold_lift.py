@@ -33,6 +33,10 @@ class HoldLiftTest(unittest.TestCase):
         load.start()
         self.addCleanup(run.stop)
         self.addCleanup(load.stop)
+        for name, value in (("cfg", self.cfg), ("REPO", self.cfg.repo)):
+            patcher = mock.patch.object(dispatch, name, value, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def labels(self) -> set[str]:
         return {item["name"] for item in self.pr["labels"]}
@@ -106,12 +110,12 @@ class HoldLiftTest(unittest.TestCase):
         held = self.events("held")[-1]
         self.assertEqual((held["approved_head"], held["actor"], held["caller"], held["ruling_id"]),
                          (self.head, "robot-agent", "mcp", "r3-0910"))
-
-    def test_unchanged_hold_lift_restores_approval_and_merge_candidate(self) -> None:
-        self.approved_hold()
         count = len(self.calls)
         self.action("hold_pr")
         self.assertEqual(len(self.calls), count)
+
+    def test_unchanged_hold_lift_restores_approval_and_merge_candidate(self) -> None:
+        self.approved_hold()
         self.check_lock = True
         preview = self.prepare("lift_hold", ruling_id="r3-0911")
         receipt = self.apply(preview)
@@ -130,8 +134,8 @@ class HoldLiftTest(unittest.TestCase):
         self.assertEqual(len(self.calls), count)
         self.assertEqual(len(self.events("hold-lifted")), 1)
         with (
-            mock.patch.object(dispatch, "cfg", self.cfg, create=True),
-            mock.patch.object(dispatch, "REPO", self.cfg.repo, create=True),
+            mock.patch.object(dispatch, "cfg", self.cfg),
+            mock.patch.object(dispatch, "REPO", self.cfg.repo),
             mock.patch.object(dispatch, "gh_json", return_value=[dict(self.pr)]),
             mock.patch("factory.learn.promote_pass"),
             mock.patch.object(dispatch, "initiative_kind", return_value=True) as candidate,
