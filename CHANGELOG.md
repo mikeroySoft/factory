@@ -3,6 +3,7 @@
 ## Unreleased
 
 - The merge stage fetches up to 1001 open PRs instead of gh's default 30 and processes every returned PR, so older approved PRs reach eligibility checks. More than 1000 results logs a truncation warning and journals `merge-list-limit` on non-dry runs; exactly 1000 does not warn (#836).
+- Test venvs share a pip-free builder using symlinks on POSIX, preserving uv-managed macOS Python's libpython lookup; interpreter probes include stderr on failure, with launch and builder-centralization regressions (#820).
 - CI recovery after #694 verified on main at `720e54b9` ([run 43419482803](https://github.com/mikeroySoft/factory/actions/runs/43419482803)): full-history checkout and mutation-cache warming were already landed, as were #725's isolated uv temporary locks; both unittest discovery suites pass. The earlier [zero-job run 42671561578](https://github.com/mikeroySoft/factory/actions/runs/42671561578) reports a GitHub internal server error (correlation ID `4fd1a7ce-a4bc-4530-bff2-62a56477c6b4`), not a workflow syntax failure; its workflow is identical to the preceding green revision. No-systemd scratch-repository commits now ignore inherited signing requirements, so the restricted fixture PATH does not require a signer; worker commit signing is unchanged (#721).
 
 ## 0.4.13 — 2026-11-12
