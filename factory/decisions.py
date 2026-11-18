@@ -1099,6 +1099,10 @@ def _withdraw_approval(cfg: Config, target: dict, deadline: float) -> None:
         raise _AmbiguousCommand("stale approval could not be withdrawn")
 
 
+class _ApprovalRefused(DecisionError):
+    """Policy rejection before any approval effect, not an operational failure."""
+
+
 def _hold(cfg: Config, step: dict, deadline: float) -> dict:
     """Hold/lift effects and conditional approval share apply's ticket and merge locks."""
     target = _pr_target(cfg, step["target"]["number"], deadline)[0]
@@ -1140,30 +1144,31 @@ def _hold(cfg: Config, step: dict, deadline: float) -> dict:
         if target["draft"]:
             mutate([*prefix, "ready", pr, "--repo", cfg.repo])
         mutate([*prefix, "edit", pr, "--repo", cfg.repo, "--remove-label", LABEL_HELD])
-        fresh = _pr_target(cfg, target["number"], deadline)[0]
+        fresh = {"head": None}
         restored = False
-        if not approved_head:
-            reason = "hold_evidence_missing"
-        elif approved_head != fresh["head"] or fresh["head"] != step["target"]["head"]:
-            reason = "head_moved"
-        elif not step["restore"]:
-            reason = "explicit_approval"
-        else:
-            try:
+        try:
+            fresh = _pr_target(cfg, target["number"], deadline)[0]
+            if not approved_head:
+                reason = "hold_evidence_missing"
+            elif approved_head != fresh["head"] or fresh["head"] != step["target"]["head"]:
+                reason = "head_moved"
+            elif not step["restore"]:
+                reason = "explicit_approval"
+            else:
                 _approve(cfg, {**step, "target": fresh}, deadline)
-            except DecisionError as exc:
-                reason = exc.code
-            except (_FailedStep, _AmbiguousCommand) as exc:
-                approval_error = exc
-                reason = "approval_uncertain" if isinstance(exc, _AmbiguousCommand) else "approval_failed"
+                restored, reason = True, "approval_restored"
+        except _ApprovalRefused as exc:
+            reason = exc.code
+        except (DecisionError, _FailedStep, _AmbiguousCommand) as exc:
+            approval_error = exc
+            reason = "approval_failed" if isinstance(exc, _FailedStep) else "approval_uncertain"
+            if fresh["head"] is not None:
                 try:
                     fresh = _pr_target(cfg, target["number"], deadline)[0]
                 except DecisionError:
-                    fresh = {**fresh, "head": None}
-                if isinstance(exc, _FailedStep) and fresh["head"] and fresh["head"] != target["head"]:
-                    reason = "head_moved"
-            else:
-                restored, reason = True, "approval_restored"
+                    fresh = {"head": None}
+            if isinstance(exc, _FailedStep) and fresh["head"] and fresh["head"] != target["head"]:
+                reason = "head_moved"
     try:
         lifecycle.append(cfg.factory / "events.jsonl", {
             "at": _format_time(_now()), "event": "held" if holding else "hold-lifted",
@@ -1182,7 +1187,10 @@ def _hold(cfg: Config, step: dict, deadline: float) -> dict:
 
 def _approve(cfg: Config, step: dict, deadline: float) -> dict:
     target = step["target"]
-    _approval_policy(cfg, target)
+    try:
+        _approval_policy(cfg, target)
+    except DecisionError as exc:
+        raise _ApprovalRefused(str(exc), exc.code) from exc
     add = {
         **step,
         "argv": [

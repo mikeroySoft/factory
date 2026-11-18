@@ -3250,11 +3250,14 @@ rebinding an old approval to a newer head. A conditional lift records
 missing evidence release the hold without approval and remain subject to normal
 review. Each hold/lift reads live PR state under the locks, including after earlier
 steps in the same batch. Repeating a completed lift has no further PR effects or
-lift event. A failed or uncertain approval restoration still records the completed
-lift before returning the failure/uncertainty receipt: `head_moved` for a raced
-push, `approval_failed` for another withdrawn approval, or `approval_uncertain`
-when the external approval effect is unknown. The audit head is null if the
-post-failure PR read is unavailable.
+lift event. A post-removal read failure or failed/uncertain approval restoration
+still records the completed lift before returning the original failure/uncertainty
+receipt: `head_moved` for a raced push whose approval was withdrawn,
+`approval_failed` for another withdrawn approval, or `approval_uncertain` when
+the external approval effect or withdrawal is unknown. Only rejection by
+`_approval_policy` is a successful lift without restoration; operational errors
+after approval mutation are never reported as policy refusals. The audit head is
+null if the post-removal read fails or the post-failure head cannot be refreshed.
 
 Use `factory_prepare_action` with, for example,
 `{"repository":"owner/repo","action":"lift_hold","args":{"number":833,"ruling_id":"r3-0910"}}`,
