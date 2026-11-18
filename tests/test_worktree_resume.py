@@ -67,6 +67,19 @@ class WorktreeResumeTest(unittest.TestCase):
         [receipt] = self.events_named("worktree-fast-forward")
         self.assertEqual((receipt["ticket"], receipt["from_head"], receipt["to_head"]), (7, self.parent, child))
 
+    def test_main_only_fetch_refspec_updates_stale_ticket_ref(self):
+        self.prepare()
+        child = self.advance_remote()
+        self.git("config", "--replace-all", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+        self.assert_runs_at(child)
+
+    def test_main_only_fetch_refspec_fetches_missing_ticket_ref(self):
+        self.prepare()
+        child = self.advance_remote()
+        self.git("config", "--replace-all", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
+        self.git("update-ref", "-d", "refs/remotes/origin/agent/7")
+        self.assert_runs_at(child)
+
     def test_linear_worker_push_after_fast_forward_succeeds(self):
         self.prepare()
         child = self.advance_remote()
