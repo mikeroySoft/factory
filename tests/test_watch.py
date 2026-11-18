@@ -830,5 +830,31 @@ class ControlBandWatchTest(unittest.TestCase):
         self.assertEqual(model.call_count, 1)
         self.assertEqual(self.gh.calls, [])
 
+    def test_saturated_escape_listing_does_not_stop_filing_or_closure(self) -> None:
+        self.cfg.watch_bands.append(config.Band(
+            metric="revert_rate_by_tier",
+            window_days=28,
+            rules=(config.BandRule(
+                kind="sigma", tier="act", sigma=3.0, count=1, span=1,
+                min_tickets=2,
+            ),),
+        ))
+        self.journal(self.rows())
+        with (
+            mock.patch.object(watch.stats, "escapes", side_effect=RuntimeError(
+                "gh issue list returned 1000 results; results may be truncated",
+            )),
+            mock.patch.object(dispatch, "log") as log,
+        ):
+            watch.run_pass(self.cfg, now=self.NOW)
+            self.assertEqual(len(self.gh.created), 1)
+            self.assertIn(self.TEST_ID, self.gh.created[0][
+                self.gh.created[0].index("--body") + 1
+            ])
+            with mock.patch.object(watch, "_age", return_value=timedelta(days=2)):
+                watch.run_pass(self.cfg, now=self.NOW + timedelta(days=2))
+            self.assertEqual(self.gh.issues[101]["state"], "CLOSED")
+            log.assert_any_call("watch: escape attribution unavailable (RuntimeError)")
+
 if __name__ == "__main__":
     unittest.main()
