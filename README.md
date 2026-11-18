@@ -1682,8 +1682,11 @@ and expired elections as soon as lifecycle evidence proves the execution interru
 (including an earlier boot) and the ticket lock is free. A dead dispatcher alone
 does not prove interruption: live children and unproven current-boot descendants
 retain the lease. Unknown exits are re-evaluated using the same evidence.
-New claims journal their nonce before publication; older claims match the local
-ticket execution that acquired the ticket lock before their creation time.
+New claims journal their nonce before publication; older claims match resolved
+ticket-lock paths and the latest acquisition before creation, independently of
+journal archive placement. GitHub creation timestamps have second precision;
+acquisitions within that second are also possible owners, and ambiguous ownership
+retains the hold.
 Missing/unknown evidence, live owners, foreign claims and completed PR owners retain
 the usual holds. Admission rechecks
 under its own ticket lock, preserves the shared assignment until a replacement

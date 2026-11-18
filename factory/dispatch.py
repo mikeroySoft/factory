@@ -584,24 +584,35 @@ def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
     """Require lifecycle interruption proof, including any launched descendants."""
     if claim["host"] != cfg.host_name:
         return False
-    lock_path = str(ticket_lock(n).absolute())
+    lock_path = str(ticket_lock(n).resolve())
     owner = next((row for row in reversed(rows)
                   if row.get("event") == "host-claim-started" and row.get("ticket") == n
                   and row.get("nonce") == claim["nonce"]), None)
     if owner is None:
-        for row in reversed(rows):
+        acquisitions = []
+        created = claim["created"]
+        # GitHub truncates created_at to seconds; local acquisition keeps microseconds.
+        latest = created if created.microsecond else created.replace(microsecond=999_999)
+        for row in rows:
             if (row.get("event") != "lifecycle" or row.get("kind") != "lock_acquired"
                     or row.get("stage") != "ticket" or row.get("ticket") != n
                     or row.get("lock") != lock_path):
                 continue
             try:
                 entered = datetime.fromisoformat(row["at"])
-                if entered.utcoffset() is None or entered > claim["created"]:
+                if entered.utcoffset() is None or entered > latest:
                     continue
             except (KeyError, TypeError, ValueError):
                 continue
-            owner = row
-            break
+            acquisitions.append((entered, row))
+        # Archive placement is not ownership order. Retain every possible owner
+        # within the creation second, plus the latest acquisition before it.
+        preceding = max((at for at, _ in acquisitions if at <= created), default=None)
+        owners = {row.get("execution_id"): row for at, row in acquisitions
+                  if preceding is None or at >= preceding}
+        if len(owners) != 1:
+            return False  # Ambiguous ownership cannot justify removing a lease.
+        owner = next(iter(owners.values()))
     if owner is None or not owner.get("execution_id"):
         return False
     events = [row for row in rows if lifecycle._lifecycle(row)]
