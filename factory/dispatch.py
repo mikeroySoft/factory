@@ -611,13 +611,21 @@ def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
         for row in owned
     ):
         return False  # Completed work retains its PR hold, even after the process exits.
-    execution_ids = {owner["execution_id"]}
-    related = []
+    # Closed descendants may be archived before their still-open ancestors.
+    children = {}
     for row in events:
-        if row["kind"] == "enter" and row.get("parent_execution_id") in execution_ids:
-            execution_ids.add(row["execution_id"])
-        if row["execution_id"] in execution_ids:
-            related.append(row)
+        if row["kind"] == "enter":
+            children.setdefault(row.get("parent_execution_id"), []).append(row["execution_id"])
+    pending = [owner["execution_id"]]
+    execution_ids = set()
+    while pending:
+        execution_id = pending.pop()
+        if execution_id not in execution_ids:
+            execution_ids.add(execution_id)
+            pending.extend(children.get(execution_id, ()))
+    related = [owned[0]] + [
+        row for row in events if row["execution_id"] in execution_ids and row is not owned[0]
+    ]
     descendants = {"processes": [], "complete": True}
     if any(row["kind"] in {"handoff", "child_start"} for row in related):
         descendants = lifecycle._descendants(
