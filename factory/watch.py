@@ -753,7 +753,7 @@ def run_pass(
         try:
             events.extend(stats.escape_events(stats.escapes()))
         except (
-            OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, SystemExit,
+            OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError, SystemExit,
         ) as exc:
             dispatch.log(f"watch: escape attribution unavailable ({type(exc).__name__})")
     rows = [r for r in events if r.get("event") == "watch"]
