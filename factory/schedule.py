@@ -52,6 +52,19 @@ def is_experiment(issue: dict) -> bool:
     return any(label.get("name") == config.LABEL_EXPERIMENT for label in issue.get("labels") or [])
 
 
+def feature_ticket(number: int, feature: int | None, parents: dict[int, int]) -> bool:
+    """Membership includes descendants; malformed parent cycles never hang admission."""
+    seen = set()
+    while number not in seen:
+        if number == feature:
+            return True
+        seen.add(number)
+        if number not in parents:
+            break
+        number = parents[number]
+    return False
+
+
 def explicit_streak(events: list[dict], *, session: dict | None = None) -> int:
     """Consecutive explicit claims, optionally limited to one timer/engine session."""
     streak = 0
@@ -61,7 +74,7 @@ def explicit_streak(events: list[dict], *, session: dict | None = None) -> int:
             active = row.get("fairness_session") == session
             if not active:
                 streak = 0
-        elif active and row.get("event") == "claimed":
+        elif active and row.get("event") == "claimed" and not row.get("feature_drive"):
             streak = streak + 1 if row.get("priority") in PRIORITY_TIERS else 0
     return streak
 
@@ -81,12 +94,13 @@ def active_experiments(events: list[dict], active: set[int]) -> int:
 def advance(streak: int, experiments: int, pick: dict) -> tuple[int, int]:
     """(streak, experiments) after admitting `pick`, a plan candidate or its explained row:
     an explicit tier extends the streak, unknown priority resets it, an experiment takes a slot."""
-    return (streak + 1 if pick["priority"] else 0), experiments + pick["experiment"]
+    return (streak if pick.get("feature_drive") else streak + 1 if pick["priority"] else 0), experiments + pick["experiment"]
 
 
 def plan(
     rows: list[dict], capacity: int, *, repo: str, streak: int, experiments: int,
-    parents: dict[int, int] | None = None,
+    parents: dict[int, int] | None = None, mode: str = "normal", feature: int | None = None,
+    maintenance_labels: list[str] | tuple[str, ...] = (), feature_slot: bool = True,
 ) -> dict:
     """Admission order for one pass under the accepted policy; mutates nothing.
 
@@ -98,11 +112,18 @@ def plan(
     Returns the `selected` issues in admission order and one `explained` row per frontier ticket.
     """
     initial_streak, initial_experiments = streak, experiments
+    maintenance = {"bug", "chore", *maintenance_labels}
     explained, held, pool = [], [], []
     for issue in rows:
         n = issue["number"]
         if issue.get("held"):
             held.append({"ticket": n, "decision": "held", "reason": issue["held"]})
+            continue
+        if mode == "maintenance" and not maintenance.intersection(
+            label["name"] for label in issue.get("labels") or []
+        ):
+            held.append({"ticket": n, "decision": "held",
+                         "reason": "maintenance mode: not a bug/chore ticket"})
             continue
         try:
             tier, why = priority(n, issue.get("body"), repo)
@@ -110,8 +131,11 @@ def plan(
             held.append({"ticket": n, "decision": "held",
                          "reason": f"Plan binding is invalid; admission would refuse it: {exc}"})
             continue
-        pool.append({"issue": issue, "ticket": n, "priority": tier, "why": why,
-                     "experiment": is_experiment(issue), "age": (issue.get("createdAt") or "", n)})
+        candidate = {"issue": issue, "ticket": n, "priority": tier, "why": why,
+                     "experiment": is_experiment(issue), "age": (issue.get("createdAt") or "", n)}
+        if mode == "feature-drive" and feature_ticket(n, feature, parents or {}):
+            candidate["feature_drive"] = True
+        pool.append(candidate)
 
     def ranked(candidates: list[dict]) -> list[dict]:
         return sorted(candidates, key=lambda c: (
@@ -124,7 +148,12 @@ def plan(
             break
         explicit = ranked([c for c in eligible if c["priority"]])
         unknown = ranked([c for c in eligible if not c["priority"]])
-        if unknown and (not explicit or (explicit[0]["priority"] != "NOW" and streak >= FAIRNESS_STREAK)):
+        driven = ranked([c for c in eligible if c.get("feature_drive")]) if feature_slot else []
+        if driven:
+            pick = driven[0]
+            rule = f"feature-drive #{feature}: reserved feature slot"
+            feature_slot = False
+        elif unknown and (not explicit or (explicit[0]["priority"] != "NOW" and streak >= FAIRNESS_STREAK)):
             pick = unknown[0]
             rule = (f"fairness after {streak} consecutive explicit-priority admissions; oldest unknown-priority"
                     if explicit else "oldest unknown-priority; no explicit priority is eligible")
@@ -188,4 +217,5 @@ def plan(
 
 def _explain(candidate: dict, decision: str, rule: str) -> dict:
     return {"ticket": candidate["ticket"], "decision": decision, "priority": candidate["priority"],
-            "experiment": candidate["experiment"], "reason": f"{rule} ({candidate['why']})"}
+            "experiment": candidate["experiment"], "reason": f"{rule} ({candidate['why']})",
+            **({"feature_drive": True} if candidate.get("feature_drive") else {})}

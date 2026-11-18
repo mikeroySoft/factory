@@ -25,7 +25,7 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 
-from factory import briefing, config, flow, runtime_events, runtime_local, settings, trace
+from factory import briefing, config, flow, runtime_events, runtime_local, settings, throttle, trace
 from factory.config import Config
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -486,6 +486,7 @@ class Workspace:
             "roadmap": None,
             "runtime": None,
             "flow": None,
+            "throttle": None,
             "errors": [],
             "observed_at": None,
             "collection": cls._new_collection(),
@@ -1020,9 +1021,10 @@ class Workspace:
 
 
     def data(self, slug: str, *, refresh: bool = False) -> dict:
-        self.repository_config(slug)
+        mode_state = throttle.read(self.repository_config(slug))
         self.request_refresh(slug, force=refresh)
         with self._lock:
+            self._scopes[slug]["throttle"] = mode_state
             repositories = []
             for repository in self.repositories:
                 scope = self._scopes[repository]

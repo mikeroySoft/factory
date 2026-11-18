@@ -30,6 +30,7 @@ from factory import (
     runtime_events,
     runtime_local,
     stats,
+    throttle,
 )
 from factory.config import (
     LABEL_AGENT,
@@ -1203,6 +1204,7 @@ def snapshot() -> dict:
         "engine": {"commit": config.engine_commit(), "warning": config.engine_drift(cfg)},
         "repo": REPO,
         "root": str(ROOT),
+        "throttle": throttle.read(cfg),
         "errors": errors,
         "coverage": {
             "legacy": legacy_coverage,
