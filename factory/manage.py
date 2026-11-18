@@ -564,7 +564,9 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             if pr.get("changedFiles") != 0 or pr.get("baseRefName") != dispatch.cfg.main:
                 raise ValueError("RESOLVE refuses an open agent PR with changes or another base")
             post_comment("pr", pr["number"], message, pr=pr["number"])
-            dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO])
+            with lifecycle.pr_close_lock(dispatch.EVENTS):
+                dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO])
+                dispatch.record("pr-closed", ticket=n, pr=pr["number"], by="manager", reason="resolve")
         post_comment("issue", n, message, **({"pr": pr["number"]} if pr else {}))
         issue_action("close", "--reason", "completed")
         issue_action("edit", "--remove-label", LABEL_HUMAN)
@@ -587,7 +589,9 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             if pr.get("state") != "OPEN" or pr.get("baseRefName") != dispatch.cfg.main:
                 raise ValueError(f"CLOSE requires an open PR targeting the configured target `{dispatch.cfg.main}`")
             post_comment("pr", pr["number"], message, pr=pr["number"])
-            dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO])
+            with lifecycle.pr_close_lock(dispatch.EVENTS):
+                dispatch.run(["gh", "pr", "close", str(pr["number"]), "--repo", dispatch.REPO])
+                dispatch.record("pr-closed", ticket=n, pr=pr["number"], by="manager", reason="close")
         post_comment("issue", n, message, **({"pr": pr["number"]} if pr else {}))
         if any(e.get("event") == "issue-created" and e.get("ticket") == n for e in lifecycle.read_events(dispatch.EVENTS)):
             issue_action("close", "--reason", "not planned")
