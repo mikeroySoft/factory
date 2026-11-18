@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +27,7 @@ atexit.register(shutil.rmtree, XDG, ignore_errors=True)
 from datetime import UTC
 
 from factory import __version__, config, lifecycle, manage, runtime_events
+from tests.venv_helpers import create_venv
 
 # A worker runs this suite inside the dispatcher's handoff env; an inherited context would
 # redirect every fixture's lifecycle rows (gate timeouts, review verdicts...) into the live
@@ -172,16 +172,16 @@ def installed_factory(environment: Path) -> tuple[Path, Path]:
     """Create a disposable environment containing this Factory snapshot."""
     import tomlkit
 
-    venv.EnvBuilder(with_pip=False).create(environment)
-    python = environment / "bin" / "python"
+    python = create_venv(environment)
     env = {
         k: v for k, v in os.environ.items()
         if k not in ("PYTHONPATH", "PYTHONSAFEPATH", "PYTHONHOME")
     }
     site = subprocess.run(
         [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
-        env=env, capture_output=True, text=True, check=True,
+        env=env, capture_output=True, text=True, check=False,
     )
+    assert site.returncode == 0, site.stderr
     package = Path(site.stdout.strip()) / "factory"
     shutil.copytree(ROOT / "factory", package, ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(
@@ -525,7 +525,7 @@ class HostConfigTest(unittest.TestCase):
                 )
             )
             empty = tmp / "empty"
-            venv.EnvBuilder(with_pip=False).create(empty)
+            create_venv(empty)
             xdg = tmp / "xdg"
             host = xdg / "factory" / "config.toml"
             host.parent.mkdir(parents=True)
