@@ -240,3 +240,93 @@ class HostClaimRebootTest(unittest.TestCase):
             ultron.process_ticket(issue, 1, False)
         self.assertEqual(self.launched, [])
         self.assertIn(old, self.github.comments)
+
+    def test_legacy_reboot_claim_resumes_through_symlinked_lock_root(self):
+        ultron = self.dispatcher("ultron")
+        alias = self.root / "factory-alias"
+        alias.symlink_to(ultron.FACTORY, target_is_directory=True)
+        self.enterContext(mock.patch.object(ultron, "FACTORY", alias))
+        old = self.abandoned_claim(ultron)
+        self.github.open_prs = [{"number": 70}]
+        ultron.record("generation", ticket=7, generation=1, intent="resume", source="requeue_agent")
+        self.assert_resumed(ultron, old)
+
+    def test_nonce_claim_ignores_admission_lock_through_symlinked_root(self):
+        ultron = self.dispatcher("ultron")
+        alias = self.root / "factory-alias"
+        alias.symlink_to(ultron.FACTORY, target_is_directory=True)
+        self.enterContext(mock.patch.object(ultron, "FACTORY", alias))
+        ultron.ticket_lock(7).touch()
+        dead = {**lifecycle._identity(os.getpid()), "pid": 2_000_000_000}
+        with (
+            mock.patch.object(lifecycle, "_identity", return_value=dead),
+            self.assertRaises(KeyboardInterrupt),
+            lifecycle.scope(ultron.EVENTS, "ticket", ticket=7) as execution,
+        ):
+            execution.resource("acquired", ultron.ticket_lock(7), scope="repository")
+            old = self.github.add_claim("ultron", datetime.now(UTC))
+            ultron.record(
+                "host-claim-started", ticket=7,
+                nonce=old["body"].split("nonce=", 1)[1].split()[0],
+            )
+            raise KeyboardInterrupt
+        self.assert_resumed(ultron, old)
+
+    def test_legacy_claim_recovers_acquisition_in_creation_second(self):
+        ultron = self.dispatcher("ultron")
+        at = (datetime.now(UTC) - timedelta(seconds=60)).replace(microsecond=100_000)
+        with mock.patch.object(lifecycle, "_now", return_value=at.isoformat()):
+            execution = lifecycle.Execution(ultron.EVENTS, "ticket", ticket=7)
+            execution.process = {
+                **lifecycle._identity(os.getpid()),
+                "boot_id": "previous-boot", "pid": 2_000_000_000,
+            }
+            execution.emit("enter")
+            execution.resource("acquired", ultron.ticket_lock(7), scope="repository")
+        old = self.github.add_claim("ultron", at + timedelta(milliseconds=100))
+        old["created_at"] = at.replace(microsecond=0).isoformat()
+        self.github.open_prs = [{"number": 70}]
+        ultron.record("generation", ticket=7, generation=1, intent="resume", source="requeue_agent")
+        self.assert_resumed(ultron, old)
+
+    def test_legacy_claim_keeps_hold_for_ambiguous_creation_second(self):
+        ultron = self.dispatcher("ultron")
+        at = (datetime.now(UTC) - timedelta(seconds=60)).replace(microsecond=100_000)
+        for offset, completed in ((0, True), (700, False)):
+            acquired = at + timedelta(milliseconds=offset)
+            with mock.patch.object(lifecycle, "_now", return_value=acquired.isoformat()):
+                execution = lifecycle.Execution(ultron.EVENTS, "ticket", ticket=7)
+                execution.process = {
+                    **lifecycle._identity(os.getpid()),
+                    "boot_id": "previous-boot", "pid": 2_000_000_000,
+                }
+                execution.emit("enter")
+                execution.resource("acquired", ultron.ticket_lock(7), scope="repository")
+                if completed:
+                    execution.emit("exit")
+        old = self.github.add_claim("ultron", at + timedelta(milliseconds=100))
+        old["created_at"] = at.replace(microsecond=0).isoformat()
+        self.github.open_prs = [{"number": 70}]
+        [issue] = ultron.frontier()
+        self.assertEqual(issue.get("held"), "host claim (ultron)")
+        ultron.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, [])
+        self.assertIn(old, self.github.comments)
+
+    def test_archived_completed_legacy_owner_keeps_open_pr_hold(self):
+        ultron = self.dispatcher("ultron")
+        older = self.abandoned_claim(ultron, age=4 * 3600)
+        old = self.abandoned_claim(ultron, age=3 * 3600, completed=True)
+        self.github.comments.remove(older)
+        rows = lifecycle.read_events(ultron.EVENTS)
+        older_id = rows[0]["execution_id"]
+        # Closed newer ownership is archived before the older interrupted run.
+        archived = [row for row in rows if row.get("execution_id") != older_id]
+        live = [row for row in rows if row.get("execution_id") == older_id]
+        self.github.open_prs = [{"number": 70}]
+        with mock.patch.object(lifecycle, "read_events", return_value=archived + live):
+            [issue] = ultron.frontier()
+            self.assertEqual(issue.get("held"), "open PR")
+            ultron.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, [])
+        self.assertIn(old, self.github.comments)
