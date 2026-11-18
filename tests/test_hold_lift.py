@@ -519,7 +519,7 @@ class HoldLiftTest(unittest.TestCase):
                 attempted = []
                 transport = self.transport
 
-                def fail_hold(argv, state=state, attempted=attempted, **kwargs):
+                def fail_hold(argv, state=state, attempted=attempted, transport=transport, **kwargs):
                     if argv[:3] == ["gh", "pr", "edit"] and config.LABEL_HELD in argv:
                         attempted.append(True)
                         if state in {"approved", "ready"}:

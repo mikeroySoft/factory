@@ -1135,9 +1135,19 @@ def _hold(cfg: Config, step: dict, deadline: float) -> dict:
     if holding:
         if not target["draft"]:
             mutate([*prefix, "ready", pr, "--repo", cfg.repo, "--undo"])
-        mutate([*prefix, "edit", pr, "--repo", cfg.repo,
-                "--remove-label", LABEL_APPROVED, "--add-label", LABEL_HELD])
         restored, reason = False, "held"
+        try:
+            mutate([*prefix, "edit", pr, "--repo", cfg.repo,
+                    "--remove-label", LABEL_APPROVED, "--add-label", LABEL_HELD])
+        except _AmbiguousCommand as exc:
+            try:
+                fresh = _pr_target(cfg, target["number"], deadline)[0]
+            except DecisionError:
+                raise exc
+            if not fresh["draft"] or LABEL_HELD not in fresh["labels"] or LABEL_APPROVED in fresh["labels"]:
+                raise
+            target = fresh
+            approval_error, reason = exc, "hold_application_uncertain"
     else:
         if LABEL_APPROVED in labels:
             _withdraw_approval(cfg, target, deadline)

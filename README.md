@@ -3263,6 +3263,12 @@ same locks. Confirmed removal records `hold-lifted` with
 `reason: hold_removal_uncertain`, without attempting approval restoration, and
 returns the original uncertain receipt. If removal cannot be confirmed, no
 completed-lift event is asserted and the original uncertainty is preserved.
+If hold application loses its result, it also re-reads under the same locks.
+A confirmed draft with `factory-held` present and `factory-approved` absent
+records `held` with `reason: hold_application_uncertain` and the original
+approved-head snapshot, then returns the original uncertain receipt. A retry is
+a no-op; an unchanged-head lift can still restore approval through the shared
+policy. Unconfirmed application records no completed-hold event.
 
 Use `factory_prepare_action` with, for example,
 `{"repository":"owner/repo","action":"lift_hold","args":{"number":833,"ruling_id":"r3-0910"}}`,
