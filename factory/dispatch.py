@@ -4763,6 +4763,7 @@ def land_pass(dry_run: bool) -> None:
 
 def merge_pass_locked(dry_run: bool) -> None:
     """Ticket PR merge stage; `factory learn` PRs in the same listing go to `learn.promote_pass` first."""
+    list_limit = 1000
     prs = gh_json(
         [
             "pr",
@@ -4771,10 +4772,16 @@ def merge_pass_locked(dry_run: bool) -> None:
             REPO,
             "--state",
             "open",
+            "--limit",
+            "1001",
             "--json",
             "number,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision",
         ]
     )
+    if len(prs) > list_limit:
+        log(f"merge: WARNING: open PR listing reached limit {list_limit}; results may be truncated")
+        if not dry_run:
+            record("merge-list-limit", limit=list_limit, count=len(prs))
     from factory.learn import promote_pass
 
     try:
