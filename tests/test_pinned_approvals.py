@@ -267,6 +267,267 @@ class PinnedApprovalTest(unittest.TestCase):
         self.assertIn("--add-only-override", commands[-1])
         self.assertNotIn("--approval-comment", commands[-1])
 
+    def test_dispatch_ignores_newer_unrelated_or_stale_comments(self):
+        for newer in (
+            {"body": "ordinary discussion"},
+            {**self.comment, "body": MARKER + json.dumps({**self.data, "head": "0" * 40})},
+        ):
+            with self.subTest(newer=newer):
+                with mock.patch.object(dispatch, "gh_json", return_value=[[self.comment], [newer]]):
+                    ok, report, commands = self.dispatch_gate()
+                self.assertTrue(ok, report)
+                self.assertIn("--approval-comment", commands[-1])
+
+    def test_dispatch_refuses_malformed_comment_pages(self):
+        for pages in (1, [1], {"unexpected": []}):
+            with self.subTest(pages=pages):
+                with mock.patch.object(dispatch, "gh_json", return_value=pages):
+                    ok, report, commands = self.dispatch_gate()
+                self.assertFalse(ok, report)
+                self.assertIn("protected-paths: FAIL", report)
+                self.assertNotIn("--approval-comment", commands[-1])
+
+    def test_receipt_cli_requires_positive_ticket_and_comment(self):
+        for ticket, comment in ((None, "42"), ("7", None), ("0", "42"), ("7", "0"),
+                                ("-1", "42"), ("7", "-1")):
+            with self.subTest(ticket=ticket, comment=comment):
+                args = self.args()[:2]
+                if ticket is not None:
+                    args += ["--approval-ticket", ticket]
+                if comment is not None:
+                    args += ["--approval-comment", comment]
+                code, report = run_gate(self.repo, *args)
+                self.assertEqual(code, 2, report)
+                self.assertIn("must both be positive", report)
+
+    def test_receipt_cli_rejects_each_blanket_override(self):
+        for override in ("--protected-override", "--test-override", "--add-only-override"):
+            with self.subTest(override=override):
+                code, report = run_gate(self.repo, *self.args(), override)
+                self.assertEqual(code, 2, report)
+                self.assertIn("cannot be combined with blanket overrides", report)
+
+    def test_duplicate_protected_allow_is_refused(self):
+        code, report = run_gate(self.repo, *self.args(), *self.args()[:2])
+        self.assertEqual(code, 2, report)
+        self.assertIn("--protected-allow names a path more than once", report)
+
+    def test_large_comment_id_matches_by_value_and_not_identity(self):
+        self.comment["id"] = 1042
+        self.save()
+        args = self.args()
+        args[-1] = "1042"
+        code, report = run_gate(self.repo, *args)
+        self.assertEqual(code, 0, report)
+        self.comment["id"] = 1043
+        self.save()
+        code, report = run_gate(self.repo, *args)
+        self.assertEqual(code, 1, report)
+        self.assertIn("approval receipt does not match supplied allows", report)
+
+    def test_receipt_add_only_base_must_be_the_recorded_commit_not_an_alias(self):
+        (self.repo / "tests/test_old.py").write_text(APPROVED)
+        commit(self.repo)
+        self.data["head"] = git(self.repo, "rev-parse", "HEAD")
+        self.data["add_only"] = {"tests/test_old.py": blob(self.repo, APPROVED)}
+        self.save()
+        args = [*self.args(), "--add-only-allow", f"tests/test_old.py={blob(self.repo, APPROVED)}",
+                "--add-only-allow-base"]
+        code, report = run_gate(self.repo, *args, self.base)
+        self.assertEqual(code, 0, report)
+        code, report = run_gate(self.repo, *args, "origin/main")
+        self.assertEqual(code, 1, report)
+        self.assertIn("approval receipt does not match supplied allows", report)
+
+    def test_protected_allow_requires_in_place_regular_file_edit(self):
+        from contextlib import chdir
+
+        from factory import gate
+
+        path = "mutation-equivalents.json"
+        allow = {path: self.pin}
+        with chdir(self.repo):
+            raw = {path: ("100644", "100644", "M")}
+            self.assertEqual(gate._verify_protected_allow(allow, raw), "")
+            for modes in (("000000", "100644", "A"), ("100644", "000000", "D"),
+                          ("100644", "100755", "M"), ("120000", "100644", "M")):
+                with self.subTest(modes=modes):
+                    self.assertIn("not an in-place", gate._verify_protected_allow(allow, {path: modes}))
+            for other in (".factory.toml", "z-protected.json"):
+                with self.subTest(path=other):
+                    self.assertIn("outside reviewed protected scope", gate._verify_protected_allow(
+                        {other: self.pin}, {other: raw[path]},
+                    ))
+            target = self.repo / path
+            for mode in (0o641, 0o654, 0o744):
+                target.chmod(mode)
+                self.assertIn("working tree is not", gate._verify_protected_allow(allow, raw))
+            target.chmod(0o666)
+            self.assertEqual(gate._verify_protected_allow(allow, raw), "")
+            target.unlink()
+            self.assertIn("working tree is not", gate._verify_protected_allow(allow, raw))
+            reviewed = self.root / "reviewed.json"
+            reviewed.write_text('[{"reviewed": true}]\n')
+            target.symlink_to(reviewed)
+            self.assertIn("working tree is not", gate._verify_protected_allow(allow, raw))
+
+    def test_receipt_transport_errors_fail_closed_with_report(self):
+        from contextlib import chdir
+
+        from factory import gate
+
+        timed = gate.timed
+
+        def unavailable(command, **kwargs):
+            if command[:2] == ["gh", "api"]:
+                raise OSError("approval transport unavailable")
+            return timed(command, **kwargs)
+
+        with chdir(self.repo), mock.patch.multiple(
+            gate, cfg=None, GPU_LOCK=None, LEAK_RE=None, GPU_CHECKS=set(),
+            CHECK_TIMEOUT=1200, create=True,
+        ), mock.patch.object(gate, "timed", side_effect=unavailable):
+            code = gate.main(["--bug", "--no-repro-test", "fixture", *self.args()])
+        report = (self.repo / ".factory/gate-report.md").read_text()
+        self.assertEqual(code, 1, report)
+        self.assertIn("reviewed approval refused: approval transport unavailable", report)
+
+
+    def test_dispatch_does_not_use_attempt_receipts_for_other_tiers_or_named_runs(self):
+        dispatch.configure(config.load(self.repo))
+        with mock.patch.object(dispatch, "gh_json", side_effect=AssertionError("receipt lookup")):
+            for ticket, tier in ((7, "pr"), (7, "release"), ("7-pr", "attempt")):
+                with self.subTest(ticket=ticket, tier=tier):
+                    self.assertEqual(dispatch._reviewed_gate_flags(
+                        self.repo, ticket, self.head, self.base, tier, False, False,
+                    ), [])
+
+    def test_dispatch_receipt_transport_failures_leave_protection_enforced(self):
+        for error in (OSError("offline"), ValueError("invalid JSON"),
+                      subprocess.CalledProcessError(1, ["gh", "api"])):
+            with self.subTest(error=error):
+                with mock.patch.object(dispatch, "gh_json", side_effect=error):
+                    ok, report, commands = self.dispatch_gate()
+                self.assertFalse(ok, report)
+                self.assertIn("protected-paths: FAIL", report)
+                self.assertNotIn("--approval-comment", commands[-1])
+
+    def test_dispatch_refuses_receipt_when_base_has_no_common_ancestor(self):
+        dispatch.configure(config.load(self.repo))
+        unrelated = git(self.repo, "commit-tree", "HEAD^{tree}", stdin="unrelated root\n")
+        with mock.patch.object(dispatch, "gh_json", return_value=[[self.comment]]):
+            self.assertEqual(dispatch._reviewed_gate_flags(
+                self.repo, 7, self.head, unrelated, "attempt", False, False,
+            ), [])
+
+    def test_receipt_accepts_smallest_positive_ticket_and_comment_ids(self):
+        for ticket, comment in ((1, 42), (7, 1)):
+            with self.subTest(ticket=ticket, comment=comment):
+                self.comment["id"] = comment
+                self.comment["issue_url"] = f"https://api.github.com/repos/acme/widgets/issues/{ticket}"
+                self.save()
+                args = [*self.args()[:2], "--approval-ticket", str(ticket),
+                        "--approval-comment", str(comment)]
+                code, report = run_gate(self.repo, *args)
+                self.assertEqual(code, 0, report)
+
+    def test_receipt_requires_complete_add_only_map_and_full_base_pin(self):
+        self.data["add_only"] = {"tests/test_old.py": blob(self.repo, APPROVED)}
+        self.save()
+        code, report = run_gate(self.repo, *self.args())
+        self.assertEqual(code, 1, report)
+        self.assertIn("approval receipt does not match supplied allows", report)
+        (self.repo / "tests/test_old.py").write_text(APPROVED)
+        commit(self.repo)
+        self.data["head"] = git(self.repo, "rev-parse", "HEAD")
+        self.save()
+        code, report = run_gate(
+            self.repo, *self.args(), "--add-only-allow", f"tests/test_old.py={blob(self.repo, APPROVED)}",
+            "--add-only-allow-base", self.base[:12],
+        )
+        self.assertEqual(code, 1, report)
+        self.assertIn("approval receipt does not match supplied allows", report)
+
+    def test_protected_pin_checks_committed_blob_even_when_worktree_matches_approval(self):
+        from contextlib import chdir
+
+        from factory import gate
+
+        path = "mutation-equivalents.json"
+        reviewed = (self.repo / path).read_text()
+        for greater in (False, True):
+            content = next(
+                f"unreviewed {n}\n" for n in range(256)
+                if (blob(self.repo, f"unreviewed {n}\n") > self.pin) == greater
+            )
+            (self.repo / path).write_text(content)
+            commit(self.repo)
+            committed = git(self.repo, "rev-parse", f"HEAD:{path}")
+            (self.repo / path).write_text(reviewed)
+            with chdir(self.repo):
+                refusal = gate._verify_protected_allow(
+                    {path: self.pin}, {path: ("100644", "100644", "M")},
+                )
+            self.assertIn(f"approved {self.pin}, committed {committed}, working tree {self.pin}", refusal)
+
+
+class ApprovalReceiptValidationTest(unittest.TestCase):
+    def test_receipt_boundary_rejects_malformed_or_unpinned_authority(self):
+        from copy import deepcopy
+
+        from factory import gate
+
+        head, base, pin = "b" * 40, "c" * 40, "d" * 40
+        data = {
+            "reviewer": "Reviewer", "ruling": "r3-0850", "head": head, "base": base,
+            "protected": {"mutation-equivalents.json": pin}, "add_only": {},
+        }
+        comment = {
+            "id": 1042, "issue_url": "https://api.github.com/repos/acme/widgets/issues/7",
+            "user": {"login": "reviewer"}, "author_association": "OWNER",
+            "body": MARKER + json.dumps(data),
+        }
+
+        def validate(envelope):
+            return gate.reviewed_approval(envelope, "acme/widgets", 7, head, base)
+
+        for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+            self.assertEqual(validate({**comment, "author_association": association}), data)
+        self.assertEqual(validate({**comment, "id": 1}), data)
+        add_only = {**data, "protected": {}, "add_only": {"tests/test_old.py": pin}}
+        self.assertEqual(validate({**comment, "body": MARKER + json.dumps(add_only)}), add_only)
+
+        for field, value in (
+            ("id", -1), ("id", 0), ("id", True), ("id", "1042"), ("id", None),
+            ("user", None), ("user", {}), ("user", {"login": ""}), ("user", {"login": 1}),
+            ("author_association", "NONE"), ("issue_url", "https://api.github.com/repos/acme/widgets/issues/8"),
+            ("body", None), ("body", "discussion"), ("body", MARKER + "{"),
+        ):
+            with self.subTest(envelope_field=field, value=value), self.assertRaises((TypeError, ValueError)):
+                validate({**comment, field: value})
+        for malformed in (None, [], "", 1):
+            with self.subTest(envelope=malformed), self.assertRaises((TypeError, ValueError)):
+                validate(malformed)
+        variants = [[], {}, {**data, "extra": True}, {k: v for k, v in data.items() if k != "ruling"}]
+        for field, values in (
+            ("reviewer", (None, "", "impostor")),
+            ("ruling", (None, "", "ruling with spaces", "x" * 129)),
+            ("head", ("a" * 40, "f" * 40)),
+            ("base", ("a" * 40, "f" * 40)),
+            ("protected", ([], {"a-protected.json": pin}, {"z-protected.json": pin},
+                           {"mutation-equivalents.json": 1}, {"mutation-equivalents.json": "bad"})),
+            ("add_only", ([], {"../tests/test_old.py": pin}, {"tests//test_old.py": pin},
+                          {"tests/test_old.py": "bad"})),
+        ):
+            variants.extend({**data, field: value} for value in values)
+        variants.append({**data, "protected": {}})
+        for invalid in variants:
+            with self.subTest(receipt=invalid):
+                envelope = deepcopy(comment)
+                envelope["body"] = MARKER + json.dumps(invalid)
+                with self.assertRaises((TypeError, ValueError)):
+                    validate(envelope)
+
 
 if __name__ == "__main__":
     unittest.main()
