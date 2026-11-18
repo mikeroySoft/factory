@@ -541,6 +541,76 @@ class HoldLiftTest(unittest.TestCase):
                 self.assertEqual(self.events("held"), [])
                 self.assertEqual(self.apply(preview), result)
 
+    def test_hold_retry_recovers_snapshot_after_response_and_reconciliation_loss(self) -> None:
+        self.evidence()
+        self.action("approve_pr", add=[config.LABEL_APPROVED])
+        self.check_lock = True
+        preview = self.prepare("hold_pr", ruling_id="r3-disconnected-hold")
+        attempted = []
+        transport = self.transport
+
+        def disconnect_after_hold(argv, **kwargs):
+            if attempted and argv[:3] == ["gh", "pr", "view"]:
+                return subprocess.CompletedProcess(argv, 1, "", "provider unavailable")
+            result = transport(argv, **kwargs)
+            if argv[:3] == ["gh", "pr", "edit"] and config.LABEL_HELD in argv:
+                attempted.append(True)
+                raise decisions._AmbiguousCommand("hold response lost")
+            return result
+
+        with mock.patch.object(decisions, "_run", side_effect=disconnect_after_hold):
+            result = self.apply(preview)
+        self.assertEqual(result["status"], "uncertain", result)
+        self.assertEqual(result["steps"][-1]["output"], "hold response lost")
+        self.assertEqual(self.events("held"), [])
+        self.assertTrue(self.pr["isDraft"])
+        self.assertEqual(self.labels(), {config.LABEL_HELD})
+        count = len(self.calls)
+        self.assertEqual(self.apply(preview), result)
+        self.action("hold_pr", ruling_id="r3-retry")
+        self.assertEqual(len(self.calls), count)
+        held = self.events("held")
+        self.assertEqual(len(held), 1)
+        self.assertEqual(
+            (held[0]["approved_head"], held[0]["actor"], held[0]["caller"], held[0]["ruling_id"]),
+            (self.head, "robot-agent", "mcp", "r3-disconnected-hold"),
+        )
+        self.action("hold_pr")
+        self.assertEqual(self.events("held"), held)
+        self.action("lift_hold")
+        self.assertEqual(self.labels(), {config.LABEL_APPROVED})
+        self.assertTrue(self.events("hold-lifted")[-1]["approval_restored"])
+        self.assertEqual(self.apply(preview), result)
+
+    def test_lift_policy_journal_read_oserror_keeps_audit_and_receipt(self) -> None:
+        self.approved_hold()
+        preview = self.prepare("lift_hold", ruling_id="r3-journal-read")
+        read_events = lifecycle.read_events
+
+        def fail_policy_read(*args, **kwargs):
+            if config.LABEL_HELD not in self.labels():
+                raise OSError("approval journal temporarily unreadable")
+            return read_events(*args, **kwargs)
+
+        with mock.patch.object(lifecycle, "read_events", side_effect=fail_policy_read):
+            result = self.apply(preview)
+        self.assertEqual(result["status"], "uncertain", result)
+        self.assertEqual(result["steps"][-1]["output"], "approval journal temporarily unreadable")
+        self.assertFalse(self.pr["isDraft"])
+        self.assertEqual(self.labels(), set())
+        lifted = self.events("hold-lifted")
+        self.assertEqual(len(lifted), 1)
+        self.assertEqual(
+            (lifted[0]["head"], lifted[0]["approval_restored"], lifted[0]["reason"],
+             lifted[0]["actor"], lifted[0]["caller"], lifted[0]["ruling_id"]),
+            (self.head, False, "approval_uncertain", "robot-agent", "mcp", "r3-journal-read"),
+        )
+        count = len(self.calls)
+        self.assertEqual(self.apply(preview), result)
+        self.action("lift_hold")
+        self.assertEqual(len(self.calls), count)
+        self.assertEqual(self.events("hold-lifted"), lifted)
+
 
 if __name__ == "__main__":
     unittest.main()
