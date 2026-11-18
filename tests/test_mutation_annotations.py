@@ -45,7 +45,8 @@ async def answer(a: Literal[5] = 6, /, *args: Literal[7], key: Literal[8] = 9,
                 cwd=repository,
                 env={key: value for key, value in os.environ.items()
                      if key not in {"UV_NO_SYNC", "VIRTUAL_ENV"}} | {
-                         "UV_PROJECT_ENVIRONMENT": str(root / "venv"), "UV_OFFLINE": "1"},
+                         "UV_PROJECT_ENVIRONMENT": str(root / "venv"), "UV_OFFLINE": "1",
+                         "TMPDIR": str(root), "TMP": str(root), "TEMP": str(root)},
                 capture_output=True, text=True, timeout=90, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
