@@ -1341,8 +1341,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    a `Factory approval v1` receipt on the PR before labelling it. The land host
    authenticates the shared dispatcher login and rechecks the receipt's exact-head
    gate, risk-tier and independent-review premises. A newer verified receipt
-   supersedes an older local REVISE at that head; equal or newer local evidence
-   wins. Missing shared evidence waits without withdrawing the approval label.
+   supersedes an older local REVISE at that head; equal or newer local evidence,
+   including PR-only review-intake results, wins. Successful named-host approval
+   removes `ready-for-agent` before releasing the claim and assignment, so another
+   worker cannot reclaim completed work while CI or landing waits.
+   Missing shared evidence waits without withdrawing the approval label.
    Checks are associated with that head and rechecked after evidence evaluation; the PR
    head, target branch, label, and veto are then re-read immediately before
    `gh pr merge --match-head-commit <sha>`. Missing,

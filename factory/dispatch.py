@@ -3970,7 +3970,10 @@ def _shared_approval_events(n: int, pr: int, head: str, events: list[dict]) -> l
                 if not _head_evidence_matches(evidence, n, head):
                     continue
                 # A newer local refusal must not be erased by an older shared approval.
-                local = [row for row in events if row.get("ticket") == n
+                local = [row for row in events if (
+                    row.get("ticket") == n
+                    or row.get("event") == "review-result" and row.get("pr") == pr
+                )
                          and (row.get("head") == head or row.get("gate_head") == head)
                          and row.get("event") in {
                              "attempt", "refreshed", "gate-fixup", "review", "review-result",
@@ -4120,7 +4123,7 @@ def approve_pr(n: int, head: str) -> bool:
     )
     retain_handoff(n, head)
     if cfg.host_name is not None:
-        unclaim(n, check=True)
+        unclaim(n, "--remove-label", LABEL_AGENT, check=True, assignee_last=True)
     return True
 
 

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Cross-host landing consumes authenticated, exact-head approval receipts published by the claiming dispatcher, rechecking gate and risk-tier review premises instead of letting an older local REVISE revoke approval. Only live foreign claims block land; successful approval releases its source claim and assignment. CI, current-main, label and human-veto requirements are unchanged (#845).
+- Cross-host landing consumes authenticated, exact-head approval receipts published by the claiming dispatcher, rechecking gate and risk-tier review premises instead of letting an older local REVISE revoke approval. Equal or newer local review evidence, including PR-only review-intake results, remains authoritative. Only live foreign claims block land; successful approval removes `ready-for-agent` before releasing its source claim and assignment to prevent redispatch. CI, current-main, label and human-veto requirements are unchanged (#845).
 
 - CI recovery after #694 verified on main at `720e54b9` ([run 43419482803](https://github.com/mikeroySoft/factory/actions/runs/43419482803)): full-history checkout and mutation-cache warming were already landed, as were #725's isolated uv temporary locks; both unittest discovery suites pass. The earlier [zero-job run 42671561578](https://github.com/mikeroySoft/factory/actions/runs/42671561578) reports a GitHub internal server error (correlation ID `4fd1a7ce-a4bc-4530-bff2-62a56477c6b4`), not a workflow syntax failure; its workflow is identical to the preceding green revision. No-systemd scratch-repository commits now ignore inherited signing requirements, so the restricted fixture PATH does not require a signer; worker commit signing is unchanged (#721).
 
