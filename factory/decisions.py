@@ -1143,32 +1143,42 @@ def _hold(cfg: Config, step: dict, deadline: float) -> dict:
             _withdraw_approval(cfg, target, deadline)
         if target["draft"]:
             mutate([*prefix, "ready", pr, "--repo", cfg.repo])
-        mutate([*prefix, "edit", pr, "--repo", cfg.repo, "--remove-label", LABEL_HELD])
         fresh = {"head": None}
         restored = False
         try:
-            fresh = _pr_target(cfg, target["number"], deadline)[0]
-            if not approved_head:
-                reason = "hold_evidence_missing"
-            elif approved_head != fresh["head"] or fresh["head"] != step["target"]["head"]:
-                reason = "head_moved"
-            elif not step["restore"]:
-                reason = "explicit_approval"
-            else:
-                _approve(cfg, {**step, "target": fresh}, deadline)
-                restored, reason = True, "approval_restored"
-        except _ApprovalRefused as exc:
-            reason = exc.code
-        except (DecisionError, _FailedStep, _AmbiguousCommand) as exc:
-            approval_error = exc
-            reason = "approval_failed" if isinstance(exc, _FailedStep) else "approval_uncertain"
-            if fresh["head"] is not None:
-                try:
-                    fresh = _pr_target(cfg, target["number"], deadline)[0]
-                except DecisionError:
-                    fresh = {"head": None}
-            if isinstance(exc, _FailedStep) and fresh["head"] and fresh["head"] != target["head"]:
-                reason = "head_moved"
+            mutate([*prefix, "edit", pr, "--repo", cfg.repo, "--remove-label", LABEL_HELD])
+        except _AmbiguousCommand as exc:
+            try:
+                fresh = _pr_target(cfg, target["number"], deadline)[0]
+            except DecisionError:
+                raise exc
+            if LABEL_HELD in fresh["labels"]:
+                raise
+            approval_error, reason = exc, "hold_removal_uncertain"
+        else:
+            try:
+                fresh = _pr_target(cfg, target["number"], deadline)[0]
+                if not approved_head:
+                    reason = "hold_evidence_missing"
+                elif approved_head != fresh["head"] or fresh["head"] != step["target"]["head"]:
+                    reason = "head_moved"
+                elif not step["restore"]:
+                    reason = "explicit_approval"
+                else:
+                    _approve(cfg, {**step, "target": fresh}, deadline)
+                    restored, reason = True, "approval_restored"
+            except _ApprovalRefused as exc:
+                reason = exc.code
+            except (DecisionError, _FailedStep, _AmbiguousCommand) as exc:
+                approval_error = exc
+                reason = "approval_failed" if isinstance(exc, _FailedStep) else "approval_uncertain"
+                if fresh["head"] is not None:
+                    try:
+                        fresh = _pr_target(cfg, target["number"], deadline)[0]
+                    except DecisionError:
+                        fresh = {"head": None}
+                if isinstance(exc, _FailedStep) and fresh["head"] and fresh["head"] != target["head"]:
+                    reason = "head_moved"
     try:
         lifecycle.append(cfg.factory / "events.jsonl", {
             "at": _format_time(_now()), "event": "held" if holding else "hold-lifted",

@@ -3258,6 +3258,11 @@ the external approval effect or withdrawal is unknown. Only rejection by
 `_approval_policy` is a successful lift without restoration; operational errors
 after approval mutation are never reported as policy refusals. The audit head is
 null if the post-removal read fails or the post-failure head cannot be refreshed.
+If the hold-removal command loses its result, the lift re-reads the PR under the
+same locks. Confirmed removal records `hold-lifted` with
+`reason: hold_removal_uncertain`, without attempting approval restoration, and
+returns the original uncertain receipt. If removal cannot be confirmed, no
+completed-lift event is asserted and the original uncertainty is preserved.
 
 Use `factory_prepare_action` with, for example,
 `{"repository":"owner/repo","action":"lift_hold","args":{"number":833,"ruling_id":"r3-0910"}}`,
