@@ -3263,12 +3263,17 @@ same locks. Confirmed removal records `hold-lifted` with
 `reason: hold_removal_uncertain`, without attempting approval restoration, and
 returns the original uncertain receipt. If removal cannot be confirmed, no
 completed-lift event is asserted and the original uncertainty is preserved.
-If hold application loses its result, it also re-reads under the same locks.
-A confirmed draft with `factory-held` present and `factory-approved` absent
-records `held` with `reason: hold_application_uncertain` and the original
-approved-head snapshot, then returns the original uncertain receipt. A retry is
-a no-op; an unchanged-head lift can still restore approval through the shared
-policy. Unconfirmed application records no completed-hold event.
+Before any hold mutation, `hold-started` durably records the approved-head
+snapshot and original actor/caller/ruling. If hold application loses its result,
+it re-reads under the same locks. A confirmed draft with `factory-held` present
+and `factory-approved` absent records `held` with
+`reason: hold_application_uncertain`, retaining the original uncertain receipt.
+If reconciliation is unavailable, no completed hold is asserted; a fresh hold
+or lift reconciles that pending snapshot before proceeding. A confirmed retry
+has no further PR effects; an unchanged-head lift can still restore approval
+through the shared policy. Partial effects never count as a completed hold.
+Operational journal-read failures during post-removal approval also retain the
+completed-lift audit and uncertain receipt rather than escaping the action.
 
 Use `factory_prepare_action` with, for example,
 `{"repository":"owner/repo","action":"lift_hold","args":{"number":833,"ruling_id":"r3-0910"}}`,

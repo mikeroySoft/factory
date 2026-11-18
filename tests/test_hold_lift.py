@@ -611,6 +611,36 @@ class HoldLiftTest(unittest.TestCase):
         self.assertEqual(len(self.calls), count)
         self.assertEqual(self.events("hold-lifted"), lifted)
 
+    def test_pending_hold_recovery_requires_all_effects_and_preserves_head_binding(self) -> None:
+        self.evidence()
+        path = self.cfg.factory / "events.jsonl"
+        for state in ("approved", "ready", "unchanged", "moved"):
+            with self.subTest(state=state):
+                self.pr["headRefOid"] = "b" * 40 if state == "moved" else self.head
+                self.pr["isDraft"] = state != "ready"
+                self.pr["labels"] = [{"name": config.LABEL_HELD}]
+                if state == "approved":
+                    self.pr["labels"].append({"name": config.LABEL_APPROVED})
+                lifecycle.append(path, {
+                    "event": "hold-started", "pr": 17, "ticket": 7,
+                    "head": self.head, "approved_head": self.head,
+                    "actor": "original-agent", "caller": "mcp", "ruling_id": "r3-original",
+                })
+                before = len(self.events("held"))
+                if state in {"approved", "ready"}:
+                    result = self.apply(self.prepare("hold_pr"))
+                    self.assertEqual(result["status"], "uncertain", result)
+                    self.assertEqual(len(self.events("held")), before)
+                else:
+                    self.action("lift_hold")
+                    self.assertEqual(len(self.events("held")), before + 1)
+                    held = self.events("held")[-1]
+                    self.assertEqual((held["actor"], held["ruling_id"]), ("original-agent", "r3-original"))
+                    lifted = self.events("hold-lifted")[-1]
+                    self.assertEqual(lifted["approved_head"], self.head)
+                    self.assertEqual(lifted["approval_restored"], state == "unchanged")
+                    self.assertEqual(self.labels(), {config.LABEL_APPROVED} if state == "unchanged" else set())
+
 
 if __name__ == "__main__":
     unittest.main()
