@@ -139,25 +139,25 @@ class HostClaimRebootTest(unittest.TestCase):
         with (
             mock.patch.object(lifecycle, "_now", return_value=at.isoformat()),
             mock.patch.object(lifecycle, "_identity", side_effect=[process, process, live]),
+            self.assertRaises(KeyboardInterrupt),
+            lifecycle.scope(module.EVENTS, "ticket", ticket=7) as execution,
         ):
-            with self.assertRaises(KeyboardInterrupt):
-                with lifecycle.scope(module.EVENTS, "ticket", ticket=7) as execution:
-                    execution.resource("acquired", module.ticket_lock(7), scope="repository")
-                    claim = self.github.add_claim(module.cfg.host_name, at + timedelta(seconds=1))
-                    module.record(
-                        "host-claim-started", ticket=7,
-                        nonce=claim["body"].split("nonce=", 1)[1].split()[0],
-                        process=execution.process,
-                    )
-                    if child:
-                        with lifecycle.scope(module.EVENTS, "worker", ticket=7) as worker:
-                            worker.process = execution.process
-                            worker.env()
-                            worker.child(os.getpid())
-                            if child == "reaped":
-                                worker.child_done(os.getpid())
-                    execution.resource("released", module.ticket_lock(7), scope="repository")
-                    raise KeyboardInterrupt
+            execution.resource("acquired", module.ticket_lock(7), scope="repository")
+            claim = self.github.add_claim(module.cfg.host_name, at + timedelta(seconds=1))
+            module.record(
+                "host-claim-started", ticket=7,
+                nonce=claim["body"].split("nonce=", 1)[1].split()[0],
+                process=execution.process,
+            )
+            if child:
+                with lifecycle.scope(module.EVENTS, "worker", ticket=7) as worker:
+                    worker.process = execution.process
+                    worker.env()
+                    worker.child(os.getpid())
+                    if child == "reaped":
+                        worker.child_done(os.getpid())
+            execution.resource("released", module.ticket_lock(7), scope="repository")
+            raise KeyboardInterrupt
         return claim
 
     def test_current_boot_orphan_worker_keeps_claim_with_free_ticket_lock(self):
@@ -200,10 +200,12 @@ class HostClaimRebootTest(unittest.TestCase):
         ultron = self.dispatcher("ultron")
         old = self.abandoned_claim(ultron)
         at = datetime.fromisoformat(old["created_at"]) - timedelta(milliseconds=500)
-        with mock.patch.object(lifecycle, "_now", return_value=at.isoformat()):
-            with lifecycle.scope(ultron.EVENTS, "ticket", ticket=7) as contender:
-                contender.resource("requested", ultron.ticket_lock(7), scope="repository")
-                contender.wait("ticket_lock_contended", mode="retry_next_pass")
+        with (
+            mock.patch.object(lifecycle, "_now", return_value=at.isoformat()),
+            lifecycle.scope(ultron.EVENTS, "ticket", ticket=7) as contender,
+        ):
+            contender.resource("requested", ultron.ticket_lock(7), scope="repository")
+            contender.wait("ticket_lock_contended", mode="retry_next_pass")
         self.github.open_prs = [{"number": 70}]
         ultron.record("generation", ticket=7, generation=1, intent="resume", source="requeue_agent")
         self.assert_resumed(ultron, old)
@@ -212,17 +214,21 @@ class HostClaimRebootTest(unittest.TestCase):
         ultron = self.dispatcher("ultron")
         live = lifecycle._identity(os.getpid())
         dead = {**live, "pid": 2_000_000_000}
-        with mock.patch.object(lifecycle, "_identity", side_effect=[dead, dead, dead, live]):
-            with lifecycle.scope(ultron.EVENTS, "ticket", ticket=7):
-                old = self.github.add_claim("ultron", datetime.now(UTC))
-                ultron.record(
-                    "host-claim-started", ticket=7, process=dead,
-                    nonce=old["body"].split("nonce=", 1)[1].split()[0],
-                )
-                with lifecycle.scope(ultron.EVENTS, "review", ticket=7):
-                    with lifecycle.scope(ultron.EVENTS, "worker", ticket=7) as worker:
-                        worker.env()
-                        worker.child(os.getpid())
+        with (
+            mock.patch.object(lifecycle, "_identity", side_effect=[dead, dead, dead, live]),
+            lifecycle.scope(ultron.EVENTS, "ticket", ticket=7),
+        ):
+            old = self.github.add_claim("ultron", datetime.now(UTC))
+            ultron.record(
+                "host-claim-started", ticket=7, process=dead,
+                nonce=old["body"].split("nonce=", 1)[1].split()[0],
+            )
+            with (
+                lifecycle.scope(ultron.EVENTS, "review", ticket=7),
+                lifecycle.scope(ultron.EVENTS, "worker", ticket=7) as worker,
+            ):
+                worker.env()
+                worker.child(os.getpid())
         rows = lifecycle.read_events(ultron.EVENTS)
         # Rotation archives a closed worker before still-open ticket/review rows.
         archived = [row for row in rows if row.get("stage") == "worker"]
