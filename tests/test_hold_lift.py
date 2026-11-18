@@ -379,15 +379,14 @@ class HoldLiftTest(unittest.TestCase):
                 })
                 preview = self.prepare("lift_hold")
                 self.push_on_approve = True
-                withdrawal_attempted = False
+                withdrawals = []
 
-                def fail_withdrawal(*args):
-                    nonlocal withdrawal_attempted
-                    withdrawal_attempted = True
+                def fail_withdrawal(*args, withdrawals=withdrawals):
+                    withdrawals.append(True)
                     raise decisions.DecisionError("withdrawal deadline expired", "deadline")
 
-                def observe_target(*args):
-                    if withdrawal_attempted and not observable:
+                def observe_target(*args, observable=observable, withdrawals=withdrawals):
+                    if withdrawals and not observable:
                         raise decisions.DecisionError("audit read unavailable", "provider_unavailable")
                     return read_target(*args)
 
@@ -397,7 +396,7 @@ class HoldLiftTest(unittest.TestCase):
                     mock.patch.object(decisions, "_pr_target", side_effect=observe_target),
                 ):
                     result = self.apply(preview)
-                self.assertTrue(withdrawal_attempted)
+                self.assertTrue(withdrawals)
                 self.assertEqual(result["status"], "uncertain", result)
                 self.assertEqual(result["steps"][-1]["output"], "withdrawal deadline expired")
                 self.assertFalse(self.pr["isDraft"])
