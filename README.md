@@ -1336,9 +1336,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
 
 6. **Merge stage** (start of the next pass). One PR per pass requires green
    GitHub checks, a current-main head, no human requested-changes veto, the
-   `factory-approved` label, and a matching successful journal approval whose
-   gate, review, approval, and current PR head SHAs are identical. Checks are
-   associated with that head and rechecked after evidence evaluation; the PR
+   `factory-approved` label, and a matching successful approval whose gate,
+   review, approval, and current PR head SHAs are identical. Named hosts publish
+   a `Factory approval v1` receipt on the PR before labelling it. The land host
+   authenticates the shared dispatcher login and rechecks the receipt's exact-head
+   gate, risk-tier and independent-review premises. A newer verified receipt
+   supersedes an older local REVISE at that head; equal or newer local evidence
+   wins. Missing shared evidence waits without withdrawing the approval label.
+   Checks are associated with that head and rechecked after evidence evaluation; the PR
    head, target branch, label, and veto are then re-read immediately before
    `gh pr merge --match-head-commit <sha>`. Missing,
    unbound, legacy, or stale approval evidence never merges.
@@ -1624,10 +1629,12 @@ without a manager, and act only on this host's own `escalate` rows. A PR claimed
 only by the other host has no local `claimed` or `escalate` row, so those passes
 leave it alone.
 
-Independently, the ticket merge stage skips PRs whose elected claim belongs to
-another host, even after that claim expires. It neither refreshes those branches
-nor consumes local approval evidence, removes `factory-approved`, or escalates
-them. PRs without a claim retain ordinary eligibility checks.
+Independently, the ticket merge stage skips PRs whose **live** elected claim
+belongs to another host. Expired claims do not block landing, though election
+recovery still retains them for ticket ownership. Successful approval publication
+releases the source host's claim and assignment; failed or manager-pending
+approvals do not release it. The manager frontier retains its separate elected
+ownership guard. CI, freshness, label and human-veto checks remain mandatory.
 
 Before any GitHub mutation, dispatch reads `gh api rate_limit` and requires at
 least **100 remaining** in both GraphQL and REST (`core`). Below either floor,

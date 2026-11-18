@@ -3938,6 +3938,86 @@ def _head_evidence_matches(
     )
 
 
+def _shared_approval_events(n: int, pr: int, head: str, events: list[dict]) -> list[dict]:
+    """Consume only newer, authenticated, exact-head dispatcher approval receipts."""
+    if cfg.host_name is None:
+        return events
+    pages = gh_json(["api", "--paginate", "--slurp", f"repos/{REPO}/issues/{pr}/comments"])
+    latest = None
+    for page in pages:
+        for comment in page:
+            if not _same_github_login((comment.get("user") or {}).get("login"), host_claim_login()):
+                continue
+            body = comment.get("body") or ""
+            if not body.startswith("Factory approval v1\n"):
+                continue
+            try:
+                receipt = json.loads(body.partition("\n")[2])
+                if (
+                    not isinstance(receipt, dict)
+                    or receipt.get("ticket") != n or receipt.get("pr") != pr
+                    or any(receipt.get(key) != head for key in ("head", "gate_head", "review_head"))
+                    or not isinstance(receipt.get("host"), str) or not receipt["host"]
+                    or not isinstance(receipt.get("evidence"), list)
+                ):
+                    continue
+                at = datetime.fromisoformat(receipt["at"])
+                if at.utcoffset() is None:
+                    continue
+                evidence = receipt["evidence"]
+                if not all(isinstance(row, dict) and row.get("ticket") == n for row in evidence):
+                    continue
+                if not _head_evidence_matches(evidence, n, head):
+                    continue
+                # A newer local refusal must not be erased by an older shared approval.
+                local = [row for row in events if row.get("ticket") == n
+                         and (row.get("head") == head or row.get("gate_head") == head)
+                         and row.get("event") in {
+                             "attempt", "refreshed", "gate-fixup", "review", "review-result",
+                             "risk", "risk-check", "approved",
+                         }]
+                if any(datetime.fromisoformat(row["at"]) >= at for row in local):
+                    continue
+                if latest is None or at > latest[0]:
+                    latest = at, evidence, receipt
+            except (KeyError, TypeError, ValueError, RecursionError):
+                continue
+    if latest is None:
+        return events
+    _, evidence, receipt = latest
+    return [*events, *evidence, {**receipt, "event": "approved"}]
+
+
+def _publish_approval(n: int, pr: int, head: str, events: list[dict]) -> None:
+    """Share the same premises the land host rechecks, without logs or local paths."""
+    fields = {
+        "event", "ticket", "at", "head", "gate_head", "actual_head", "gate",
+        "worker_model", "role", "accepted", "verdict", "model", "tier", "matched_rules",
+        "mutation", "pr_gate", "mutation_scope", "mutation_proof",
+    }
+    rows = {}
+    for row in events:
+        if (row.get("ticket") == n
+            and (row.get("head") == head or row.get("gate_head") == head)
+            and row.get("event") in {
+                "attempt", "refreshed", "gate-fixup", "review", "risk", "risk-check",
+            }):
+            rows[row["event"], row.get("role")] = {key: value for key, value in row.items() if key in fields}
+    worker_model = next((row.get("worker_model") for row in reversed(events)
+                         if row.get("event") == "attempt" and row.get("ticket") == n
+                         and row.get("worker_model")), None)
+    for row in rows.values():
+        if row["event"] in {"attempt", "refreshed", "gate-fixup"} and not row.get("worker_model"):
+            row["worker_model"] = worker_model
+    receipt = {
+        "ticket": n, "pr": pr, "host": cfg.host_name,
+        "head": head, "gate_head": head, "review_head": head,
+        "at": datetime.now(UTC).isoformat(timespec="seconds"), "evidence": list(rows.values()),
+    }
+    run(["gh", "pr", "comment", str(pr), "--repo", REPO, "--body",
+         "Factory approval v1\n" + json.dumps(receipt, separators=(",", ":"))])
+
+
 def manager_approval(events: list[dict], n: int, head: str) -> bool:
     """`manager.review = "all"`: a recorded manager APPROVE bound to this exact head."""
     return any(
@@ -3976,6 +4056,8 @@ def approve_pr(n: int, head: str) -> bool:
         or pr.get("reviewDecision") == "CHANGES_REQUESTED"
     ):
         return False
+    if cfg.host_name is not None:
+        _publish_approval(n, pr["number"], head, events)
     changed = run(
         [
             "gh",
@@ -4037,6 +4119,8 @@ def approve_pr(n: int, head: str) -> bool:
         gate_head=head, review_head=head,
     )
     retain_handoff(n, head)
+    if cfg.host_name is not None:
+        unclaim(n, check=True)
     return True
 
 
@@ -4797,9 +4881,9 @@ def merge_pass_locked(dry_run: bool) -> None:
         candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
     for pr_num, n, listed_head in sorted(candidates):
         if cfg.host_name is not None:
-            elected = elected_host_claim(host_claims(n))
-            if elected is not None and elected["host"] != cfg.host_name:
-                log(f"PR #{pr_num}: skipped, elected claim belongs to host {elected['host']}")
+            live = live_host_claims(host_claims(n))
+            if live and live[0]["host"] != cfg.host_name:
+                log(f"PR #{pr_num}: skipped, live claim belongs to host {live[0]['host']}")
                 continue
         with nullcontext() if dry_run else lifecycle.scope(
             EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
@@ -4809,9 +4893,10 @@ def merge_pass_locked(dry_run: bool) -> None:
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "initiative"
                 continue
-            verdict = latest_head_review_verdict(
-                lifecycle.read_events(EVENTS), n, pr_num, listed_head,
+            approval_events = _shared_approval_events(
+                n, pr_num, listed_head, lifecycle.read_events(EVENTS),
             )
+            verdict = latest_head_review_verdict(approval_events, n, pr_num, listed_head)
             if verdict in {"REQUEST_CHANGES", "REVISE"}:
                 log(f"PR #{pr_num}: journaled {verdict} at {listed_head}; not merging")
                 if dry_run:
@@ -4842,6 +4927,16 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 if execution:
                     execution.outcome, execution.reason = "project_escalation", "review_revise"
+                continue
+            if cfg.host_name is not None and not any(
+                row.get("event") == "approved" and row.get("ticket") == n
+                and row.get("pr") == pr_num
+                and all(row.get(key) == listed_head for key in ("head", "gate_head", "review_head"))
+                for row in approval_events
+            ):
+                log(f"PR #{pr_num}: waiting for SHA-bound approval evidence at {listed_head}")
+                if execution:
+                    execution.outcome, execution.reason = "not_eligible", "approval_missing"
                 continue
             checks = triage_cancelled(pr_num, pr_checks(pr_num, listed_head), dry_run, n, listed_head)
             buckets: dict[str, int] = {}
@@ -4945,7 +5040,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                         )
                     log(f"PR #{pr_num}: would refuse (worker eval keep claim missing for {head}); run `{command}`")
                 else:
-                    events = lifecycle.read_events(EVENTS)
+                    events = _shared_approval_events(n, pr_num, head, lifecycle.read_events(EVENTS))
                     approved = _head_evidence_matches(
                         events, n, head, changed_paths=changed_paths,
                     ) and any(
@@ -4988,7 +5083,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 if refresh_pr_branch(n, pr_num, carries_upstream):
                     execution.outcome = "refreshed"
                 return
-            events = lifecycle.read_events(EVENTS)
+            events = _shared_approval_events(n, pr_num, head, lifecycle.read_events(EVENTS))
             if (
                 cfg.eval_schedule
                 and "files" in fresh
@@ -5022,6 +5117,10 @@ def merge_pass_locked(dry_run: bool) -> None:
                 for e in events
             )
             if not approved:
+                if cfg.host_name is not None:
+                    log(f"PR #{pr_num}: waiting for SHA-bound approval evidence at {head}")
+                    execution.outcome, execution.reason = "not_eligible", "approval_missing"
+                    continue
                 record_merge_decision(
                     n, pr_num, "remove stale factory-approved label",
                     f"approval evidence is missing or stale for head {head}",
