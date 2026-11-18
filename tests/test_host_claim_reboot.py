@@ -128,3 +128,82 @@ class HostClaimRebootTest(unittest.TestCase):
         self.assertEqual(ultron.elected_host_claim(claims)["host"], "tank")
         self.assertEqual(context, "resume current work")
         self.assert_resumed(ultron, old)
+
+    def interrupted_claim(self, module, *, reboot=False, child=None):
+        at = datetime.now(UTC) - timedelta(seconds=60)
+        live = lifecycle._identity(os.getpid())
+        process = {**live, "pid": 2_000_000_000}
+        if reboot:
+            process["boot_id"] = "previous-boot"
+        module.ticket_lock(7).touch()
+        with (
+            mock.patch.object(lifecycle, "_now", return_value=at.isoformat()),
+            mock.patch.object(lifecycle, "_identity", side_effect=[process, process, live]),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                with lifecycle.scope(module.EVENTS, "ticket", ticket=7) as execution:
+                    execution.resource("acquired", module.ticket_lock(7), scope="repository")
+                    claim = self.github.add_claim(module.cfg.host_name, at + timedelta(seconds=1))
+                    module.record(
+                        "host-claim-started", ticket=7,
+                        nonce=claim["body"].split("nonce=", 1)[1].split()[0],
+                        process=execution.process,
+                    )
+                    if child:
+                        with lifecycle.scope(module.EVENTS, "worker", ticket=7) as worker:
+                            worker.process = execution.process
+                            worker.env()
+                            worker.child(os.getpid())
+                            if child == "reaped":
+                                worker.child_done(os.getpid())
+                    execution.resource("released", module.ticket_lock(7), scope="repository")
+                    raise KeyboardInterrupt
+        return claim
+
+    def test_current_boot_orphan_worker_keeps_claim_with_free_ticket_lock(self):
+        ultron = self.dispatcher("ultron")
+        old = self.interrupted_claim(ultron, child="alive")
+        # Model SIGKILL: no ticket exit, but a recorded surviving nested worker.
+        rows = lifecycle.read_events(ultron.EVENTS)
+        rows = [row for row in rows if not (
+            row.get("stage") == "ticket" and row.get("kind") == "exit"
+        )]
+        with mock.patch.object(lifecycle, "read_events", return_value=rows):
+            [issue] = ultron.frontier()
+            self.assertEqual(issue.get("held"), "host claim (ultron)")
+            ultron.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, [])
+        self.assertIn(old, self.github.comments)
+
+    def test_current_boot_unproven_descendants_keep_claim_after_unknown_exit(self):
+        ultron = self.dispatcher("ultron")
+        old = self.interrupted_claim(ultron, child="reaped")
+        [issue] = ultron.frontier()
+        self.assertEqual(issue["held"], "host claim (ultron)")
+        ultron.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, [])
+        self.assertIn(old, self.github.comments)
+
+    def test_unknown_exit_reclaims_dead_owner_without_launched_worker(self):
+        ultron = self.dispatcher("ultron")
+        old = self.interrupted_claim(ultron)
+        self.assert_resumed(ultron, old)
+
+    def test_unknown_exit_after_reboot_resumes_open_pr(self):
+        ultron = self.dispatcher("ultron")
+        old = self.interrupted_claim(ultron, reboot=True, child="reaped")
+        self.github.open_prs = [{"number": 70}]
+        ultron.record("generation", ticket=7, generation=1, intent="resume", source="requeue_agent")
+        self.assert_resumed(ultron, old)
+
+    def test_legacy_claim_ignores_later_contender_without_ticket_lock(self):
+        ultron = self.dispatcher("ultron")
+        old = self.abandoned_claim(ultron)
+        at = datetime.fromisoformat(old["created_at"]) - timedelta(milliseconds=500)
+        with mock.patch.object(lifecycle, "_now", return_value=at.isoformat()):
+            with lifecycle.scope(ultron.EVENTS, "ticket", ticket=7) as contender:
+                contender.resource("requested", ultron.ticket_lock(7), scope="repository")
+                contender.wait("ticket_lock_contended", mode="retry_next_pass")
+        self.github.open_prs = [{"number": 70}]
+        ultron.record("generation", ticket=7, generation=1, intent="resume", source="requeue_agent")
+        self.assert_resumed(ultron, old)
