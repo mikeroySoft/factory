@@ -185,3 +185,40 @@ class CrossHostLandTest(TestCase):
                     ]))
                 tank.merge_pass_locked(False)
                 self.assertFalse(self.github.merged)
+
+    def test_successful_handoff_is_not_readmitted(self):
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        stale = self.github.issue()
+        self.claim("ultron")
+        head = self.approve(ultron)
+        for module in (ultron, tank):
+            with self.subTest(host=module.cfg.host_name):
+                self.assertEqual(module.frontier(), [])
+                module.cfg.workers["default"] = [sys.executable]
+                with mock.patch.object(module, "worker_round") as worker:
+                    module.process_ticket(stale, 1, False)
+                worker.assert_not_called()
+                self.assertIsNone(module.elected_host_claim(module.host_claims(9)))
+        self.assertEqual(self.github.head(), head)
+        self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+        self.assertEqual(self.events(ultron, "escalate") + self.events(tank, "escalate"), [])
+
+    def test_pr_only_review_result_preserves_local_veto(self):
+        for case in ("newer", "equal", "older", "other_pr", "other_head"):
+            with self.subTest(case=case):
+                self.setUp()
+                tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+                self.approval_comments = []
+                head = self.approve(ultron)
+                receipt = json.loads(self.approval_comments[-1]["body"].partition("\n")[2])
+                at = {
+                    "equal": receipt["at"], "older": "2000-01-01T00:00:00Z",
+                }.get(case, "2099-01-01T00:00:00Z")
+                tank.record("review-result", pr=103 if case == "other_pr" else 102,
+                            head="f" * 40 if case == "other_head" else head,
+                            verdict="REQUEST_CHANGES", at=at)
+                tank.merge_pass_locked(False)
+                self.assertEqual(self.github.merged, case not in {"newer", "equal"})
+                if case in {"newer", "equal"}:
+                    self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+                    self.assertEqual(self.events(tank, "escalate")[-1]["code"], "review_revise")
