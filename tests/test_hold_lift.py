@@ -408,6 +408,65 @@ class HoldLiftTest(unittest.TestCase):
                 self.assertFalse(lifted[-1]["approval_restored"])
                 self.assertEqual(self.apply(preview), result)
 
+    def test_lift_ambiguous_removal_reconciles_completed_lift_and_keeps_receipt(self) -> None:
+        self.approved_hold()
+        self.check_lock = True
+        preview = self.prepare("lift_hold", ruling_id="r3-transport-failure")
+        transport = self.transport
+
+        def lose_removal_result(argv, **kwargs):
+            result = transport(argv, **kwargs)
+            if argv[:3] == ["gh", "pr", "edit"] and config.LABEL_HELD in argv:
+                raise decisions._AmbiguousCommand("hold removal transport timed out")
+            return result
+
+        with mock.patch.object(decisions, "_run", side_effect=lose_removal_result):
+            result = self.apply(preview)
+        self.assertEqual(result["status"], "uncertain", result)
+        self.assertEqual(result["steps"][-1]["output"], "hold removal transport timed out")
+        self.assertFalse(self.pr["isDraft"])
+        self.assertEqual(self.labels(), set())
+        lifted = self.events("hold-lifted")
+        self.assertEqual(len(lifted), 1)
+        self.assertEqual(
+            {key: lifted[0][key] for key in (
+                "head", "approved_head", "approval_restored", "reason", "actor", "caller", "ruling_id",
+            )},
+            {"head": self.head, "approved_head": self.head, "approval_restored": False,
+             "reason": "hold_removal_uncertain", "actor": "robot-agent", "caller": "mcp",
+             "ruling_id": "r3-transport-failure"},
+        )
+        count = len(self.calls)
+        self.assertEqual(self.apply(preview), result)
+        self.action("lift_hold")
+        self.assertEqual(len(self.calls), count)
+        self.assertEqual(self.events("hold-lifted"), lifted)
+
+    def test_lift_ambiguous_removal_does_not_audit_an_unconfirmed_lift(self) -> None:
+        self.approved_hold()
+        for readable in (True, False):
+            with self.subTest(readable=readable):
+                preview = self.prepare("lift_hold")
+                transport = self.transport
+                attempted = []
+
+                def fail_removal(argv, readable=readable, attempted=attempted, transport=transport, **kwargs):
+                    if argv[:3] == ["gh", "pr", "edit"] and config.LABEL_HELD in argv:
+                        attempted.append(True)
+                        return subprocess.CompletedProcess(argv, 1, "", "hold removal failed")
+                    if attempted and not readable and argv[:3] == ["gh", "pr", "view"]:
+                        return subprocess.CompletedProcess(argv, 1, "", "provider unavailable")
+                    return transport(argv, **kwargs)
+
+                with mock.patch.object(decisions, "_run", side_effect=fail_removal):
+                    result = self.apply(preview)
+                self.assertTrue(attempted)
+                self.assertEqual(result["status"], "uncertain", result)
+                self.assertEqual(result["steps"][-1]["output"], "hold removal failed")
+                self.assertEqual(self.labels(), {config.LABEL_HELD})
+                self.assertEqual(self.events("hold-lifted"), [])
+                self.assertEqual(self.apply(preview), result)
+
 
 if __name__ == "__main__":
     unittest.main()
