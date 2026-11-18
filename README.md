@@ -821,9 +821,16 @@ by a human. A journal with no `generation` row is generation 0 and counts exactl
 before.
 
 `requeue_agent` takes an optional `intent`. With `resume` (the default, and what a
-plain relabel means), the branch, worktree and refresh context are kept. With `fresh`,
-`agent/<n>` is recut from main at the generation's first claim, and the superseded local
-and remote heads stay under create-only
+plain relabel means), the branch, worktree and refresh context are kept. Before
+reusing a worktree (or its local branch), dispatch fetches origin and fast-forwards
+a clean local ancestor to `origin/agent/<n>`, journaling `worktree-fast-forward`
+with `from_head` and `to_head`. Equal heads and unpublished local-ahead commits
+are kept. Dirty or diverged worktrees escalate before the worker or gate, naming
+both heads and preserving the worktree; generated `.factory/` and
+`.factory-prompt.md` artifacts do not count as worker edits. The lease and
+`claimed.base` use the synchronized head. No reset or recut is used for resume.
+With `fresh`, `agent/<n>` is recut from main at the generation's first claim,
+and the superseded local and remote heads stay under create-only
 `refs/factory-evidence/<n>-generation-<g>-{local,remote}-<sha12>` refs, so replaying an
 interrupted restart never replaces them. A `generation-restart` row (`local`, `remote`,
 `base`) is the receipt: later claims of the generation reuse the recut worktree instead

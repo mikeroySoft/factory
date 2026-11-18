@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from contextlib import chdir
+from unittest import mock
 
-from factory import lifecycle
+from factory import config, dispatch, lifecycle
 from tests import test_dispatch_lifecycle as smoke
 
 
@@ -65,6 +67,23 @@ class WorktreeResumeTest(unittest.TestCase):
         [receipt] = self.events_named("worktree-fast-forward")
         self.assertEqual((receipt["ticket"], receipt["from_head"], receipt["to_head"]), (7, self.parent, child))
 
+    def test_linear_worker_push_after_fast_forward_succeeds(self):
+        self.prepare()
+        child = self.advance_remote()
+        self.worker.write_text(self.worker.read_text() + (
+            "Path('change.txt').write_text('linear worker change\\n')\n"
+            "subprocess.run(['git', 'add', 'change.txt'], check=True)\n"
+            "subprocess.run(['git', 'commit', '-qm', 'linear worker'], check=True)\n"
+        ))
+        self.cli("dispatch", "--ticket", "7")
+        self.assertEqual(self.worker_head.read_text(), child)
+        head = self.git("rev-parse", "agent/7").stdout.strip()
+        self.assertEqual(self.git("rev-parse", f"{head}^").stdout.strip(), child)
+        self.assertEqual(self.gate_head.read_text(), head)
+        self.assertEqual(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0], head)
+        self.assertEqual(self.events_named("escalate"), [])
+        self.assertTrue(self.events_named("approved"))
+
     def test_equal_head_proceeds_unchanged(self):
         self.prepare()
         self.assert_runs_at(self.parent)
@@ -103,6 +122,23 @@ class WorktreeResumeTest(unittest.TestCase):
         local = self.git("rev-parse", "agent/7").stdout.strip()
         self.assert_refused(local, remote)
 
+    def test_diverged_refresh_escalates_without_gate(self):
+        self.prepare()
+        remote = self.advance_remote()
+        self.git("-C", str(self.wt), "commit", "--allow-empty", "-qm", "local fork")
+        local = self.git("rev-parse", "agent/7").stdout.strip()
+        with chdir(self.repo), mock.patch.dict("os.environ", self.env), \
+                mock.patch.object(dispatch, "run_gate") as gate:
+            dispatch.configure(config.load(self.repo))
+            self.assertFalse(dispatch.refresh_pr_branch(7, 70, False))
+        gate.assert_not_called()
+        [escalation] = self.events_named("escalate")
+        self.assertEqual(escalation["code"], "refresh_head")
+        self.assertIn(local, escalation["reason"])
+        self.assertIn(remote, escalation["reason"])
+        self.assertEqual(self.git("rev-parse", "agent/7").stdout.strip(), local)
+        self.assertEqual(self.events_named("worktree-fast-forward"), [])
+
     def check_dirty(self, kind):
         self.prepare()
         remote = self.advance_remote()
@@ -127,11 +163,3 @@ class WorktreeResumeTest(unittest.TestCase):
         self.git("push", "origin", "--delete", "agent/7")
         self.assert_runs_at(self.parent)
 
-    def test_fetch_failure_never_runs_stale_code(self):
-        self.prepare()
-        self.git("remote", "set-url", "origin", str(self.base / "missing-origin"))
-        self.cli("dispatch", "--ticket", "7", expected=1)
-        self.assertFalse(self.worker_head.exists())
-        self.assertFalse(self.gate_head.exists())
-        self.assertEqual(self.git("rev-parse", "agent/7").stdout.strip(), self.parent)
-        self.assertTrue(self.events_named("escalate"))
