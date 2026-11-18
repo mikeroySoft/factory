@@ -653,6 +653,7 @@ def _approval_policy(cfg: Config, target: dict) -> None:
         or _SHA.fullmatch(head) is None
         or target.get("state") != "OPEN"
         or target.get("draft")
+        or "factory-held" in target.get("labels", [])
         or target.get("base") != cfg.main
         or target.get("review_decision") == "CHANGES_REQUESTED"
     ):
@@ -1106,7 +1107,7 @@ def _approve(cfg: Config, step: dict, deadline: float) -> dict:
             "gate_head": target["head"],
             "review_head": target["head"],
             "actor": step.get("actor"),
-            "source": "human-decision",
+            "source": "mcp" if step.get("caller") == "mcp" else "human-decision",
         })
     except OSError as exc:
         try:
@@ -1231,7 +1232,7 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                 for step in document["steps"]:
                     try:
                         if step.get("kind") == "approve":
-                            step = {**step, "actor": actor}
+                            step = {**step, "actor": actor, "caller": preview.get("caller")}
                             step_results.append(_approve(cfg, step, deadline))
                         elif step.get("kind") == "command":
                             step_results.append(_mutation(cfg, step, deadline))
