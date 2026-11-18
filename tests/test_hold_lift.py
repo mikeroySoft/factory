@@ -317,6 +317,98 @@ class HoldLiftTest(unittest.TestCase):
         self.assertEqual(lifted["reason"], "approval_uncertain")
         self.assertFalse(lifted["approval_restored"])
 
+    def test_lift_post_removal_read_failure_keeps_audit_and_receipt(self) -> None:
+        self.approved_hold()
+        preview = self.prepare("lift_hold", ruling_id="r3-read-failure")
+        read_target = decisions._pr_target
+
+        def fail_after_removal(*args):
+            if config.LABEL_HELD not in self.labels():
+                raise decisions.DecisionError("post-lift provider read failed", "provider_unavailable")
+            return read_target(*args)
+
+        with mock.patch.object(decisions, "_pr_target", side_effect=fail_after_removal):
+            result = self.apply(preview)
+        self.assertEqual(result["status"], "uncertain", result)
+        self.assertEqual(result["steps"][-1]["output"], "post-lift provider read failed")
+        self.assertFalse(self.pr["isDraft"])
+        self.assertEqual(self.labels(), set())
+        lifted = self.events("hold-lifted")
+        self.assertEqual(len(lifted), 1)
+        self.assertIsNone(lifted[0]["head"])
+        self.assertFalse(lifted[0]["approval_restored"])
+        self.assertEqual(lifted[0]["reason"], "approval_uncertain")
+        self.assertEqual(
+            (lifted[0]["actor"], lifted[0]["caller"], lifted[0]["ruling_id"]),
+            ("robot-agent", "mcp", "r3-read-failure"),
+        )
+        count = len(self.calls)
+        self.assertEqual(self.apply(preview), result)
+        self.action("lift_hold")
+        self.assertEqual(len(self.calls), count)
+        self.assertEqual(self.events("hold-lifted"), lifted)
+
+    def test_lift_policy_rejection_is_a_successful_unapproved_lift(self) -> None:
+        self.approved_hold()
+        preview = self.prepare("lift_hold")
+        with mock.patch.object(
+            decisions, "_approval_policy",
+            side_effect=decisions.DecisionError("exact-head evidence disappeared", "approval_evidence"),
+        ):
+            result = self.apply(preview)
+        self.assertEqual(result["status"], "success", result)
+        self.assertFalse(self.pr["isDraft"])
+        self.assertEqual(self.labels(), set())
+        self.assertEqual(len(self.events("approved")), 1)
+        lifted = self.events("hold-lifted")[-1]
+        self.assertEqual(lifted["head"], self.head)
+        self.assertEqual(lifted["reason"], "approval_evidence")
+        self.assertFalse(lifted["approval_restored"])
+
+    def test_lift_failed_stale_withdrawal_is_not_a_policy_refusal(self) -> None:
+        self.approved_hold()
+        read_target = decisions._pr_target
+        for observable in (True, False):
+            with self.subTest(observable=observable):
+                self.pr["headRefOid"] = self.head
+                self.pr["isDraft"] = True
+                self.pr["labels"] = [{"name": config.LABEL_HELD}]
+                lifecycle.append(self.cfg.factory / "events.jsonl", {
+                    "event": "held", "ticket": 7, "pr": 17,
+                    "head": self.head, "approved_head": self.head,
+                })
+                preview = self.prepare("lift_hold")
+                self.push_on_approve = True
+                withdrawal_attempted = False
+
+                def fail_withdrawal(*args):
+                    nonlocal withdrawal_attempted
+                    withdrawal_attempted = True
+                    raise decisions.DecisionError("withdrawal deadline expired", "deadline")
+
+                def observe_target(*args):
+                    if withdrawal_attempted and not observable:
+                        raise decisions.DecisionError("audit read unavailable", "provider_unavailable")
+                    return read_target(*args)
+
+                before = len(self.events("hold-lifted"))
+                with (
+                    mock.patch.object(decisions, "_withdraw_approval", side_effect=fail_withdrawal),
+                    mock.patch.object(decisions, "_pr_target", side_effect=observe_target),
+                ):
+                    result = self.apply(preview)
+                self.assertTrue(withdrawal_attempted)
+                self.assertEqual(result["status"], "uncertain", result)
+                self.assertEqual(result["steps"][-1]["output"], "withdrawal deadline expired")
+                self.assertFalse(self.pr["isDraft"])
+                self.assertEqual(self.labels(), {config.LABEL_APPROVED})
+                lifted = self.events("hold-lifted")
+                self.assertEqual(len(lifted), before + 1)
+                self.assertEqual(lifted[-1]["head"], "b" * 40 if observable else None)
+                self.assertEqual(lifted[-1]["reason"], "approval_uncertain")
+                self.assertFalse(lifted[-1]["approval_restored"])
+                self.assertEqual(self.apply(preview), result)
+
 
 if __name__ == "__main__":
     unittest.main()
