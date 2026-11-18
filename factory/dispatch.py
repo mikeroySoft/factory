@@ -3228,7 +3228,7 @@ def pr_gate_and_review(
         ):
             pr_runs[head] = run_gate(
                 wt, f"{n}-pr", tier="pr", blocking_mutation=policy_tier == "High",
-                base=caller_base, mutation_proof=proof, mutation_duration=duration,
+                base=caller_base, mutation_proof=proof, mutation_duration=duration if duration is not None else cfg.mutation_duration if proof else None,
             )
             ok, pr_report = pr_runs[head]
             if not ok and fixups and cfg.fixups:
@@ -3280,7 +3280,7 @@ def pr_gate_and_review(
                     base_commit = current_base
                     pr_runs[head] = run_gate(
                         wt, f"{n}-pr", tier="pr", blocking_mutation=True,
-                        base=caller_base, mutation_proof=True, mutation_duration=duration,
+                        base=caller_base, mutation_proof=True, mutation_duration=duration if duration is not None else cfg.mutation_duration,
                     )
                     ok, pr_report = pr_runs[head]
                     verdict, proof_scope = (
