@@ -1173,6 +1173,12 @@ class LeaseRefusedCLI(unittest.TestCase):
 
     def test_refused_first_push_escalates_and_unassigns(self):
         foreign = self.push_foreign()
+        # Move the remote after resume synchronization and lease capture, not before.
+        self.git("push", "origin", "--delete", "agent/7")
+        self.worker.write_text(self.worker.read_text() + (
+            "\nimport subprocess\n"
+            f"subprocess.run(['git', 'push', 'origin', '{foreign}:refs/heads/agent/7'], check=True)\n"
+        ))
         self.cli("dispatch", "--ticket", "7")
         self.assert_escalated(foreign)
         self.assertFalse(json.loads(self.state.read_text()).get("pr"))
