@@ -1885,9 +1885,11 @@ branches, or merge state.
   not fabricated review evidence, and cleanup cannot race an active claim.
   Named dispatchers publish a `Factory approval v1` PR comment containing bounded
   exact-head journal premises before adding `factory-approved`. Dashboard/MCP
-  decisions can use this receipt when the producing journal is on another host:
-  the author must match the dispatcher identity (`[install].dispatch_env`, not
-  the human actor), and ticket, PR, head, gate head and review head must match.
+  decisions on a named host can use this receipt when the producing journal is
+  on another host. Consumption requires `[install].dispatch_env` credentials
+  authenticating a dispatcher login distinct from the human actor. The comment
+  must be unedited, its author must match that dispatcher, and ticket, PR, head,
+  gate head and review head must match.
   Gate/review, High-tier mutation/model separation and manager requirements are
   rechecked at prepare and apply; newer or undated local evidence still blocks.
   Missing, malformed or stale receipts fail closed. Pre-upgrade journal-only

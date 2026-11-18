@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -28,7 +29,11 @@ class CrossHostDecisionTest(unittest.TestCase):
 
     def transport(self, argv, **kwargs):
         if argv[:2] == ["gh", "api"] and argv[-1] == "user":
-            login = "factory" if kwargs["env"].get("GH_TOKEN") == "dispatcher-test-token" else "alice"
+            env = kwargs["env"]
+            token = env.get("GH_TOKEN") or env.get("GITHUB_TOKEN")
+            machine = token == "dispatcher-test-token" or (
+                not token and env.get("GH_CONFIG_DIR") == "/dispatcher/gh")
+            login = "factory" if machine else "alice"
             return self.driver.completed(argv, out=json.dumps({"login": login}))
         if argv[:2] == ["gh", "api"] and argv[-1] == f"repos/{self.cfg.repo}/issues/17/comments":
             return self.driver.completed(argv, out=json.dumps([self.comments]))
@@ -100,6 +105,28 @@ class CrossHostDecisionTest(unittest.TestCase):
                     self.driver.apply(preview) if preview else self.prepare()
                 self.assertEqual(caught.exception.code, "approval_evidence")
                 self.assertEqual(self.driver.calls, [])
+
+    def test_dispatcher_credentials_do_not_inherit_human_token_precedence(self):
+        self.share()
+        for credentials in ({"GH_CONFIG_DIR": "/dispatcher/gh"},
+                            {"GITHUB_TOKEN": "dispatcher-test-token"}):
+            with self.subTest(credentials=credentials), mock.patch.dict(
+                os.environ, {"GH_TOKEN": "human-token", "GITHUB_TOKEN": "human-token"},
+            ):
+                self.cfg.install["dispatch_env"] = credentials
+                self.assertEqual(self.prepare()["targets"][0]["head"], self.head)
+
+    def test_missing_or_invalid_edit_metadata_refuses(self):
+        for key, value in (("created_at", None), ("created_at", "invalid"), ("updated_at", None)):
+            for phase in ("prepare", "apply"):
+                with self.subTest(key=key, value=value, phase=phase):
+                    self.share()
+                    preview = self.prepare() if phase == "apply" else None
+                    self.comments[0][key] = value
+                    with self.assertRaises(decisions.DecisionError) as caught:
+                        self.driver.apply(preview) if preview else self.prepare()
+                    self.assertEqual(caught.exception.code, "approval_evidence")
+                    self.assertEqual(self.driver.calls, [])
 
     def test_newer_remote_approval_supersedes_older_local_revise(self):
         self.share()

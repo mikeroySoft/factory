@@ -650,13 +650,21 @@ def _local_cleanup_target(cfg: Config, number: int, deadline: float) -> dict:
 
 def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadline: float) -> list[dict]:
     """Read dispatcher-authenticated receipts, never claims supplied by the decision actor."""
-    if cfg.host_name is None:
+    dispatcher_env = cfg.install.get("dispatch_env", {})
+    if cfg.host_name is None or not any(
+        dispatcher_env.get(key) for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR")
+    ):
         return events
+    # A dashboard token must not override the dispatcher's gh credential store.
+    env = {key: value for key, value in _environment(cfg).items()
+           if key not in {"GH_TOKEN", "GITHUB_TOKEN"}}
     user = _read_json(cfg, ["gh", "api", "--hostname", "github.com", "user"], deadline,
-                      env={**_environment(cfg), **cfg.install.get("dispatch_env", {})})
+                      env={**env, **dispatcher_env})
     login = user.get("login") if isinstance(user, dict) else None
     if not isinstance(login, str) or _LOGIN.fullmatch(login) is None:
         raise DecisionError("dispatcher identity is unavailable", "provider_unavailable")
+    if dispatch._same_github_login(login, _actor(cfg, deadline)):
+        return events
     pages = _read_json(cfg, [
         "gh", "api", "--hostname", "github.com", "--paginate", "--slurp",
         f"repos/{cfg.repo}/issues/{target['number']}/comments",
@@ -681,6 +689,10 @@ def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadl
             if not isinstance(author, dict) or not isinstance(author.get("login"), str):
                 continue
             if not dispatch._same_github_login(author["login"], login):
+                continue
+            # Repository writers can edit a dispatcher's comment without changing its author.
+            created = comment.get("created_at")
+            if _parse_time(created) is None or comment.get("updated_at") != created:
                 continue
             body = comment.get("body")
             if not isinstance(body, str) or not body.startswith("Factory approval v1\n"):
