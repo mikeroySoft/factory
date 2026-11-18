@@ -36,6 +36,8 @@ class CrossHostDecisionTest(unittest.TestCase):
             login = "factory" if machine else "alice"
             return self.driver.completed(argv, out=json.dumps({"login": login}))
         if argv[:2] == ["gh", "api"] and argv[-1] == f"repos/{self.cfg.repo}/issues/17/comments":
+            if "--jq" in argv:
+                return self.driver.completed(argv, out=json.dumps(self.comments))
             return self.driver.completed(argv, out=json.dumps([self.comments]))
         return self.driver.transport(argv, **kwargs)
 
@@ -203,6 +205,8 @@ class CrossHostDecisionTest(unittest.TestCase):
         receipt = self.share()
         receipt["evidence"] = test_risk_merge.high_events(head=self.head)
         self.cfg.checks = [config.Check("mutation", ["mutation"], when="pr", proof=config.MUTATION_PROOF)]
+        for row in receipt["evidence"]:
+            row.setdefault("at", receipt["at"])
         for valid in (False, True):
             with self.subTest(valid=valid):
                 for row in receipt["evidence"]:
@@ -238,6 +242,8 @@ class CrossHostDecisionTest(unittest.TestCase):
         self.assertTrue(body.startswith("Factory approval v1\n"))
         self.comments = [{"user": {"login": "factory"}, "body": body,
                           "created_at": "2026-11-18T19:15:24Z", "updated_at": "2026-11-18T19:15:24Z"}]
+        published_at = json.loads(body.partition("\n")[2])["at"]
+        self.comments[0].update(created_at=published_at, updated_at=published_at)
         preview = self.prepare()
         self.assertTrue(self.driver.apply(preview)["ok"])
         self.assertIn(config.LABEL_APPROVED, {row["name"] for row in self.driver.pr["labels"]})

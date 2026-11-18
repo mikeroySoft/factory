@@ -3540,7 +3540,7 @@ def push_and_pr(
 
 def pr_comment(n: int, text: str) -> None:
     body_file = FACTORY / f"review-{n}.md"
-    body_file.write_text(text + "\n")
+    body_file.write_text("Factory reviewer:\n\n" + text + "\n")
     posted = run(
         [
             "gh",

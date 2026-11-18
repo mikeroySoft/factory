@@ -665,10 +665,21 @@ def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadl
         raise DecisionError("dispatcher identity is unavailable", "provider_unavailable")
     if dispatch._same_github_login(login, _actor(cfg, deadline)):
         return events
-    pages = _read_json(cfg, [
-        "gh", "api", "--hostname", "github.com", "--paginate", "--slurp",
+    result = _checked(cfg, [
+        "gh", "api", "--hostname", "github.com", "--paginate",
+        "--jq", (
+            "map(select(.user.login? | strings | ascii_downcase == "
+            + json.dumps(login.casefold()) + ")"
+            ' | select(.body? | strings | startswith("Factory approval v1\\n"))'
+            " | {user, body, created_at, updated_at}) | @json"
+        ),
         f"repos/{cfg.repo}/issues/{target['number']}/comments",
     ], deadline)
+    # gh cannot combine --jq and --slurp; @json emits one compact array per page.
+    try:
+        pages = [json.loads(page) for page in result.stdout.splitlines()]
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise DecisionError("provider returned invalid approval comments", "provider_unavailable") from exc
     if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
         raise DecisionError("provider returned invalid approval comments", "provider_unavailable")
     ticket, head = target["ticket"], target["head"]
@@ -692,7 +703,8 @@ def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadl
                 continue
             # Repository writers can edit a dispatcher's comment without changing its author.
             created = comment.get("created_at")
-            if _parse_time(created) is None or comment.get("updated_at") != created:
+            created_at = _parse_time(created)
+            if created_at is None or comment.get("updated_at") != created:
                 continue
             body = comment.get("body")
             if not isinstance(body, str) or not body.startswith("Factory approval v1\n"):
@@ -709,15 +721,22 @@ def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadl
                     continue
                 at = _parse_time(receipt.get("at"))
                 evidence = receipt["evidence"]
-                if at is None or not all(isinstance(row, dict) and row.get("ticket") == ticket for row in evidence):
+                if at is None or at > created_at or not evidence or not all(
+                    isinstance(row, dict) and row.get("ticket") == ticket for row in evidence
+                ):
                     continue
+                times = [_parse_time(row.get("at")) for row in evidence]
+                if any(stamp is None or stamp > at for stamp in times):
+                    continue
+                # Every shared premise must predate publication and supersede local evidence.
+                evidence_at = min(times)
                 if not dispatch._head_evidence_matches(evidence, ticket, head, configuration=cfg):
                     continue
                 # Unknown or newer local evidence cannot be overwritten by a remote receipt.
-                if any((local_at := _parse_time(row.get("at"))) is None or local_at >= at for row in local):
+                if any((local_at := _parse_time(row.get("at"))) is None or local_at >= evidence_at for row in local):
                     continue
-                if latest is None or at > latest[0]:
-                    latest = at, evidence
+                if latest is None or evidence_at > latest[0]:
+                    latest = evidence_at, evidence
             except (KeyError, TypeError, ValueError, RecursionError):
                 continue
     return [*events, *latest[1]] if latest else events

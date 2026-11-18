@@ -1891,7 +1891,12 @@ branches, or merge state.
   must be unedited, its author must match that dispatcher, and ticket, PR, head,
   gate head and review head must match.
   Gate/review, High-tier mutation/model separation and manager requirements are
-  rechecked at prepare and apply; newer or undated local evidence still blocks.
+  rechecked at prepare and apply. All shared premises must be timestamped no later
+  than the receipt, and the receipt no later than the server's comment creation.
+  Undated local evidence, or local evidence as new as any shared premise, blocks;
+  republishing old evidence cannot renew it. Untrusted reviewer comments have a
+  fixed prefix distinct from the receipt marker. Provider-side filtering excludes
+  unrelated discussion before bounded capture.
   Missing, malformed or stale receipts fail closed. Pre-upgrade journal-only
   approvals need the source dispatcher to approve that same head again to publish
   the receipt. CI, branch freshness and human-veto safeguards are unchanged.

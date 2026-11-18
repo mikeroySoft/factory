@@ -70,10 +70,14 @@ class ReceiptChronologyTest(unittest.TestCase):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(200)
+                first = "page=2" not in self.path
+                response = json.dumps(comments[:-1] if first else comments[-1:]).encode()
+                if first:
+                    self.send_header("Link", f'<http://127.0.0.1:{self.server.server_port}/comments?page=2>; rel="next"')
                 self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Content-Length", str(len(response)))
                 self.end_headers()
-                self.wfile.write(payload)
+                self.wfile.write(response)
 
             def log_message(self, *args):
                 pass
