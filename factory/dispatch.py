@@ -3076,9 +3076,9 @@ def _mutation_status(report: str) -> str:
     return match.group(1) if match else "MISSING"
 
 
-def _mutation_proof_opted() -> bool:
+def _mutation_proof_opted(configuration: Config | None = None) -> bool:
     """The repository's own `.factory.toml` declared a `proof = "mutation-v1"` pr check."""
-    checks = getattr(globals().get("cfg"), "checks", None) or []
+    checks = getattr(configuration or globals().get("cfg"), "checks", None) or []
     return any(c.when == "pr" and c.proof == config.MUTATION_PROOF for c in checks)
 
 
@@ -3874,6 +3874,7 @@ FACTORY_APPROVED = LABEL_APPROVED
 
 def _head_evidence_matches(
     events: list[dict], n: int, head: str, *, changed_paths: list[str] | None = None,
+    configuration: Config | None = None,
 ) -> bool:
     """True when every tier-specific premise passed for this exact head."""
     tier, rules = risk_for_head(n, head, events)
@@ -3932,7 +3933,7 @@ def _head_evidence_matches(
         and pr_gate == "PASS"
         # Opted-in repositories accept only a risk-check decided by the completion record
         # and bound to a gate-validated scope (rows without one, e.g. legacy, never qualify).
-        and (mutation_proof == config.MUTATION_PROOF or not _mutation_proof_opted())
+        and (mutation_proof == config.MUTATION_PROOF or not _mutation_proof_opted(configuration))
         and all(isinstance(model, str) and model for model in models)
         and len(set(models)) == 3
     )
@@ -3945,6 +3946,34 @@ def manager_approval(events: list[dict], n: int, head: str) -> bool:
         and e.get("decision") == "APPROVE"
         for e in events
     )
+
+
+def _publish_approval(n: int, pr: int, head: str, events: list[dict]) -> None:
+    """Share journal premises using the authenticated Factory approval v1 protocol."""
+    fields = {
+        "event", "ticket", "at", "head", "gate_head", "actual_head", "gate",
+        "worker_model", "role", "accepted", "verdict", "model", "tier", "matched_rules",
+        "mutation", "pr_gate", "mutation_scope", "mutation_proof", "decision",
+    }
+    rows = {}
+    for row in events:
+        if (row.get("ticket") == n
+            and (row.get("head") == head or row.get("gate_head") == head)
+            and row.get("event") in {
+                "attempt", "refreshed", "gate-fixup", "review", "risk", "risk-check", "manage",
+            }):
+            rows[row["event"], row.get("role")] = {key: value for key, value in row.items() if key in fields}
+    worker_model = _worker_model_for_head(n, head)
+    for row in rows.values():
+        if row["event"] in {"attempt", "refreshed", "gate-fixup"} and not row.get("worker_model"):
+            row["worker_model"] = worker_model
+    receipt = {
+        "ticket": n, "pr": pr, "host": cfg.host_name,
+        "head": head, "gate_head": head, "review_head": head,
+        "at": datetime.now(UTC).isoformat(timespec="seconds"), "evidence": list(rows.values()),
+    }
+    run(["gh", "pr", "comment", str(pr), "--repo", REPO, "--body",
+         "Factory approval v1\n" + json.dumps(receipt, separators=(",", ":"))])
 
 
 def approve_pr(n: int, head: str) -> bool:
@@ -3976,6 +4005,8 @@ def approve_pr(n: int, head: str) -> bool:
         or pr.get("reviewDecision") == "CHANGES_REQUESTED"
     ):
         return False
+    if cfg.host_name is not None:
+        _publish_approval(n, pr["number"], head, events)
     changed = run(
         [
             "gh",

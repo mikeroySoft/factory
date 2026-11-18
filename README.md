@@ -1883,6 +1883,16 @@ branches, or merge state.
   `/api/act` is removed; authenticated prepare/apply/receipt endpoints own actions.
   Upstream-sync issues cannot be requeued as ordinary worker tasks. Approval is
   not fabricated review evidence, and cleanup cannot race an active claim.
+  Named dispatchers publish a `Factory approval v1` PR comment containing bounded
+  exact-head journal premises before adding `factory-approved`. Dashboard/MCP
+  decisions can use this receipt when the producing journal is on another host:
+  the author must match the dispatcher identity (`[install].dispatch_env`, not
+  the human actor), and ticket, PR, head, gate head and review head must match.
+  Gate/review, High-tier mutation/model separation and manager requirements are
+  rechecked at prepare and apply; newer or undated local evidence still blocks.
+  Missing, malformed or stale receipts fail closed. Pre-upgrade journal-only
+  approvals need the source dispatcher to approve that same head again to publish
+  the receipt. CI, branch freshness and human-veto safeguards are unchanged.
   Triage executes the controller's trusted Python package, not a shadow package
   in the selected checkout. Cleanup coordinates with both landing and ticket
   claims, binds local revisions, refuses dirty worktrees, and deletes the branch

@@ -380,10 +380,12 @@ def _timeout(deadline: float) -> float:
 
 def _checked(
     cfg: Config, argv: list[str], deadline: float, *, cwd: Path | None = None, cap: int = READ_CAP,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = _run(
-            argv, env=_environment(cfg), cwd=cwd, timeout=_timeout(deadline), cap=cap,
+            argv, env=env if env is not None else _environment(cfg),
+            cwd=cwd, timeout=_timeout(deadline), cap=cap,
         )
     except _AmbiguousCommand as exc:
         raise DecisionError("provider read did not complete", "provider_unavailable") from exc
@@ -394,8 +396,9 @@ def _checked(
 
 def _read_json(
     cfg: Config, argv: list[str], deadline: float, *, cwd: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> object:
-    result = _checked(cfg, argv, deadline, cwd=cwd)
+    result = _checked(cfg, argv, deadline, cwd=cwd, env=env)
     try:
         return json.loads(result.stdout)
     except (ValueError, TypeError, RecursionError) as exc:
@@ -645,7 +648,70 @@ def _local_cleanup_target(cfg: Config, number: int, deadline: float) -> dict:
     return target
 
 
-def _approval_policy(cfg: Config, target: dict) -> None:
+def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadline: float) -> list[dict]:
+    """Read dispatcher-authenticated receipts, never claims supplied by the decision actor."""
+    if cfg.host_name is None:
+        return events
+    user = _read_json(cfg, ["gh", "api", "--hostname", "github.com", "user"], deadline,
+                      env={**_environment(cfg), **cfg.install.get("dispatch_env", {})})
+    login = user.get("login") if isinstance(user, dict) else None
+    if not isinstance(login, str) or _LOGIN.fullmatch(login) is None:
+        raise DecisionError("dispatcher identity is unavailable", "provider_unavailable")
+    pages = _read_json(cfg, [
+        "gh", "api", "--hostname", "github.com", "--paginate", "--slurp",
+        f"repos/{cfg.repo}/issues/{target['number']}/comments",
+    ], deadline)
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        raise DecisionError("provider returned invalid approval comments", "provider_unavailable")
+    ticket, head = target["ticket"], target["head"]
+    local = [row for row in events if (
+        row.get("ticket") == ticket
+        or row.get("event") == "review-result" and row.get("pr") == target["number"]
+    ) and (row.get("head") == head or row.get("gate_head") == head)
+        and row.get("event") in {
+            "attempt", "refreshed", "gate-fixup", "review", "review-result",
+            "risk", "risk-check", "manage",
+        }]
+    latest = None
+    for page in pages:
+        for comment in page:
+            if not isinstance(comment, dict):
+                continue
+            author = comment.get("user")
+            if not isinstance(author, dict) or not isinstance(author.get("login"), str):
+                continue
+            if not dispatch._same_github_login(author["login"], login):
+                continue
+            body = comment.get("body")
+            if not isinstance(body, str) or not body.startswith("Factory approval v1\n"):
+                continue
+            try:
+                receipt = json.loads(body.partition("\n")[2])
+                if (
+                    not isinstance(receipt, dict)
+                    or receipt.get("ticket") != ticket or receipt.get("pr") != target["number"]
+                    or any(receipt.get(key) != head for key in ("head", "gate_head", "review_head"))
+                    or not isinstance(receipt.get("host"), str) or not receipt["host"]
+                    or not isinstance(receipt.get("evidence"), list)
+                ):
+                    continue
+                at = _parse_time(receipt.get("at"))
+                evidence = receipt["evidence"]
+                if at is None or not all(isinstance(row, dict) and row.get("ticket") == ticket for row in evidence):
+                    continue
+                if not dispatch._head_evidence_matches(evidence, ticket, head, configuration=cfg):
+                    continue
+                # Unknown or newer local evidence cannot be overwritten by a remote receipt.
+                if any((local_at := _parse_time(row.get("at"))) is None or local_at >= at for row in local):
+                    continue
+                if latest is None or at > latest[0]:
+                    latest = at, evidence
+            except (KeyError, TypeError, ValueError, RecursionError):
+                continue
+    return [*events, *latest[1]] if latest else events
+
+
+def _approval_policy(cfg: Config, target: dict, deadline: float) -> None:
     ticket, head = target.get("ticket"), target.get("head")
     if (
         type(ticket) is not int
@@ -658,9 +724,15 @@ def _approval_policy(cfg: Config, target: dict) -> None:
     ):
         raise DecisionError("PR is outside Factory's exact-head approval scope", "approval_scope")
     events = lifecycle.read_events(cfg.factory / "events.jsonl")
-    if not dispatch._head_evidence_matches(events, ticket, head):
+    needs_manager = cfg.manager and cfg.manager_review == "all"
+    if (
+        not dispatch._head_evidence_matches(events, ticket, head, configuration=cfg)
+        or needs_manager and not dispatch.manager_approval(events, ticket, head)
+    ):
+        events = _shared_approval_events(cfg, target, events, deadline)
+    if not dispatch._head_evidence_matches(events, ticket, head, configuration=cfg):
         raise DecisionError("exact-head gate and independent review evidence is missing", "approval_evidence")
-    if cfg.manager and cfg.manager_review == "all" and not dispatch.manager_approval(events, ticket, head):
+    if needs_manager and not dispatch.manager_approval(events, ticket, head):
         raise DecisionError("exact-head manager approval evidence is missing", "approval_evidence")
 
 
@@ -705,7 +777,7 @@ def _command_step(action: str, argv: list[str], *, cwd: Path | None = None) -> d
 
 
 def _plan_request(
-    cfg: Config, request: dict, actor: str, target: dict, raw: dict | None,
+    cfg: Config, request: dict, actor: str, target: dict, raw: dict | None, deadline: float,
 ) -> list[dict]:
     number, op = request["number"], request["op"]
     steps = []
@@ -731,7 +803,7 @@ def _plan_request(
                 f"{op}_edit", ["gh", op, "edit", str(number), "--repo", cfg.repo, *edit],
             ))
         if LABEL_APPROVED in request.get("add", []):
-            _approval_policy(cfg, target)
+            _approval_policy(cfg, target, deadline)
             steps.append({"kind": "approve", "action": "pr_approve", "target": target})
         if request.get("close"):
             steps.append(_command_step(
@@ -826,7 +898,7 @@ def prepare(
                 merge_lock = True
         if op == "issue":
             _sync_routing(request, raw)
-        planned = _plan_request(cfg, request, actor, target, raw)
+        planned = _plan_request(cfg, request, actor, target, raw, deadline)
         steps.extend({**step, "request": index} for step in planned)
         effects.append({"request": index, **_effect(request, actor, target)})
 
@@ -1072,7 +1144,7 @@ def _withdraw_approval(cfg: Config, target: dict, deadline: float) -> None:
 
 def _approve(cfg: Config, step: dict, deadline: float) -> dict:
     target = step["target"]
-    _approval_policy(cfg, target)
+    _approval_policy(cfg, target, deadline)
     add = {
         **step,
         "argv": [
@@ -1203,7 +1275,7 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                         raise DecisionError("target changed after prepare", "stale_target")
                 for step in document["steps"]:
                     if step.get("kind") == "approve":
-                        _approval_policy(cfg, step["target"])
+                        _approval_policy(cfg, step["target"], deadline)
                 started_at = _format_time(_now())
                 intent = {
                     "schema_version": 1,

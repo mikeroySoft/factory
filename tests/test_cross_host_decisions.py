@@ -23,7 +23,7 @@ class CrossHostDecisionTest(unittest.TestCase):
         self.head = self.driver.pr["headRefOid"]
         self.source = config.Config(self.driver.root.parent / "ultron", self.cfg.repo, host_name="ultron")
         self.comments = []
-        self.driver.run_patch.side_effect = self.transport
+        decisions._run.side_effect = self.transport
         self.request = {"op": "pr", "number": 17, "add": [config.LABEL_APPROVED]}
 
     def transport(self, argv, **kwargs):
@@ -67,11 +67,21 @@ class CrossHostDecisionTest(unittest.TestCase):
         receipt = self.driver.apply(preview)
         self.assertTrue(receipt["ok"], receipt)
         self.assertIn(config.LABEL_APPROVED, {row["name"] for row in self.driver.pr["labels"]})
+        # A local approval receipt is not a later gate/review refusal.
+        self.assertEqual(self.prepare()["targets"][0]["head"], self.head)
+
+    def test_newer_remote_approval_supersedes_older_local_revise(self):
+        self.share()
+        lifecycle.append(self.cfg.factory / "events.jsonl", {
+            "event": "review", "ticket": 7, "head": self.head, "actual_head": self.head,
+            "verdict": "REVISE", "accepted": True, "at": "2026-11-18T19:14:00Z",
+        })
+        self.assertEqual(self.prepare()["targets"][0]["head"], self.head)
 
     def test_missing_wrong_head_or_untrusted_evidence_refuses(self):
         original = self.share()
         for defect in ("missing", "head", "gate_head", "review_head", "ticket", "pr",
-                       "gate", "review", "author", "malformed"):
+                       "gate", "review", "actual_head", "verdict", "author", "malformed"):
             with self.subTest(defect=defect):
                 receipt = copy.deepcopy(original)
                 author = "factory"
@@ -82,6 +92,8 @@ class CrossHostDecisionTest(unittest.TestCase):
                 elif defect in {"gate", "review"}:
                     kind = "attempt" if defect == "gate" else "review"
                     receipt["evidence"] = [row for row in receipt["evidence"] if row["event"] != kind]
+                elif defect in {"actual_head", "verdict"}:
+                    receipt["evidence"][1][defect] = "b" * 40 if defect == "actual_head" else "REVISE"
                 elif defect == "author":
                     author = "alice"  # The human decision actor is not the dispatcher.
                 elif defect == "malformed":
@@ -147,7 +159,7 @@ class CrossHostDecisionTest(unittest.TestCase):
 
     def test_named_dispatcher_publishes_journal_evidence_before_label(self):
         self.share()
-        events = lifecycle.read_events(self.source.factory / "events.jsonl")
+        self.comments = []
         commands = []
         pr = {"number": 17, "state": "OPEN", "headRefOid": self.head,
               "baseRefName": "main", "reviewDecision": "", "files": []}
@@ -165,10 +177,10 @@ class CrossHostDecisionTest(unittest.TestCase):
         self.assertLess(commands.index(publication), commands.index(label))
         body = publication[publication.index("--body") + 1]
         self.assertTrue(body.startswith("Factory approval v1\n"))
-        receipt = json.loads(body.partition("\n")[2])
-        self.assertEqual(receipt["head"], self.head)
-        self.assertTrue(dispatch._head_evidence_matches(receipt["evidence"], 7, self.head))
-        self.assertEqual({row["event"] for row in events}, {"attempt", "review", "approved"})
+        self.comments = [{"user": {"login": "factory"}, "body": body}]
+        preview = self.prepare()
+        self.assertTrue(self.driver.apply(preview)["ok"])
+        self.assertIn(config.LABEL_APPROVED, {row["name"] for row in self.driver.pr["labels"]})
 
 
 if __name__ == "__main__":
