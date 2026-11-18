@@ -434,7 +434,7 @@ class PinnedApprovalTest(unittest.TestCase):
     def test_receipt_requires_complete_add_only_map_and_full_base_pin(self):
         self.data["add_only"] = {"tests/test_old.py": blob(self.repo, APPROVED)}
         self.save()
-        code, report = run_gate(self.repo, *self.args())
+        code, report = run_gate(self.repo, *self.args(), "--add-only-allow-base", self.base)
         self.assertEqual(code, 1, report)
         self.assertIn("approval receipt does not match supplied allows", report)
         (self.repo / "tests/test_old.py").write_text(APPROVED)
