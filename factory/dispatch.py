@@ -581,16 +581,18 @@ def host_claim_login() -> str:
 
 
 def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
-    """Prove local owner death; legacy comments use their enclosing ticket execution."""
+    """Require lifecycle interruption proof, including any launched descendants."""
     if claim["host"] != cfg.host_name:
         return False
+    lock_path = str(ticket_lock(n).absolute())
     owner = next((row for row in reversed(rows)
                   if row.get("event") == "host-claim-started" and row.get("ticket") == n
                   and row.get("nonce") == claim["nonce"]), None)
     if owner is None:
         for row in reversed(rows):
-            if (row.get("event") != "lifecycle" or row.get("kind") != "enter"
-                    or row.get("stage") != "ticket" or row.get("ticket") != n):
+            if (row.get("event") != "lifecycle" or row.get("kind") != "lock_acquired"
+                    or row.get("stage") != "ticket" or row.get("ticket") != n
+                    or row.get("lock") != lock_path):
                 continue
             try:
                 entered = datetime.fromisoformat(row["at"])
@@ -600,13 +602,34 @@ def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
                 continue
             owner = row
             break
-    if owner is None or any(
-        row.get("event") == "lifecycle" and row.get("kind") == "exit"
-        and row.get("execution_id") == owner.get("execution_id")
-        and row.get("outcome") != "interrupted" for row in rows
+    if owner is None or not owner.get("execution_id"):
+        return False
+    events = [row for row in rows if lifecycle._lifecycle(row)]
+    owned = [row for row in events if row["execution_id"] == owner["execution_id"]]
+    if not owned or owned[0]["kind"] != "enter" or any(
+        row["kind"] == "exit" and row.get("outcome") not in {None, "unknown", "interrupted"}
+        for row in owned
     ):
         return False  # Completed work retains its PR hold, even after the process exits.
-    return lifecycle._process_state(owner.get("process")) == "dead"
+    execution_ids = {owner["execution_id"]}
+    related = []
+    for row in events:
+        if row["kind"] == "enter" and row.get("parent_execution_id") in execution_ids:
+            execution_ids.add(row["execution_id"])
+        if row["execution_id"] in execution_ids:
+            related.append(row)
+    descendants = {"processes": [], "complete": True}
+    if any(row["kind"] in {"handoff", "child_start"} for row in related):
+        descendants = lifecycle._descendants(
+            [owned[0]], {owner["execution_id"]: lifecycle._open_children(related)},
+        )[owner["execution_id"]]
+        descendants["launched"] = True
+    # host_claim_hold checks the ticket lock separately, including admission's own
+    # newly acquired lock. Other recorded locks still require lifecycle evidence.
+    related[-1] = {**related[-1], "locks": [
+        lock for lock in owned[-1]["locks"] if lock["path"] != lock_path
+    ]}
+    return lifecycle._evidence(related, descendants)[0] == "interrupted"
 
 
 def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[list[dict], str]:

@@ -1678,11 +1678,14 @@ Expired claims are admitted through the frontier only when no other hold exists.
 A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
 hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
 Same-host claims from interrupted ticket executions are excluded from live leases
-and expired elections as soon as lifecycle process identity proves the owner dead
-(including an earlier boot) and the ticket lock is free. New claims journal their
-nonce and process identity before publication; older claims use the local ticket
-execution enclosing their creation time. Missing/unknown evidence, live owners,
-foreign claims and completed PR owners retain the usual holds. Admission rechecks
+and expired elections as soon as lifecycle evidence proves the execution interrupted
+(including an earlier boot) and the ticket lock is free. A dead dispatcher alone
+does not prove interruption: live children and unproven current-boot descendants
+retain the lease. Unknown exits are re-evaluated using the same evidence.
+New claims journal their nonce before publication; older claims match the local
+ticket execution that acquired the ticket lock before their creation time.
+Missing/unknown evidence, live owners, foreign claims and completed PR owners retain
+the usual holds. Admission rechecks
 under its own ticket lock, preserves the shared assignment until a replacement
 wins, then retires abandoned claims even when their old lease or PR would hold.
 This lets an owner resume requeue reuse its open PR on the first post-reboot pass.
