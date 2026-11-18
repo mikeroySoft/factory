@@ -80,7 +80,7 @@ ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engin
 # `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
 # `leak_scan.extra` is read from both and concatenated: host terms only add to the scan.
 HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "manager", "install", "prices"})
-HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",),
+HOST_KEYS = {"dashboard": ("port",), "gate": ("lock", "mutation_duration"),
              "review": ("command", "second_command", "json_mode")}
 HOST_SCALARS = ("host_name", "triage_host", "land_host", "release_host", "claim_ttl")
 
@@ -99,7 +99,7 @@ KNOWN_KEYS = {
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
-    "gate": ("timeout", "lock", "check", "fixups", "protected_paths", "add_only_paths"),
+    "gate": ("timeout", "mutation_duration", "lock", "check", "fixups", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout", "service", "max_tokens", "chat_template_kwargs"),
     "journal": ("max_mb", "retention"),
@@ -252,6 +252,7 @@ class Config:
     protected_paths: list[str] = field(default_factory=list)
     add_only_paths: list[str] = field(default_factory=list)
     check_timeout: int = 1200
+    mutation_duration: float | None = None  # total seconds for an opted PR mutation proof check
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
     leak_pattern: str | None = DEFAULT_LEAK_PATTERN
     leak_exclude: list[str] = field(default_factory=list)
@@ -924,6 +925,14 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.prices = price_table(raw.get("prices", {}))
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
+    if "mutation_duration" in gate:
+        duration = gate["mutation_duration"]
+        if (
+            isinstance(duration, bool) or not isinstance(duration, (int, float))
+            or not math.isfinite(duration) or duration <= 60
+        ):
+            raise ConfigError("gate.mutation_duration must be finite and greater than the 60s cleanup reserve")
+        cfg.mutation_duration = duration
     fixups = gate.get("fixups", [])
     if not isinstance(fixups, list) or any(
         not isinstance(argv, list) or not argv
