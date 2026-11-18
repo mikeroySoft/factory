@@ -4790,6 +4790,7 @@ def merge_pass_locked(dry_run: bool) -> None:
             log(f"PR #{pr['number']}: targets {pr.get('baseRefName')!r}, not {cfg.main!r}; not merging")
             continue
         if FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}:
+            log(f"PR #{pr['number']}: missing `{FACTORY_APPROVED}`; not merging")
             continue
         if pr["reviewDecision"] == "CHANGES_REQUESTED":
             log(f"PR #{pr['number']}: human requested changes; not merging")

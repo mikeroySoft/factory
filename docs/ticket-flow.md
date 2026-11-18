@@ -198,8 +198,9 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 
 | Code | Removes | Adds | Path |
 |------|---------|------|------|
-| `decisions._approve` | — | `factory-approved` | Human approve step; withdrawn again if the PR changed while labelling |
-| `decisions._plan_request` | `*` | `*` | Human action; labels limited to `decisions.ACT_LABELS`, `factory-approved` routed to `decisions._approve` |
+| `decisions._approve` | — | `factory-approved` | Dashboard/MCP approval policy; withdrawn again if the PR changed while labelling |
+| `decisions._hold` | `factory-approved`, `factory-held` | `factory-held` | Hold drafts and withdraws approval; lift marks ready and restores only the unchanged recorded head through `decisions._approve` |
+| `decisions._plan_request` | `*` | `*` | Confirmed action; labels limited to `decisions.ACT_LABELS`, approval routed to `decisions._approve` and holds to `decisions._hold` |
 | `decisions._withdraw_approval` | `factory-approved` | — | Human approve step found the PR changed |
 | `dispatch.acquire_host_claim` | — | `*` | Add this host's `host:<name>` label before the comment election |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |

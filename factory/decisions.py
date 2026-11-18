@@ -46,7 +46,7 @@ ACT_LABELS = frozenset({
     LABEL_AGENT,
     LABEL_HUMAN,
     "wontfix",
-    LABEL_APPROVED,
+    LABEL_APPROVED, config.LABEL_HELD,
 })
 CLOSE_REASONS = frozenset({"completed", "not planned"})
 CALLERS = frozenset({"dashboard", "mcp"})
@@ -457,7 +457,7 @@ def _normalize_request(raw: object) -> dict:
         return details
     allowed = {
         "issue": {"op", "number", "comment", "add", "remove", "assign", "unassign", "close"},
-        "pr": {"op", "number", "comment", "add", "remove"},
+        "pr": {"op", "number", "comment", "add", "remove", "ruling_id"},
         "triage": {"op", "number"},
         "cleanup": {"op", "number"},
     }.get(op)
@@ -501,7 +501,7 @@ def _normalize_request(raw: object) -> dict:
         or request.get("close")
     ):
         raise DecisionError("request has no supported effect")
-    return request
+    return _normalize_hold(raw, request)
 
 
 def _normalize_requests(requests: object) -> list[dict]:
@@ -692,6 +692,7 @@ def _effect(request: dict, actor: str, target: dict) -> dict:
         changes.append("remove the fixed local worktree and agent branch; retain lock evidence")
     if request["op"] == "outcome":
         changes.append("post one canonical owner attestation; no release or install is run")
+    changes.extend(_hold_effects(request))
     if LABEL_APPROVED in request.get("add", []):
         changes.append("require exact-head gate and independent review evidence before approval")
     return {
@@ -715,8 +716,7 @@ def _plan_request(
                 f"{op}_comment",
                 ["gh", op, "comment", str(number), "--repo", cfg.repo, "--body", request["comment"]],
             ))
-        add = [label for label in request.get("add", []) if label != LABEL_APPROVED]
-        remove = request.get("remove", [])
+        add, remove, target = _plan_hold(cfg, request, target, steps)
         edit = []
         for label in add:
             edit += ["--add-label", label]
@@ -818,7 +818,7 @@ def prepare(
         if kind == "pr":
             ticket = target.get("ticket") or number
             locks.add(("ticket", ticket))
-            if LABEL_APPROVED in request.get("add", []) or LABEL_APPROVED in request.get("remove", []):
+            if {LABEL_APPROVED, config.LABEL_HELD} & set(request.get("add", []) + request.get("remove", [])):
                 merge_lock = True
         else:
             locks.add(("ticket", number))
@@ -921,6 +921,47 @@ def _lock_file(directory: int, name: str) -> int:
         os.close(fd)
         raise DecisionError("decision lock is unsafe", "unsafe_storage")
     return fd
+
+
+def _normalize_hold(raw: dict, request: dict) -> dict:
+    if "ruling_id" in raw:
+        ruling = raw["ruling_id"]
+        if not isinstance(ruling, str) or len(ruling) > 200 or "\x00" in ruling:
+            raise DecisionError("ruling_id must be a string of at most 200 characters without NUL")
+        request["ruling_id"] = ruling
+    if config.LABEL_HELD in request.get("add", []) + request.get("remove", []):
+        if request["op"] != "pr":
+            raise DecisionError("holds require a pull request")
+        if config.LABEL_HELD in request.get("add", []) and LABEL_APPROVED in request.get("add", []):
+            raise DecisionError("a hold cannot add approval")
+    return request
+
+
+def _hold_effects(request: dict) -> list[str]:
+    changes = []
+    if config.LABEL_HELD in request.get("add", []):
+        changes.append("draft the PR, withdraw approval and record the approved head under merge.lock")
+    if config.LABEL_HELD in request.get("remove", []):
+        changes.append("mark ready; restore approval only for the unchanged held head with matching policy evidence")
+    return changes
+
+
+def _plan_hold(cfg: Config, request: dict, target: dict, steps: list[dict]) -> tuple:
+    holding = request["op"] == "pr" and config.LABEL_HELD in request.get("add", [])
+    lifting = request["op"] == "pr" and config.LABEL_HELD in request.get("remove", [])
+    if holding or lifting:
+        if target.get("state") != "OPEN" or not target.get("ticket") or target.get("base") != cfg.main:
+            raise DecisionError("holds require an open Factory PR targeting main", "approval_scope")
+        steps.append({
+            "kind": "hold" if holding else "lift_hold",
+            "action": "pr_hold" if holding else "pr_lift_hold",
+            "target": target,
+            "restore": LABEL_APPROVED not in request.get("add", []),
+        })
+    add = [label for label in request.get("add", []) if label not in {LABEL_APPROVED, config.LABEL_HELD}]
+    remove = [label for label in request.get("remove", [])
+              if label != config.LABEL_HELD and not (holding and label == LABEL_APPROVED)]
+    return add, remove, {**target, "draft": False} if lifting else target
 
 
 @contextmanager
@@ -1070,9 +1111,156 @@ def _withdraw_approval(cfg: Config, target: dict, deadline: float) -> None:
         raise _AmbiguousCommand("stale approval could not be withdrawn")
 
 
+class _ApprovalRefused(DecisionError):
+    """Policy rejection before any approval effect, not an operational failure."""
+
+
+def _recover_pending_hold(cfg: Config, target: dict, events: list[dict], *, holding: bool) -> None:
+    pending = next((
+        event for event in reversed(events)
+        if event.get("ticket") == target["ticket"] and event.get("pr") == target["number"]
+        and event.get("event") in {"hold-started", "held", "hold-lifted"}
+    ), {})
+    if pending.get("event") != "hold-started" or config.LABEL_HELD not in target["labels"]:
+        return
+    if not target["draft"] or LABEL_APPROVED in target["labels"]:
+        if holding:
+            raise _AmbiguousCommand("pending hold effects could not be confirmed")
+        return
+    completed = {
+        **pending, "at": _format_time(_now()), "event": "held", "head": target["head"],
+        "approval_restored": False, "reason": "hold_application_uncertain",
+    }
+    lifecycle.append(cfg.factory / "events.jsonl", completed)
+    events.append(completed)
+
+
+def _hold(cfg: Config, step: dict, deadline: float) -> dict:
+    """Hold/lift effects and conditional approval share apply's ticket and merge locks."""
+    target = _pr_target(cfg, step["target"]["number"], deadline)[0]
+    holding = step["kind"] == "hold"
+    labels = target["labels"]
+    receipt = {
+        "request": step["request"], "action": step["action"],
+        "status": "noop", "ok": True, "output": "PR already held" if holding else "PR is not held",
+    }
+    if not holding and config.LABEL_HELD not in labels:
+        return receipt
+    try:
+        events = lifecycle.read_events(cfg.factory / "events.jsonl")
+        _recover_pending_hold(cfg, target, events, holding=holding)
+    except OSError as exc:
+        raise _AmbiguousCommand(str(exc)) from exc
+    if holding and config.LABEL_HELD in labels:
+        return receipt
+    previous = next((
+        event for event in reversed(events)
+        if event.get("ticket") == target["ticket"] and event.get("pr") == target["number"]
+        and event.get("event") in ({"approved"} if holding else {"held", "hold-lifted"})
+    ), {})
+    approved_head = (
+        previous.get("head") if holding and LABEL_APPROVED in labels
+        and previous.get("gate_head") == previous.get("head") == previous.get("review_head")
+        else previous.get("approved_head") if not holding and previous.get("event") == "held" else None
+    )
+    approval_error = None
+
+    def mutate(argv: list[str]) -> None:
+        _mutation(cfg, {**step, "argv": argv, "cwd": None}, deadline)
+
+    pr = str(target["number"])
+    prefix = ["gh", "pr"]
+    if holding:
+        try:
+            lifecycle.append(cfg.factory / "events.jsonl", {
+                "at": _format_time(_now()), "event": "hold-started",
+                "ticket": target["ticket"], "pr": target["number"],
+                "head": target["head"], "approved_head": approved_head,
+                "actor": step["actor"], "caller": step["caller"],
+                **({"ruling_id": step["ruling_id"]} if step.get("ruling_id") else {}),
+            })
+        except OSError as exc:
+            raise _FailedStep("hold snapshot could not be recorded; no hold effect attempted") from exc
+        if not target["draft"]:
+            mutate([*prefix, "ready", pr, "--repo", cfg.repo, "--undo"])
+        restored, reason = False, "held"
+        try:
+            mutate([*prefix, "edit", pr, "--repo", cfg.repo,
+                    "--remove-label", LABEL_APPROVED, "--add-label", config.LABEL_HELD])
+        except _AmbiguousCommand as exc:
+            try:
+                fresh = _pr_target(cfg, target["number"], deadline)[0]
+            except DecisionError:
+                raise exc
+            if not fresh["draft"] or config.LABEL_HELD not in fresh["labels"] or LABEL_APPROVED in fresh["labels"]:
+                raise
+            target = fresh
+            approval_error, reason = exc, "hold_application_uncertain"
+    else:
+        if LABEL_APPROVED in labels:
+            _withdraw_approval(cfg, target, deadline)
+        if target["draft"]:
+            mutate([*prefix, "ready", pr, "--repo", cfg.repo])
+        fresh = {"head": None}
+        restored = False
+        try:
+            mutate([*prefix, "edit", pr, "--repo", cfg.repo, "--remove-label", config.LABEL_HELD])
+        except _AmbiguousCommand as exc:
+            try:
+                fresh = _pr_target(cfg, target["number"], deadline)[0]
+            except DecisionError:
+                raise exc
+            if config.LABEL_HELD in fresh["labels"]:
+                raise
+            approval_error, reason = exc, "hold_removal_uncertain"
+        else:
+            try:
+                fresh = _pr_target(cfg, target["number"], deadline)[0]
+                if not approved_head:
+                    reason = "hold_evidence_missing"
+                elif approved_head != fresh["head"] or fresh["head"] != step["target"]["head"]:
+                    reason = "head_moved"
+                elif not step["restore"]:
+                    reason = "explicit_approval"
+                else:
+                    _approve(cfg, {**step, "target": fresh}, deadline)
+                    restored, reason = True, "approval_restored"
+            except _ApprovalRefused as exc:
+                reason = exc.code
+            except (DecisionError, _FailedStep, _AmbiguousCommand, OSError) as exc:
+                approval_error = _AmbiguousCommand(str(exc)) if isinstance(exc, OSError) else exc
+                reason = "approval_failed" if isinstance(exc, _FailedStep) else "approval_uncertain"
+                if fresh["head"] is not None:
+                    try:
+                        fresh = _pr_target(cfg, target["number"], deadline)[0]
+                    except (DecisionError, OSError):
+                        fresh = {"head": None}
+                if isinstance(exc, _FailedStep) and fresh["head"] and fresh["head"] != target["head"]:
+                    reason = "head_moved"
+    try:
+        lifecycle.append(cfg.factory / "events.jsonl", {
+            "at": _format_time(_now()), "event": "held" if holding else "hold-lifted",
+            "ticket": target["ticket"], "pr": target["number"],
+            "head": target["head"] if holding else fresh["head"],
+            "approved_head": approved_head, "approval_restored": restored, "reason": reason,
+            "actor": step["actor"], "caller": step["caller"],
+            **({"ruling_id": step["ruling_id"]} if step.get("ruling_id") else {}),
+        })
+    except OSError as exc:
+        if approval_error is not None:
+            raise approval_error from exc
+        raise _AmbiguousCommand("hold audit could not be recorded") from exc
+    if approval_error is not None:
+        raise approval_error
+    return {**receipt, "status": "applied", "output": reason}
+
+
 def _approve(cfg: Config, step: dict, deadline: float) -> dict:
     target = step["target"]
-    _approval_policy(cfg, target)
+    try:
+        _approval_policy(cfg, target)
+    except DecisionError as exc:
+        raise _ApprovalRefused(str(exc), exc.code) from exc
     add = {
         **step,
         "argv": [
@@ -1106,7 +1294,9 @@ def _approve(cfg: Config, step: dict, deadline: float) -> dict:
             "gate_head": target["head"],
             "review_head": target["head"],
             "actor": step.get("actor"),
-            "source": "human-decision",
+            "caller": step.get("caller", "dashboard"),
+            "source": step.get("caller", "dashboard"),
+            **({"ruling_id": step["ruling_id"]} if step.get("ruling_id") else {}),
         })
     except OSError as exc:
         try:
@@ -1230,9 +1420,14 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                 status, error = "success", None
                 for step in document["steps"]:
                     try:
+                        step = {
+                            **step, "actor": actor, "caller": preview["caller"],
+                            "ruling_id": preview["requests"][step["request"]].get("ruling_id"),
+                        }
                         if step.get("kind") == "approve":
-                            step = {**step, "actor": actor}
                             step_results.append(_approve(cfg, step, deadline))
+                        elif step.get("kind") in {"hold", "lift_hold"}:
+                            step_results.append(_hold(cfg, step, deadline))
                         elif step.get("kind") == "command":
                             step_results.append(_mutation(cfg, step, deadline))
                         else:

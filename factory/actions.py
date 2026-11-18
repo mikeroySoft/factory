@@ -9,6 +9,8 @@ from __future__ import annotations
 from factory import decisions, dispatch, generation
 from factory.config import (
     LABEL_AGENT,
+    LABEL_APPROVED,
+    LABEL_HELD,
     LABEL_HUMAN,
     LABEL_INFO,
     LABEL_INITIATIVE,
@@ -20,6 +22,7 @@ from factory.decisions import DecisionError
 PIPELINE_LABELS = frozenset({LABEL_TRIAGE, LABEL_AGENT, LABEL_HUMAN, LABEL_INFO})
 NUMBER = {"type": "integer", "minimum": 1, "maximum": 2**31 - 1}
 COMMENT = {"type": "string", "maxLength": decisions.COMMENT_CAP}
+RULING = {"type": "string", "maxLength": 200}
 
 
 def _schema(required: dict | None = None, optional: dict | None = None) -> dict:
@@ -43,6 +46,9 @@ def _validate(schema: dict, args: object) -> dict:
         spec = properties[key]
         if spec["type"] == "integer":
             ok = type(value) is int and spec["minimum"] <= value <= spec["maximum"]
+        elif spec["type"] == "array":
+            ok = (isinstance(value, list) and len(value) == 1
+                  and value[0] in spec["items"]["enum"])
         else:
             ok = (isinstance(value, str) and "\x00" not in value
                   and len(value) <= spec.get("maxLength", len(value))
@@ -78,6 +84,8 @@ def _request(args: dict, **effect: object) -> list[dict]:
     request = {"op": "issue", "number": args["number"], **effect}
     if args.get("comment", "").strip():
         request["comment"] = args["comment"]
+    if args.get("ruling_id"):
+        request["ruling_id"] = args["ruling_id"]
     return [request]
 
 
@@ -105,6 +113,28 @@ ACTIONS = {
         "check": _triage_check,
         "compile": lambda args: _request(args, add=[LABEL_TRIAGE]),
     },
+    "hold_pr": {
+        "description": "Draft an open Factory PR, withdraw approval and record its approved head under merge.lock.",
+        "schema": _schema(optional={"ruling_id": RULING}),
+        "check": _open,
+        "compile": lambda args: _request(args, op="pr", add=[LABEL_HELD]),
+    },
+    "lift_hold": {
+        "description": "Release a PR hold; restore approval only for the recorded unchanged head and matching policy evidence.",
+        "schema": _schema(optional={"ruling_id": RULING}),
+        "check": _open,
+        "compile": lambda args: _request(args, op="pr", remove=[LABEL_HELD]),
+    },
+    "approve_pr": {
+        "description": "Apply exact-head approval policy to one PR; only add factory-approved and/or remove factory-held.",
+        "schema": _schema(optional={
+            "add": {"type": "array", "items": {"enum": [LABEL_APPROVED]}, "minItems": 1, "maxItems": 1},
+            "remove": {"type": "array", "items": {"enum": [LABEL_HELD]}, "minItems": 1, "maxItems": 1},
+            "ruling_id": RULING,
+        }),
+        "check": _open,
+        "compile": lambda args: _request(args, op="pr", add=args.get("add", []), remove=args.get("remove", [])),
+    },
 }
 
 
@@ -114,6 +144,8 @@ def prepare(cfg: Config, name: object, args: object, *, caller: str) -> dict:
     if action is None:
         raise DecisionError(f"unknown action; expected one of {sorted(ACTIONS)}", "unknown_action")
     args = _validate(action["schema"], args)
+    if name == "approve_pr" and not (args.get("add") or args.get("remove")):
+        raise DecisionError("approve_pr requires add and/or remove", "invalid_args")
     return decisions.prepare(
         cfg, action["compile"](args), caller=caller, action={"name": name, "args": args}, guard=action["check"],
     )
