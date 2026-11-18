@@ -25,6 +25,7 @@ from factory import (
     config,
     dispatch,
     feedback,
+    gh_reads,
     lifecycle,
     risk,
     runtime_events,
@@ -204,7 +205,10 @@ def github(*, endpoint: str | None = None, query: str | None = None,
         for key, value in (variables or {}).items():
             if value is not None:
                 cmd += ["-F" if type(value) is int else "-f", f"{key}={value}"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+    proc = gh_reads.run(
+        cmd, lambda: subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout),
+        check=False,
+    )
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or "gh api graphql failed")
     value = json.loads(proc.stdout)

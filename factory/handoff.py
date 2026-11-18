@@ -17,7 +17,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from subprocess import CalledProcessError
 
-from factory import dispatch, generation, lifecycle
+from factory import dispatch, generation, gh_reads, lifecycle
 from factory.config import LABEL_AGENT, LABEL_HUMAN
 
 MARK = "factory-handoff"
@@ -37,6 +37,13 @@ def timeline(n: int) -> list[dict]:
     return [item for page in pages for item in page] if pages and isinstance(pages[0], list) else pages
 
 
+def manager_decisions(events: list[dict], **identity: object) -> list[dict]:
+    deferred = {row["execution_id"] for row in events if row.get("event") == "manage-deferred"}
+    return [row for row in events if row.get("event") == "manage"
+            and row.get("execution_id") not in deferred
+            and all(row.get(key) == value for key, value in identity.items())]
+
+
 def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
     """Why no automatic recovery remains for this escalation; None while the manager may still act.
 
@@ -49,7 +56,7 @@ def terminal(cfg, events: list[dict], escalation: dict) -> str | None:
         return "review-intake escalations are never managed; the opted-in PR needs a human review decision"
     if not 1 <= r <= cfg.manager_rounds:
         return f"the manager's {cfg.manager_rounds} allowed round(s) are exhausted"
-    decided = [e for e in events if e.get("event") == "manage" and e.get("round") == r and not e.get("pr")]
+    decided = manager_decisions(events, round=r, pr=None)
     if not decided:
         if not Path(escalation["packet"]).is_file():
             return "the escalation packet is missing on the runner, so the manager cannot run"
@@ -163,12 +170,13 @@ def compose(n: int, request: str, token: str, escalation: dict, why: str, observ
     ])
 
 
+@gh_reads.guarded(lambda: dispatch.EVENTS, "handoff")
 def handoff_pass(dry_run: bool = False) -> None:
     """Publish or reconcile the routed request for every terminal `ready-for-human` escalation."""
     cfg = dispatch.cfg
     issues = dispatch.gh_json(["issue", "list", "--repo", cfg.repo, "--state", "open", "--label", LABEL_HUMAN,
                                "--json", "number,title,labels", "--limit", "1000"])
-    for issue in issues:
+    for issue in gh_reads.items(issues):
         n = issue["number"]
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dry_run and dispatch.lock_held(lock_path):
@@ -178,6 +186,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                 dispatch.EVENTS, "manage", ticket=n, lazy=True
             )) as execution,
             (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
+            gh_reads.item(ticket=n),
         ):
             if not dry_run:
                 request = execution.resource("requested", lock_path, scope="repository")
@@ -212,7 +221,7 @@ def handoff_pass(dry_run: bool = False) -> None:
                     # Uncertain publication: only GitHub can say whether the comment exists.
                     try:
                         items = timeline(n)
-                    except (CalledProcessError, ValueError):
+                    except (gh_reads.ReadFailed, CalledProcessError, ValueError):
                         dispatch.log(f"#{n}: handoff publication uncertain and GitHub could not be read; nothing posted")
                         continue
                     for intent in pending:

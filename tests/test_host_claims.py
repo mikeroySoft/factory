@@ -349,6 +349,274 @@ class HostClaimRaceTest(unittest.TestCase):
         self.assertEqual(self.github.comments, [])
         self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
 
+    def test_non_host_read_failure_after_assignment_recovers_next_pass(self):
+        from factory import gh_reads, schedule
+
+        single = self.dispatcher(None)
+        issue = copy.deepcopy(self.github.issue)
+        failed = False
+
+        def priority(*_args):
+            nonlocal failed
+            if not failed:
+                failed = True
+                cmd = ["gh", "issue", "view", "7", "--repo", single.REPO, "--json", "labels"]
+                with lifecycle.scope(single.EVENTS, "review", ticket=7):
+                    gh_reads.run(
+                        cmd,
+                        lambda: subprocess.CompletedProcess(cmd, 1, "", "connection reset"),
+                    )
+            return 1, "fixture"
+
+        healthy = subprocess.CompletedProcess(
+            [], 0, '{"resources":{"core":{"remaining":5000,"reset":0},'
+            '"graphql":{"remaining":5000,"reset":0}}}', "",
+        )
+        with mock.patch.object(schedule, "priority", side_effect=priority), \
+                mock.patch.object(single, "escalate") as escalate, \
+                mock.patch("factory.gh_reads.subprocess.run", return_value=healthy):
+            single.process_ticket(issue, 1, False)
+            self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+            self.assertIn({"name": "ready-for-agent"}, self.github.issue["labels"])
+            self.assertEqual(self.launched, [])
+            rows = lifecycle.read_events(single.EVENTS)
+            self.assertTrue(any(
+                row.get("event") == "gh-read-skipped" and row.get("ticket") == 7
+                for row in rows
+            ))
+            self.assertTrue(any(
+                row.get("event") == "ticket-read-deferred" and row.get("ticket") == 7
+                for row in rows
+            ))
+
+            [recovered] = single.frontier()
+            self.assertNotIn("held", recovered)
+            single.process_ticket(recovered, 1, False)
+
+        self.assertEqual(self.launched, [None])
+        escalate.assert_not_called()
+
+    def test_non_host_recovery_never_executes_foreign_assignment(self):
+        single = self.dispatcher(None)
+        self.github.issue["assignees"] = [{"login": "@me"}]
+
+        [foreign] = single.frontier()
+        self.assertEqual(foreign["held"], "assigned")
+        single.process_ticket(foreign, 1, False)
+
+        self.assertEqual(self.launched, [])
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+
+    def test_heartbeat_read_failure_retries_without_poisoning_pipeline(self):
+        from factory import gh_reads
+
+        tank = self.dispatcher("tank")
+        attempts = []
+        mutations = []
+
+        class TwoTicks:
+            def __init__(self):
+                self.count = 0
+
+            def wait(self, _timeout):
+                self.count += 1
+                return self.count > 2
+
+            def set(self):
+                self.count = 3
+
+        def owned(_n):
+            attempts.append(True)
+            if len(attempts) == 1:
+                cmd = ["gh", "issue", "view", "7", "--repo", tank.REPO, "--json", "labels"]
+                gh_reads.run(
+                    cmd,
+                    lambda: subprocess.CompletedProcess(cmd, 1, "", "connection reset"),
+                )
+            return {"nonce": "claim-nonce"}
+
+        healthy = subprocess.CompletedProcess(
+            [], 0, '{"resources":{"core":{"remaining":5000,"reset":0},'
+            '"graphql":{"remaining":5000,"reset":0}}}', "",
+        )
+        with mock.patch.object(tank, "owned_host_claim", side_effect=owned), \
+                mock.patch.object(
+                    tank, "run",
+                    side_effect=lambda cmd, *args, **kwargs: (
+                        mutations.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
+                    ),
+                ), mock.patch("factory.gh_reads.subprocess.run", return_value=healthy), \
+                gh_reads.scope(tank.EVENTS, "dispatch") as pipeline:
+            claim = tank.HostClaim(7, {"id": 1, "nonce": "claim-nonce"})
+            claim.stopped = TwoTicks()
+            claim.thread.start()
+            claim.thread.join(timeout=5)
+            self.assertFalse(claim.thread.is_alive())
+            self.assertEqual((pipeline.failed_reads, pipeline.failed_tickets), (0, set()))
+
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(len(mutations), 1)
+
+    def test_heartbeat_rate_limit_honors_persisted_reset(self):
+        from factory import gh_reads
+
+        tank = self.dispatcher("tank")
+        invokes = []
+        mutations = []
+
+        class ThreeTicks:
+            def __init__(self):
+                self.count = 0
+
+            def wait(self, _timeout):
+                self.count += 1
+                return self.count > 3
+
+            def set(self):
+                self.count = 4
+
+        def fail():
+            invokes.append(True)
+            cmd = ["gh", "issue", "view", "7", "--repo", tank.REPO, "--json", "labels"]
+            return subprocess.CompletedProcess(
+                cmd, 1, "", "GraphQL: API rate limit exceeded retry-after: 60",
+            )
+
+        def owned(_n):
+            cmd = ["gh", "issue", "view", "7", "--repo", tank.REPO, "--json", "labels"]
+            gh_reads.run(cmd, fail)
+            return {"nonce": "claim-nonce"}
+
+        limited = subprocess.CompletedProcess(
+            [], 0, '{"resources":{"core":{"remaining":5000,"reset":0},'
+            '"graphql":{"remaining":0,"reset":4102444800}}}', "",
+        )
+        with mock.patch.object(tank, "owned_host_claim", side_effect=owned), \
+                mock.patch.object(
+                    tank, "run",
+                    side_effect=lambda cmd, *args, **kwargs: (
+                        mutations.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
+                    ),
+                ), mock.patch("factory.gh_reads.subprocess.run", return_value=limited), \
+                gh_reads.scope(tank.EVENTS, "dispatch") as pipeline:
+            claim = tank.HostClaim(7, {"id": 1, "nonce": "claim-nonce"})
+            claim.stopped = ThreeTicks()
+            claim.thread.start()
+            claim.thread.join(timeout=5)
+            self.assertFalse(claim.thread.is_alive())
+            self.assertEqual((pipeline.failed_reads, pipeline.failed_tickets), (0, set()))
+
+        self.assertEqual(len(invokes), 1)
+        self.assertEqual(mutations, [])
+
+    def test_merge_read_failures_still_record_cleanup_and_stop_after_one(self):
+        from factory import gh_reads
+
+        single = self.dispatcher(None)
+        single.cfg.signoff = False
+        heads = {70: "a" * 40, 71: "b" * 40}
+        prs = [
+            {
+                "number": pr, "headRefName": f"agent/{pr - 63}", "headRefOid": head,
+                "baseRefName": "main", "isDraft": False,
+                "labels": [{"name": single.FACTORY_APPROVED}], "reviewDecision": "APPROVED",
+            }
+            for pr, head in heads.items()
+        ]
+        for pr, head in heads.items():
+            lifecycle.append(single.EVENTS, {
+                "event": "approved", "ticket": pr - 63, "pr": pr, "head": head,
+                "gate_head": head, "review_head": head,
+            })
+
+        def github(args):
+            if args[:2] == ["pr", "list"]:
+                return copy.deepcopy(prs)
+            if args[:2] == ["pr", "view"] and args[-1] == "mergeCommit":
+                raise gh_reads.ReadFailed("gh_read_failed")
+            if args[:2] == ["pr", "view"]:
+                pr = int(args[2])
+                return {
+                    **copy.deepcopy(next(row for row in prs if row["number"] == pr)),
+                    "state": "OPEN", "title": f"PR {pr}", "files": [],
+                }
+            if args[0] == "api" and "/compare/" in args[1]:
+                return {"behind_by": 0}
+            raise AssertionError(args)
+
+        merges = []
+        merged_rows = []
+        with mock.patch.object(single, "gh_json", side_effect=github), \
+                mock.patch.object(single, "initiative_kind", return_value=False), \
+                mock.patch.object(single, "latest_head_review_verdict", return_value="APPROVE"), \
+                mock.patch.object(single, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]), \
+                mock.patch.object(single, "triage_cancelled", side_effect=lambda _p, rows, *_a: rows), \
+                mock.patch.object(single, "_head_evidence_matches", return_value=True), \
+                mock.patch.object(
+                    single, "run",
+                    side_effect=lambda cmd, *args, **kwargs: (
+                        merges.append(int(cmd[3])) if cmd[:3] == ["gh", "pr", "merge"] else None
+                    ) or subprocess.CompletedProcess(cmd, 0, "", ""),
+                ), mock.patch.object(
+                    single, "record",
+                    side_effect=lambda event, **fields: merged_rows.append((event, fields)),
+                ), mock.patch.object(single, "record_merge_decision") as decision, \
+                mock.patch.object(
+                    single, "cleanup_after_merge",
+                    side_effect=gh_reads.ReadFailed("gh_read_failed"),
+                ) as cleanup, mock.patch("factory.learn.promote_pass"):
+            single.merge_pass_locked(False)
+
+        self.assertEqual(merges, [70])
+        self.assertEqual(
+            [(event, fields["ticket"], fields["merge_sha"]) for event, fields in merged_rows],
+            [("merged", 7, None)],
+        )
+        decision.assert_called_once()
+        cleanup.assert_called_once_with(7, heads[70])
+
+    def test_dispatch_dry_run_ignores_backoff_without_writing_journal(self):
+        from factory import config, gh_reads
+
+        cfg = Config(root=self.root / "dry", repo="local/claims")
+        dispatch.configure(cfg)
+        lifecycle.append(dispatch.EVENTS, {
+            "event": "gh-read-backoff", "stage": "dispatch",
+            "code": "rate_limited", "reset": 4102444800,
+        })
+        before = dispatch.EVENTS.read_bytes()
+
+        with mock.patch.object(config, "load", return_value=cfg), \
+                mock.patch.object(config, "engine_commit", return_value=None), \
+                mock.patch.object(config, "engine_target", return_value=None), \
+                mock.patch.object(dispatch, "github_preflight", return_value=0) as preflight:
+            self.assertEqual(dispatch.main(["--dry-run"]), 0)
+
+        preflight.assert_called_once_with(True)
+        self.assertEqual(dispatch.EVENTS.read_bytes(), before)
+
+        def failed_preflight(_dry_run):
+            cmd = ["gh", "api", "rate_limit"]
+            gh_reads.run(
+                cmd,
+                lambda: subprocess.CompletedProcess(
+                    cmd, 1, "", "API rate limit exceeded retry-after: 60",
+                ),
+            )
+
+        limited = subprocess.CompletedProcess(
+            [], 0, '{"resources":{"core":{"remaining":0,"reset":4102444800},'
+            '"graphql":{"remaining":0,"reset":4102444800}}}', "",
+        )
+        with mock.patch.object(config, "load", return_value=cfg), \
+                mock.patch.object(config, "engine_commit", return_value=None), \
+                mock.patch.object(config, "engine_target", return_value=None), \
+                mock.patch.object(dispatch, "github_preflight", side_effect=failed_preflight), \
+                mock.patch("factory.gh_reads.subprocess.run", return_value=limited):
+            self.assertEqual(dispatch.main(["--dry-run"]), 0)
+
+        self.assertEqual(dispatch.EVENTS.read_bytes(), before)
+
 
 class TriageHostTest(unittest.TestCase):
     def setUp(self):

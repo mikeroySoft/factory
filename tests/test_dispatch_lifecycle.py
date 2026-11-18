@@ -59,6 +59,8 @@ elif a[0] == "api" and "/rules/branches/" in a[1]:
     print("[[]]")
 elif a[0] == "api" and "/compare/" in a[1]:
     print(json.dumps({"behind_by": 0}))
+elif a[0] == "api" and "/dependencies/blocked_by" in a[1]:
+    print("[]")
 elif a[:2] not in (["issue", "edit"], ["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):
     raise SystemExit("Unexpected external operation: " + repr(a))
 '''

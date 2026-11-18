@@ -217,8 +217,16 @@ class BindingCli(unittest.TestCase):
                 self.state['unavailable'] = unavailable
                 self.save()
                 result = self.cli('dispatch', '--ticket', '7')
-                self.assertIn('refused', result.stdout)
-                self.assertIn(reason, result.stdout)
+                if unavailable:
+                    rows = lifecycle.read_events(self.repo / '.factory/events.jsonl')
+                    [skipped] = [row for row in rows if row.get('event') == 'gh-read-skipped']
+                    self.assertEqual((skipped['code'], skipped['ticket']), ('gh_read_failed', 7))
+                    state = json.loads(self.state_path.read_text())
+                    self.assertEqual(state['tickets']['7'], self.state['tickets']['7'])
+                    self.assertFalse(any(row.get('event') == 'claimed' for row in rows))
+                else:
+                    self.assertIn('refused', result.stdout)
+                    self.assertIn(reason, result.stdout)
                 self.assertFalse((self.base / 'prompt-7.txt').exists())
         calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
         self.assertFalse(any(a[:2] == ['issue', 'edit'] for a in calls))

@@ -346,7 +346,10 @@ fi
                 code, terminal = self.run_pass()
                 self.assertNotEqual(code, 0)
                 self.assertNotIn("issue ", self.calls.read_text())
-                self.assertEqual(terminal, ("mechanism_failure", "github_command_failed"))
+                self.assertEqual(terminal, ("mechanism_failure", "gh_read_failed"))
+                skipped = [row for row in lifecycle.read_events(self.events)
+                           if row.get("event") == "gh-read-skipped"][-1]
+                self.assertEqual((skipped["code"], skipped["returncode"]), ("gh_read_failed", 1))
 
     def test_different_logins_refuse_to_post(self):
         os.environ["CURRENT_LOGIN"] = "owner"
@@ -425,24 +428,29 @@ esac
                 scope = lifecycle.scope(self.events, "triage", lazy=True) if recording else contextlib.nullcontext()
                 with contextlib.redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()), \
                         scope as execution:
-                    self.assertEqual(triage.execute(args, execution), 0)
+                    self.assertEqual(triage.execute(args, execution), 1)
                 calls = self.calls.read_text()
                 self.assertIn("api user --jq .login", calls)
                 self.assertIn("issue view 8 ", calls, "the next ticket must still be fetched")
-                for number in (7, 8):
-                    if recording:
-                        self.assertIn(
-                            f"issue edit {number} --remove-label needs-triage --add-label needs-info", calls,
-                        )
-                    else:
-                        prefix = f"#{number}: " if mode == "replay" else f"#{number} [dry-run] decision: "
-                        line = next(line for line in out.getvalue().splitlines() if line.startswith(prefix))
-                        self.assertEqual(json.loads(line.removeprefix(prefix))["decision"], "needs-info")
+                self.assertNotIn("issue edit 7 ", calls)
+                self.assertNotIn("issue comment 7 ", calls)
+                self.assertFalse(any(line.startswith("#7") for line in out.getvalue().splitlines()))
+                if recording:
+                    self.assertIn("issue edit 8 --remove-label needs-triage --add-label needs-info", calls)
+                else:
+                    prefix = "#8: " if mode == "replay" else "#8 [dry-run] decision: "
+                    line = next(line for line in out.getvalue().splitlines() if line.startswith(prefix))
+                    self.assertEqual(json.loads(line.removeprefix(prefix))["decision"], "needs-info")
+                rows = lifecycle.read_events(self.events)
+                skipped = [row for row in rows if row.get("event") == "gh-read-skipped"][-1]
+                self.assertEqual((skipped["code"], skipped["ticket"]), ("gh_read_failed", 7))
+                summary = [row for row in rows if row.get("event") == "pass-summary"][-1]
+                self.assertEqual((summary["failed_reads"], summary["skipped"]), (1, 1))
                 if recording:
                     terminal = [row for row in lifecycle.read_events(self.events)
                                 if row.get("stage") == "triage" and row.get("kind") == "exit"][-1]
                     self.assertEqual((terminal["outcome"], terminal["reason"]),
-                                     ("product_feedback", "triage_feedback"))
+                                     ("mechanism_failure", "gh_read_failed"))
                 else:
                     self.assertNotIn("issue comment", calls)
                     self.assertNotIn("issue edit", calls)

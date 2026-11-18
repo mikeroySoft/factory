@@ -25,7 +25,16 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 from uuid import uuid4
 
-from factory import brief, briefing, config, dashboard, lifecycle, runtime_events, runtime_local
+from factory import (
+    brief,
+    briefing,
+    config,
+    dashboard,
+    gh_reads,
+    lifecycle,
+    runtime_events,
+    runtime_local,
+)
 
 REQUEST_CAP = 4096
 READ_SECONDS = 90
@@ -346,6 +355,27 @@ def github_read(endpoint: str, deadline: float, *, text: bool = False) -> tuple[
 
 
 def _github_read(command: list[str], endpoint: str, deadline: float, *, text: bool = False) -> tuple[object, bool]:
+    if gh_reads.current() is None:
+        return _bounded_github_read(command, endpoint, deadline, text=text)
+    value = None
+
+    def invoke():
+        nonlocal value
+        value = _bounded_github_read(command, endpoint, deadline, text=text)
+        return subprocess.CompletedProcess(command, 0)
+
+    try:
+        gh_reads.run(command, invoke)
+    except subprocess.CalledProcessError as exc:
+        # Only operation-specific absences escape the pass guard unchanged.
+        diagnostic = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr or ""
+        if re.search(r"HTTP 404\b", diagnostic):
+            raise EvidenceError("github_not_found", "GitHub source is unavailable.", endpoint) from None
+        raise
+    return value
+
+
+def _bounded_github_read(command: list[str], endpoint: str, deadline: float, *, text: bool = False) -> tuple[object, bool]:
     """Bound both pipes and kill the gh session on clipping or timeout."""
     stop = min(deadline, time.monotonic() + COMMAND_SECONDS)
     if stop <= time.monotonic():
@@ -374,7 +404,7 @@ def _github_read(command: list[str], endpoint: str, deadline: float, *, text: bo
             while selector.get_map():
                 remaining = stop - time.monotonic()
                 if remaining <= 0 or not (ready := selector.select(remaining)):
-                    raise EvidenceError("collection_timeout", "A GitHub read exceeded its deadline.", endpoint)
+                    raise subprocess.TimeoutExpired(command, COMMAND_SECONDS)
                 for key, _ in ready:
                     target = key.data
                     limit = cap if target is data else REQUEST_CAP
@@ -393,12 +423,18 @@ def _github_read(command: list[str], endpoint: str, deadline: float, *, text: bo
         if not truncated:
             status = proc.wait(timeout=max(0.001, stop - time.monotonic()))
             if status:
+                if gh_reads.current() is not None:
+                    raise subprocess.CalledProcessError(status, command, stderr=bytes(diagnostic))
                 match = re.search(rb"HTTP[ /](\d{3})", diagnostic)
                 code = {b"401": "github_authentication", b"403": "github_forbidden", b"404": "github_not_found", b"429": "github_rate_limited"}.get(match[1] if match else b"", "github_unavailable")
                 raise EvidenceError(code, "GitHub source is unavailable; access failures do not establish absence. Raw diagnostics withheld.", endpoint)
     except subprocess.TimeoutExpired:
+        if gh_reads.current() is not None:
+            raise
         raise EvidenceError("collection_timeout", "A GitHub read exceeded its deadline.", endpoint) from None
     except OSError:
+        if gh_reads.current() is not None:
+            raise
         raise EvidenceError("github_unavailable", "GitHub command unavailable; raw diagnostics withheld.", endpoint) from None
     finally:
         if proc is not None:

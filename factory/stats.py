@@ -16,7 +16,7 @@ from pathlib import Path
 from statistics import pstdev
 from typing import Any
 
-from factory import config, feedback, lifecycle, onboard, risk
+from factory import config, feedback, gh_reads, lifecycle, onboard, risk
 from factory.config import LABEL_AGENT, LABEL_HUMAN, USAGE_FIELDS, Config
 
 cfg: Config
@@ -37,10 +37,10 @@ def configure(c: Config) -> None:
 
 def gh(*args: str) -> Any:
     """Run gh and decode its JSON output."""
-    completed = subprocess.run(
-        ["gh", *args, *([] if args[0] == "api" else ["--repo", REPOSITORY])],
-        text=True,
-        capture_output=True,
+    cmd = ["gh", *args, *([] if args[0] == "api" else ["--repo", REPOSITORY])]
+    completed = gh_reads.run(
+        cmd,
+        lambda: subprocess.run(cmd, text=True, capture_output=True, check=False),
         check=False,
     )
     if completed.returncode:
@@ -357,10 +357,16 @@ def weekly_metrics(
 def stuck_over_days(now: datetime, days: int = 7) -> list[dict] | str:
     """One bounded GitHub read for stale open ready-for-human issues."""
     try:
-        completed = subprocess.run(
-            ["gh", "issue", "list", "--repo", REPOSITORY, "--state", "open",
-             "--label", LABEL_HUMAN, "--limit", "1000", "--json", "number,title,url,updatedAt"],
-            text=True, capture_output=True, check=False, timeout=10,
+        cmd = [
+            "gh", "issue", "list", "--repo", REPOSITORY, "--state", "open",
+            "--label", LABEL_HUMAN, "--limit", "1000", "--json", "number,title,url,updatedAt",
+        ]
+        completed = gh_reads.run(
+            cmd,
+            lambda: subprocess.run(
+                cmd, text=True, capture_output=True, check=False, timeout=10,
+            ),
+            check=False,
         )
         issues = json.loads(completed.stdout) if completed.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):

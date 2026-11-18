@@ -14,7 +14,7 @@ from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import NamedTemporaryFile
 
-from factory import binding, config, dispatch, generation, handoff, lifecycle
+from factory import binding, config, dispatch, generation, gh_reads, handoff, lifecycle
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
     LABEL_AGENT,
@@ -662,6 +662,7 @@ def parse_viability(output: str, sources: list[dict]) -> tuple[str, str]:
     return "DEFER", "No valid evidence-cited viability verdict was returned. A human must reconsider or re-arm this request."
 
 
+@gh_reads.guarded(lambda: dispatch.EVENTS, "manage")
 def viability_pass(dry_run: bool = False) -> None:
     from factory import evidence, plan
 
@@ -670,9 +671,14 @@ def viability_pass(dry_run: bool = False) -> None:
         return
     # A shared issue-number lock also serializes PRs, which share GitHub's namespace.
     for kind, label in (("pr", LABEL_REVIEW), ("issue", LABEL_VIABILITY)):
-        issues = dispatch.gh_json([kind, "list", "--repo", cfg.repo, "--state", "open", "--label", label,
-                                   "--json", "number,title,body,labels", "--limit", "1000"])
-        for candidate in issues:
+        unread = object()
+        issues = unread
+        with gh_reads.item(kind=kind):
+            issues = dispatch.gh_json([kind, "list", "--repo", cfg.repo, "--state", "open", "--label", label,
+                                       "--json", "number,title,body,labels", "--limit", "1000"])
+        if issues is unread:
+            continue
+        for candidate in gh_reads.items(issues):
             labels = {item["name"] for item in candidate.get("labels", [])}
             if label not in labels or labels & VIABILITY_BLOCKED:
                 continue
@@ -686,6 +692,7 @@ def viability_pass(dry_run: bool = False) -> None:
                     dispatch.EVENTS, "manage", ticket=n, lazy=True
                 )) as execution,
                 (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
+                gh_reads.item(ticket=n, **({"pr": n} if kind == "pr" else {})),
             ):
                 if not dry_run:
                     resource = execution.resource("requested", lock_path, scope="repository")
@@ -916,6 +923,7 @@ def released_at(n: int) -> str:
                 if i.get("event") == "labeled" and i.get("label", {}).get("name") == LABEL_AGENT), default="")
 
 
+@gh_reads.guarded(lambda: dispatch.EVENTS, "manage")
 def frontier_pass(dry_run: bool = False) -> None:
     """Shepherd factory-owned `agent/<n>` PRs: CI pending waits; red CI, late feedback and
     staleness escalate once through the ordinary ticket packet; with `manager.review = "all"`
@@ -926,7 +934,7 @@ def frontier_pass(dry_run: bool = False) -> None:
 
     cfg = dispatch.cfg
     prs = dispatch.gh_json(["pr", "list", "--repo", cfg.repo, "--state", "open", "--limit", "1000", "--json", PR_FIELDS])
-    for pr in prs:
+    for pr in gh_reads.items(prs):
         match = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
         if not match or pr["baseRefName"] != cfg.main or pr["isCrossRepository"] or pr["isDraft"]:
             continue
@@ -936,16 +944,12 @@ def frontier_pass(dry_run: bool = False) -> None:
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dispatch.lock_held(lock_path):
             continue
-        if cfg.host_name is not None:
-            elected = dispatch.elected_host_claim(dispatch.host_claims(n))
-            if elected is not None and elected["host"] != cfg.host_name:
-                dispatch.log(f"PR #{number}: skipped, elected claim belongs to host {elected['host']}")
-                continue
         with (
             (nullcontext() if dry_run else lifecycle.scope(
                 dispatch.EVENTS, "manage", ticket=n, lazy=True
             )) as execution,
             (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
+            gh_reads.item(ticket=n, pr=number),
         ):
             if not dry_run:
                 request = execution.resource("requested", lock_path, scope="repository")
@@ -956,6 +960,11 @@ def frontier_pass(dry_run: bool = False) -> None:
                     continue
                 execution.resource("acquired", lock_path, scope="repository")
             try:
+                if cfg.host_name is not None:
+                    elected = dispatch.elected_host_claim(dispatch.host_claims(n))
+                    if elected is not None and elected["host"] != cfg.host_name:
+                        dispatch.log(f"PR #{number}: skipped, elected claim belongs to host {elected['host']}")
+                        continue
                 issue = dispatch.gh_json(["issue", "view", str(n), "--repo", cfg.repo, "--json", "number,title,body,labels,state"])
                 labels = {label["name"] for label in issue.get("labels", [])}
                 if issue.get("state") != "OPEN" or LABEL_HUMAN in labels:
@@ -1100,6 +1109,7 @@ def frontier_pass(dry_run: bool = False) -> None:
                     execution.resource("released", lock_path, scope="repository")
 
 
+@gh_reads.guarded(lambda: dispatch.EVENTS, "manage")
 def manage_pass(dry_run: bool = False) -> None:
     """Viability (a GitHub-wide label scan) runs on the triage host; frontier and escalation rounds, owned through the local journal, run on every host with a manager; terminal handoffs need no manager."""
     try:
@@ -1116,11 +1126,12 @@ def manage_pass(dry_run: bool = False) -> None:
         handoff.handoff_pass(dry_run)
 
 
+@gh_reads.guarded(lambda: dispatch.EVENTS, "manage")
 def escalation_pass(dry_run: bool = False) -> None:
     cfg = dispatch.cfg
     issues = dispatch.gh_json(["issue", "list", "--repo", cfg.repo, "--state", "open", "--label", LABEL_HUMAN,
                                "--json", "number,title,body,labels", "--limit", "1000"])
-    for issue in issues:
+    for issue in gh_reads.items(issues):
         n = issue["number"]
         lock_path = cfg.factory / "locks" / f"{n}.lock"
         if dry_run and dispatch.lock_held(lock_path):
@@ -1130,6 +1141,7 @@ def escalation_pass(dry_run: bool = False) -> None:
                 dispatch.EVENTS, "manage", ticket=n, lazy=True
             )) as execution,
             (nullcontext() if dry_run else dispatch.ticket_lock(n).open("w")) as lock,
+            gh_reads.item(ticket=n),
         ):
             if not dry_run:
                 request = execution.resource("requested", lock_path, scope="repository")
@@ -1148,9 +1160,9 @@ def escalation_pass(dry_run: bool = False) -> None:
                 round_number = escalation.get("round", 0)
                 pending = pending_fix(events[events.index(escalation):], round=round_number, pr=None)
                 # The PR frontier numbers its own `manage` rows (with `pr`) per PR; they never spend an escalation round.
-                if not 1 <= round_number <= cfg.manager_rounds or (pending is None and any(
-                    e.get("event") == "manage" and e.get("round") == round_number and not e.get("pr") for e in events
-                )):
+                if not 1 <= round_number <= cfg.manager_rounds or (
+                    pending is None and handoff.manager_decisions(events, round=round_number, pr=None)
+                ):
                     continue
                 packet = Path(escalation["packet"])
                 if dispatch.initiative_kind(n):
@@ -1220,11 +1232,18 @@ def escalation_pass(dry_run: bool = False) -> None:
                 )
                 dispatch.record("manage", ticket=n, decision=decision, round=round_number,
                                 packet=str(packet), notes=status, rejected=rejected)
+                read_pass = gh_reads.current()
+                writes = read_pass.writes.get(n, 0)
                 try:
                     if decision == "FIX":
                         apply_fix(n, issue, data, packet, round=round_number)
                     else:
                         apply(n, issue, decision, body, data, packet)
+                except gh_reads.ReadFailed:
+                    if read_pass.writes.get(n, 0) == writes:
+                        dispatch.record("manage-deferred", ticket=n, round=round_number,
+                                        reason="github_read_unavailable")
+                    raise
                 except dispatch.WorkerUnavailable as exc:
                     execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
                     dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
@@ -1247,5 +1266,6 @@ def main(argv: list[str]) -> int:
     dispatch.configure(config.load())
     if not args.dry_run:
         dispatch.worker_health_pass()
-    manage_pass(args.dry_run)
+    with gh_reads.scope(dispatch.EVENTS, "manage", persistent=not args.dry_run):
+        manage_pass(args.dry_run)
     return 0
