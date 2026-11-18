@@ -202,7 +202,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `decisions._plan_request` | `*` | `*` | Human action; labels limited to `decisions.ACT_LABELS`, `factory-approved` routed to `decisions._approve` |
 | `decisions._withdraw_approval` | `factory-approved` | — | Human approve step found the PR changed |
 | `dispatch.acquire_host_claim` | — | `*` | Add this host's `host:<name>` label before the comment election |
-| `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
+| `dispatch.approve_pr` | `factory-approved`, `ready-for-agent` | `factory-approved` | Approve; withdraw again if the PR changed while labelling; successful named-host approval removes the worker queue label before releasing the claim and assignment |
 | `dispatch.delete_host_claim` | `*` | `*` | Remove the host label before deleting its last claim; restore it if comment deletion fails and the claim remains |
 | `dispatch._record_rework` | `ready-for-human` | `ready-for-agent` | Deferred actionable findings: durable round charged, packet retained, owner queue cleared and assignee removed for the next pass |
 | `dispatch.defer_mutation_proof` | `ready-for-human` | `ready-for-agent` | Mutation-proof base moved during review, refresh or manager FIX: claim released and requeued for the next pass without charging worker or review budget |
