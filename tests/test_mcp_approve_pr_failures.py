@@ -87,6 +87,48 @@ class McpApprovePrFailuresTest(unittest.TestCase):
         self.assertEqual([row["status"] for row in decisions_rows], ["prepared", "started", "failure"])
         self.assertEqual(decisions_rows[-1]["receipt"]["steps"], receipt["steps"])
 
+    def test_advancing_head_with_its_own_evidence_still_withdraws_old_approval(self) -> None:
+        preview = self.call("factory_prepare_action", action="approve_pr", args={"number": self.number})
+        new_head = "b" * 40
+        transport = self.transport
+
+        def push_during_edit(argv, **kwargs):
+            result = transport(argv, **kwargs)
+            if argv == [*self.edit, "--add-label", config.LABEL_APPROVED]:
+                self.pr["headRefOid"] = new_head
+                lifecycle.append(self.journal, {
+                    "event": "attempt", "ticket": self.ticket, "gate": "PASS",
+                    "head": new_head, "actual_head": new_head,
+                })
+                lifecycle.append(self.journal, {
+                    "event": "review", "ticket": self.ticket, "verdict": "APPROVE", "accepted": True,
+                    "head": new_head, "actual_head": new_head,
+                })
+            return result
+
+        with patch.object(decisions, "_run", side_effect=push_during_edit):
+            receipt = self.call("factory_apply_action", proposal_id=preview["proposal_id"],
+                                confirmation=preview["confirmation"])
+
+        self.assertEqual(receipt["status"], "failure")
+        self.assertEqual(self.pr["headRefOid"], new_head)
+        self.assertEqual(self.pr["labels"], [{"name": "keep-me"}])
+        self.assertEqual(self.mutations, [
+            [*self.edit, "--add-label", config.LABEL_APPROVED],
+            [*self.edit, "--remove-label", config.LABEL_APPROVED],
+        ])
+        self.assertFalse(any(row.get("event") == "approved" for row in lifecycle.read_events(self.journal)))
+
+    def test_discovery_advertises_approval_args_as_closed_to_extra_effects(self) -> None:
+        response = mcp.handle(b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}', {})
+        prepare = next(tool for tool in response["result"]["tools"] if tool["name"] == "factory_prepare_action")
+        branch = next(alt["properties"] for alt in prepare["inputSchema"]["oneOf"]
+                      if alt["properties"]["action"]["const"] == "approve_pr")
+        schema = branch["args"]
+        self.assertEqual(set(schema["properties"]), {"number", "ruling_id"})
+        self.assertEqual(schema["required"], ["number"])
+        self.assertIs(schema["additionalProperties"], False)
+
 
 if __name__ == "__main__":
     unittest.main()

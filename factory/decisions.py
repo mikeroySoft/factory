@@ -1090,13 +1090,12 @@ def _approve(cfg: Config, step: dict, deadline: float) -> dict:
         _approval_policy(cfg, fresh)
         if (
             fresh.get("head") != target.get("head")
-            or fresh.get("base") != target.get("base")
             or LABEL_APPROVED not in fresh.get("labels", [])
         ):
             raise DecisionError("PR changed while approval was applied", "stale_target")
-    except DecisionError as exc:
+    except (DecisionError, OSError) as exc:
         _withdraw_approval(cfg, target, deadline)
-        raise _FailedStep("PR changed while approval was applied; approval label withdrawn") from exc
+        raise _FailedStep("approval revalidation failed; approval label withdrawn") from exc
     try:
         lifecycle.append(cfg.factory / "events.jsonl", {
             "at": _format_time(_now()),
