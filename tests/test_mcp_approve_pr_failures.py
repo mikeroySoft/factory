@@ -95,7 +95,7 @@ class McpApprovePrFailuresTest(unittest.TestCase):
                 preview = self.call("factory_prepare_action", action="approve_pr", args={"number": self.number})
                 transport = self.transport
 
-                def push_during_edit(argv, **kwargs):
+                def push_during_edit(argv, *, transport=transport, new_head=new_head, **kwargs):
                     result = transport(argv, **kwargs)
                     if argv == [*self.edit, "--add-label", config.LABEL_APPROVED]:
                         self.pr["headRefOid"] = new_head
