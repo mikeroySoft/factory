@@ -580,6 +580,35 @@ def host_claim_login() -> str:
     return gh_json(["api", "user"])["login"].casefold()
 
 
+def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
+    """Prove local owner death; legacy comments use their enclosing ticket execution."""
+    if claim["host"] != cfg.host_name:
+        return False
+    owner = next((row for row in reversed(rows)
+                  if row.get("event") == "host-claim-started" and row.get("ticket") == n
+                  and row.get("nonce") == claim["nonce"]), None)
+    if owner is None:
+        for row in reversed(rows):
+            if (row.get("event") != "lifecycle" or row.get("kind") != "enter"
+                    or row.get("stage") != "ticket" or row.get("ticket") != n):
+                continue
+            try:
+                entered = datetime.fromisoformat(row["at"])
+                if entered.utcoffset() is None or entered > claim["created"]:
+                    continue
+            except (KeyError, TypeError, ValueError):
+                continue
+            owner = row
+            break
+    if owner is None or any(
+        row.get("event") == "lifecycle" and row.get("kind") == "exit"
+        and row.get("execution_id") == owner.get("execution_id")
+        and row.get("outcome") != "interrupted" for row in rows
+    ):
+        return False  # Completed work retains its PR hold, even after the process exits.
+    return lifecycle._process_state(owner.get("process")) == "dead"
+
+
 def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[list[dict], str]:
     """Read authenticated claims and transition context, including released claims."""
     pages = gh_json(["api", "--paginate", "--slurp", f"repos/{REPO}/issues/{n}/comments"])
@@ -615,6 +644,12 @@ def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[lis
                 continue
             claims.append({**comment, "host": host, "nonce": nonce, "at": at,
                            "heartbeat": heartbeat, "created": created})
+    local_rows = lifecycle.read_events(EVENTS) if any(
+        claim["host"] == cfg.host_name for claim in claims
+    ) else []
+    for claim in claims:
+        if abandoned_host_claim(n, claim, local_rows):
+            claim["abandoned"] = True
     for claim in claims:
         if claim["nonce"] in requeues:
             claim["requeue"] = requeues[claim["nonce"]]
@@ -631,11 +666,13 @@ def host_claims(n: int) -> list[dict]:
 def live_host_claims(claims: list[dict]) -> list[dict]:
     now = datetime.now(UTC)
     return [claim for claim in claims
-            if (now - claim["heartbeat"]).total_seconds() < cfg.claim_ttl_seconds]
+            if not claim.get("abandoned")
+            and (now - claim["heartbeat"]).total_seconds() < cfg.claim_ttl_seconds]
 
 
 def elected_host_claim(claims: list[dict]) -> dict | None:
     """Recover election ownership after expiry, ignoring overlapping losing comments."""
+    claims = [claim for claim in claims if not claim.get("abandoned")]
     if live := live_host_claims(claims):
         return live[0]
     elected = None
@@ -647,7 +684,11 @@ def elected_host_claim(claims: list[dict]) -> dict | None:
     return elected
 
 
-def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
+def host_claim_hold(
+    n: int, issue: dict, claims: list[dict], *, lock_owned: bool = False,
+) -> str | None:
+    if not lock_owned and any(row.get("abandoned") for row in claims) and lock_held(ticket_lock(n)):
+        return "ticket lock held"
     if live := live_host_claims(claims):
         return f"host claim ({live[0]['host']})"
     stale_hosts = {claim["host"] for claim in claims}
@@ -659,7 +700,8 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
         if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
             return "assigned"
         # Only a later election can supersede the expired owner's transition.
-        if "requeue" not in elected_host_claim(claims) and gh_json(
+        elected = elected_host_claim(claims)
+        if elected is not None and "requeue" not in elected and gh_json(
             ["pr", "list", "--repo", REPO, "--state", "open",
              "--head", f"agent/{n}", "--json", "number"]
         ):
@@ -685,16 +727,19 @@ def delete_host_claim(n: int, claim: dict) -> None:
         record("claim-label-removed", ticket=n, label=f"host:{claim['host']}")
 
 
-def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement: int | None = None) -> dict:
+def release_stale_claims(
+    n: int, issue: dict, claims: list[dict], *, replacement: int | None = None,
+    lock_owned: bool = False,
+) -> dict:
     claims = [row for row in claims if row["id"] != replacement]
     live_ids = {row["id"] for row in live_host_claims(claims)}
     stale = [row for row in claims if row["id"] not in live_ids]
-    if not stale or (replacement is None and host_claim_hold(n, issue, claims)):
+    if not stale or (replacement is None and host_claim_hold(n, issue, claims, lock_owned=lock_owned)):
         return issue
     # Re-read before deleting: a heartbeat may have landed since the admission read.
     current = host_claims(n)
     if replacement is None:
-        if host_claim_hold(n, issue, current):
+        if host_claim_hold(n, issue, current, lock_owned=lock_owned):
             return issue
     else:
         # A losing contender may still be live. Only the elected owner may
@@ -757,8 +802,10 @@ class HostClaim:
                  "--remove-label", f"host:{cfg.host_name}"])
 
 
-def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool = False) -> HostClaim | None:
-    if held := host_claim_hold(n, issue, claims):
+def acquire_host_claim(
+    n: int, issue: dict, claims: list[dict], *, forced: bool = False, lock_owned: bool = False,
+) -> HostClaim | None:
+    if held := host_claim_hold(n, issue, claims, lock_owned=lock_owned):
         record("claim_lost", ticket=n, host=cfg.host_name, reason=held)
         log(f"#{n}: skipped ({held})")
         return None
@@ -766,6 +813,8 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
     run(["gh", "label", "create", label, "--repo", REPO, "--color", "ededed", "--force"])
     run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-label", label])
     claim = HostClaim(n, {"nonce": str(uuid.uuid4())})
+    record("host-claim-started", ticket=n, host=cfg.host_name, nonce=claim.comment["nonce"],
+           process=lifecycle._identity(os.getpid()))
     try:
         comment = gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                            "-f", f"body={claim.body()}"])
@@ -5513,7 +5562,7 @@ def process_ticket(
             shared_context = ""
             if cfg.host_name:
                 claims, shared_context = host_claim_state(n, require_shared_login=True)
-                fresh = release_stale_claims(n, fresh, claims)
+                fresh = release_stale_claims(n, fresh, claims, lock_owned=True)
             if not forced and (
                 fresh["state"].upper() != "OPEN"
                 # Authenticated claims arbitrate a shared bot assignment below;
@@ -5560,7 +5609,7 @@ def process_ticket(
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
             if cfg.host_name:
-                host_claim = acquire_host_claim(n, fresh, claims, forced=forced)
+                host_claim = acquire_host_claim(n, fresh, claims, forced=forced, lock_owned=True)
                 if host_claim is None:
                     execution.outcome, execution.reason = "not_admitted", "claim_lost"
                     return
@@ -5578,7 +5627,9 @@ def process_ticket(
                 return
             claimed = True
             if host_claim is not None:
-                fresh = release_stale_claims(n, fresh, claims, replacement=host_claim.comment["id"])
+                fresh = release_stale_claims(
+                    n, fresh, claims, replacement=host_claim.comment["id"], lock_owned=True,
+                )
             record_claim_decision(n, True, admission_id)
             from factory import schedule
 

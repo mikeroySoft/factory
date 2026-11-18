@@ -102,3 +102,29 @@ class HostClaimRebootTest(unittest.TestCase):
         tank.process_ticket(tank.frontier()[0], 1, False)
         self.assertEqual(self.launched, [])
         self.assertIn(old, self.github.comments)
+
+    def test_unknown_process_identity_does_not_shorten_lease(self):
+        ultron = self.dispatcher("ultron")
+        old = self.abandoned_claim(ultron)
+        with mock.patch.object(lifecycle, "_process_state", return_value="unknown"):
+            self.assertEqual(ultron.frontier()[0]["held"], "host claim (ultron)")
+            ultron.process_ticket(ultron.frontier()[0], 1, False)
+        self.assertEqual(self.launched, [])
+        self.assertIn(old, self.github.comments)
+
+    def test_abandoned_owner_does_not_supersede_later_requeue_election(self):
+        ultron = self.dispatcher("ultron")
+        old = self.abandoned_claim(ultron, age=3 * 3600)
+        later = self.github.add_claim(
+            "tank", datetime.fromisoformat(old["created_at"]) + timedelta(seconds=60),
+        )
+        nonce = later["body"].split("nonce=", 1)[1].split()[0]
+        self.github.comments.append({
+            "id": 100, "body": f"Factory requeue: nonce={nonce}\nresume current work",
+            "user": {"login": "@me"},
+        })
+        self.github.open_prs = [{"number": 70}]
+        claims, context = ultron.host_claim_state(7)
+        self.assertEqual(ultron.elected_host_claim(claims)["host"], "tank")
+        self.assertEqual(context, "resume current work")
+        self.assert_resumed(ultron, old)
