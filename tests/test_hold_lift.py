@@ -467,6 +467,80 @@ class HoldLiftTest(unittest.TestCase):
                 self.assertEqual(self.events("hold-lifted"), [])
                 self.assertEqual(self.apply(preview), result)
 
+    def test_hold_ambiguous_application_preserves_snapshot_for_lift(self) -> None:
+        self.evidence()
+        self.action("approve_pr", add=[config.LABEL_APPROVED])
+        self.check_lock = True
+        preview = self.prepare("hold_pr", ruling_id="r3-hold-transport")
+        transport = self.transport
+
+        def lose_hold_result(argv, **kwargs):
+            result = transport(argv, **kwargs)
+            if argv[:3] == ["gh", "pr", "edit"] and config.LABEL_HELD in argv:
+                raise decisions._AmbiguousCommand("hold application transport timed out")
+            return result
+
+        with mock.patch.object(decisions, "_run", side_effect=lose_hold_result):
+            result = self.apply(preview)
+        self.assertEqual(result["status"], "uncertain", result)
+        self.assertEqual(result["steps"][-1]["output"], "hold application transport timed out")
+        self.assertTrue(self.pr["isDraft"])
+        self.assertEqual(self.labels(), {config.LABEL_HELD})
+        held = self.events("held")
+        self.assertEqual(len(held), 1)
+        self.assertEqual(
+            {key: held[0][key] for key in (
+                "head", "approved_head", "approval_restored", "reason", "actor", "caller", "ruling_id",
+            )},
+            {"head": self.head, "approved_head": self.head, "approval_restored": False,
+             "reason": "hold_application_uncertain", "actor": "robot-agent", "caller": "mcp",
+             "ruling_id": "r3-hold-transport"},
+        )
+        count = len(self.calls)
+        self.assertEqual(self.apply(preview), result)
+        self.action("hold_pr")
+        self.assertEqual(len(self.calls), count)
+        self.assertEqual(self.events("held"), held)
+        self.action("lift_hold")
+        self.assertFalse(self.pr["isDraft"])
+        self.assertEqual(self.labels(), {config.LABEL_APPROVED})
+        self.assertTrue(self.events("hold-lifted")[-1]["approval_restored"])
+        self.assertEqual(self.events("approved")[-1]["caller"], "mcp")
+        self.assertEqual(self.apply(preview), result)
+
+    def test_hold_ambiguous_application_does_not_audit_unconfirmed_completion(self) -> None:
+        self.evidence()
+        for state in ("unheld", "unreadable", "approved", "ready"):
+            with self.subTest(state=state):
+                self.pr["isDraft"] = False
+                self.pr["labels"] = []
+                self.action("approve_pr", add=[config.LABEL_APPROVED])
+                preview = self.prepare("hold_pr")
+                attempted = []
+                transport = self.transport
+
+                def fail_hold(argv, state=state, attempted=attempted, **kwargs):
+                    if argv[:3] == ["gh", "pr", "edit"] and config.LABEL_HELD in argv:
+                        attempted.append(True)
+                        if state in {"approved", "ready"}:
+                            transport(argv, **kwargs)
+                            if state == "approved":
+                                self.pr["labels"].append({"name": config.LABEL_APPROVED})
+                            else:
+                                self.pr["isDraft"] = False
+                        return subprocess.CompletedProcess(argv, 1, "", "hold application failed")
+                    if attempted and state == "unreadable" and argv[:3] == ["gh", "pr", "view"]:
+                        return subprocess.CompletedProcess(argv, 1, "", "provider unavailable")
+                    return transport(argv, **kwargs)
+
+                with mock.patch.object(decisions, "_run", side_effect=fail_hold):
+                    result = self.apply(preview)
+                self.assertTrue(attempted)
+                self.assertEqual(result["status"], "uncertain", result)
+                self.assertEqual(result["steps"][-1]["output"], "hold application failed")
+                self.assertEqual(self.events("held"), [])
+                self.assertEqual(self.apply(preview), result)
+
 
 if __name__ == "__main__":
     unittest.main()
