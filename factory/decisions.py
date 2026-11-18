@@ -1106,7 +1106,7 @@ def _approve(cfg: Config, step: dict, deadline: float) -> dict:
             "gate_head": target["head"],
             "review_head": target["head"],
             "actor": step.get("actor"),
-            "source": "mcp" if step.get("caller") == "mcp" else "human-decision",
+            "source": {"mcp": "mcp"}.get(step.get("caller"), "human-decision"),
         })
     except OSError as exc:
         try:
