@@ -207,3 +207,30 @@ class HostClaimRebootTest(unittest.TestCase):
         self.github.open_prs = [{"number": 70}]
         ultron.record("generation", ticket=7, generation=1, intent="resume", source="requeue_agent")
         self.assert_resumed(ultron, old)
+
+    def test_archived_worker_before_open_ancestors_keeps_live_child_claim(self):
+        ultron = self.dispatcher("ultron")
+        live = lifecycle._identity(os.getpid())
+        dead = {**live, "pid": 2_000_000_000}
+        with mock.patch.object(lifecycle, "_identity", side_effect=[dead, dead, dead, live]):
+            with lifecycle.scope(ultron.EVENTS, "ticket", ticket=7):
+                old = self.github.add_claim("ultron", datetime.now(UTC))
+                ultron.record(
+                    "host-claim-started", ticket=7, process=dead,
+                    nonce=old["body"].split("nonce=", 1)[1].split()[0],
+                )
+                with lifecycle.scope(ultron.EVENTS, "review", ticket=7):
+                    with lifecycle.scope(ultron.EVENTS, "worker", ticket=7) as worker:
+                        worker.env()
+                        worker.child(os.getpid())
+        rows = lifecycle.read_events(ultron.EVENTS)
+        # Rotation archives a closed worker before still-open ticket/review rows.
+        archived = [row for row in rows if row.get("stage") == "worker"]
+        open_rows = [row for row in rows if row.get("stage") != "worker"
+                     and row.get("kind") != "exit"]
+        with mock.patch.object(lifecycle, "read_events", return_value=archived + open_rows):
+            [issue] = ultron.frontier()
+            self.assertEqual(issue.get("held"), "host claim (ultron)")
+            ultron.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, [])
+        self.assertIn(old, self.github.comments)
