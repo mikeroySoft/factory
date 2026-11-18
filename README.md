@@ -822,8 +822,9 @@ before.
 
 `requeue_agent` takes an optional `intent`. With `resume` (the default, and what a
 plain relabel means), the branch, worktree and refresh context are kept. Before
-reusing a worktree (or its local branch), dispatch fetches origin and fast-forwards
-a clean local ancestor to `origin/agent/<n>`, journaling `worktree-fast-forward`
+reusing a worktree (or its local branch), dispatch fetches origin and explicitly
+fetches the remote ticket branch even with a main-only fetch refspec, then
+fast-forwards a clean local ancestor to `origin/agent/<n>`, journaling `worktree-fast-forward`
 with `from_head` and `to_head`. Equal heads and unpublished local-ahead commits
 are kept. Dirty or diverged worktrees escalate before the worker or gate, naming
 both heads and preserving the worktree; generated `.factory/` and

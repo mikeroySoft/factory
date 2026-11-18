@@ -2090,6 +2090,8 @@ def ensure_worktree(n: int, *, preserved: str | None = None) -> Path:
     wt, branch = FACTORY / f"wt-{n}", f"agent/{n}"
     with _REMOTE_REFS:
         run(["git", "fetch", "origin"], cwd=ROOT)
+        if _remote_agent_head(ROOT, n):
+            run(["git", "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=ROOT)
     if not wt.is_dir():
         if run(["git", "rev-parse", "--verify", branch], cwd=ROOT, check=False).returncode == 0:
             run(["git", "worktree", "add", str(wt), branch], cwd=ROOT)
