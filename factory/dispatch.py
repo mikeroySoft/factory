@@ -2269,8 +2269,8 @@ def run_gate(
         cmd.append("--protected-override")
     if test_override:
         cmd.append("--test-override")
-    if add_only_override:
-        cmd.append("--add-only-override")
+    cmd += _reviewed_gate_flags(wt, n, head, base or f"origin/{cfg.main}",
+                               tier, protected_override or test_override, add_only_override)
     if bug:
         cmd.append("--bug")
     if repro_test:
@@ -3618,6 +3618,42 @@ def sync_event(n: int) -> dict | None:
 def _ticket_line(text: str, name: str) -> str | None:
     match = re.search(rf"(?im)^{re.escape(name)}:[ \t]*(\S[^\r\n]*)$", text)
     return match.group(1).strip() if match else None
+
+
+def _reviewed_gate_flags(
+    wt: Path, ticket: int | str, head: str, base: str,
+    tier: str, blanket_override: bool, add_only_override: bool,
+) -> list[str]:
+    """Read live receipts at gate time, unless existing blanket authority takes precedence."""
+    if add_only_override:
+        return ["--add-only-override"]
+    if blanket_override or tier != "attempt" or not str(ticket).isdigit():
+        return []
+    from factory import gate
+
+    common = run(["git", "merge-base", base, "HEAD"], cwd=wt, check=False).stdout.strip()
+    try:
+        pages = gh_json([
+            "api", "--paginate", "--slurp",
+            f"repos/{REPO}/issues/{ticket}/comments?per_page=100",
+        ])
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return []
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        return []
+    for comment in reversed([row for page in pages for row in page]):
+        try:
+            data = gate.reviewed_approval(comment, REPO, int(ticket), head, common)
+        except (TypeError, ValueError):
+            continue
+        flags = ["--approval-ticket", str(ticket), "--approval-comment", str(comment["id"])]
+        for scope, option in (("protected", "--protected-allow"), ("add_only", "--add-only-allow")):
+            for path, sha in sorted(data[scope].items()):
+                flags += [option, f"{path}={sha}"]
+        if data["add_only"]:
+            flags += ["--add-only-allow-base", data["base"]]
+        return flags
+    return []
 
 
 def gate_flags(
@@ -5415,7 +5451,8 @@ def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
         )
     return (
         f"Failed check: `{check}`. For in-place text edits, manager AUTHORIZE "
-        f"can add label `{LABEL_ADD_ONLY_OVERRIDE}` to clear it."
+        f"can add label `{LABEL_ADD_ONLY_OVERRIDE}` to clear it. "
+        "Alternatively, record a reviewer receipt pinning only the required add-only edits."
     )
 
 def process_ticket(

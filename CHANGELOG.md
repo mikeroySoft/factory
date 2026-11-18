@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Gate accepts ticket-scoped reviewer receipts pinning `mutation-equivalents.json` and add-only edits to a head, merge-base and exact blobs. Dispatch discovers receipts from live comments at gate time, including approvals posted during a worker round; the existing add-only label and protected/test blanket overrides skip receipt lookup instead of emitting incompatible flags. Gate independently re-fetches reviewer evidence and records it in the report. Existing label/AUTHORIZE behavior and local explicit overrides remain unchanged; the pinned route requires neither label nor blanket override (#827).
+
 - CI recovery after #694 verified on main at `720e54b9` ([run 43419482803](https://github.com/mikeroySoft/factory/actions/runs/43419482803)): full-history checkout and mutation-cache warming were already landed, as were #725's isolated uv temporary locks; both unittest discovery suites pass. The earlier [zero-job run 42671561578](https://github.com/mikeroySoft/factory/actions/runs/42671561578) reports a GitHub internal server error (correlation ID `4fd1a7ce-a4bc-4530-bff2-62a56477c6b4`), not a workflow syntax failure; its workflow is identical to the preceding green revision. No-systemd scratch-repository commits now ignore inherited signing requirements, so the restricted fixture PATH does not require a signer; worker commit signing is unchanged (#721).
 
 ## 0.4.13 — 2026-11-12

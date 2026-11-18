@@ -551,6 +551,67 @@ def parse_add_only_allow(value: str) -> tuple[str, str]:
     return path, sha
 
 
+APPROVAL_MARKER = "Factory gate approval: "
+
+
+def reviewed_approval(comment: object, repo: str, ticket: int, head: str, base: str) -> dict:
+    """Validate a GitHub-owned receipt envelope, never a worker-supplied author claim."""
+    if not isinstance(comment, dict):
+        raise TypeError("approval comment is missing")
+    user = comment.get("user")
+    author = user.get("login") if isinstance(user, dict) else None
+    if (comment.get("author_association") not in ("OWNER", "MEMBER", "COLLABORATOR")
+            or not isinstance(author, str) or not author
+            or type(comment.get("id")) is not int or comment["id"] <= 0
+            or comment.get("issue_url") != f"https://api.github.com/repos/{repo}/issues/{ticket}"):
+        raise ValueError("approval requires a repository reviewer on this ticket")
+    body = comment.get("body")
+    if not isinstance(body, str) or not body.startswith(APPROVAL_MARKER):
+        raise ValueError("approval marker is missing")
+    data = json.loads(body[len(APPROVAL_MARKER):])
+    if not isinstance(data, dict) or set(data) != {
+        "reviewer", "ruling", "head", "base", "protected", "add_only",
+    }:
+        raise ValueError("approval fields are incomplete")
+    if (not isinstance(data["reviewer"], str) or data["reviewer"].casefold() != author.casefold()
+            or not isinstance(data["ruling"], str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", data["ruling"])
+            or not _BLOB.fullmatch(head) or not _BLOB.fullmatch(base)
+            or data["head"] != head or data["base"] != base):
+        raise ValueError("approval reviewer, ruling, head or merge-base mismatch")
+    for scope in ("protected", "add_only"):
+        pins = data[scope]
+        if not isinstance(pins, dict):
+            raise TypeError("approval blobs must be path maps")
+        for path, sha in pins.items():
+            if not isinstance(sha, str):
+                raise TypeError("approval blob must be a full object id")
+            try:
+                parse_add_only_allow(f"{path}={sha}")
+            except argparse.ArgumentTypeError as exc:
+                raise ValueError(str(exc)) from exc
+            if scope == "protected" and path != "mutation-equivalents.json":
+                raise ValueError("protected approval only permits mutation-equivalents.json")
+    if not data["protected"] and not data["add_only"]:
+        raise ValueError("approval has no reviewed blobs")
+    return data
+
+
+def _verify_protected_allow(allow: dict[str, str], raw: dict[str, tuple[str, str, str]]) -> str:
+    for path, sha in allow.items():
+        if path != "mutation-equivalents.json":
+            return f"{path}: outside reviewed protected scope"
+        if raw.get(path) != ("100644", "100644", "M"):
+            return f"{path}: not an in-place non-executable regular-file edit"
+        committed = timed(["git", "rev-parse", "--verify", "-q", f"HEAD:{path}"]).stdout.strip()
+        if not os.path.isfile(path) or os.path.islink(path) or os.stat(path).st_mode & 0o111:
+            return f"{path}: working tree is not a non-executable regular file"
+        worktree = timed(["git", "hash-object", "--no-filters", "--", path]).stdout.strip()
+        if committed != sha or worktree != sha:
+            return f"{path}: approved {sha}, committed {committed or '-'}, working tree {worktree or '-'}"
+    return ""
+
+
 # The one PM-reviewed protected change the product itself knows: `proof = "mutation-v1"` added
 # to the committed `.factory.toml` of the reviewed base. No other tuple can ever be exempted.
 REVIEWED_TRANSITION = (CONFIG_NAME, "36dee1c6386165f2f434c32d09ee98d26c88e7d4",
@@ -635,6 +696,7 @@ def check_protected_paths(
     base: str, upstream: list[str] = (), add_only_override: bool = False,
     allow: dict[str, str] | None = None, allow_base: str | None = None,
     transition: tuple[str, str, str] | None = None, transition_base: str | None = None,
+    protected_allow: dict[str, str] | None = None,
 ) -> tuple[bool, str, str]:
     """(passed, reason, detail): reason is `protected_paths`, or `add_only_paths` when
     every hit is an add-only glob whose change was not purely additive. With `upstream`
@@ -644,7 +706,9 @@ def check_protected_paths(
     `allow` ({path: blob}, externally approved) exempts exactly those add-only files once
     `_verify_allows` accepts every entry; any refusal fails the whole check. `transition`
     ((path, pre, post), with `transition_base`) exempts only that path's protected hit, only
-    for the reviewed tuple `_verify_transition` accepts; otherwise the check fails."""
+    for the reviewed tuple `_verify_transition` accepts; otherwise the check fails.
+    `protected_allow` pins only mutation-equivalents.json; CLI authority additionally requires
+    an independently fetched ticket reviewer receipt."""
     listing = timed(["git", "ls-tree", "--name-only", base, "--", CONFIG_NAME])
     if listing.returncode:
         # A new repository has no base commit yet; no worker diff exists to guard.
@@ -683,6 +747,10 @@ def check_protected_paths(
                 not_additive.append(path)
     if allow and (refusal := _verify_allows(base, allow, allow_base, raw, protected, add_only)):
         return False, "add_only_paths", refusal
+    if protected_allow:
+        if refusal := _verify_protected_allow(protected_allow, raw):
+            return False, "protected_paths", refusal
+        hits = [path for path in hits if path not in protected_allow]
     if transition:
         if refusal := _verify_transition(base, transition, transition_base, raw):
             return False, "protected_paths", refusal
@@ -1080,6 +1148,10 @@ def main(argv: list[str]) -> int:
                         "when its committed and working-tree bytes both hash to BLOB; needs --add-only-allow-base")
     parser.add_argument("--add-only-allow-base", metavar="COMMIT",
                         help="merge-base the --add-only-allow blobs were reviewed against")
+    parser.add_argument("--protected-allow", action="append", default=[], type=parse_add_only_allow,
+                        metavar="PATH=BLOB", help="reviewed mutation-equivalents.json blob; needs approval receipt")
+    parser.add_argument("--approval-ticket", type=int, help="ticket containing the reviewed blob receipt")
+    parser.add_argument("--approval-comment", type=int, help="GitHub REST comment id of the approval receipt")
     parser.add_argument("--protected-transition", action="append", default=[],
                         type=parse_protected_transition, metavar="PATH=PRE:POST",
                         help="the one product-known reviewed protected change (given once): PATH must "
@@ -1115,6 +1187,17 @@ def main(argv: list[str]) -> int:
         parser.error("--add-only-allow names a path more than once")
     if allowed and not args.add_only_allow_base:
         parser.error("--add-only-allow needs --add-only-allow-base")
+    protected = [path for path, _ in args.protected_allow]
+    if len(set(protected)) != len(protected):
+        parser.error("--protected-allow names a path more than once")
+    receipt = args.approval_ticket is not None or args.approval_comment is not None
+    if args.protected_allow and not receipt:
+        parser.error("--protected-allow needs --approval-ticket and --approval-comment")
+    if receipt:
+        if not args.approval_ticket or not args.approval_comment or min(args.approval_ticket, args.approval_comment) <= 0:
+            parser.error("--approval-ticket and --approval-comment must both be positive")
+        if args.protected_override or args.test_override or args.add_only_override:
+            parser.error("reviewed approvals cannot be combined with blanket overrides")
     transitions, transition_bases = args.protected_transition, args.protected_transition_base
     if len(transitions) > 1 or len(transition_bases) > 1:
         parser.error("--protected-transition and --protected-transition-base are each given at most once")
@@ -1165,15 +1248,42 @@ def execute(args: argparse.Namespace, execution) -> int:
     skip = {name.strip() for name in args.skip.split(",") if name.strip()}
     if LEAK_RE is None:
         skip.add("leak-scan")
-    audit = []  # the reviewed protected transition this run actually verified and exempted
+    audit = []  # reviewer receipts and the protected transition verified by this run
 
     if args.tier == "attempt":
+        approval_error = ""
+        if args.approval_comment is not None:
+            try:
+                response = timed(["gh", "api", f"repos/{cfg.repo}/issues/comments/{args.approval_comment}"])
+                if response.returncode:
+                    raise ValueError("approval comment could not be fetched")
+                head = timed(["git", "rev-parse", "HEAD"]).stdout.strip()
+                base = timed(["git", "merge-base", args.base, "HEAD"]).stdout.strip()
+                comment = json.loads(response.stdout)
+                data = reviewed_approval(comment, cfg.repo, args.approval_ticket, head, base)
+                if (data["protected"] != dict(args.protected_allow)
+                        or data["add_only"] != dict(args.add_only_allow)
+                        or comment["id"] != args.approval_comment
+                        or (data["add_only"] and args.add_only_allow_base != data["base"])):
+                    raise ValueError("approval receipt does not match supplied allows")
+                audit.append(
+                    f"- reviewed-approval: ticket {args.approval_ticket} comment {args.approval_comment}, "
+                    f"reviewer {data['reviewer']}, ruling {data['ruling']}, head {head}, base {base}, "
+                    f"protected {json.dumps(data['protected'], sort_keys=True)}, "
+                    f"add-only {json.dumps(data['add_only'], sort_keys=True)}"
+                )
+            except (OSError, TypeError, ValueError, subprocess.TimeoutExpired) as exc:
+                approval_error = f"reviewed approval refused: {exc}"
         if not args.protected_override:
-            passed, reason, detail = check_protected_paths(
-                args.base, args.upstream, args.add_only_override,
-                dict(args.add_only_allow), args.add_only_allow_base,
-                args.protected_transition, args.protected_transition_base,
-            )
+            if approval_error:
+                passed, reason, detail = False, "protected_paths", approval_error
+            else:
+                passed, reason, detail = check_protected_paths(
+                    args.base, args.upstream, args.add_only_override,
+                    dict(args.add_only_allow), args.add_only_allow_base,
+                    args.protected_transition, args.protected_transition_base,
+                    dict(args.protected_allow),
+                )
             if passed and args.protected_transition:
                 path, pre, post = REVIEWED_TRANSITION
                 audit.append(f"- protected-transition: {path} {pre} -> {post} "
