@@ -48,6 +48,8 @@ class CrossHostDecisionTest(unittest.TestCase):
         rows = lifecycle.read_events(self.source.factory / "events.jsonl")
         receipt = {**rows[-1], "host": "ultron", "evidence": rows[:-1]}
         self.comments = [{"user": {"login": "factory"},
+                          "created_at": "2026-11-18T19:15:24Z",
+                          "updated_at": "2026-11-18T19:15:24Z",
                           "body": "Factory approval v1\n" + json.dumps(receipt)}]
         return receipt
 
@@ -69,6 +71,35 @@ class CrossHostDecisionTest(unittest.TestCase):
         self.assertIn(config.LABEL_APPROVED, {row["name"] for row in self.driver.pr["labels"]})
         # A local approval receipt is not a later gate/review refusal.
         self.assertEqual(self.prepare()["targets"][0]["head"], self.head)
+
+    def test_shared_evidence_requires_separate_dispatcher_identity(self):
+        for environment in (None, {}, {"GIT_AUTHOR_NAME": "factory"}, {"GH_TOKEN": "human-token"}):
+            for phase in ("prepare", "apply"):
+                with self.subTest(environment=environment, phase=phase):
+                    self.share()
+                    self.cfg.install["dispatch_env"] = {"GH_TOKEN": "dispatcher-test-token"}
+                    preview = self.prepare() if phase == "apply" else None
+                    self.comments[0]["user"]["login"] = "alice"
+                    if environment is None:
+                        self.cfg.install.pop("dispatch_env")
+                    else:
+                        self.cfg.install["dispatch_env"] = environment
+                    with self.assertRaises(decisions.DecisionError) as caught:
+                        self.driver.apply(preview) if preview else self.prepare()
+                    self.assertEqual(caught.exception.code, "approval_evidence")
+                    self.assertEqual(self.driver.calls, [])
+
+    def test_edited_dispatcher_receipt_refuses_prepare_and_apply(self):
+        for phase in ("prepare", "apply"):
+            with self.subTest(phase=phase):
+                self.share()
+                preview = self.prepare() if phase == "apply" else None
+                # A writer can replace the body without changing the original author.
+                self.comments[0]["updated_at"] = "2026-11-18T19:16:00Z"
+                with self.assertRaises(decisions.DecisionError) as caught:
+                    self.driver.apply(preview) if preview else self.prepare()
+                self.assertEqual(caught.exception.code, "approval_evidence")
+                self.assertEqual(self.driver.calls, [])
 
     def test_newer_remote_approval_supersedes_older_local_revise(self):
         self.share()
@@ -100,6 +131,7 @@ class CrossHostDecisionTest(unittest.TestCase):
                     receipt = []
                 self.comments = [] if defect == "missing" else [{
                     "user": {"login": author}, "body": "Factory approval v1\n" + json.dumps(receipt),
+                    "created_at": "2026-11-18T19:15:24Z", "updated_at": "2026-11-18T19:15:24Z",
                 }]
                 with self.assertRaises(decisions.DecisionError) as caught:
                     self.prepare()
@@ -177,7 +209,8 @@ class CrossHostDecisionTest(unittest.TestCase):
         self.assertLess(commands.index(publication), commands.index(label))
         body = publication[publication.index("--body") + 1]
         self.assertTrue(body.startswith("Factory approval v1\n"))
-        self.comments = [{"user": {"login": "factory"}, "body": body}]
+        self.comments = [{"user": {"login": "factory"}, "body": body,
+                          "created_at": "2026-11-18T19:15:24Z", "updated_at": "2026-11-18T19:15:24Z"}]
         preview = self.prepare()
         self.assertTrue(self.driver.apply(preview)["ok"])
         self.assertIn(config.LABEL_APPROVED, {row["name"] for row in self.driver.pr["labels"]})
