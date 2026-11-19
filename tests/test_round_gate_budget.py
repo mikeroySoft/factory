@@ -80,6 +80,76 @@ class RoundGateBudgetTest(unittest.TestCase):
         self.assertEqual(row["gate_reserve_source"], "last_gate")
         self.assertEqual(row["gate_reserve_seconds"], 20)
 
+    def test_shutdown_overhead_leaves_the_gate_inside_round_budget(self):
+        """Drive run_worker, its polling watchdog and the full SIGTERM/SIGKILL grace."""
+        clock = [0]
+        proc = mock.Mock(pid=2**30, returncode=None)
+        proc.poll.side_effect = lambda: proc.returncode
+
+        def wait(timeout=None):
+            if proc.returncode is not None:
+                return proc.returncode
+            clock[0] += timeout
+            raise subprocess.TimeoutExpired("worker", timeout)
+
+        def killpg(pid, sig):
+            self.assertEqual(pid, proc.pid)
+            if sig == dispatch.signal.SIGKILL:
+                proc.returncode = -sig
+
+        proc.wait.side_effect = wait
+        original_popen = subprocess.Popen
+        original_usage = dispatch.worker_usage
+        original_gate = dispatch.run_gate
+        gate_started = []
+
+        def launch(cmd, *args, **kwargs):
+            if str(self.worker) in cmd:
+                (wt / "change.txt").write_text("fixed\n")
+                return proc
+            return original_popen(cmd, *args, **kwargs)
+
+        def usage(*args, **kwargs):
+            clock[0] += 3  # finalization between reaping the worker and starting validation
+            return original_usage(*args, **kwargs)
+
+        def gate(*args, **kwargs):
+            gate_started.append(clock[0])
+            result = original_gate(*args, **kwargs)
+            clock[0] += 1
+            return result
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            self.measure(wt, 1)
+            with mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(subprocess, "Popen", side_effect=launch), \
+                    mock.patch.object(dispatch.os, "killpg", side_effect=killpg), \
+                    mock.patch.object(dispatch, "worker_usage", side_effect=usage), \
+                    mock.patch.object(dispatch, "run_gate", side_effect=gate):
+                ok, report, _, _ = dispatch.worker_round(7, wt, set(), "fix", "bounce", 4, 60)
+            self.assertTrue(ok, report)
+            self.assertIn("- code: PASS", report)
+            self.assertLessEqual(gate_started[0], 59)
+            self.assertLessEqual(clock[0], 60)
+        row, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "attempt"]
+        self.assertEqual((row["gate"], row["timeout"]), ("PASS", "budget_min"))
+
+    def test_resume_refuses_when_only_shutdown_and_gate_fit(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            self.measure(wt, 1)
+            with mock.patch.object(dispatch.time, "monotonic", return_value=45), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(0, None)) as worker, \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")) as gate:
+                ok, report, _, _ = dispatch.worker_round(7, wt, set(), "fix", "resume", 1, 60)
+            self.assertFalse(ok)
+            self.assertIn("budget exceeded before work", report)
+            worker.assert_not_called()
+            gate.assert_not_called()
+        row, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "round-budget"]
+        self.assertFalse(row["admitted"])
+
     def test_configured_floor_is_used_without_worktree_history(self):
         path = self.repo / ".factory.toml"
         path.write_text(path.read_text().replace("[dispatch]\n", "[dispatch]\ngate_reserve_seconds = 45\n"))
