@@ -2260,7 +2260,7 @@ def run_gate(
         "--base",
         base or f"origin/{cfg.main}",
         "--report",
-        report_rel, *(["--ticket", str(n).removesuffix("-pr")] if re.fullmatch(r"\d+(?:-pr)?", str(n)) else []),
+        report_rel,
     ]
     if skip:
         cmd += ["--skip", skip]
