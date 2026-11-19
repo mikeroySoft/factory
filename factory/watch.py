@@ -749,7 +749,6 @@ def run_pass(
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
-    unavailable = set()
     evaluation_cfg = cfg
     if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
@@ -764,12 +763,6 @@ def run_pass(
             ])
     rows = [r for r in events if r.get("event") == "watch"]
     filings = {r["fingerprint"]: r for r in rows}
-    if filings and evaluation_cfg is not cfg:
-        unavailable = {
-            f"band:{fingerprint(f'revert_rate_by_tier:{tier}', _rule_name(rule))}"
-            for band in cfg.watch_bands if band.metric == "revert_rate_by_tier"
-            for rule in band.rules for tier in risk.TIERS
-        }
     # Issues this install opened; only the opener closes one (rows without `repo` predate routing).
     opened = {(r["fingerprint"], r["issue"], r.get("repo", dispatch.REPO))
               for r in rows if not r.get("commented") and not r.get("closed")}
@@ -875,9 +868,18 @@ def run_pass(
         repo = previous.get("repo", dispatch.REPO)
         if previous.get("closed") or (fp, previous["issue"], repo) not in opened:
             continue
-        if fp in unavailable:
-            dispatch.log(f"watch: retaining {fp}: escape attribution unavailable")
-            continue
+        if evaluation_cfg is not cfg and fp.startswith("band:"):
+            try:
+                alarm = dispatch.gh_json([
+                    "issue", "view", str(previous["issue"]), "--repo", repo, "--json", "body",
+                ])
+            except (OSError, subprocess.SubprocessError, RuntimeError, ValueError, KeyError, TypeError):
+                dispatch.log(f"watch: retaining {fp}: alarm metric unavailable")
+                continue
+            metric = re.search(r"observed metric `([^`]+)`", alarm.get("body") or "")
+            if metric is None or metric[1] == "revert_rate_by_tier":
+                dispatch.log(f"watch: retaining {fp}: escape attribution unavailable")
+                continue
         # A signal stays in the journal window long after it stops happening, so judge by the
         # newest evidence, not presence; `latest is None` means it is failing right now.
         if fp in latest_by_fingerprint and latest_by_fingerprint[fp] is None:
