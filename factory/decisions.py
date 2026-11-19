@@ -774,26 +774,6 @@ def _plan_request(
     return steps
 
 
-def _restore_requeue_host_pin(cfg: Config, request: dict, target: dict) -> None:
-    if any(label.startswith("host:") for label in target["labels"]):
-        return
-    label = None
-    for row in reversed(lifecycle.read_events(cfg.factory / "events.jsonl")):
-        if row.get("ticket") != request["number"]:
-            continue
-        kind = row.get("event")
-        if kind == "escalate":
-            if label is not None:
-                request["add"].append(label)
-            return
-        if kind in {"claimed", "generation"}:
-            return
-        if kind == "claim-label-removed" and label is None:
-            removed = row.get("label")
-            if isinstance(removed, str) and removed.startswith("host:"):
-                label = removed
-
-
 def prepare(
     cfg: Config, requests: object, *, caller: str = "dashboard", action: dict | None = None, guard=None,
 ) -> dict:
@@ -833,10 +813,8 @@ def prepare(
             target_by_key[key] = target, raw
             targets.append(target)
         target, raw = target_by_key[key]
-        if guard is not None:
-            guard(target)
-        if action and action.get("name") == "requeue_agent":
-            _restore_requeue_host_pin(cfg, request, target)
+        _prepare_action_request(
+            cfg, request, target, action=action, guard=guard, deadline=deadline)
         if kind == "pr":
             ticket = target.get("ticket") or number
             locks.add(("ticket", ticket))
@@ -943,6 +921,45 @@ def _lock_file(directory: int, name: str) -> int:
         os.close(fd)
         raise DecisionError("decision lock is unsafe", "unsafe_storage")
     return fd
+
+
+def _prepare_action_request(
+    cfg: Config, request: dict, target: dict, *, action: dict | None, guard, deadline: float,
+) -> None:
+    if guard is not None:
+        guard(target)
+    if not action or action.get("name") != "requeue_agent" or any(
+        label.startswith("host:") for label in target["labels"]
+    ):
+        return
+    # Shared provider history, not the MCP host's potentially older local journal.
+    pages = _read_json(cfg, [
+        "gh", "api", "--hostname", "github.com", "--paginate", "--slurp",
+        f"repos/{cfg.repo}/issues/{request['number']}/events",
+    ], deadline)
+    if not isinstance(pages, list) or any(
+        not isinstance(page, list) or any(not isinstance(row, dict) for row in page)
+        for page in pages
+    ):
+        raise DecisionError("provider returned invalid issue events", "provider_unavailable")
+    pins = set()
+    for page in reversed(pages):
+        for row in reversed(page):
+            kind = row.get("event")
+            if kind not in {"labeled", "unlabeled"}:
+                continue
+            label = row.get("label")
+            if not isinstance(label, dict) or not isinstance(label.get("name"), str):
+                raise DecisionError("provider returned invalid label event", "provider_unavailable")
+            name = label["name"]
+            if kind == "labeled" and name == LABEL_HUMAN:
+                request["add"].extend(sorted(pins))
+                return
+            if name.startswith("host:"):
+                if kind == "unlabeled":
+                    pins.add(name)
+                else:
+                    pins.discard(name)
 
 
 @contextmanager

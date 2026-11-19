@@ -820,8 +820,10 @@ unassigned after its latest escalation, with none of those rows after it, was re
 by a human. A journal with no `generation` row is generation 0 and counts exactly as
 before.
 
-`requeue_agent` restores the host label removed by the latest escalation's journaled
-claim cleanup, unless the ticket already has a host pin. Unpinned tickets stay unpinned.
+`requeue_agent` restores the host labels present at the latest `ready-for-human`
+transition, unless the ticket already has a host pin. It reads GitHub's shared label
+events, so either host can requeue and later manager failures do not hide the pin.
+Unpinned tickets stay unpinned; unavailable history refuses preparation.
 `requeue_agent` takes an optional `intent`. With `resume` (the default, and what a
 plain relabel means), the branch, worktree and refresh context are kept. With `fresh`,
 `agent/<n>` is recut from main at the generation's first claim, and the superseded local
