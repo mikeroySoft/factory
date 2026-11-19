@@ -30,7 +30,8 @@ prepared copy also keeps only the paths the pinned head lists: right after it is
 and again (every copy) after the baseline and before any mutation, any other path
 (untracked, ignored or staged-new in the checkout, or baseline output) is deleted from the
 copy, never from the checkout, and the run continues. Runs
-without a record path keep the historical changed_lines() and never import the helper.
+without a record path keep the historical changed_lines(); registry validation shares
+the helper, while unopted runs without a registry never import it.
 """
 
 from __future__ import annotations
@@ -355,97 +356,6 @@ def describe(diff: str) -> str:
     return f"`{old[:80]}` -> `{new[:80]}`"
 
 
-def load_equivalents(path: str | None) -> dict[tuple, dict]:
-    """Load reviewed identities; never match the truncated display description."""
-    if path is None:
-        return {}
-    entries = json.loads(Path(path).read_text())
-    if not isinstance(entries, list):
-        raise TypeError("expected an array of reviewed equivalents")
-    reviewed = {}
-    fields = ("file", "line", "operator", "original", "mutated")
-    for index, entry in enumerate(entries, 1):
-        if not isinstance(entry, dict) or not {*fields, "argument", "reviewer"} <= entry.keys():
-            raise ValueError(f"entry {index}: requires file, line, operator, original, mutated, argument, reviewer")
-        for field in ("file", "operator", "argument", "reviewer"):
-            value = entry[field]
-            if not isinstance(value, str) or not value.strip() or value.splitlines() != [value]:
-                raise ValueError(f"entry {index}: {field} must be a nonempty single line")
-        file = Path(entry["file"])
-        if file.is_absolute() or ".." in file.parts or file.as_posix() != entry["file"]:
-            raise ValueError(f"entry {index}: file must be a repository-relative path")
-        if type(entry["line"]) is not int or entry["line"] < 1:
-            raise ValueError(f"entry {index}: line must be a positive integer")
-        if any(not isinstance(entry[field], str) for field in ("original", "mutated")):
-            raise ValueError(f"entry {index}: original and mutated must be exact source strings")
-        if entry["original"] == entry["mutated"]:
-            raise ValueError(f"entry {index}: original and mutated must differ")
-        key = tuple(entry[field] for field in fields)
-        if key in reviewed:
-            raise ValueError(f"entry {index}: duplicate equivalent")
-        reviewed[key] = entry
-    return reviewed
-
-
-def resolve_equivalents(path: str | None, reviewed: dict[tuple, dict]) -> dict[tuple, dict]:
-    """The registry's last committed revision pins its reviewed source windows.
-
-    Untracked, ad-hoc registries have no reviewed window: keep them line-pinned,
-    never guess a relocation from the candidate's own context.
-    """
-    if not reviewed:
-        return reviewed
-    revision = subprocess.run(
-        ["git", "log", "-1", "--format=%H", "--", path],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    if not revision:
-        return reviewed
-    if subprocess.run(
-        ["git", "rev-parse", "--is-shallow-repository"],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip() != "false":
-        raise ValueError("equivalent context requires complete Git history")
-    sources = {}
-    resolved = {}
-    for key, entry in reviewed.items():
-        file, line, operator, original, mutated = key
-        if file not in sources:
-            reference = subprocess.run(
-                ["git", "show", f"{revision}:{file}"],
-                capture_output=True, text=True, check=True,
-            ).stdout.splitlines()
-            try:
-                current = Path(file).read_text().splitlines()
-            except (OSError, UnicodeError):
-                current = []
-            sources[file] = reference, current
-        reference, current = sources[file]
-        expected = original.split("\n")
-        start, end = line - 1, line - 1 + len(expected)
-        left, right = max(0, start - 3), min(len(reference), end + 3)
-        window = reference[left:right]
-        matches = [
-            offset + start - left + 1
-            for offset in range(len(current) - len(window) + 1)
-            if reference[start:end] == expected
-            and current[offset:offset + len(window)] == window
-            # Missing neighbours at BOF/EOF are boundaries, not wildcard context.
-            and (start >= 3 or offset == 0)
-            and (end + 3 <= len(reference) or offset + len(window) == len(current))
-        ]
-        if len(matches) != 1:
-            print(f"stale equivalent: {file}:{line}: {operator} "
-                  f"{original!r} -> {mutated!r} ({len(matches)} source/context matches)")
-            raise ValueError("expected exactly one reviewed source/context window")
-        relocated = matches[0]
-        if relocated != line:
-            print(f"relocated equivalent: {file}:{line} -> {relocated}: {operator} "
-                  f"{original!r} -> {mutated!r} (context revision {revision})")
-        resolved[(file, relocated, operator, original, mutated)] = {**entry, "line": relocated}
-    return resolved
-
-
 def mutation_key(mutation, result) -> tuple:
     lines = (result.diff or "").splitlines()
     # Ignore unified-diff headers, preserving all changed source lines verbatim.
@@ -455,25 +365,6 @@ def mutation_key(mutation, result) -> tuple:
     mutated = "\n".join(line[1:] for line in changes if line.startswith("+"))
     return (str(mutation.module_path), mutation.start_pos[0], mutation.operator_name,
             original, mutated)
-
-
-def stale_equivalents(reviewed: dict[tuple, dict], disproven: set[tuple]) -> bool:
-    # Sampling/deadlines leave entries untested, but source invalidation is deterministic.
-    stale = reviewed.keys() & disproven
-    sources = {}
-    for key in reviewed:
-        file, line, _, original, _ = key
-        if file not in sources:
-            try:
-                sources[file] = Path(file).read_text().splitlines()
-            except (OSError, UnicodeError):
-                sources[file] = []
-        expected = original.split("\n")
-        if sources[file][line - 1:line - 1 + len(expected)] != expected:
-            stale.add(key)
-    for file, line, operator, original, mutated in sorted(stale):
-        print(f"stale equivalent: {file}:{line}: {operator} {original!r} -> {mutated!r}")
-    return bool(stale)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -511,15 +402,15 @@ def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: boo
         print("mutation proof requested without a base commit")
         outcome.update(status="error", reason="missing-base")
         return 1
-    try:
-        reviewed = resolve_equivalents(args.equivalents, load_equivalents(args.equivalents))
-    except (OSError, ValueError, TypeError, subprocess.CalledProcessError) as exc:
-        print(f"invalid equivalents: {exc}")
-        outcome.update(status="error", reason="invalid-equivalents")
-        return 1
-    if stale_equivalents(reviewed, set()):
-        outcome.update(status="error", reason="stale-equivalents")
-        return 1
+    reviewed = {}
+    if args.equivalents is not None:
+        from factory import mutation_scope
+        try:
+            reviewed = mutation_scope.load_equivalents(args.equivalents)
+        except (OSError, ValueError, TypeError, subprocess.CalledProcessError) as exc:
+            print(f"invalid equivalents: {exc}")
+            outcome.update(status="error", reason="invalid-equivalents")
+            return 1
     if args.check_equivalents:
         print(f"equivalents: {len(reviewed)} validated")
         outcome.update(status="complete", reason="equivalents-validated")
@@ -708,7 +599,7 @@ def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: boo
             key for key in reviewed
             if key[1] in lines.get(key[0], ()) and key not in accepted
         )
-    stale = stale_equivalents(reviewed, disproven)
+    stale = bool(reviewed) and mutation_scope.stale_equivalents(reviewed, disproven)
     killed = sum(r.test_outcome == TestOutcome.KILLED for _, r in results)
     tally = {
         "planned": len(mutations), "ran": len(results), "killed": killed,

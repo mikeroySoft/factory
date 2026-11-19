@@ -483,18 +483,26 @@ def _release_exclusive(execution, lock) -> None:
 
 def check_mutation_equivalents(checks: list[config.Check]) -> tuple[bool, str]:
     """Validate configured registries during the attempt gate, before PR proof work."""
-    outputs = []
-    for check in checks:
-        passed, output = run([*check.run, "--check-equivalents"])
-        outputs.append(output)
-        execution = lifecycle.current()
-        if execution:
-            for line in output.splitlines():
-                if line.startswith("relocated equivalent:"):
-                    execution.emit("equivalent-relocation", detail=line)
-        if not passed:
-            return False, "\n".join(outputs)
-    return True, "\n".join(outputs)
+    import contextlib
+    import io
+
+    report = io.StringIO()
+    passed = True
+    with contextlib.redirect_stdout(report):
+        try:
+            for check in checks:
+                path = check.run[check.run.index("--equivalents") + 1]
+                mutation_scope.load_equivalents(path)
+        except (OSError, ValueError, TypeError, IndexError, subprocess.CalledProcessError) as exc:
+            print(f"invalid equivalents: {exc}")
+            passed = False
+    output = report.getvalue()
+    execution = lifecycle.current()
+    if execution:
+        for line in output.splitlines():
+            if line.startswith("relocated equivalent:"):
+                execution.emit("equivalent-relocation", detail=line)
+    return passed, output
 
 
 def check_conflict_markers() -> tuple[bool, str]:
