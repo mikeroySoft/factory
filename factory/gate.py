@@ -16,8 +16,8 @@ import os
 import re
 import shlex
 import signal
-import subprocess
 import stat
+import subprocess
 import sys
 import tempfile
 import tomllib

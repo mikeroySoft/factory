@@ -164,6 +164,7 @@ class FocusedGateTest(unittest.TestCase):
     def test_unsafe_receipt_paths_do_not_hang_or_redirect_writes(self):
         import os
         import subprocess
+
         from tests.test_gate import ROOT
 
         for kind in ("fifo", "symlink-fifo", "symlink-file", "oversized"):
@@ -186,7 +187,7 @@ class FocusedGateTest(unittest.TestCase):
                 try:
                     proc = subprocess.run(
                         [sys.executable, "-m", "factory", "gate", "--focused-command", command],
-                        cwd=repo, env=env, capture_output=True, text=True, timeout=5,
+                        cwd=repo, env=env, capture_output=True, text=True, timeout=5, check=False,
                     )
                 except subprocess.TimeoutExpired:
                     self.fail(f"{kind} receipt blocked the gate")
