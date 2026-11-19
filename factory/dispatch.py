@@ -5127,7 +5127,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     merge_sha = None
                 record(
                     "merged", ticket=n, pr=pr_num, method=method[2:], head=head,
-                    merge_sha=merge_sha,
+                    merge_sha=merge_sha, **merge_work_type(final.get("labels", []), n),
                 )
                 record_merge_decision(
                     n, pr_num, "merge now", f"gate, review, approval, and CI passed for {head}",
@@ -6117,3 +6117,22 @@ def main(argv: list[str]) -> int:
         if not args.dry_run:
             lifecycle.record_stage_success(EVENTS, "dispatch")
         return 0
+
+
+def merge_work_type(labels: list[dict], ticket: int | None = None) -> dict:
+    """Exact PR work labels take precedence; otherwise read the ticket's labels."""
+    classes = {"speed", "bug", "polish"}
+    matched = sorted({label["name"] for label in labels} & classes)
+    source = "pr"
+    if not matched and ticket is not None:
+        source = f"ticket:{ticket}"
+        try:
+            issue = gh_json(["issue", "view", str(ticket), "--repo", REPO, "--json", "labels"])
+            matched = sorted({label["name"] for label in issue.get("labels", [])} & classes)
+        except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+            source += ":unavailable"
+    return {
+        "work_type": matched[0] if len(matched) == 1 else "unclassified",
+        "work_type_source": source,
+        "work_type_labels": matched,
+    }

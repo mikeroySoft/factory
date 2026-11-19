@@ -58,6 +58,7 @@ map or a path in it does not exist; update the map in the same change.
 | Codebase history and Atlas | `factory/codebase.py`, `factory/workspace-codebase.js`, `factory/workspace-codebase.css`, `factory/workspace-tools.js` | `tests/test_codebase.py` | `test` |
 | Accepted handoff retention | `factory/results.py` | `tests/test_results.py` | `test` |
 | Metrics (`stats`) | `factory/stats.py` | `tests/test_factory.py`, `tests/test_human_corrections.py`, `tests/test_escapes.py`, `tests/test_stats.py`, `tests/test_stats_week.py`, `tests/test_stats_week_touches.py`, `tests/test_skill_stats.py` | `test` |
+| Merged work mix and gate wall time | `factory/stats.py`, `factory/gate.py`, `factory/dispatch.py`, `factory/learn.py` | `tests/test_stats_gate_cost.py`, `tests/test_gate_timing.py`, `tests/test_merge_work_type.py` | `test` |
 | Lessons (`learn`) | `factory/learn.py` | `tests/test_factory.py`, `tests/test_lifecycle_consumers.py`, `tests/test_escapes.py`, `tests/test_auto_learn.py`, `tests/test_learn.py`, `tests/test_learn_evaluation.py`, `tests/test_learn_candidate_review.py`, `tests/test_skill_learn.py`, `tests/test_learning_progress.py` | `test` |
 | Attempt scoring (`score`) | `factory/score.py` | `tests/test_score.py`, `tests/test_skill_score.py`, `tests/test_learning_progress.py` | `test` |
 | Automatic releases | `factory/release.py` | `tests/test_release.py`, `tests/test_release_bar_sample.py`, `tests/test_release_touch_rate.py` | `test` |

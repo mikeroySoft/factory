@@ -394,6 +394,46 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory plan baseline N` / `factory plan drift TICKET` | Read-only schema 1 JSON for proposing a complete immutable initiative baseline or comparing a ticket's latest accepted baseline with the live complete source. Results are under top-level `baseline` or `drift`; neither command edits issues, rebaselines work, or grants execution authority. |
 | `factory doctor` / `init` / `install` | Onboarding, above. |
 
+### Work mix and gate wall time
+
+`factory stats` and `factory stats --week` report merged work as `speed`, `bug`,
+`polish`, or explicitly `unclassified`, with counts and percentages of distinct
+merges. A ticket merge counts once; a merge without a ticket counts by PR number.
+The merge receipt records `work_type`, `work_type_source`, and
+`work_type_labels`. Classification uses exact labels: one matching PR label wins;
+if no PR label matches, the ticket's labels are read. Multiple matching labels or
+no match produce `unclassified`. Sources are `pr`, `ticket:<number>`, or
+`ticket:<number>:unavailable` if that read failed. Titles, prose, branch names,
+and `chore`/`enhancement` labels do not imply a class. Historical merge receipts
+without a class remain `unknown`, distinct from an explicit `unclassified`.
+
+Every `factory gate` invocation writes lifecycle `kind: "result"` receipts with
+`gate_event: "gate-start"` and a final `gate_event: "gate-run"` to the inherited
+dispatcher's journal (or the local journal for a standalone invocation). Both
+carry `run_id`, `started_at`, `ended_at`, `duration_seconds`, `ticket`, `head`,
+`host`, `tier`, and `rerun`, alongside the normal lifecycle execution identity.
+Starts have null end/duration; final receipts carry UTC wall-clock timestamps
+and monotonic elapsed seconds, including failed runs and gate waits.
+`--ticket N` supplies attribution explicitly; otherwise the inherited lifecycle
+ticket or an exact `agent/N` branch supplies it. Unavailable attribution is null.
+Host is `host_name` when configured, otherwise the machine hostname.
+
+Gate cost is grouped by ticket and host. A re-run is every run after the first
+for the same ticket and tier (`attempt`, `pr`, or `release`), irrespective of
+head SHA or host, within the retained journal. Re-run wall time and its share
+use those recorded flags; the seven-day view does not restart the count.
+Completed runs belong to the window containing their end; unfinished starts
+remain missing measurements. A host observed only in non-gate rows has missing
+gate cost, not zero. Legacy rows, missing durations/flags, and incomplete runs
+remain unknown; reported subtotals are not presented as complete totals.
+JSON week output adds `work_types.{total,counts,percentages}` and
+`gate_cost.{by_ticket,by_host}`. Gate totals expose `total_wall_time_seconds`,
+`rerun_count`, `rerun_wall_time_seconds`, count-based `rerun_share`, and
+`rerun_wall_time_share`; missing totals are null, with `known_*` subtotals and
+missing-value counts reported separately. Default JSON retains its ticket-row
+list, adding `work_type`, its source/count/percentage, and `gate_cost.by_host`.
+
+
 Skill health comes from the same persisted worker transcripts: `factory score`
 journals each `read` of `skill://<name>` or `*/SKILL.md` as an idempotent
 `skill-load`, plus `skill-coverage` for attempts without a transcript. The weekly

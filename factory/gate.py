@@ -1050,7 +1050,68 @@ def check_bug_reproduction(
             _release_exclusive(execution, gpu_lock)
 
 
+def _git_value(*args: str) -> str | None:
+    try:
+        proc = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else None
+
+
+def _gate_ticket(explicit: int | None) -> int | None:
+    if explicit is not None:
+        return explicit
+    parent = lifecycle.current()
+    inherited = parent.ticket if parent is not None else lifecycle._inherited().get("ticket")
+    if type(inherited) is int:
+        return inherited
+    match = re.fullmatch(r"agent/(\d+)", _git_value("symbolic-ref", "--quiet", "--short", "HEAD") or "")
+    return int(match[1]) if match else None
+
+
+def _gate_rerun(rows: list[dict], ticket: int | None, tier: str, run_id: str) -> bool | None:
+    if ticket is None:
+        return None
+    previous = [row for row in rows
+                if row.get("ticket") == ticket and row.get("execution_id") != run_id]
+    if any(row.get("gate_event") in ("gate-start", "gate-run") and row.get("tier") == tier
+           for row in previous):
+        return True
+    attempt_heads = {row.get("head") for row in previous
+                     if row.get("gate_event") in ("gate-start", "gate-run")
+                     and row.get("tier") == "attempt" and row.get("head")}
+    unknown = any(
+        (
+            row.get("gate_event") in ("gate-start", "gate-run") and row.get("tier") is None
+            or row.get("event") in ("attempt", "gate", "gate-rerun")
+            and row.get("gate") in ("PASS", "FAIL")
+            and row.get("head") not in attempt_heads
+            or row.get("event") == "lifecycle" and row.get("kind") == "enter"
+            and row.get("stage") == "gate" and row.get("tier") is None
+        )
+        for row in previous
+    )
+    return None if unknown else False
+
+
+def _utc_now() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _gate_event(event: str, execution, args: argparse.Namespace, started_at: str,
+                ended_at: str | None, duration: float | None,
+                head: str | None, host: str, rerun: bool | None) -> None:
+    execution.emit("result", gate_event=event, run_id=execution.execution_id,
+                   started_at=started_at, ended_at=ended_at, duration_seconds=duration,
+                   head=head, host=host, tier=args.tier, rerun=rerun)
+
+
 def main(argv: list[str]) -> int:
+    import socket
+    import time
+
     parser = argparse.ArgumentParser(description="Quality gate for agent worktrees.")
     parser.add_argument("--base", default=None, help="base ref for leak scan and protected paths")
     parser.add_argument(
@@ -1107,6 +1168,7 @@ def main(argv: list[str]) -> int:
     # runner's `--duration`. Absent: the legacy budgets. Never changes other checks.
     parser.add_argument("--mutation-duration", type=mutation_duration, default=None,
                         metavar="SECONDS", help=argparse.SUPPRESS)
+    parser.add_argument("--ticket", type=int, help="issue number for gate timing attribution")
     args = parser.parse_args(argv)
     if args.mutation_duration is not None and not args.mutation_proof:
         parser.error("--mutation-duration needs --mutation-proof")
@@ -1123,12 +1185,35 @@ def main(argv: list[str]) -> int:
     args.protected_transition = transitions[0] if transitions else None
     args.protected_transition_base = transition_bases[0] if transition_bases else None
     configure(config.load())
+    ticket = _gate_ticket(args.ticket)
+    head = _git_value("rev-parse", "--verify", "HEAD")
+    host = cfg.host_name or socket.gethostname()
     previous_tmpdir = os.environ.get("TMPDIR")
     with runner.temp_root("gate") as tmpdir:
         os.environ["TMPDIR"] = tmpdir
         try:
-            with lifecycle.scope(cfg.factory / "events.jsonl", "gate") as execution:
-                return execute(args, execution)
+            with lifecycle.scope(
+                cfg.factory / "events.jsonl", "gate", ticket=ticket, tier=args.tier,
+            ) as execution:
+                rerun = _gate_rerun(
+                    lifecycle.read_events(execution.path), ticket, args.tier,
+                    execution.execution_id,
+                )
+                started_clock = time.monotonic()
+                started_at = _utc_now()
+                _gate_event(
+                    "gate-start", execution, args, started_at, None, None,
+                    head, host, rerun,
+                )
+                try:
+                    return execute(args, execution)
+                finally:
+                    ended_at = _utc_now()
+                    _gate_event(
+                        "gate-run", execution, args, started_at, ended_at,
+                        max(0.0, time.monotonic() - started_clock),
+                        head, host, rerun,
+                    )
         finally:
             if previous_tmpdir is None:
                 os.environ.pop("TMPDIR", None)
