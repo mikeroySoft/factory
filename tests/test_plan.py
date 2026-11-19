@@ -205,6 +205,31 @@ class RouteCliTest(CliCase):
                 self.assertEqual([(step["step"], step["outcome"]) for step in route["provenance"]],
                                  [("decision_owner", "invalid")])
 
+    def test_decision_owner_stops_at_markdown_heading_or_blank_line(self):
+        self.configure()
+        self.responses["repos/" + REPO] = {"json": {"owner": {"type": "Organization"}}}
+        for owner, expected in (("FactoryPMLogin", "FactoryPMLogin"), ("@example/pm", "@example/pm")):
+            for ending in ("\n## Summary\nThis is the ticket summary.",
+                           "\n\n## Summary\nThis is the ticket summary.",
+                           "\n \t\nThis is the ticket summary."):
+                with self.subTest(owner=owner, ending=ending):
+                    self.child["body"] = f"**Decision owner**\n{owner}{ending}"
+                    route = self.route(53, "ci")
+                    self.assertEqual((route["status"], route["owner"], route["source"]),
+                                     ("selected", expected, "decision_owner"))
+
+    def test_bounded_invalid_decision_owner_never_guesses_later_owner(self):
+        self.configure()
+        for owner in ("", "Factory PM", "@first @second", "@first\n@second", "FactoryPMLogin\nSome prose."):
+            with self.subTest(owner=owner):
+                self.child["body"] = (f"**Decision owner**\n{owner}\n## Summary\n@not-the-owner"
+                                      "\n\n**Decision owner**\n@later-owner")
+                route = self.route(53, "ci")
+                self.assertEqual((route["status"], route["owner"], route["source"]),
+                                 ("invalid", None, "decision_owner"))
+                self.assertEqual([(step["step"], step["outcome"]) for step in route["provenance"]],
+                                 [("decision_owner", "invalid")])
+
     def test_requirements_use_initiative_owner_then_fall_back(self):
         self.configure()
         route = self.route(53, "requirements")
