@@ -1146,14 +1146,18 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    (repeatable; runs alongside the normal gate, with `--skip` available for unrelated
    checks). The gate captures the command, exit-based PASS/FAIL, runner counts and
    start/end HEAD in `.factory/focused-tests.jsonl`; later dispatcher gates include
-   each receipt on its own `Focused test:` line. Configured unittest, pytest and
-   Cargo test commands and recognized runner summaries are captured automatically,
-   including bug-reproduction runs. Unknown runner counts are explicitly unavailable.
+   each receipt on its own `Focused test:` line labelled `worker-recorded / unverified`:
+   the file is worker-writable, so matching HEADs do not authenticate its contents.
+   Configured unittest, pytest (including absolute runner paths) and Cargo test commands
+   and recognized runner summaries are captured automatically, including bug-reproduction
+   runs. Failed launches and timeouts are retained even without a summary; unknown runner
+   counts are explicitly unavailable.
    Every report states its head and says `Focused tests: none recorded` when no
    execution evidence exists, including early protection failures. Receipts from
    another SHA, an unresolved SHA, or a command that changed HEAD are flagged
-   `STALE / revision mismatch`, not current proof. Re-run after committing changes;
-   shell commands run outside this capture path are not inferred from worker prose.
+   `STALE / revision mismatch`, not current proof. Re-run after committing changes.
+   Commands outside this capture path are not inferred from prose; manually written
+   receipts remain unverified, never dispatcher-authenticated execution evidence.
    Repositories may opt into mechanical repairs with `[gate].fixups`, an array of
    argv arrays (for example `fixups = [["cargo", "xtask", "manifest"]]`). Factory
    never infers commands. Before escalating the last failed worker gate (including

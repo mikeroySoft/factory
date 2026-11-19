@@ -132,9 +132,12 @@ def test_command(
     cmd: list[str], *, command: str | None = None, cwd: Path | None = None,
     pythonpath: Path | None = None,
 ) -> subprocess.CompletedProcess:
-    """Capture execution, not handoff claims; keep receipts for the dispatcher's next gate."""
+    """Capture executions for later reports; the worker-writable receipt file is unverified."""
     head = focused_head(cwd)
-    proc = timed(cmd, cwd=cwd, pythonpath=pythonpath)
+    try:
+        proc = timed(cmd, cwd=cwd, pythonpath=pythonpath)
+    except OSError as exc:
+        proc = subprocess.CompletedProcess(cmd, 127, f"command could not start: {exc}\n", "")
     output = proc.stdout + proc.stderr
     summary = re.findall(
         r"^(?:Ran \d+ tests? in .+|OK(?: \(.+\))?|FAILED \(.+\)|"
@@ -144,7 +147,7 @@ def test_command(
         output, re.MULTILINE,
     )
     has_counts = any(re.search(r"\d+ (?:tests?|passed|failed|errors?|skipped|deselected|xfailed|xpassed)", line) for line in summary)
-    if command is not None or has_counts or any(token in cmd for token in ("unittest", "pytest", "test", "--test")):
+    if command is not None or has_counts or any(Path(token).name in ("unittest", "pytest", "test", "--test") for token in cmd):
         receipt = {
             "command": command if command is not None else shlex.join(cmd),
             "head": head,
@@ -160,7 +163,7 @@ def test_command(
 
 
 def focused_test_lines(head: str) -> list[str]:
-    """One line per execution; a different or unresolved revision is never current proof."""
+    """File-sourced receipts are unverified even when their revision matches the reported head."""
     path = cfg.factory / "focused-tests.jsonl"
     if not path.exists():
         return ["Focused tests: none recorded"]
@@ -181,7 +184,7 @@ def focused_test_lines(head: str) -> list[str]:
             )
             binding = "" if current else f"STALE / revision mismatch (reported-head={head}) "
             lines.append(
-                f"Focused test: {binding}{row['result']} "
+                f"Focused test: worker-recorded / unverified {binding}{row['result']} "
                 f"({json.dumps(row['counts'], ensure_ascii=False)}; exit={row['exit']}) "
                 f"command={json.dumps(row['command'], ensure_ascii=False)} "
                 f"head={json.dumps(row['head'])} end-head={json.dumps(row['end_head'])}"

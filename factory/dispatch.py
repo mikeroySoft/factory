@@ -177,7 +177,7 @@ STANDING_INSTRUCTIONS = """
 - Run focused tests through `{python} -m factory gate --focused-command '<exact shell command>'`
   (repeat the option for multiple commands; use `--skip` for unrelated configured checks).
   This executes the command and retains its result/counts and HEAD for the dispatcher's
-  report. Re-run after committing; different-SHA receipts are flagged stale.
+  report as worker-recorded/unverified evidence. Different-SHA receipts are also flagged stale.
 - Finish by running `{python} -m factory gate --report .factory/gate-report-{n}.md`
   and fixing any failures it reports.
 - Last, write `.factory/handoff-{n}.md` (gitignored): what you changed, what is
