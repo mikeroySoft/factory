@@ -21,11 +21,12 @@ import shlex
 import subprocess
 import sys
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 
-from factory import config, dispatch, lifecycle, runtime_events, stats
+from factory import config, dispatch, lifecycle, risk, runtime_events, stats
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
@@ -748,6 +749,8 @@ def run_pass(
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
+    unavailable = set()
+    evaluation_cfg = cfg
     if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
         try:
@@ -756,13 +759,21 @@ def run_pass(
             OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError, SystemExit,
         ) as exc:
             dispatch.log(f"watch: escape attribution unavailable ({type(exc).__name__})")
+            unavailable = {
+                f"band:{fingerprint(f'revert_rate_by_tier:{tier}', _rule_name(rule))}"
+                for band in cfg.watch_bands if band.metric == "revert_rate_by_tier"
+                for rule in band.rules for tier in risk.TIERS
+            }
+            evaluation_cfg = replace(cfg, watch_bands=[
+                band for band in cfg.watch_bands if band.metric != "revert_rate_by_tier"
+            ])
     rows = [r for r in events if r.get("event") == "watch"]
     filings = {r["fingerprint"]: r for r in rows}
     # Issues this install opened; only the opener closes one (rows without `repo` predate routing).
     opened = {(r["fingerprint"], r["issue"], r.get("repo", dispatch.REPO))
               for r in rows if not r.get("commented") and not r.get("closed")}
     engine, install = cfg.watch_engine_repo, cfg.repo
-    current = signals(cfg, events, now)
+    current = signals(evaluation_cfg, events, now)
     observations = {
         row["fingerprint"]: row for row in events
         if row.get("event") == "watch-band" and isinstance(row.get("fingerprint"), str)
@@ -862,6 +873,9 @@ def run_pass(
             break
         repo = previous.get("repo", dispatch.REPO)
         if previous.get("closed") or (fp, previous["issue"], repo) not in opened:
+            continue
+        if fp in unavailable:
+            dispatch.log(f"watch: retaining {fp}: escape attribution unavailable")
             continue
         # A signal stays in the journal window long after it stops happening, so judge by the
         # newest evidence, not presence; `latest is None` means it is failing right now.
