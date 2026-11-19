@@ -667,9 +667,10 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     return None
 
 
-def delete_host_claim(n: int, claim: dict) -> None:
-    remove_label = not any(row["host"] == claim["host"] and row["id"] != claim["id"]
-                           for row in host_claims(n))
+def delete_host_claim(n: int, claim: dict, *, keep_label: bool = False) -> None:
+    remove_label = not keep_label and not any(
+        row["host"] == claim["host"] and row["id"] != claim["id"] for row in host_claims(n)
+    )
     if remove_label:
         # Keep the comment as durable TTL recovery evidence until label cleanup succeeds.
         run(["gh", "issue", "edit", str(n), "--repo", REPO,
@@ -806,8 +807,11 @@ def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
     return None
 
 
-def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
-    """Apply lifecycle transitions; release host resources only when this host owns them."""
+def unclaim(
+    n: int, *label_args: str, check: bool = False, assignee_last: bool = False,
+    keep_host_label: bool = False,
+) -> None:
+    """Release owned claims; escalation keeps the host label as the retry pin."""
     claims = host_claims(n) if cfg.host_name else []
     owned = owned_host_claim(n, claims)
     if cfg.host_name and any(
@@ -827,7 +831,7 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
     if args and run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check).returncode:
         return
     if owned is not None:
-        delete_host_claim(n, owned)
+        delete_host_claim(n, owned, keep_label=keep_host_label)
 
 
 def frontier() -> list[dict]:
@@ -2497,7 +2501,7 @@ def escalate(
     _ESCALATED.add(n)
     claims = host_claims(n) if cfg.host_name else []
     elected = elected_host_claim(claims)
-    unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
+    unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN, keep_host_label=True)
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if elected:
         first, _, rest = body.partition("\n")
