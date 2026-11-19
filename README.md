@@ -1145,13 +1145,20 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    For worker-focused tests, use `factory gate --focused-command '<exact shell command>'`
    (repeatable; runs alongside the normal gate, with `--skip` available for unrelated
    checks). The gate captures the command, exit-based PASS/FAIL, runner counts and
-   start/end HEAD in `.factory/focused-tests.jsonl`; later dispatcher gates include
+   start/end HEAD in the running worktree's `.factory/focused-tests.jsonl` (not the
+   main checkout's shared state directory); later dispatcher gates include
    each receipt on its own `Focused test:` line labelled `worker-recorded / unverified`:
    the file is worker-writable, so matching HEADs do not authenticate its contents.
    Configured unittest, pytest (including absolute runner paths) and Cargo test commands
    and recognized runner summaries are captured automatically, including bug-reproduction
    runs. Failed launches and timeouts are retained even without a summary; unknown runner
-   counts are explicitly unavailable.
+   counts are explicitly unavailable. Known bug-reproduction executions are recorded
+   even when imports fail or they time out before printing counts. Focused-command
+   timeouts retain the lifecycle outcome `unknown / check_timeout`.
+   Evidence reads inspect at most the newest 64 KiB, flag truncation or invalid rows,
+   and continue to later valid receipts. Reads and appends reject symlinks and
+   nonregular files and use nonblocking file locks; unsafe evidence cannot block
+   report generation or redirect receipt writes.
    Every report states its head and says `Focused tests: none recorded` when no
    execution evidence exists, including early protection failures. Receipts from
    another SHA, an unresolved SHA, or a command that changed HEAD are flagged

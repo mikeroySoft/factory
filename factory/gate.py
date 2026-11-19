@@ -17,6 +17,7 @@ import re
 import shlex
 import signal
 import subprocess
+import stat
 import sys
 import tempfile
 import tomllib
@@ -41,6 +42,7 @@ MUTATION_PROOF_COUNTS = ("planned", "ran", "killed", "survived", "timeouts", "bl
 MUTATION_PROOF_KEYS = {"protocol", "version", "mode", "status", "reason", "exit", "files", "counts",
                        "scope"}
 SKIP_NO_FACTORY_CODE = "SKIP (no changed factory code)"
+FOCUSED_MAX_BYTES = 64 * 1024
 
 
 def configure(c: Config) -> None:
@@ -128,6 +130,38 @@ def focused_head(cwd: Path | None = None) -> str:
         return "unknown"
 
 
+def _focused_evidence(receipt: dict | None = None) -> bytes:
+    """Worktree-local evidence; never follow links or wait on worker-owned files/locks."""
+    path = Path.cwd() / ".factory" / "focused-tests.jsonl"
+    fd = None
+    try:
+        if receipt is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND if receipt is not None else os.O_RDONLY
+        fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("execution receipt is not a regular file")
+        fcntl.flock(fd, (fcntl.LOCK_EX if receipt is not None else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        if receipt is not None:
+            # Separate a prior interrupted append from this complete row.
+            os.write(fd, b"\n" + json.dumps(receipt, ensure_ascii=False).encode() + b"\n")
+            return b""
+        size = os.fstat(fd).st_size
+        if size > FOCUSED_MAX_BYTES:
+            os.lseek(fd, size - FOCUSED_MAX_BYTES, os.SEEK_SET)
+        data = os.read(fd, FOCUSED_MAX_BYTES)
+        if size > FOCUSED_MAX_BYTES:
+            return b"truncated execution receipts\n" + data.partition(b"\n")[2]
+        return data
+    except FileNotFoundError:
+        return b""
+    except OSError as exc:
+        return f"unreadable execution receipts: {exc}\n".encode()
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def test_command(
     cmd: list[str], *, command: str | None = None, cwd: Path | None = None,
     pythonpath: Path | None = None,
@@ -159,20 +193,17 @@ def test_command(
             "counts": "; ".join(summary) if has_counts else "counts unavailable",
             "exit": proc.returncode,
         }
-        cfg.factory.mkdir(parents=True, exist_ok=True)
-        with (cfg.factory / "focused-tests.jsonl").open("a") as evidence:
-            evidence.write(json.dumps(receipt, ensure_ascii=False) + "\n")
+        _focused_evidence(receipt)
     return proc
 
 
 def focused_test_lines(head: str) -> list[str]:
     """File-sourced receipts are unverified even when their revision matches the reported head."""
-    path = cfg.factory / "focused-tests.jsonl"
-    if not path.exists():
-        return ["Focused tests: none recorded"]
     lines = []
-    try:
-        for raw in path.read_text().splitlines():
+    for raw in _focused_evidence().splitlines():
+        if not raw.strip():
+            continue
+        try:
             row = json.loads(raw)
             if (
                 not isinstance(row, dict)
@@ -192,8 +223,9 @@ def focused_test_lines(head: str) -> list[str]:
                 f"command={json.dumps(row['command'], ensure_ascii=False)} "
                 f"head={json.dumps(row['head'])} end-head={json.dumps(row['end_head'])}"
             )
-    except (OSError, ValueError):
-        lines.append("Focused tests: evidence unavailable (unreadable or invalid execution receipt)")
+        except ValueError:
+            if "Focused tests: evidence unavailable (unreadable or invalid execution receipt)" not in lines:
+                lines.append("Focused tests: evidence unavailable (unreadable or invalid execution receipt)")
     return lines or ["Focused tests: none recorded"]
 
 
@@ -1023,7 +1055,7 @@ def _run_at(
         if added.returncode:
             return added, False
         try:
-            return test_command(command, cwd=checkout, pythonpath=checkout), True
+            return test_command(command, command=shlex.join(command), cwd=checkout, pythonpath=checkout), True
         finally:
             timed(["git", "worktree", "remove", "--force", str(checkout)])
 
@@ -1112,7 +1144,7 @@ def check_bug_reproduction(
                 "FAIL",
                 f"declared reproduction test changed at HEAD: `{test_id}`",
             )]
-        fixed = test_command(command, cwd=Path.cwd(), pythonpath=Path.cwd())
+        fixed = test_command(command, command=shlex.join(command), cwd=Path.cwd(), pythonpath=Path.cwd())
         return [
             *results,
             (
@@ -1332,7 +1364,8 @@ def execute(args: argparse.Namespace, execution) -> int:
         if args.bug and args.tier == "attempt" else []
     )
     outcome, reason = (
-        ("product_feedback", "focused_command_failed")
+        (execution.outcome, execution.reason) if execution.outcome != "completed"
+        else ("product_feedback", "focused_command_failed")
         if any(status == "FAIL" for _, status, _ in focused_results)
         else ("product_feedback", "bug_reproduction_failed")
         if any(status == "FAIL" for _, status, _ in results)
