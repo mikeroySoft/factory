@@ -26,7 +26,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 
-from factory import config, dispatch, lifecycle, risk, runtime_events, stats
+from factory import config, dispatch, lifecycle, runtime_events, stats
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
