@@ -926,5 +926,47 @@ class ControlBandWatchTest(unittest.TestCase):
             for row in lifecycle.read_events(dispatch.EVENTS)
         ))
 
+    def test_stored_escape_metric_controls_closure_after_rule_changes(self) -> None:
+        self.cfg.watch_bands.append(config.Band(
+            metric="revert_rate_by_tier", window_days=28,
+            rules=(config.BandRule(
+                kind="sigma", tier="act", sigma=5.0, count=3, span=5, min_tickets=2,
+            ),),
+        ))
+        old_rule = config.BandRule(
+            kind="sigma", tier="act", sigma=2.0, count=2, span=3, min_tickets=2,
+        )
+        fp = f"band:{watch.fingerprint('revert_rate_by_tier:High', watch._rule_name(old_rule))}"
+        at = (self.NOW - timedelta(days=3)).isoformat()
+        self.journal([{"event": "watch", "fingerprint": fp, "issue": 99,
+                       "repo": self.ENGINE, "latest": at, "at": at}])
+        events = lifecycle.read_events(dispatch.EVENTS)
+        reader = mock.patch.object(lifecycle, "read_events", return_value=events)
+        reader.start()
+        self.addCleanup(reader.stop)
+        for stored in (
+            "`factory watch` observed metric `revert_rate_by_tier:High` outside its configured control band",
+            "Watch metric: revert_rate_by_tier:High",
+            "",
+        ):
+            with self.subTest(stored=stored):
+                self.gh.issues[99] = {
+                    "body": f"Fingerprint: {fp}\n\n{stored}\n",
+                    "state": "OPEN", "labels": [{"name": "needs-triage"}],
+                    "assignees": [], "comments": [],
+                }
+                with (
+                    mock.patch.object(watch.stats, "escapes", side_effect=RuntimeError("saturated listing")),
+                    mock.patch.object(watch, "_age", return_value=timedelta(days=3)),
+                ):
+                    watch.run_pass(self.cfg, now=self.NOW)
+                self.assertEqual(self.gh.issues[99]["state"], "OPEN")
+        with (
+            mock.patch.object(watch.stats, "escapes", return_value=[]),
+            mock.patch.object(watch, "_age", return_value=timedelta(days=3)),
+        ):
+            watch.run_pass(self.cfg, now=self.NOW)
+        self.assertEqual(self.gh.issues[99]["state"], "CLOSED")
+
 if __name__ == "__main__":
     unittest.main()
