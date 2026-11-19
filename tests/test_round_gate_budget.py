@@ -265,8 +265,8 @@ class RoundGateBudgetTest(unittest.TestCase):
             self.assertEqual(fired, "budget_min")
 
     def test_setup_and_fallback_cannot_launch_after_work_cutoff(self):
-        for delay in ("prompt", "setup", "fallback"):
-            with self.subTest(delay=delay), chdir(self.repo), mock.patch.dict(os.environ, self.env):
+        def check(delay):
+            with chdir(self.repo), mock.patch.dict(os.environ, self.env):
                 wt = self.configure_round()
                 self.measure(wt, 20)
                 clock = [0]
@@ -308,6 +308,10 @@ class RoundGateBudgetTest(unittest.TestCase):
                 self.assertIsNone(attempt["worker_exit"])
                 self.assertIsNone(attempt["gate"])
                 self.assertEqual(attempt["reason"], "budget_exceeded")
+
+        for delay in ("prompt", "setup", "fallback"):
+            with self.subTest(delay=delay):
+                check(delay)
 
     def test_short_fixup_window_is_reported_as_budget_not_gate_failure(self):
         clock = [0]
