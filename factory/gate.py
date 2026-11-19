@@ -483,26 +483,28 @@ def _release_exclusive(execution, lock) -> None:
 
 def check_mutation_equivalents(checks: list[config.Check]) -> tuple[bool, str]:
     """Validate configured registries during the attempt gate, before PR proof work."""
-    import contextlib
-    import io
-
-    report = io.StringIO()
-    passed = True
-    with contextlib.redirect_stdout(report):
-        try:
-            for check in checks:
-                path = check.run[check.run.index("--equivalents") + 1]
-                mutation_scope.load_equivalents(path)
-        except (OSError, ValueError, TypeError, IndexError, subprocess.CalledProcessError) as exc:
-            print(f"invalid equivalents: {exc}")
-            passed = False
-    output = report.getvalue()
-    execution = lifecycle.current()
-    if execution:
-        for line in output.splitlines():
-            if line.startswith("relocated equivalent:"):
-                execution.emit("equivalent-relocation", detail=line)
-    return passed, output
+    outputs = []
+    for check in checks:
+        index = check.run.index("scripts/mutation.py")
+        path = check.run[check.run.index("--equivalents") + 1]
+        # Use the established validator interface, not a version-specific CLI flag.
+        command = [
+            *check.run[:index], "-c",
+            ("import runpy, sys; producer = runpy.run_path(sys.argv[1]); "
+             "reviewed = producer['load_equivalents'](sys.argv[2]); "
+             "sys.exit(producer['stale_equivalents'](reviewed, set()))"),
+            check.run[index], path,
+        ]
+        passed, output = run(command)
+        outputs.append(output)
+        execution = lifecycle.current()
+        if execution:
+            for line in output.splitlines():
+                if line.startswith("relocated equivalent:"):
+                    execution.emit("equivalent-relocation", detail=line)
+        if not passed:
+            return False, "\n".join(outputs)
+    return True, "\n".join(outputs)
 
 
 def check_conflict_markers() -> tuple[bool, str]:

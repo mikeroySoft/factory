@@ -182,9 +182,11 @@ class MutationRelocationTest(unittest.TestCase):
                 self.assertEqual(status, 0, report)
                 self.assertIn("unrelated: SKIP (pr tier)", report)
 
-    def test_attempt_gate_does_not_start_the_checkout_producer(self):
-        (self.root / "scripts/mutation.py").write_text(
-            'raise RuntimeError("producer must not run during context validation")\n'
+    def test_attempt_gate_does_not_run_producer_main(self):
+        script = self.root / "scripts/mutation.py"
+        script.write_text(
+            script.read_text().rsplit('if __name__ == "__main__":', 1)[0]
+            + 'if __name__ == "__main__":\n    raise RuntimeError("producer main ran")\n'
         )
         status, report = self.attempt_gate()
         self.assertEqual(status, 0, report)
