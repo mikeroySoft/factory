@@ -939,9 +939,9 @@ def _prepare_action_request(cfg, request, target, action, guard, deadline):
             "gh", "api", "--hostname", "github.com", "--method", "GET",
             f"repos/{cfg.repo}/issues/{request['number']}/events",
             "-f", "per_page=100", "-f", f"page={page}",
-            "--jq", 'if type == "array" and all(.[]; type == "object") '
-            'then map({event, label: {name: .label.name}}) '
-            'else error("invalid issue events") end',
+            "--jq", ('if type == "array" and all(.[]; type == "object") '
+                     'then map({event, label: {name: .label.name}}) '
+                     'else error("invalid issue events") end'),
         ], deadline)
         if not isinstance(rows, list):
             raise DecisionError("provider returned invalid issue events", "provider_unavailable")
