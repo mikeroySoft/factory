@@ -330,3 +330,39 @@ class HostClaimRebootTest(unittest.TestCase):
             ultron.process_ticket(issue, 1, False)
         self.assertEqual(self.launched, [])
         self.assertIn(old, self.github.comments)
+
+    def test_pruned_completed_legacy_owner_keeps_open_pr_hold(self):
+        ultron = self.dispatcher("ultron")
+        older = self.abandoned_claim(ultron, age=4 * 3600)
+        self.github.comments.remove(older)
+        at = datetime.now(UTC) - timedelta(hours=3)
+        dead = {
+            **lifecycle._identity(os.getpid()),
+            "boot_id": "previous-boot", "pid": 2_000_000_000,
+        }
+        with (
+            mock.patch.object(lifecycle, "_now", return_value=at.isoformat()),
+            mock.patch.object(lifecycle, "_identity", return_value=dead),
+            lifecycle.scope(ultron.EVENTS, "ticket", ticket=7) as completed,
+        ):
+            completed.resource("acquired", ultron.ticket_lock(7), scope="repository")
+            old = self.github.add_claim("ultron", at + timedelta(seconds=1))
+            ultron.record("claimed", ticket=7, at=(at + timedelta(seconds=2)).isoformat())
+        # Real retention drops the completed lifecycle but keeps its durable receipt.
+        with (
+            mock.patch.object(lifecycle, "MAX_BYTES", 1),
+            mock.patch.object(lifecycle, "RETENTION", 1),
+        ):
+            ultron.record("rotation")
+            ultron.record("rotation")
+        rows = lifecycle.read_events(ultron.EVENTS)
+        self.assertFalse(any(row.get("event") == "lifecycle"
+                             and row.get("execution_id") == completed.execution_id for row in rows))
+        self.assertTrue(any(row.get("event") == "claimed"
+                            and row.get("execution_id") == completed.execution_id for row in rows))
+        self.github.open_prs = [{"number": 70}]
+        [issue] = ultron.frontier()
+        self.assertEqual(issue.get("held"), "open PR")
+        ultron.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, [])
+        self.assertIn(old, self.github.comments)
