@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Agent PR verdict comments now start with a parseable `Reviewed head: <sha>` line containing the full reviewed head SHA, including first review, bounce, manager FIX, and refreshed/rebased re-approvals; existing `VERDICT:` parsing is unchanged (#559).
 
 - Hosts can set `[defaults.gate] mutation_duration = 5400` (or a per-repository host override) for opted High-risk PR mutation proof runs. Values must be finite numeric seconds greater than 60; absent values preserve the timeout-minus-60 runner budget. Manual durations take precedence, and host settings do not invalidate cached PR gates (#850).
 - MCP named action `approve_pr` accepts a PR number and optional `ruling_id`, restores only `factory-approved` through the existing exact-head approval policy, and records the authenticated actor with source `mcp`. Draft, held, closed and non-main PRs are refused, including holds observed after applying approval; post-edit policy refusals, journal-read failures and head changes withdraw approval without an approved event and retain a failure receipt. Hold snapshot/restore behavior is unchanged (#848).
