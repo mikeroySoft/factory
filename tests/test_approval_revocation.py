@@ -117,6 +117,22 @@ class ApprovalRevocationTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "approval_evidence")
         self.assertEqual(len(self.fixture.commands), 1)
 
+    def test_same_second_label_removal_does_not_restore_a_published_receipt(self):
+        lifecycle.append(self.case.source.factory / "events.jsonl", {
+            "event": "approved", "ticket": 7, "pr": 17, "head": self.case.head,
+            "gate_head": self.case.head, "review_head": self.case.head,
+            "at": "2026-11-18T19:15:23.500000Z",
+        })
+        self.assertEqual(dispatch.main([]), 0)
+        preview = self.case.prepare()
+        # GitHub's second-resolution timestamp cannot prove this removal preceded approval.
+        self.timeline = [{"event": "unlabeled", "label": {"name": config.LABEL_APPROVED},
+                          "created_at": "2026-11-18T19:15:23Z"}]
+        self.assertEqual(dispatch.main([]), 0)
+        with self.assertRaises(decisions.DecisionError) as caught:
+            self.case.driver.apply(preview)
+        self.assertEqual(caught.exception.code, "approval_evidence")
+
 
 class MergeReceiptGuardTest(unittest.TestCase):
     def setUp(self):
