@@ -137,6 +137,9 @@ def test_command(
     try:
         proc = timed(cmd, cwd=cwd, pythonpath=pythonpath)
     except OSError as exc:
+        if execution := lifecycle.current():
+            execution.outcome = "mechanism_failure" if isinstance(exc, (FileNotFoundError, PermissionError)) else "unknown"
+            execution.reason = f"{type(exc).__name__}: {exc}"
         proc = subprocess.CompletedProcess(cmd, 127, f"command could not start: {exc}\n", "")
     output = proc.stdout + proc.stderr
     summary = re.findall(
