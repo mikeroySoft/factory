@@ -132,6 +132,117 @@ class FocusedGateTest(unittest.TestCase):
                 for text in (shlex.join(command), "FAIL", "counts unavailable", f"exit={status}", head):
                     self.assertIn(text, line)
 
+    def test_receipts_are_isolated_between_worktrees(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo, command, head = self.make_repo(directory)
+            other = Path(directory) / "other"
+            git(repo, "worktree", "add", "--detach", str(other), head)
+            code, output, report = gate(other, "--focused-command", command)
+            self.assertEqual(code, 0, report + output)
+            self.assertIn(command, report)
+            code, output, report = gate(repo)
+            self.assertEqual(code, 0, report + output)
+            self.assertIn("Focused tests: none recorded", report)
+            self.assertNotIn(command, report)
+            code, output, report = gate(other)
+            self.assertEqual(code, 0, report + output)
+            self.assertIn(command, report)
+
+    def test_invalid_row_does_not_hide_later_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo, command, head = self.make_repo(directory)
+            (repo / ".factory").mkdir(exist_ok=True)
+            path = repo / ".factory" / "focused-tests.jsonl"
+            path.write_text('{"incomplete":\n' + json.dumps({"result": "PASS"}) + "\n")
+            code, output, report = gate(repo, "--focused-command", command)
+            self.assertEqual(code, 0, report + output)
+            self.assertIn("invalid execution receipt", report)
+            [line] = self.focused_lines(report)
+            for text in (command, head, "PASS", "Ran 2 tests"):
+                self.assertIn(text, line)
+
+    def test_unsafe_receipt_paths_do_not_hang_or_redirect_writes(self):
+        import os
+        import subprocess
+        from tests.test_gate import ROOT
+
+        for kind in ("fifo", "symlink-fifo", "symlink-file", "oversized"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                repo, command, _ = self.make_repo(directory)
+                (repo / ".factory").mkdir(exist_ok=True)
+                path = repo / ".factory" / "focused-tests.jsonl"
+                target = Path(directory) / "target"
+                if kind in ("fifo", "symlink-fifo"):
+                    os.mkfifo(path if kind == "fifo" else target)
+                    if kind == "symlink-fifo":
+                        path.symlink_to(target)
+                elif kind == "symlink-file":
+                    target.write_text("do not modify\n")
+                    path.symlink_to(target)
+                else:
+                    path.write_bytes(b"x" * (1024 * 1024) + b"\n")
+                env = {**os.environ, "PYTHONPATH": str(ROOT)}
+                env.pop("FACTORY_LIFECYCLE_CONTEXT", None)
+                try:
+                    proc = subprocess.run(
+                        [sys.executable, "-m", "factory", "gate", "--focused-command", command],
+                        cwd=repo, env=env, capture_output=True, text=True, timeout=5,
+                    )
+                except subprocess.TimeoutExpired:
+                    self.fail(f"{kind} receipt blocked the gate")
+                report = (repo / ".factory" / "gate-report.md").read_text()
+                self.assertEqual(proc.returncode, 0, report + proc.stdout + proc.stderr)
+                self.assertIn("Focused tests: evidence unavailable", report)
+                if kind == "symlink-file":
+                    self.assertEqual(target.read_text(), "do not modify\n")
+                if kind == "oversized":
+                    [line] = self.focused_lines(report)
+                    self.assertIn(command, line)
+                    self.assertLess(len(report), 10000)
+
+    def test_reproduction_without_runner_summary_is_recorded(self):
+        for mode in ("import-error", "timeout"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                repo, _, _ = self.make_repo(directory)
+                test = repo / "tests" / "test_repro.py"
+                test.write_text(
+                    ("import missing_dependency\n" if mode == "import-error"
+                     else "import time\ntime.sleep(60)\n")
+                    + "import unittest\nclass Repro(unittest.TestCase):\n"
+                    "    def test_value(self):\n        self.assertTrue(True)\n"
+                )
+                git(repo, "add", "tests/test_repro.py")
+                git(repo, "commit", "-qm", "reproduce")
+                before = git(repo, "rev-parse", "HEAD")
+                git(repo, "commit", "--allow-empty", "-qm", "claimed fix")
+                head = git(repo, "rev-parse", "HEAD")
+                code, output, report = gate(
+                    repo, "--bug", "--repro-test", "tests.test_repro.Repro.test_value",
+                    "--check-timeout", "1",
+                )
+                self.assertEqual(code, 1, report + output)
+                lines = self.focused_lines(report)
+                self.assertEqual(len(lines), 2 if mode == "import-error" else 1, report)
+                for line in lines:
+                    for text in ("-c", "tests/test_repro.py", "FAIL", "counts unavailable"):
+                        self.assertIn(text, line)
+                self.assertIn(before, lines[0])
+                self.assertIn("STALE", lines[0])
+                if mode == "import-error":
+                    self.assertIn(head, lines[1])
+                    self.assertNotIn("STALE", lines[1])
+
+    def test_focused_timeout_preserves_unknown_lifecycle_outcome(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo, _, _ = self.make_repo(directory)
+            command = shlex.join([sys.executable, "-c", "import time; time.sleep(60)"])
+            code, output, report = gate(repo, "--focused-command", command, "--check-timeout", "1")
+            self.assertEqual(code, 1, report + output)
+            events = [json.loads(line) for line in (repo / ".factory" / "events.jsonl").read_text().splitlines()]
+            [exit_event] = [row for row in events if row["stage"] == "gate" and row["kind"] == "exit"]
+            self.assertEqual(exit_event["outcome"], "unknown")
+            self.assertEqual(exit_event["reason"], "check_timeout")
+
 
 if __name__ == "__main__":
     unittest.main()
