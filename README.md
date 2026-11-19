@@ -1096,6 +1096,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    gate in the current generation passed, escalation uses `budget`, not
    `gate_failed`; the comment and packet name `budget_min` / `budget_exceeded`
    so the budget cut is identifiable for a not-a-strike owner requeue.
+   Budget escalation reasons include only the status line; detailed gate output
+   stays in the gate report and the bounded escalation packet.
    An actual failing gate retains its existing classification.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before

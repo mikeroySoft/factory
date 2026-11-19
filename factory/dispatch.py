@@ -5724,7 +5724,7 @@ def process_ticket(
                 if ok:
                     break
                 if report.startswith("budget exceeded"):
-                    escalate(n, f"{report}; budget_min / budget_exceeded", logfile, code="budget")
+                    escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
                     return
                 if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
@@ -5849,7 +5849,7 @@ def process_ticket(
                     comments=fresh.get("comments"),
                 )
                 if report.startswith("budget exceeded"):
-                    escalate(n, f"{report}; budget_min / budget_exceeded", logfile, code="budget")
+                    escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
                     return
                 if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
