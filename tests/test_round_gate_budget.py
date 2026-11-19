@@ -264,6 +264,152 @@ class RoundGateBudgetTest(unittest.TestCase):
             foreign.emit("exit")
             self.assertEqual(fired, "budget_min")
 
+    def test_setup_and_fallback_cannot_launch_after_work_cutoff(self):
+        for delay in ("prompt", "setup", "fallback"):
+            with self.subTest(delay=delay), chdir(self.repo), mock.patch.dict(os.environ, self.env):
+                wt = self.configure_round()
+                self.measure(wt, 20)
+                clock = [0]
+                launches = []
+                original_popen = subprocess.Popen
+                original_activity = dispatch._activity
+
+                def prompt(*args, **kwargs):
+                    if delay == "prompt":
+                        clock[0] = 50
+                    return "fix"
+
+                def activity(*args, **kwargs):
+                    if delay == "setup":
+                        clock[0] = 50
+                    return original_activity(*args, **kwargs)
+
+                def launch(cmd, *args, **kwargs):
+                    if str(self.worker) in cmd:
+                        launches.append(cmd)
+                        if delay == "fallback" and len(launches) == 1:
+                            clock[0] = 50
+                            raise FileNotFoundError("worker vanished")
+                    return original_popen(cmd, *args, **kwargs)
+
+                with mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                        mock.patch.object(dispatch, "build_prompt", side_effect=prompt), \
+                        mock.patch.object(dispatch, "_activity", side_effect=activity), \
+                        mock.patch.object(subprocess, "Popen", side_effect=launch), \
+                        mock.patch.object(dispatch, "fallback_worker", return_value="default"), \
+                        mock.patch.object(dispatch, "set_worker_health"), \
+                        mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")) as gate:
+                    ok, report, _, _ = dispatch.worker_round(7, wt, set(), "fix", "resume", 1, 60)
+                self.assertFalse(ok)
+                self.assertTrue(report.startswith("budget exceeded before work"), report)
+                self.assertEqual(len(launches), int(delay == "fallback"))
+                gate.assert_not_called()
+                attempt = [r for r in lifecycle.read_events(self.events) if r.get("event") == "attempt"][-1]
+                self.assertIsNone(attempt["worker_exit"])
+                self.assertIsNone(attempt["gate"])
+                self.assertEqual(attempt["reason"], "budget_exceeded")
+
+    def test_short_fixup_window_is_reported_as_budget_not_gate_failure(self):
+        clock = [0]
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            self.measure(wt, 20)
+
+            def gate(*args, **kwargs):
+                clock[0] = 45
+                return False, "- code: FAIL"
+
+            with mock.patch.object(dispatch.cfg, "fixups", [["repair"]]), \
+                    mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
+                    mock.patch.object(dispatch, "run_gate", side_effect=gate), \
+                    mock.patch.object(dispatch, "run", wraps=dispatch.run) as run:
+                ok, report, _, _ = dispatch.worker_round(7, wt, set(), "fix", "bounce", 4, 60)
+            self.assertFalse(ok)
+            self.assertTrue(report.startswith("budget exceeded"), report)
+            self.assertIn("Mechanical fixups", report)
+            self.assertIn("not run", report)
+            self.assertFalse(any(call.args[0] == ["repair"] for call in run.call_args_list))
+            self.assertEqual((wt / ".factory/gate-report-7.md").read_text(), report)
+        row, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "gate-fixup-budget"]
+        self.assertEqual(row["reason"], "budget_exceeded")
+
+    def test_fixup_timeout_preserves_the_gate_reservation(self):
+        clock = [0]
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            self.measure(wt, 20)
+            original_run = dispatch.run
+            timeouts = []
+
+            def gate(*args, **kwargs):
+                clock[0] = 19  # only one second of repair work remains
+                return False, "- code: FAIL"
+
+            def run(cmd, *args, **kwargs):
+                if cmd == ["repair"]:
+                    timeout = kwargs["timeout"]
+                    timeouts.append(timeout)
+                    (wt / "partial.txt").write_text("unfinished repair\n")
+                    clock[0] += timeout
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                return original_run(cmd, *args, **kwargs)
+
+            with mock.patch.object(dispatch.cfg, "fixups", [["repair"], ["must-not-run"]]), \
+                    mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
+                    mock.patch.object(dispatch, "run_gate", side_effect=gate) as check, \
+                    mock.patch.object(dispatch, "run", side_effect=run):
+                head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+                ok, report, _, candidate = dispatch.worker_round(7, wt, set(), "fix", "bounce", 4, 60)
+            self.assertEqual(timeouts, [1])
+            self.assertFalse(ok)
+            self.assertTrue(report.startswith("budget exceeded"), report)
+            self.assertIn("Mechanical fixups", report)
+            self.assertEqual(candidate, head)
+            self.assertEqual(check.call_count, 1)
+            self.assertEqual(clock[0], 20)
+        row, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "gate-fixup-budget"]
+        self.assertEqual(row["reason"], "budget_exceeded")
+
+    def test_fixups_share_work_cutoff_then_run_the_full_gate(self):
+        clock = [0]
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            self.measure(wt, 20)
+            original_run = dispatch.run
+            timeouts = []
+            gate_starts = []
+
+            def gate(*args, **kwargs):
+                self.assertNotIn("timeout", kwargs)
+                gate_starts.append(clock[0])
+                if len(gate_starts) == 1:
+                    clock[0] = 17
+                    return False, "- code: FAIL"
+                clock[0] = 65  # admitted validation still finishes if the estimate was low
+                return True, "- code: PASS"
+
+            def run(cmd, *args, **kwargs):
+                if cmd in (["repair-1"], ["repair-2"]):
+                    timeouts.append(kwargs["timeout"])
+                    clock[0] += 1
+                    (wt / "fixed.txt").write_text("fixed\n")
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return original_run(cmd, *args, **kwargs)
+
+            with mock.patch.object(dispatch.cfg, "fixups", [["repair-1"], ["repair-2"]]), \
+                    mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
+                    mock.patch.object(dispatch, "run_gate", side_effect=gate), \
+                    mock.patch.object(dispatch, "run", side_effect=run):
+                ok, report, _, head = dispatch.worker_round(7, wt, set(), "fix", "bounce", 4, 60)
+            self.assertTrue(ok, report)
+            self.assertEqual(timeouts, [3, 2])
+            self.assertEqual(gate_starts, [0, 19])
+            self.assertEqual(self.git("show", f"{head}:fixed.txt").stdout, "fixed\n")
+            self.assertIn("Re-ran gate", report)
+
     def test_floor_rejects_invalid_config_values(self):
         path = self.repo / ".factory.toml"
         original = path.read_text()
