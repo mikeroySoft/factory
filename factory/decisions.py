@@ -774,6 +774,26 @@ def _plan_request(
     return steps
 
 
+def _restore_requeue_host_pin(cfg: Config, request: dict, target: dict) -> None:
+    if any(label.startswith("host:") for label in target["labels"]):
+        return
+    label = None
+    for row in reversed(lifecycle.read_events(cfg.factory / "events.jsonl")):
+        if row.get("ticket") != request["number"]:
+            continue
+        kind = row.get("event")
+        if kind == "escalate":
+            if label is not None:
+                request["add"].append(label)
+            return
+        if kind in {"claimed", "generation"}:
+            return
+        if kind == "claim-label-removed" and label is None:
+            removed = row.get("label")
+            if isinstance(removed, str) and removed.startswith("host:"):
+                label = removed
+
+
 def prepare(
     cfg: Config, requests: object, *, caller: str = "dashboard", action: dict | None = None, guard=None,
 ) -> dict:
@@ -815,6 +835,8 @@ def prepare(
         target, raw = target_by_key[key]
         if guard is not None:
             guard(target)
+        if action and action.get("name") == "requeue_agent":
+            _restore_requeue_host_pin(cfg, request, target)
         if kind == "pr":
             ticket = target.get("ticket") or number
             locks.add(("ticket", ticket))

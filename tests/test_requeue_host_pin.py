@@ -25,10 +25,18 @@ class RequeueHostPinTest(unittest.TestCase):
                 "-f", f"body={argv[argv.index('--body') + 1]}",
             ])
             return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[:3] == ["gh", "issue", "edit"]:
+            for index, flag in enumerate(argv[:-1]):
+                if flag in {"--add-label", "--remove-label", "--add-assignee", "--remove-assignee"}:
+                    self.github.run("owner", [*argv[:4], flag, argv[index + 1]])
+            return subprocess.CompletedProcess(argv, 0, "", "")
         return self.github.run("owner", argv, **kwargs)
 
-    def requeue_after_escalation(self, intent, host):
+    def requeue_after_escalation(self, intent, host, *, existing_host=None, previous_host=None):
         module = self.dispatcher(host)
+        if previous_host:
+            module.record("escalate", ticket=7, code="gate_failed", reason="previous escalation")
+            module.record("claim-label-removed", ticket=7, label=f"host:{previous_host}")
         self.github.issue.update({
             "updatedAt": "2026-11-18T00:00:00Z",
             "url": "https://github.com/local/claims/issues/7",
@@ -42,6 +50,9 @@ class RequeueHostPinTest(unittest.TestCase):
         self.assertEqual(self.github.issue["assignees"], [])
         self.assertEqual(module.host_claims(7), [])
         self.assertIn({"name": "ready-for-human"}, self.github.issue["labels"])
+        if existing_host:
+            self.github.issue["labels"].append({"name": f"host:{existing_host}"})
+        module.record("claim-label-removed", ticket=8, label="host:unrelated")
 
         with mock.patch.object(mcp.config, "load", return_value=module.cfg), \
                 mock.patch.object(decisions, "_run", side_effect=self.transport):
@@ -59,9 +70,10 @@ class RequeueHostPinTest(unittest.TestCase):
             self.assertNotIn("isError", applied, applied)
             receipt = json.loads(applied["content"][0]["text"])
             self.assertEqual(receipt["status"], "success")
-        expected = {"ready-for-agent", *([f"host:{host}"] if host else [])}
+        pin = existing_host or host
+        expected = {"ready-for-agent", *([f"host:{pin}"] if pin else [])}
         self.assertEqual({row["name"] for row in self.github.issue["labels"]}, expected)
-        if host:
+        if host and not existing_host:
             foreign = self.dispatcher("tank")
             self.assertIn(host, foreign.frontier()[0]["held"])
             self.assertNotIn("held", module.frontier()[0])
@@ -77,3 +89,9 @@ class RequeueHostPinTest(unittest.TestCase):
 
     def test_fresh_without_host_pin_stays_unpinned(self):
         self.requeue_after_escalation("fresh", None)
+
+    def test_current_host_pin_takes_precedence_over_escalation_cleanup(self):
+        self.requeue_after_escalation("resume", "ultron", existing_host="tank")
+
+    def test_unpinned_escalation_does_not_restore_previous_escalations_host(self):
+        self.requeue_after_escalation("fresh", None, previous_host="ultron")
