@@ -231,30 +231,25 @@ def _gate_runs(rows: list[dict]) -> list[dict]:
         elif row["gate_event"] == "gate-run" or previous.get("gate_event") == "gate-start":
             custom[run_id] = {**previous, **row}
 
-    def run(row: dict, *, run_id: str, tier: str | None = None,
-            started_at: object = None, ended_at: object = None,
-            duration: object = None) -> dict:
+    def run(row, *, tier=None, started_at=None, ended_at=None, duration=None):
         seconds = duration if type(duration) in {int, float} and math.isfinite(duration) and duration >= 0 else None
         return {
-            "run_id": run_id,
             "at": ended_at or started_at or row.get("at"),
             "ticket": row.get("ticket") if type(row.get("ticket")) is int else None,
             "head": row.get("head") if isinstance(row.get("head"), str) else None,
             "host": row.get("host") if isinstance(row.get("host"), str) and row["host"] else "unknown",
             "tier": tier if tier in ("attempt", "pr", "release") else "unknown",
             "rerun": row.get("rerun") if type(row.get("rerun")) is bool else None,
-            "started_at": started_at if _timestamp(started_at) is not None else None,
-            "ended_at": ended_at if _timestamp(ended_at) is not None else None,
             "duration_seconds": seconds,
         }
 
     result = [
         run(
-            row, run_id=run_id, tier=row.get("tier"),
+            row, tier=row.get("tier"),
             started_at=row.get("started_at"), ended_at=row.get("ended_at"),
             duration=row.get("duration_seconds"),
         )
-        for run_id, row in custom.items()
+        for row in custom.values()
     ]
 
     lifecycle_runs: dict[str, list[dict]] = {}
@@ -263,28 +258,21 @@ def _gate_runs(rows: list[dict]) -> list[dict]:
                 and row.get("stage") == "gate" and row.get("kind") in {"enter", "exit"}
                 and isinstance(row.get("execution_id"), str) and row["execution_id"]):
             lifecycle_runs.setdefault(row["execution_id"], []).append(row)
-    legacy_slots: Counter[tuple[int, int]] = Counter()
+    legacy_slots: set[tuple[int, int]] = set()
     for execution_id, events in lifecycle_runs.items():
         if execution_id in custom:
             continue
-        entered = next((event for event in events if event.get("kind") == "enter"), None)
-        exited = next((event for event in reversed(events) if event.get("kind") == "exit"), None)
-        evidence = exited or entered or events[-1]
-        started_at = entered.get("at") if entered else None
-        ended_at = exited.get("at") if exited else None
-        result.append(run(
-            evidence, run_id=execution_id, started_at=started_at,
-            ended_at=ended_at,
-        ))
+        evidence = next((event for event in reversed(events) if event.get("kind") == "exit"), events[0])
+        result.append(run(evidence))
         if type(evidence.get("ticket")) is int and type(evidence.get("attempt")) is int:
-            legacy_slots[(evidence["ticket"], evidence["attempt"])] += 1
+            legacy_slots.add((evidence["ticket"], evidence["attempt"]))
 
     custom_attempt_heads = {
         (item["ticket"], item["head"]) for item in result
         if item["tier"] == "attempt" and item["head"] is not None
     }
     seen_attempts: set[tuple[int, int]] = set()
-    for index, row in enumerate(rows):
+    for row in rows:
         if (not isinstance(row, dict) or row.get("event") != "attempt"
                 or row.get("gate") not in {"PASS", "FAIL"}
                 or type(row.get("ticket")) is not int):
@@ -297,10 +285,9 @@ def _gate_runs(rows: list[dict]) -> list[dict]:
             continue
         if key is not None:
             seen_attempts.add(key)
-            if legacy_slots[key]:
-                legacy_slots[key] -= 1
+            if key in legacy_slots:
                 continue
-        result.append(run(row, run_id=f"legacy-attempt-{index}", tier="attempt"))
+        result.append(run(row, tier="attempt"))
     return result
 
 
@@ -351,7 +338,7 @@ def gate_cost_metrics(
 
     def grouped(key: str, values: set[str]) -> dict[str, dict]:
         result = {}
-        for value in sorted(values, key=lambda item: (item == "unknown", item)):
+        for value in sorted(values):
             selected = [
                 row for row in runs
                 if (str(row[key]) if row[key] is not None else "unknown") == value

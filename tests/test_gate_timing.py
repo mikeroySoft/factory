@@ -151,6 +151,49 @@ class GateTimingTest(unittest.TestCase):
         }
         self.assertEqual(by_ticket, {41: [None, True], 42: [None, True]})
 
+    def test_failed_git_query_with_stdout_does_not_attribute_ticket(self) -> None:
+        real_run = subprocess.run
+
+        def run(command, *args, **kwargs):
+            if command == ["git", "symbolic-ref", "--quiet", "--short", "HEAD"]:
+                return subprocess.CompletedProcess(command, 1, "agent/900\n", "")
+            return real_run(command, *args, **kwargs)
+
+        with mock.patch.object(gate.subprocess, "run", side_effect=run), \
+                mock.patch.object(gate, "execute", return_value=0):
+            self.assertEqual(gate.main([]), 0)
+
+        start, end = self.timing_rows()
+        self.assert_pair(start, end)
+        self.assertEqual((start["ticket"], start["rerun"]), (None, None))
+
+    def test_large_ticket_ignores_unrelated_lifecycle_before_rerun(self) -> None:
+        lifecycle.append(self.events, {
+            "event": "lifecycle", "kind": "enter", "stage": "dispatch",
+            "tier": None, "ticket": 1000, "execution_id": "unrelated",
+        })
+        with mock.patch.object(gate, "execute", return_value=0):
+            self.assertEqual(gate.main(["--ticket", "1000"]), 0)
+            self.assertEqual(gate.main(["--ticket", "1000"]), 0)
+
+        starts = [row for row in self.timing_rows() if row["gate_event"] == "gate-start"]
+        self.assertEqual([row["ticket"] for row in starts], [1000, 1000])
+        self.assertEqual([row["rerun"] for row in starts], [False, True])
+
+    def test_duration_uses_elapsed_monotonic_seconds(self) -> None:
+        clock = mock.Mock(return_value=10.0)
+
+        def advance_clock(*_args) -> int:
+            clock.return_value = 12.5
+            return 0
+
+        with mock.patch("time.monotonic", clock), \
+                mock.patch.object(gate, "execute", side_effect=advance_clock):
+            self.assertEqual(gate.main([]), 0)
+
+        _start, end = self.timing_rows()
+        self.assertEqual(end["duration_seconds"], 2.5)
+
     def test_non_agent_branch_leaves_ticket_and_rerun_unknown(self) -> None:
         self.git("checkout", "-q", "-b", "agent/41-extra")
         with mock.patch.object(gate, "execute", return_value=0):

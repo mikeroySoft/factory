@@ -74,6 +74,25 @@ class GateCostAggregationTest(unittest.TestCase):
             "unclassified": 25.0, "unknown": 25.0,
         })
 
+    def test_nonmerge_rows_cannot_reassign_merge_receipt_identity(self) -> None:
+        journal_rows = json.loads(json.dumps([
+            {"event": "merged", "ticket": 10, "pr": 100, "work_type": "speed",
+             "work_type_source": "pr"},
+            {"event": "review", "ticket": 99, "pr": 100, "work_type": "bug"},
+            {"event": "merged", "pr": 100},
+            {"event": "merged", "ticket": 20, "pr": 200, "work_type_source": "legacy"},
+        ]))
+
+        result = stats.work_type_metrics(journal_rows)
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["counts"]["speed"], 1)
+        self.assertEqual(result["counts"]["unknown"], 1)
+
+        ticket_rows = [{"ticket": 20, "state": "merged"}]
+        stats.enrich_ticket_rows(ticket_rows, journal_rows)
+        self.assertIsNone(ticket_rows[0]["work_type"])
+        self.assertIsNone(ticket_rows[0]["work_type_source"])
+
     def test_pairs_runs_across_tiers_and_reports_unknowns_honestly(self) -> None:
         result = stats.gate_cost_metrics(evidence())
 
@@ -83,6 +102,7 @@ class GateCostAggregationTest(unittest.TestCase):
         self.assertEqual(ticket1["total_wall_time_seconds"], 7)
         self.assertEqual(ticket1["rerun_wall_time_seconds"], 2)
         self.assertEqual(ticket1["rerun_share"], 0.5)
+        self.assertAlmostEqual(ticket1["rerun_wall_time_share"], 2 / 7)
         self.assertEqual(set(ticket1["by_tier"]), {"attempt", "pr"})
         self.assertEqual(ticket1["by_host"]["alpha"]["total_count"], 1)
         self.assertEqual(ticket1["by_host"]["beta"]["total_count"], 1)
@@ -118,12 +138,131 @@ class GateCostAggregationTest(unittest.TestCase):
              "at": stamp(-1), "started_at": stamp(-1)},
             {"event": "lifecycle", "gate_event": "gate-run", "run_id": "later", "ticket": 9,
              "at": stamp(1), "ended_at": stamp(1), "duration_seconds": 2},
+            {"event": "lifecycle", "gate_event": "gate-start", "run_id": "edge", "ticket": 10,
+             "at": stamp(-7 * 24 * 60 * 60 + 1),
+             "started_at": stamp(-7 * 24 * 60 * 60 - 1)},
         ]
         result = stats.gate_cost_metrics(rows, NOW - timedelta(days=7), NOW)
         self.assertEqual(result["by_ticket"]["8"]["total_count"], 1)
         self.assertEqual(result["by_ticket"]["8"]["rerun_wall_time_seconds"], 600000)
         self.assertEqual(result["by_ticket"]["9"]["total_count"], 0)
         self.assertIsNone(result["by_ticket"]["9"]["rerun_count"])
+        self.assertEqual(result["by_ticket"]["10"]["total_count"], 0)
+
+    def test_modern_runs_ignore_gate_shaped_noise_and_keep_completed_evidence(self) -> None:
+        rows = json.loads(json.dumps([
+            {"event": "lifecycle", "gate_event": "gate-run", "run_id": "done",
+             "ticket": 1, "host": "zeta", "tier": "attempt", "rerun": False,
+             "at": stamp(-3), "ended_at": stamp(-3), "duration_seconds": 7},
+            # A late duplicate start cannot replace a completed receipt.
+            {"event": "lifecycle", "gate_event": "gate-start", "run_id": "done",
+             "ticket": 1, "host": "zeta", "tier": "attempt", "rerun": False,
+             "at": stamp(-2), "started_at": stamp(-2), "ended_at": None,
+             "duration_seconds": None},
+            {"event": "lifecycle", "gate_event": "gate-run", "run_id": "zero",
+             "ticket": 1, "host": "unknown", "tier": "pr", "rerun": True,
+             "at": stamp(-1), "ended_at": stamp(-1), "duration_seconds": 0},
+            {"event": "lifecycle", "gate_event": "gate-run", "run_id": "negative",
+             "ticket": 2, "host": "neg", "tier": "release", "rerun": False,
+             "at": stamp(-1), "ended_at": stamp(-1), "duration_seconds": -0.5},
+            {"event": "attempt", "gate_event": "gate-run", "run_id": "wrong-event",
+             "ticket": 91, "tier": "attempt", "rerun": False, "duration_seconds": 4},
+            {"event": "lifecycle", "gate_event": "noise", "run_id": "wrong-gate-event",
+             "ticket": 92, "tier": "attempt", "rerun": False, "duration_seconds": 4},
+            {"event": "merged", "gate": "PASS", "ticket": 93, "attempt": 1},
+            {"event": "attempt", "gate": "noise", "ticket": 94, "attempt": 1},
+            {"event": "attempt", "gate": "PASS", "ticket": "not-an-int", "attempt": 1},
+        ]))
+
+        result = stats.gate_cost_metrics(rows)
+        ticket1 = result["by_ticket"]["1"]
+        self.assertEqual(ticket1["total_count"], 2)
+        self.assertEqual(ticket1["total_wall_time_seconds"], 7)
+        self.assertEqual(ticket1["by_tier"]["pr"]["total_wall_time_seconds"], 0)
+        self.assertEqual(ticket1["by_tier"]["pr"]["missing_duration_count"], 0)
+        self.assertEqual(set(ticket1["by_tier"]), {"attempt", "pr"})
+        self.assertEqual(result["by_ticket"]["2"]["known_total_wall_time_seconds"], 0)
+        self.assertEqual(result["by_ticket"]["2"]["missing_duration_count"], 1)
+        self.assertIsNone(result["by_ticket"]["2"]["total_wall_time_seconds"])
+        self.assertEqual(sum(group["total_count"] for group in result["by_host"].values()), 3)
+        self.assertNotIn("unknown", result["by_ticket"])
+        for ticket in ("91", "92", "93", "94"):
+            self.assertEqual(result["by_ticket"][ticket]["total_count"], 0)
+
+    def test_weekly_legacy_run_uses_completion_and_ignores_unrelated_lifecycle(self) -> None:
+        rows = json.loads(json.dumps([
+            {"event": "lifecycle", "stage": "gate", "kind": "enter",
+             "execution_id": "cross-window", "ticket": 30, "attempt": 1,
+             "at": stamp(-8 * 24 * 60 * 60)},
+            {"event": "lifecycle", "stage": "gate", "kind": "exit",
+             "execution_id": "cross-window", "ticket": 30, "attempt": 1,
+             "at": stamp(-24 * 60 * 60)},
+            {"event": "lifecycle", "stage": "review", "kind": "exit",
+             "execution_id": "not-gate", "ticket": 31, "at": stamp(-60)},
+            {"event": "review", "stage": "gate", "kind": "exit",
+             "execution_id": "not-lifecycle", "ticket": 32, "at": stamp(-60)},
+        ]))
+
+        result = stats.gate_cost_metrics(rows, NOW - timedelta(days=7), NOW)
+        completed = result["by_ticket"]["30"]
+        self.assertEqual(completed["total_count"], 1)
+        self.assertEqual(completed["missing_duration_count"], 1)
+        self.assertIsNone(completed["total_wall_time_seconds"])
+        self.assertIsNone(completed["rerun_count"])
+        self.assertEqual(result["by_ticket"]["31"]["total_count"], 0)
+        self.assertEqual(result["by_ticket"]["32"]["total_count"], 0)
+
+    def test_mixed_unknown_measurements_remain_unknown(self) -> None:
+        rows = json.loads(json.dumps([
+            {"event": "lifecycle", "gate_event": "gate-run", "run_id": f"mixed-{index}",
+             "ticket": 40, "tier": "attempt", "rerun": rerun,
+             "duration_seconds": duration, "at": stamp(-1)}
+            for index, (rerun, duration) in enumerate([
+                (True, 2), (False, 5), (None, 11), (False, None),
+            ])
+        ]))
+
+        result = stats.gate_cost_metrics(rows)["by_ticket"]["40"]
+        self.assertEqual(result["total_count"], 4)
+        self.assertIsNone(result["rerun_count"])
+        self.assertEqual(result["known_rerun_count"], 1)
+        self.assertEqual(result["missing_rerun_count"], 1)
+        self.assertIsNone(result["total_wall_time_seconds"])
+        self.assertEqual(result["known_total_wall_time_seconds"], 18)
+        self.assertEqual(result["missing_duration_count"], 1)
+        self.assertIsNone(result["rerun_wall_time_seconds"])
+        self.assertEqual(result["known_rerun_wall_time_seconds"], 2)
+        self.assertIsNone(result["rerun_share"])
+        self.assertIsNone(result["rerun_wall_time_share"])
+
+    def test_complete_run_counts_above_small_integer_cache_keep_totals_known(self) -> None:
+        rows = [
+            {"event": "lifecycle", "gate_event": "gate-run", "run_id": f"large-{index}",
+             "ticket": 41, "tier": "attempt", "rerun": index == 0,
+             "duration_seconds": 2 if index == 0 else 1, "at": stamp(-1)}
+            for index in range(257)
+        ]
+
+        result = stats.gate_cost_metrics(rows)["by_ticket"]["41"]
+        self.assertEqual(result["total_count"], 257)
+        self.assertEqual(result["rerun_count"], 1)
+        self.assertEqual(result["missing_rerun_count"], 0)
+        self.assertEqual(result["total_wall_time_seconds"], 258)
+        self.assertEqual(result["rerun_wall_time_seconds"], 2)
+        self.assertAlmostEqual(result["rerun_share"], 1 / 257)
+        self.assertAlmostEqual(result["rerun_wall_time_share"], 2 / 258)
+
+    def test_unfinished_run_window_uses_measured_start_not_receipt_time(self) -> None:
+        rows = [
+            {"event": "lifecycle", "gate_event": "gate-start", "run_id": "old-start",
+             "ticket": 42, "started_at": stamp(-8 * 24 * 60 * 60), "at": stamp(-1)},
+            {"event": "lifecycle", "gate_event": "gate-start", "run_id": "late-receipt",
+             "ticket": 43, "started_at": stamp(-1), "at": stamp(1)},
+        ]
+        result = stats.gate_cost_metrics(rows, NOW - timedelta(days=7), NOW)["by_ticket"]
+        self.assertEqual(result["42"]["total_count"], 0)
+        self.assertEqual(result["43"]["total_count"], 1)
+        self.assertIsNone(result["43"]["total_wall_time_seconds"])
 
     def test_default_rows_keep_list_shape_and_expose_per_ticket_class_and_hosts(self) -> None:
         rows = [
@@ -141,6 +280,20 @@ class GateCostAggregationTest(unittest.TestCase):
         self.assertEqual(rows[2]["work_type_count"], 2)
         self.assertEqual(rows[2]["work_type_percentage"], 40.0)
         self.assertIn("idle", rows[0]["gate_cost"]["by_host"])
+
+    def test_nonmerged_row_does_not_truncate_following_enrichment(self) -> None:
+        rows = json.loads(json.dumps([
+            {"ticket": 50, "state": "open"},
+            {"ticket": 51, "state": "merged"},
+            {"ticket": 52, "state": "merged"},
+        ]))
+
+        stats.enrich_ticket_rows(rows, [])
+        self.assertIsNone(rows[0]["work_type_count"])
+        self.assertIsNone(rows[0]["work_type_percentage"])
+        for row in rows[1:]:
+            self.assertEqual(row["work_type_count"], 2)
+            self.assertEqual(row["work_type_percentage"], 100.0)
 
 
 class StatsCliOutputTest(unittest.TestCase):
@@ -176,6 +329,9 @@ class StatsCliOutputTest(unittest.TestCase):
         self.assertIn("unclassified", text)
         self.assertIn("Gate cost by ticket", text)
         self.assertIn("Gate cost by host", text)
+        ticket_line = next(line for line in text.splitlines() if line.strip().startswith("1 "))
+        self.assertIn("50.0%", ticket_line)
+        self.assertIn("28.6%", ticket_line)
         self.assertIn("idle", text)
         self.assertIn("unknown", text)
 
