@@ -1943,7 +1943,7 @@ def run_worker(
     worker: str | None = None,
     worker_version: str | None = None,
     journal: bool = True,
-) -> tuple[int, str | None]:
+) -> tuple[int | None, str | None]:
     """Run the worker; return its exit code and the timeout that stopped it, if any.
 
     `idle_timeout`: no log output and no worktree change (stuck mid-work).
@@ -1951,6 +1951,7 @@ def run_worker(
     `budget_min`: the worker's allotted work deadline passed.
     `gate_timeout`: an active worker gate exhausted its bounded watchdog extension.
     Evaluation replays set `journal=False`; their aggregate result is the durable evidence.
+    A None exit code means setup exhausted the work window before process launch.
     """
     log(f"worker: {' '.join(cmd)} -> {logfile}")
     started = time.monotonic()
@@ -1967,6 +1968,11 @@ def run_worker(
                 launch[lifecycle.CONTEXT_ENV] = context
         with without_github(launch) as isolated:
             raise_if_interrupted()
+            if time.monotonic() >= deadline:
+                if execution is not None:
+                    execution.emit("timeout", timeout="budget_min")
+                    execution.outcome, execution.reason = "interrupted", TIMEOUT_REASONS["budget_min"]
+                return None, "budget_min"
             proc = subprocess.Popen(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT,
                                     env=isolated, start_new_session=True)
             try:
@@ -2345,7 +2351,8 @@ def run_gate(
 
 
 def retry_gate_fixups(
-    wt: Path, n: int | str, report: str, head: str, **flags,
+    wt: Path, n: int | str, report: str, head: str, *,
+    work_deadline: float = float("inf"), **flags,
 ) -> tuple[bool, str, str]:
     """One configured repair pass; only a new, clean, re-gated commit can pass."""
     if not cfg.fixups or "Gate evidence rejected:" in report:
@@ -2361,19 +2368,33 @@ def retry_gate_fixups(
         (wt / ".factory" / f"gate-report-{n}.md").write_text(text)
         return ok, text, candidate
 
+    def budget_stop(detail: str) -> tuple[bool, str, str]:
+        notes.append(f"Mechanical fixups {detail}: work cutoff reached; gate reservation preserved.")
+        record("gate-fixup-budget", ticket=n, head=head, reason="budget_exceeded",
+               work_deadline=work_deadline, seconds_remaining=max(0, work_deadline - time.monotonic()))
+        return finish(False, "budget exceeded during mechanical fixups\n\n" + report, head)
+
     if run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip() != head or run(status, cwd=wt).stdout.strip():
         notes.append("Mechanical fixups not run: HEAD changed or worktree is not clean.")
         return finish(False, report, head)
     for argv in cfg.fixups:
+        remaining = work_deadline - time.monotonic()
+        if remaining <= 0:
+            return budget_stop("not run" if len(notes) == 1 else "stopped")
+        timeout = min(cfg.check_timeout, remaining)
         try:
-            proc = run(argv, cwd=wt, check=False, timeout=cfg.check_timeout)
+            proc = run(argv, cwd=wt, check=False, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
             notes.append(f"- `{shlex.join(argv)}` ran: {stderr_tail(str(exc))}")
+            if isinstance(exc, subprocess.TimeoutExpired) and time.monotonic() >= work_deadline:
+                return budget_stop("stopped")
             return finish(False, report, head)
         notes.append(f"- `{shlex.join(argv)}` ran: exit {proc.returncode}")
         if proc.returncode:
             notes.append(stderr_tail(proc.stdout + proc.stderr))
             return finish(False, report, head)
+    if time.monotonic() >= work_deadline:
+        return budget_stop("stopped")
     actual = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     if actual != head:
         notes.append("Mechanical fixups rejected: command changed HEAD instead of files.")
@@ -5239,12 +5260,16 @@ def worker_round(
            stop_reserve_seconds=stop_reserve,
            remaining_seconds=max(0, deadline - started) if math.isfinite(deadline) else None,
            work_seconds=max(0, work_deadline - started) if math.isfinite(deadline) else None, admitted=admitted)
-    if not admitted:
+
+    def budget_stop() -> tuple[bool, str, Path, str]:
         head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         record("attempt", ticket=n, attempt=attempt, worker_exit=None, gate=None,
                log=str(logfile), head=head, timeout="budget_min", reason="budget_exceeded")
         report = f"budget exceeded before work: {reserve:g}s reserved for gate ({reserve_source})"
         return False, report, logfile, head
+
+    if not admitted:
+        return budget_stop()
     plan_dir = attempt_plan_dir(wt, attempt)
     shutil.rmtree(plan_dir, ignore_errors=True)
     promptfile = wt / ".factory-prompt.md"
@@ -5286,6 +5311,8 @@ def worker_round(
             if fallback_worker(profile) is None:
                 raise
             continue
+        if code is None:
+            return budget_stop()
         failure = None if code == 0 or fired else _launch_failure(wt, logfile, offset, launch_head, code)
         if failure is None:
             break
@@ -5360,9 +5387,8 @@ def worker_round(
     if before_status or after_status:
         ok = False
         report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
-    if (not ok and cfg.fixups and time.monotonic() + reserve < deadline
-            and (fixups or _protected_gate_guidance(report, labels))):
-        ok, report, head = retry_gate_fixups(wt, n, report, head, **flags)
+    if (not ok and cfg.fixups and (fixups or _protected_gate_guidance(report, labels))):
+        ok, report, head = retry_gate_fixups(wt, n, report, head, work_deadline=work_deadline, **flags)
         actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         after_status = run(status_cmd, cwd=wt).stdout.strip()
     if ok and tip and run(["git", "merge-base", "--is-ancestor", tip, head], cwd=wt, check=False).returncode:

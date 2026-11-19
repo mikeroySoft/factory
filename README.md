@@ -1067,7 +1067,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    A `round-budget` journal row records gate-reserved seconds, source
    (`last_gate` or `floor`), `stop_reserve_seconds`, remaining work window and admission.
    If no work window remains, no worker or gate starts; the round ends as
-   `budget` with the worktree preserved. Otherwise the watchdog uses the
+   `budget` with the worktree preserved. Admission is checked again immediately
+   before each process launch, including fallbacks, after prompt and worker setup.
+   Otherwise the watchdog uses the
    earlier work cutoff, leaving the reservation for the dispatcher's unchanged,
    full gate. A worker cut off at that point is still gated before any push.
    A live worker-owned gate identified by descendant lifecycle evidence is
@@ -1164,10 +1166,17 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    never infers commands. Before escalating the last failed worker gate (including
    manager FIX and review-bounce workers), it runs these commands once, in order,
    in the clean ticket worktree, stopping on the first failure and using the gate
-   check timeout. If all succeed and change files, Factory commits those changes
-   and re-runs the gate with the same flags at the new SHA. No changes, a command
-   failure, or another failed gate leaves the normal escalation in place; the
-   report and escalation comment state that fixups ran. An empty/absent list
+   check timeout. Worker-round repairs share the remaining work window: each
+   command's timeout is capped at that cutoff, preserving gate and finalization
+   reserves. If no repair time remains, or that cutoff interrupts repairs, the
+   round ends as `budget`, not `gate_failed`; a `gate-fixup-budget` journal row
+   and the gate report identify commands not run or stopped. Partial changes
+   remain in the worktree without publication. If all commands succeed within
+   the work window and change files, Factory commits those changes and re-runs
+   the full gate with the same flags at the new SHA, without a round-budget kill.
+   No changes, a command failure before the cutoff, or another failed gate leaves
+   the normal escalation in place; the report and escalation comment state what ran.
+   An empty/absent list
    leaves behavior unchanged. Refresh failures get the same repair pass after
    their existing same-head retry; PR-tier failures get one pass per uncached
    head, then recheck the attempt gate before publishing and reviewing a new
