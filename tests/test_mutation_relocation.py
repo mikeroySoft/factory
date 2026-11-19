@@ -18,7 +18,10 @@ class MutationRelocationTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="mutation-relocation-")
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name) / "repo"
+        self.root.mkdir()
+        self.scratch = Path(temporary.name) / "tmp"
+        self.scratch.mkdir()
         for name in ("factory", "scripts", "tests"):
             (self.root / name).mkdir()
             (self.root / name / "__init__.py").touch()
@@ -68,7 +71,8 @@ class MutationRelocationTest(unittest.TestCase):
              "--blocking", "--equivalents", "reviewed.json", *args],
             cwd=self.root, capture_output=True, text=True, timeout=90, check=False,
             env={key: value for key, value in os.environ.items()
-                 if key not in ("FACTORY_MUTATION_PROOF", "FACTORY_MUTATION_PROOF_BASE")},
+                 if key not in ("FACTORY_MUTATION_PROOF", "FACTORY_MUTATION_PROOF_BASE")}
+            | {"TMPDIR": str(self.scratch)},
         )
         return result.returncode, result.stdout + result.stderr
 
