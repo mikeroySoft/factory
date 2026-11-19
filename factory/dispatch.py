@@ -3893,6 +3893,10 @@ def _head_evidence_matches(
     for event in events:
         if event.get("ticket") != n:
             continue
+        if event.get("event") == "approval-revoked" and event.get("head") == head:
+            gate = None
+            reviews.clear()
+            mutation = pr_gate = mutation_proof = None
         if (
             event.get("event") == "attempt" and event.get("head") == head
             or event.get("event") == "refreshed" and event.get("gate_head") == head
@@ -3949,31 +3953,21 @@ def manager_approval(events: list[dict], n: int, head: str) -> bool:
 
 
 def approval_publication_pass(dry_run: bool) -> None:
-    """Share existing journal approvals without rerunning review or changing labels."""
+    """Publish valid source approvals and retract receipts whose premises were revoked."""
     if dry_run or cfg.host_name is None:
         return
     pending = {}
+    states = {"approved", "approval-published", "approval-revoked", "approval-retracted", "merged"}
     for row in reversed(lifecycle.read_events(EVENTS)):
-        if type(row.get("ticket")) is int and row.get("event") in {
-            "approved", "approval-published", "merged",
-        }:
+        if type(row.get("ticket")) is int and row.get("event") in states:
             pending.setdefault(row["ticket"], row)
-    pending = {n: row for n, row in pending.items() if row["event"] == "approved"}
+    pending = {n: row for n, row in pending.items()
+               if row["event"] in {"approved", "approval-published", "approval-revoked"}}
     if not pending:
         return
-    prs = gh_json([
-        "pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
-        "--json", "number,headRefName,headRefOid",
-    ])
-    for pr in prs:
-        branch = re.fullmatch(r"agent/([1-9][0-9]*)", pr.get("headRefName") or "")
-        if branch is None:
-            continue
-        n, head = int(branch[1]), pr["headRefOid"]
-        approval = pending.get(n)
-        if not approval or approval.get("pr") != pr["number"] or any(
-            approval.get(key) != head for key in ("head", "gate_head", "review_head")
-        ):
+    for n, approval in pending.items():
+        head, pr = approval.get("head"), approval.get("pr")
+        if not isinstance(head, str) or type(pr) is not int:
             continue
         with ticket_lock(n).open("w") as lock:
             try:
@@ -3982,28 +3976,106 @@ def approval_publication_pass(dry_run: bool) -> None:
                 continue
             events = lifecycle.read_events(EVENTS)
             latest = next((row for row in reversed(events) if row.get("ticket") == n
-                           and row.get("event") in {"approved", "approval-published", "merged"}), None)
+                           and row.get("event") in states), None)
             if latest != approval:
                 continue
-            current = gh_json([
-                "pr", "view", str(pr["number"]), "--repo", REPO, "--json",
-                "state,isDraft,headRefOid,headRefName,baseRefName,reviewDecision,files",
-            ])
-            if (
-                current.get("state") != "OPEN" or current.get("isDraft")
-                or current.get("headRefOid") != head
-                or current.get("headRefName") != f"agent/{n}"
-                or current.get("baseRefName") != cfg.main
-                or current.get("reviewDecision") == "CHANGES_REQUESTED"
-                or not _head_evidence_matches(
-                    events, n, head, configuration=cfg,
-                    changed_paths=[row["path"] for row in current.get("files", [])],
+            try:
+                current = gh_json([
+                    "pr", "view", str(pr), "--repo", REPO, "--json",
+                    "state,isDraft,headRefOid,headRefName,baseRefName,reviewDecision,files,labels",
+                ])
+                labelled = any(row["name"] == FACTORY_APPROVED for row in current.get("labels", []))
+                valid = (
+                    current.get("state") == "OPEN" and not current.get("isDraft")
+                    and current.get("headRefOid") == head
+                    and current.get("headRefName") == f"agent/{n}"
+                    and current.get("baseRefName") == cfg.main
+                    and current.get("reviewDecision") != "CHANGES_REQUESTED"
+                    and latest_head_review_verdict(events, n, pr, head) not in {"REVISE", "REQUEST_CHANGES"}
+                    and _head_evidence_matches(
+                        events, n, head, configuration=cfg,
+                        changed_paths=[row["path"] for row in current.get("files", [])],
+                    )
+                    and not (cfg.manager and cfg.manager_review == "all"
+                             and not manager_approval(events, n, head))
                 )
-                or cfg.manager and cfg.manager_review == "all" and not manager_approval(events, n, head)
-            ):
+                if valid:
+                    timeline = gh_json(["api", "--paginate", "--slurp",
+                                        f"repos/{REPO}/issues/{pr}/timeline"])
+                    valid = not _approval_label_removed(events, n, pr, head, timeline)
+                published = approval["event"] != "approved"
+                if published and (
+                    not valid or approval["event"] == "approval-revoked"
+                    or approval.get("labelled", True) and not labelled
+                ):
+                    if approval["event"] != "approval-revoked":
+                        record("approval-revoked", ticket=n, pr=pr, head=head)
+                    _retract_approval(n, pr, head)
+                    record("approval-retracted", ticket=n, pr=pr, head=head)
+                elif not published and valid and all(
+                    approval.get(key) == head for key in ("gate_head", "review_head")
+                ):
+                    _publish_approval(n, pr, head, events)
+                    record("approval-published", ticket=n, pr=pr, head=head, labelled=labelled)
+                elif published and labelled and not approval.get("labelled", True):
+                    record("approval-published", ticket=n, pr=pr, head=head, labelled=True)
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                _approval_transport_failure(n, exc)
+
+
+def _approval_transport_failure(n: int, exc: Exception) -> None:
+    reason = f"approval receipt transport failed ({type(exc).__name__})"
+    log(f"#{n}: {reason}")
+    try:
+        escalate(n, reason, None, code="approval_missing")
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as escalation_error:
+        log(f"#{n}: approval receipt escalation failed ({type(escalation_error).__name__})")
+
+
+def _approval_label_removed(events: list[dict], n: int, pr: int, head: str, pages: list) -> bool:
+    """An approval label removal is a veto, even if the label was subsequently readded."""
+    approval = next((row for row in reversed(events) if row.get("event") == "approved"
+                     and row.get("ticket") == n and row.get("pr") == pr and row.get("head") == head), {})
+    try:
+        at = datetime.fromisoformat(approval["at"])
+        if at.tzinfo is None or not isinstance(pages, list):
+            return True
+        for page in pages:
+            if not isinstance(page, list):
+                return True
+            for row in page:
+                if row.get("event") != "unlabeled" or row.get("label", {}).get("name") != FACTORY_APPROVED:
+                    continue
+                removed_at = datetime.fromisoformat(row["created_at"])
+                if removed_at.tzinfo is None or removed_at >= at:
+                    return True
+    except (KeyError, TypeError, ValueError):
+        return True
+    return False
+
+
+def _retract_approval(n: int, pr: int, head: str) -> None:
+    """Invalidate only this producer's own immutable approval comments."""
+    login = gh_json(["api", "user"])["login"]
+    pages = gh_json(["api", "--paginate", "--slurp", f"repos/{REPO}/issues/{pr}/comments"])
+    for page in pages:
+        for comment in page:
+            if not _same_github_login(comment.get("user", {}).get("login", ""), login):
                 continue
-            _publish_approval(n, pr["number"], head, events)
-            record("approval-published", ticket=n, pr=pr["number"], head=head)
+            body = comment.get("body", "")
+            if not body.startswith("Factory approval v1\n"):
+                continue
+            try:
+                receipt = json.loads(body.partition("\n")[2])
+            except (ValueError, RecursionError):
+                continue
+            if not isinstance(receipt, dict) or any(receipt.get(key) != value for key, value in (
+                ("ticket", n), ("pr", pr), ("head", head), ("host", cfg.host_name),
+            )):
+                continue
+            run(["gh", "api", "--method", "PATCH",
+                 f"repos/{REPO}/issues/comments/{comment['id']}",
+                 "-f", f"body=Factory approval revoked for #{n} at {head}"])
 
 
 def _publish_approval(n: int, pr: int, head: str, events: list[dict]) -> None:
@@ -4064,7 +4136,11 @@ def approve_pr(n: int, head: str) -> bool:
     ):
         return False
     if cfg.host_name is not None:
-        _publish_approval(n, pr["number"], head, events)
+        try:
+            _publish_approval(n, pr["number"], head, events)
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            _approval_transport_failure(n, exc)
+            return False
     changed = run(
         [
             "gh",
@@ -4126,7 +4202,7 @@ def approve_pr(n: int, head: str) -> bool:
         gate_head=head, review_head=head,
     )
     if cfg.host_name is not None:
-        record("approval-published", ticket=n, pr=pr["number"], head=head)
+        record("approval-published", ticket=n, pr=pr["number"], head=head, labelled=True)
     retain_handoff(n, head)
     return True
 

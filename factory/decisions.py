@@ -39,11 +39,6 @@ REQUEST_CAP = 64 * 1024
 MAX_REQUESTS = 16
 COMMENT_CAP = 20_000
 SUMMARY_CAP = 4_000
-_COMMENT_EDIT_QUERY = """query($ids: [ID!]!) {
-  nodes(ids: $ids) {
-    ... on IssueComment { id lastEditedAt }
-  }
-}"""
 
 ACT_LABELS = frozenset({
     LABEL_TRIAGE,
@@ -384,13 +379,11 @@ def _timeout(deadline: float) -> float:
 
 
 def _checked(
-    cfg: Config, argv: list[str], deadline: float, *, cwd: Path | None = None, cap: int = READ_CAP,
-    env: dict[str, str] | None = None,
+    cfg: Config, argv: list[str], deadline: float, *, cwd: Path | None = None, cap: int = READ_CAP, env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = _run(
-            argv, env=env if env is not None else _environment(cfg),
-            cwd=cwd, timeout=_timeout(deadline), cap=cap,
+            argv, env=env if env is not None else _environment(cfg), cwd=cwd, timeout=_timeout(deadline), cap=cap,
         )
     except _AmbiguousCommand as exc:
         raise DecisionError("provider read did not complete", "provider_unavailable") from exc
@@ -400,8 +393,7 @@ def _checked(
 
 
 def _read_json(
-    cfg: Config, argv: list[str], deadline: float, *, cwd: Path | None = None,
-    env: dict[str, str] | None = None,
+    cfg: Config, argv: list[str], deadline: float, *, cwd: Path | None = None, env: dict[str, str] | None = None,
 ) -> object:
     result = _checked(cfg, argv, deadline, cwd=cwd, env=env)
     try:
@@ -653,148 +645,6 @@ def _local_cleanup_target(cfg: Config, number: int, deadline: float) -> dict:
     return target
 
 
-def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadline: float) -> list[dict]:
-    """Read dispatcher-authenticated receipts, never claims supplied by the decision actor."""
-    dispatcher_env = cfg.install.get("dispatch_env", {})
-    if cfg.host_name is None or not any(
-        dispatcher_env.get(key) for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR")
-    ):
-        return events
-    # A dashboard token must not override the dispatcher's gh credential store.
-    env = {key: value for key, value in _environment(cfg).items()
-           if key not in {"GH_TOKEN", "GITHUB_TOKEN"}}
-    provider_env = {**env, **dispatcher_env}
-    user = _read_json(cfg, ["gh", "api", "--hostname", "github.com", "user"], deadline,
-                      env=provider_env)
-    login = user.get("login") if isinstance(user, dict) else None
-    if not isinstance(login, str) or _LOGIN.fullmatch(login) is None:
-        raise DecisionError("dispatcher identity is unavailable", "provider_unavailable")
-    if dispatch._same_github_login(login, _actor(cfg, deadline)):
-        return events
-    result = _checked(cfg, [
-        "gh", "api", "--hostname", "github.com", "--paginate",
-        "--jq", (
-            "map(select(.user.login? | strings | ascii_downcase == "
-            + json.dumps(login.casefold()) + ")"
-            ' | select(.body? | strings | startswith("Factory approval v1\\n"))'
-            " | {node_id, user, body, created_at, updated_at}) | @json"
-        ),
-        f"repos/{cfg.repo}/issues/{target['number']}/comments",
-    ], deadline, env=provider_env)
-    # gh cannot combine --jq and --slurp; @json emits one compact array per page.
-    try:
-        pages = [json.loads(page) for page in result.stdout.splitlines()]
-    except (ValueError, TypeError, RecursionError) as exc:
-        raise DecisionError("provider returned invalid approval comments", "provider_unavailable") from exc
-    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
-        raise DecisionError("provider returned invalid approval comments", "provider_unavailable")
-    ticket, head = target["ticket"], target["head"]
-    local = [row for row in events if (
-        row.get("ticket") == ticket
-        or row.get("event") == "review-result" and row.get("pr") == target["number"]
-    ) and (row.get("head") == head or row.get("gate_head") == head)
-        and row.get("event") in {
-            "attempt", "refreshed", "gate-fixup", "review", "review-result",
-            "risk", "risk-check", "manage",
-        }]
-    candidates = []
-    for page in pages:
-        for comment in page:
-            if not isinstance(comment, dict):
-                continue
-            author = comment.get("user")
-            if not isinstance(author, dict) or not isinstance(author.get("login"), str):
-                continue
-            if not dispatch._same_github_login(author["login"], login):
-                continue
-            # REST timestamps expose obvious edits, but same-second edits require
-            # IssueComment.lastEditedAt from GraphQL below.
-            created = comment.get("created_at")
-            created_at = _parse_time(created)
-            if created_at is None or comment.get("updated_at") != created:
-                continue
-            node_id = comment.get("node_id")
-            if not isinstance(node_id, str) or not node_id:
-                continue
-            body = comment.get("body")
-            if not isinstance(body, str) or not body.startswith("Factory approval v1\n"):
-                continue
-            try:
-                receipt = json.loads(body.partition("\n")[2])
-                if (
-                    not isinstance(receipt, dict)
-                    or receipt.get("ticket") != ticket or receipt.get("pr") != target["number"]
-                    or any(receipt.get(key) != head for key in ("head", "gate_head", "review_head"))
-                    or not isinstance(receipt.get("host"), str) or not receipt["host"]
-                    or not isinstance(receipt.get("evidence"), list)
-                ):
-                    continue
-                at = _parse_time(receipt.get("at"))
-                evidence = receipt["evidence"]
-                if at is None or at > created_at or not evidence or not all(
-                    isinstance(row, dict) and row.get("ticket") == ticket for row in evidence
-                ):
-                    continue
-                times = [_parse_time(row.get("at")) for row in evidence]
-                if any(stamp is None or stamp > at for stamp in times):
-                    continue
-                # Every shared premise must predate publication and supersede local evidence.
-                evidence_at = min(times)
-                if not dispatch._head_evidence_matches(evidence, ticket, head, configuration=cfg):
-                    continue
-                # Unknown or newer local evidence cannot be overwritten by a remote receipt.
-                if any((local_at := _parse_time(row.get("at"))) is None or local_at >= evidence_at for row in local):
-                    continue
-                candidates.append((evidence_at, evidence, node_id))
-            except (KeyError, TypeError, ValueError, RecursionError):
-                continue
-    if not candidates:
-        return events
-
-    node_ids = list(dict.fromkeys(candidate[2] for candidate in candidates))
-    edit_metadata: dict[str, object] = {}
-    duplicate_metadata = set()
-    for start in range(0, len(node_ids), 100):
-        batch = node_ids[start:start + 100]
-        response = _read_json(cfg, [
-            "gh", "api", "--hostname", "github.com", "--method", "POST", "graphql",
-            "-f", f"query={_COMMENT_EDIT_QUERY}",
-            *(value for node_id in batch for value in ("-f", f"ids[]={node_id}")),
-        ], deadline, env=provider_env)
-        try:
-            if not isinstance(response, dict) or "errors" in response:
-                raise ValueError
-            nodes = response["data"]["nodes"]
-            if not isinstance(nodes, list):
-                raise TypeError
-        except (KeyError, TypeError, ValueError) as exc:
-            raise DecisionError("provider returned invalid comment edit metadata",
-                                "provider_unavailable") from exc
-        for node in nodes:
-            if (
-                not isinstance(node, dict)
-                or not isinstance(node.get("id"), str)
-                or "lastEditedAt" not in node
-                or node["id"] not in batch
-            ):
-                continue
-            if node["id"] in edit_metadata:
-                duplicate_metadata.add(node["id"])
-            edit_metadata[node["id"]] = node["lastEditedAt"]
-
-    latest = None
-    for evidence_at, evidence, node_id in candidates:
-        if (
-            node_id not in edit_metadata
-            or node_id in duplicate_metadata
-            or edit_metadata[node_id] is not None
-        ):
-            continue
-        if latest is None or evidence_at > latest[0]:
-            latest = evidence_at, evidence
-    return [*events, *latest[1]] if latest else events
-
-
 def _approval_policy(cfg: Config, target: dict, deadline: float) -> None:
     ticket, head = target.get("ticket"), target.get("head")
     if (
@@ -807,16 +657,10 @@ def _approval_policy(cfg: Config, target: dict, deadline: float) -> None:
         or target.get("review_decision") == "CHANGES_REQUESTED"
     ):
         raise DecisionError("PR is outside Factory's exact-head approval scope", "approval_scope")
-    events = lifecycle.read_events(cfg.factory / "events.jsonl")
-    needs_manager = cfg.manager and cfg.manager_review == "all"
-    if (
-        not dispatch._head_evidence_matches(events, ticket, head, configuration=cfg)
-        or needs_manager and not dispatch.manager_approval(events, ticket, head)
-    ):
-        events = _shared_approval_events(cfg, target, events, deadline)
+    events = _approval_events(cfg, target, deadline)
     if not dispatch._head_evidence_matches(events, ticket, head, configuration=cfg):
         raise DecisionError("exact-head gate and independent review evidence is missing", "approval_evidence")
-    if needs_manager and not dispatch.manager_approval(events, ticket, head):
+    if cfg.manager and cfg.manager_review == "all" and not dispatch.manager_approval(events, ticket, head):
         raise DecisionError("exact-head manager approval evidence is missing", "approval_evidence")
 
 
@@ -1565,3 +1409,179 @@ def receipt(cfg: Config, proposal_id: str, observe: bool = False) -> dict:
         return result
     finally:
         os.close(directory)
+
+
+_COMMENT_EDIT_QUERY = """query($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on IssueComment { id lastEditedAt }
+  }
+}"""
+
+
+def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadline: float) -> list[dict]:
+    """Read dispatcher-authenticated receipts, never claims supplied by the decision actor."""
+    dispatcher_env = cfg.install.get("dispatch_env", {})
+    if cfg.host_name is None or not any(
+        dispatcher_env.get(key) for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR")
+    ):
+        return events
+    # A dashboard token must not override the dispatcher's gh credential store.
+    env = {key: value for key, value in _environment(cfg).items()
+           if key not in {"GH_TOKEN", "GITHUB_TOKEN"}}
+    provider_env = {**env, **dispatcher_env}
+    user = _read_json(cfg, ["gh", "api", "--hostname", "github.com", "user"], deadline,
+                      env=provider_env)
+    login = user.get("login") if isinstance(user, dict) else None
+    if not isinstance(login, str) or _LOGIN.fullmatch(login) is None:
+        raise DecisionError("dispatcher identity is unavailable", "provider_unavailable")
+    if dispatch._same_github_login(login, _actor(cfg, deadline)):
+        return events
+    result = _checked(cfg, [
+        "gh", "api", "--hostname", "github.com", "--paginate",
+        "--jq", (
+            "map(select(.user.login? | strings | ascii_downcase == "
+            + json.dumps(login.casefold()) + ")"
+            ' | select(.body? | strings | startswith("Factory approval v1\\n"))'
+            " | {node_id, user, body, created_at, updated_at}) | @json"
+        ),
+        f"repos/{cfg.repo}/issues/{target['number']}/comments",
+    ], deadline, env=provider_env)
+    # gh cannot combine --jq and --slurp; @json emits one compact array per page.
+    try:
+        pages = [json.loads(page) for page in result.stdout.splitlines()]
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise DecisionError("provider returned invalid approval comments", "provider_unavailable") from exc
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        raise DecisionError("provider returned invalid approval comments", "provider_unavailable")
+    ticket, head = target["ticket"], target["head"]
+    local = [row for row in events if (
+        row.get("ticket") == ticket
+        or row.get("event") == "review-result" and row.get("pr") == target["number"]
+    ) and (row.get("head") == head or row.get("gate_head") == head)
+        and row.get("event") in {
+            "attempt", "refreshed", "gate-fixup", "review", "review-result",
+            "risk", "risk-check", "manage", "approval-revoked",
+        }]
+    candidates = []
+    for page in pages:
+        for comment in page:
+            if not isinstance(comment, dict):
+                continue
+            author = comment.get("user")
+            if not isinstance(author, dict) or not isinstance(author.get("login"), str):
+                continue
+            if not dispatch._same_github_login(author["login"], login):
+                continue
+            # REST timestamps expose obvious edits, but same-second edits require
+            # IssueComment.lastEditedAt from GraphQL below.
+            created = comment.get("created_at")
+            created_at = _parse_time(created)
+            if created_at is None or created_at > _now() or comment.get("updated_at") != created:
+                continue
+            node_id = comment.get("node_id")
+            if not isinstance(node_id, str) or not node_id:
+                continue
+            body = comment.get("body")
+            if not isinstance(body, str) or not body.startswith("Factory approval v1\n"):
+                continue
+            try:
+                receipt = json.loads(body.partition("\n")[2])
+                if (
+                    not isinstance(receipt, dict)
+                    or receipt.get("ticket") != ticket or receipt.get("pr") != target["number"]
+                    or any(receipt.get(key) != head for key in ("head", "gate_head", "review_head"))
+                    or not isinstance(receipt.get("host"), str) or not receipt["host"]
+                    or receipt["host"] == cfg.host_name
+                    or not isinstance(receipt.get("evidence"), list)
+                ):
+                    continue
+                at = _parse_time(receipt.get("at"))
+                evidence = receipt["evidence"]
+                if at is None or at > created_at or not evidence or not all(
+                    isinstance(row, dict) and row.get("ticket") == ticket for row in evidence
+                ):
+                    continue
+                times = [_parse_time(row.get("at")) for row in evidence]
+                if any(stamp is None or stamp > at for stamp in times):
+                    continue
+                # Every shared premise must predate publication and supersede local evidence.
+                evidence_at = min(times)
+                if not dispatch._head_evidence_matches(evidence, ticket, head, configuration=cfg):
+                    continue
+                # Unknown or newer local evidence cannot be overwritten by a remote receipt.
+                if any((local_at := _parse_time(row.get("at"))) is None or local_at >= evidence_at for row in local):
+                    continue
+                candidates.append((evidence_at, evidence, node_id))
+            except (KeyError, TypeError, ValueError, RecursionError):
+                continue
+    if not candidates:
+        return events
+
+    node_ids = list(dict.fromkeys(candidate[2] for candidate in candidates))
+    edit_metadata: dict[str, object] = {}
+    duplicate_metadata = set()
+    for start in range(0, len(node_ids), 100):
+        batch = node_ids[start:start + 100]
+        response = _read_json(cfg, [
+            "gh", "api", "--hostname", "github.com", "--method", "POST", "graphql",
+            "-f", f"query={_COMMENT_EDIT_QUERY}",
+            *(value for node_id in batch for value in ("-f", f"ids[]={node_id}")),
+        ], deadline, env=provider_env)
+        try:
+            if not isinstance(response, dict) or "errors" in response:
+                raise ValueError
+            nodes = response["data"]["nodes"]
+            if not isinstance(nodes, list):
+                raise TypeError
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DecisionError("provider returned invalid comment edit metadata",
+                                "provider_unavailable") from exc
+        for node in nodes:
+            if (
+                not isinstance(node, dict)
+                or not isinstance(node.get("id"), str)
+                or "lastEditedAt" not in node
+                or node["id"] not in batch
+            ):
+                continue
+            if node["id"] in edit_metadata:
+                duplicate_metadata.add(node["id"])
+            edit_metadata[node["id"]] = node["lastEditedAt"]
+
+    latest = None
+    for evidence_at, evidence, node_id in candidates:
+        if (
+            node_id not in edit_metadata
+            or node_id in duplicate_metadata
+            or edit_metadata[node_id] is not None
+        ):
+            continue
+        if latest is None or evidence_at > latest[0]:
+            latest = evidence_at, evidence
+    return [*events, *latest[1]] if latest else events
+
+
+def _approval_events(cfg: Config, target: dict, deadline: float) -> list[dict]:
+    events = lifecycle.read_events(cfg.factory / "events.jsonl")
+    ticket, head = target["ticket"], target["head"]
+    source = next((row for row in reversed(events) if row.get("ticket") == ticket
+                   and row.get("event") in {"approved", "approval-published", "approval-revoked", "approval-retracted"}
+                   and row.get("source") != "human-decision"), None)
+    if cfg.host_name and source and source.get("head") == head and (
+        source["event"] in {"approval-revoked", "approval-retracted"}
+        or source.get("labelled", True) and LABEL_APPROVED not in target.get("labels", [])
+        or dispatch.latest_head_review_verdict(events, ticket, target["number"], head)
+        in {"REVISE", "REQUEST_CHANGES"}
+    ):
+        raise DecisionError("source approval has been revoked", "approval_evidence")
+    if cfg.host_name and source and source.get("head") == head:
+        timeline = _read_json(cfg, ["gh", "api", "--paginate", "--slurp",
+                                   f"repos/{cfg.repo}/issues/{target['number']}/timeline"], deadline)
+        if dispatch._approval_label_removed(events, ticket, target["number"], head, timeline):
+            raise DecisionError("source approval label was removed", "approval_evidence")
+    if (
+        not dispatch._head_evidence_matches(events, ticket, head, configuration=cfg)
+        or cfg.manager and cfg.manager_review == "all" and not dispatch.manager_approval(events, ticket, head)
+    ):
+        events = _shared_approval_events(cfg, target, events, deadline)
+    return events

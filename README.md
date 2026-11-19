@@ -1904,8 +1904,15 @@ branches, or merge state.
   matching heads, rechecking current gate/review, High-tier/manager requirements,
   branch and human veto under the ticket lock. This shares existing evidence
   without rerunning review or adding the label, and records publication to avoid
-  duplicate comments on later passes. CI, branch freshness and human-veto
-  safeguards are unchanged.
+  duplicate comments on later passes. Published receipts are retracted on a later
+  source pass when the head moves, review is revoked, or the approval label is
+  removed. The provider timeline catches removals even if the label was readded
+  between passes. Retraction edits only that source host's authenticated comments and
+  journals revocation before the provider mutation; failed retractions are retried.
+  Prepare/apply on the source host cannot resurrect its own revoked approval from
+  a receipt. Publication/retraction transport failures log and escalate the affected
+  ticket without aborting unrelated dispatcher work. CI, branch freshness and
+  human-veto safeguards are unchanged.
   Triage executes the controller's trusted Python package, not a shadow package
   in the selected checkout. Cleanup coordinates with both landing and ticket
   claims, binds local revisions, refuses dirty worktrees, and deletes the branch
