@@ -18,6 +18,10 @@ class RequeueHostPinTest(unittest.TestCase):
         if argv[:2] == ["gh", "api"] and "user" in argv:
             return subprocess.CompletedProcess(argv, 0, "alice\n", "")
         if argv[:2] == ["gh", "api"] and any(arg.endswith("/events") for arg in argv):
+            if "--slurp" not in argv:
+                page = next(int(arg[5:]) for arg in argv if arg.startswith("page="))
+                rows = self.label_events[(page - 1) * 100:page * 100]
+                return subprocess.CompletedProcess(argv, 0, json.dumps(rows), "")
             return subprocess.CompletedProcess(argv, 0, json.dumps([self.label_events]), "")
         if argv[:3] == ["gh", "issue", "view"]:
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.github.issue), "")

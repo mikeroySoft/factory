@@ -822,8 +822,10 @@ before.
 
 `requeue_agent` restores the host labels present at the latest `ready-for-human`
 transition, unless the ticket already has a host pin. It reads GitHub's shared label
-events, so either host can requeue and later manager failures do not hide the pin.
+events one projected, bounded page at a time, so either host can requeue, large event
+payloads do not block preparation, and later manager failures do not hide the pin.
 Unpinned tickets stay unpinned; unavailable history refuses preparation.
+
 `requeue_agent` takes an optional `intent`. With `resume` (the default, and what a
 plain relabel means), the branch, worktree and refresh context are kept. With `fresh`,
 `agent/<n>` is recut from main at the generation's first claim, and the superseded local

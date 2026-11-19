@@ -923,43 +923,53 @@ def _lock_file(directory: int, name: str) -> int:
     return fd
 
 
-def _prepare_action_request(
-    cfg: Config, request: dict, target: dict, *, action: dict | None, guard, deadline: float,
-) -> None:
+def _prepare_action_request(cfg, request, target, action, guard, deadline):
     if guard is not None:
         guard(target)
-    if not action or action.get("name") != "requeue_agent" or any(
+    if not action or action.get("name") not in {"requeue_agent"} or any(
         label.startswith("host:") for label in target["labels"]
     ):
         return
     # Shared provider history, not the MCP host's potentially older local journal.
-    pages = _read_json(cfg, [
-        "gh", "api", "--hostname", "github.com", "--paginate", "--slurp",
-        f"repos/{cfg.repo}/issues/{request['number']}/events",
-    ], deadline)
-    if not isinstance(pages, list) or any(
-        not isinstance(page, list) or any(not isinstance(row, dict) for row in page)
-        for page in pages
-    ):
-        raise DecisionError("provider returned invalid issue events", "provider_unavailable")
+    # Project before capture and cap each page, not the ticket's complete history.
+    events = []
+    page = 1
+    while True:
+        rows = _read_json(cfg, [
+            "gh", "api", "--hostname", "github.com", "--method", "GET",
+            f"repos/{cfg.repo}/issues/{request['number']}/events",
+            "-f", "per_page=100", "-f", f"page={page}",
+            "--jq", 'if type == "array" and all(.[]; type == "object") '
+            'then map({event, label: {name: .label.name}}) '
+            'else error("invalid issue events") end',
+        ], deadline)
+        if not isinstance(rows, list):
+            raise DecisionError("provider returned invalid issue events", "provider_unavailable")
+        if not rows:
+            break
+        events.extend(rows)
+        page += 1
     pins = set()
-    for page in reversed(pages):
-        for row in reversed(page):
-            kind = row.get("event")
-            if kind not in {"labeled", "unlabeled"}:
-                continue
-            label = row.get("label")
-            if not isinstance(label, dict) or not isinstance(label.get("name"), str):
-                raise DecisionError("provider returned invalid label event", "provider_unavailable")
-            name = label["name"]
-            if kind == "labeled" and name == LABEL_HUMAN:
-                request["add"].extend(sorted(pins))
-                return
-            if name.startswith("host:"):
-                if kind == "unlabeled":
-                    pins.add(name)
-                else:
-                    pins.discard(name)
+    for row in reversed(events):
+        if not isinstance(row, dict):
+            raise DecisionError("provider returned invalid issue event", "provider_unavailable")
+        kind = row.get("event")
+        if kind not in {"labeled", "unlabeled"}:
+            continue
+        label = row.get("label")
+        if not isinstance(label, dict) or not isinstance(label.get("name"), str):
+            raise DecisionError("provider returned invalid label event", "provider_unavailable")
+        name = label["name"]
+        if (kind, name) == ("labeled", LABEL_HUMAN):
+            # Named requeue alone may restore provider-observed host labels after
+            # generic request normalization; the exact additions stay in the preview.
+            request["add"].extend(sorted(pins))
+            return
+        if name.startswith("host:"):
+            if kind == "unlabeled":
+                pins.add(name)
+            else:
+                pins.discard(name)
 
 
 @contextmanager

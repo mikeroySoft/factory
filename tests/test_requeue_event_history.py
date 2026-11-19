@@ -106,3 +106,19 @@ class RequeueEventHistoryTest(unittest.TestCase):
                 refused = self.via_mcp("requeue_agent", {"number": 7})
                 self.assertEqual(refused.get("error", {}).get("code"), "provider_unavailable", refused)
                 self.assertEqual(self.mutations, [])
+
+    def test_current_pin_does_not_depend_on_history_availability(self):
+        self.issue["labels"].append({"name": "host:tank"})
+        self.fail_page = 1
+        preview = self.via_mcp("requeue_agent", {"number": 7})
+        self.assertIn("proposal_id", preview, preview)
+        self.assertIn("host:tank", preview["targets"][0]["labels"])
+
+    def test_other_named_actions_do_not_restore_historical_pins(self):
+        self.events = [
+            {"event": "labeled", "label": {"name": "ready-for-human"}},
+            {"event": "unlabeled", "label": {"name": "host:ultron"}},
+        ]
+        preview = self.via_mcp("resolve_and_close", {"number": 7, "reason": "completed"})
+        self.assertIn("proposal_id", preview, preview)
+        self.assertNotIn("host:ultron", preview["requests"][0].get("add", []))
