@@ -107,7 +107,7 @@ class RoundGateBudgetTest(unittest.TestCase):
             proc = mock.Mock()
             proc.pid = os.getpid()
             state = (None, "head", "", None)
-            with lifecycle.scope(self.events, "worker", ticket=7, attempt=4) as worker:
+            with lifecycle.scope(self.events, "worker", ticket=7, attempt=4):
                 worker_gate = lifecycle.Execution(self.events, "gate")
                 worker_gate.emit("enter")
 
@@ -128,19 +128,20 @@ class RoundGateBudgetTest(unittest.TestCase):
 
     def test_insufficient_bounce_does_not_push_an_unvalidated_head(self):
         clock = [0]
-        original_gate = dispatch.run_gate
+        original_run = dispatch.run
         calls = [0]
 
-        def gate(*args, **kwargs):
-            result = original_gate(*args, **kwargs)
-            calls[0] += 1
-            if calls[0] == 1:
-                clock[0] = 50
+        def run(cmd, **kwargs):
+            result = original_run(cmd, **kwargs)
+            if cmd[3:6] == ["-m", "factory", "gate"]:
+                calls[0] += 1
+                if calls[0] == 1:
+                    clock[0] = 50
             return result
 
         with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
                 mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
-                mock.patch.object(dispatch, "run_gate", side_effect=gate), \
+                mock.patch.object(dispatch, "run", side_effect=run), \
                 mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])):
             dispatch.configure(config.load(self.repo))
             issue = dispatch.gh_json(["issue", "view", "7"])
@@ -151,6 +152,55 @@ class RoundGateBudgetTest(unittest.TestCase):
         escalation, = [r for r in rows if r.get("event") == "escalate"]
         self.assertEqual(escalation["code"], "budget")
         self.assertEqual(json.loads(self.state.read_text())["reviews"], 1)
+        remote = self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0]
+        self.assertEqual(remote, attempts[0]["head"])
+
+    def test_active_gate_extension_has_a_hard_cap(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            dispatch.cfg.check_timeout = 10
+            clock = [0]
+            ticks = iter([61, 101])
+            proc = mock.Mock()
+            state = (None, "head", "", None)
+
+            def wait(**kwargs):
+                clock[0] = next(ticks)
+                raise subprocess.TimeoutExpired("worker", 5)
+
+            proc.wait.side_effect = wait
+            with lifecycle.scope(self.events, "worker", ticket=7):
+                active = lifecycle.Execution(self.events, "gate")
+                active.emit("enter")
+                with mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                        mock.patch.object(dispatch, "_activity", return_value=state):
+                    fired = dispatch._watch(proc, wt, self.base / "log", self.base / "handoff", 60, state)
+                active.emit("exit")
+            self.assertEqual(fired, "gate_timeout")
+
+    def test_unrelated_gate_does_not_extend_work(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            foreign = lifecycle.Execution(self.events, "gate", ticket=8)
+            foreign.emit("enter")
+            proc = mock.Mock()
+            proc.wait.side_effect = subprocess.TimeoutExpired("worker", 5)
+            state = (None, "head", "", None)
+            with lifecycle.scope(self.events, "worker", ticket=7), \
+                    mock.patch.object(dispatch.time, "monotonic", return_value=61), \
+                    mock.patch.object(dispatch, "_activity", return_value=state):
+                fired = dispatch._watch(proc, wt, self.base / "log", self.base / "handoff", 60, state)
+            foreign.emit("exit")
+            self.assertEqual(fired, "budget_min")
+
+    def test_floor_rejects_invalid_config_values(self):
+        path = self.repo / ".factory.toml"
+        original = path.read_text()
+        for value in ("0", "-1", "nan", "inf", "true", '"30"'):
+            with self.subTest(value=value), mock.patch.dict(os.environ, self.env):
+                path.write_text(original.replace("[dispatch]\n", f"[dispatch]\ngate_reserve_seconds = {value}\n"))
+                with self.assertRaisesRegex(config.ConfigError, "finite positive"):
+                    config.load(self.repo)
 
 
 if __name__ == "__main__":

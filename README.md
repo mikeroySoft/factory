@@ -1059,6 +1059,22 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
    reviewer's findings. Up to `max_attempts` attempts within `budget_min`.
+   Each round reserves its last measured dispatcher attempt-gate duration for
+   that worktree, or `[dispatch].gate_reserve_seconds` (default 30 seconds,
+   finite and positive) when there is no history. PR-tier and other-worktree
+   timings are excluded. A `round-budget` journal row records the reserved
+   seconds, source (`last_gate` or `floor`), remaining work window and admission.
+   If no work window remains, no worker or gate starts; the round ends as
+   `budget` with the worktree preserved. Otherwise the worker prompt and
+   watchdog use the earlier work cutoff, leaving the reservation for the
+   dispatcher's unchanged, full gate. A worker cut off at that point is still
+   gated before any push.
+   A live worker-owned gate identified by descendant lifecycle evidence is
+   exempt from the work cutoff and quiet watchdogs. Per-check `[gate].timeout`
+   limits remain unchanged; the watchdog also bounds the extension to
+   `gate.timeout * (number of configured checks + 3)` seconds from the work
+   cutoff (or an earlier quiet timeout), including exclusive-lock waits
+   (`gate_timeout` / `gate_hard_cap`).
    A fresh handoff with an empty `Still unverified` or `Unverified` section
    (blank or `None.`) and a clean, committed worktree is the finish signal:
    after expiry, the dispatcher still gates that head and proceeds through
