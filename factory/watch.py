@@ -759,16 +759,17 @@ def run_pass(
             OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError, SystemExit,
         ) as exc:
             dispatch.log(f"watch: escape attribution unavailable ({type(exc).__name__})")
-            unavailable = {
-                f"band:{fingerprint(f'revert_rate_by_tier:{tier}', _rule_name(rule))}"
-                for band in cfg.watch_bands if band.metric == "revert_rate_by_tier"
-                for rule in band.rules for tier in risk.TIERS
-            }
             evaluation_cfg = replace(cfg, watch_bands=[
                 band for band in cfg.watch_bands if band.metric != "revert_rate_by_tier"
             ])
     rows = [r for r in events if r.get("event") == "watch"]
     filings = {r["fingerprint"]: r for r in rows}
+    if filings and evaluation_cfg is not cfg:
+        unavailable = {
+            f"band:{fingerprint(f'revert_rate_by_tier:{tier}', _rule_name(rule))}"
+            for band in cfg.watch_bands if band.metric == "revert_rate_by_tier"
+            for rule in band.rules for tier in risk.TIERS
+        }
     # Issues this install opened; only the opener closes one (rows without `repo` predate routing).
     opened = {(r["fingerprint"], r["issue"], r.get("repo", dispatch.REPO))
               for r in rows if not r.get("commented") and not r.get("closed")}
