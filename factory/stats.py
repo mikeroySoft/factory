@@ -1282,8 +1282,6 @@ def main(argv: list[str]) -> int:
             cfg.llm_model if config.local_endpoint(cfg.llm_url) else None,
         )
         rows["work_types"] = work_type_metrics(journal_rows)
-        rows["merges"] = rows["work_types"]["total"]
-        rows["human_touches_per_merge"] = rows["human_touches"] / rows["merges"] if rows["merges"] else None
         rows["gate_cost"] = gate_cost_metrics(all_rows, start, now)
         rows.setdefault("skills", skill_metrics(journal_rows))
         rows.setdefault("skill_coverage", skill_coverage(journal_rows))

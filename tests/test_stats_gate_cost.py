@@ -164,6 +164,8 @@ class StatsCliOutputTest(unittest.TestCase):
     def test_week_json_and_text_add_aggregates_without_changing_weekly_metrics(self) -> None:
         result = json.loads(self.run_main(["--week", "--json"]))
 
+        self.assertEqual(result["merges"], 3)
+        self.assertEqual(result["work_types"]["total"], 4)
         self.assertEqual(result["work_types"]["counts"]["unclassified"], 1)
         self.assertEqual(result["work_types"]["counts"]["unknown"], 1)
         self.assertEqual(result["gate_cost"]["by_ticket"]["1"]["total_count"], 2)
