@@ -766,7 +766,7 @@ def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadl
                 raise ValueError
             nodes = response["data"]["nodes"]
             if not isinstance(nodes, list):
-                raise ValueError
+                raise TypeError
         except (KeyError, TypeError, ValueError) as exc:
             raise DecisionError("provider returned invalid comment edit metadata",
                                 "provider_unavailable") from exc
