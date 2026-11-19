@@ -1298,25 +1298,6 @@ def attempt_plan_dir(wt: Path, _attempt: int) -> Path:
     return wt / ".factory" / "plans" / "current"
 
 
-def merge_work_type(labels: list[dict], ticket: int | None = None) -> dict:
-    """Exact PR work labels take precedence; otherwise read the ticket's labels."""
-    classes = {"speed", "bug", "polish"}
-    matched = sorted({label["name"] for label in labels} & classes)
-    source = "pr"
-    if not matched and ticket is not None:
-        source = f"ticket:{ticket}"
-        try:
-            issue = gh_json(["issue", "view", str(ticket), "--repo", REPO, "--json", "labels"])
-            matched = sorted({label["name"] for label in issue.get("labels", [])} & classes)
-        except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
-            source += ":unavailable"
-    return {
-        "work_type": matched[0] if len(matched) == 1 else "unclassified",
-        "work_type_source": source,
-        "work_type_labels": matched,
-    }
-
-
 def record(event: str, **fields: object) -> None:
     """Append one row to .factory/events.jsonl: the factory's audit trail.
 
@@ -2279,11 +2260,8 @@ def run_gate(
         "--base",
         base or f"origin/{cfg.main}",
         "--report",
-        report_rel,
+        report_rel, *(["--ticket", str(n).removesuffix("-pr")] if re.fullmatch(r"\d+(?:-pr)?", str(n)) else []),
     ]
-    ticket = re.fullmatch(r"(\d+)(?:-pr)?", str(n))
-    if ticket:
-        cmd += ["--ticket", ticket[1]]
     if skip:
         cmd += ["--skip", skip]
     # The gate process records its own stage and check boundaries.
@@ -6139,3 +6117,22 @@ def main(argv: list[str]) -> int:
         if not args.dry_run:
             lifecycle.record_stage_success(EVENTS, "dispatch")
         return 0
+
+
+def merge_work_type(labels: list[dict], ticket: int | None = None) -> dict:
+    """Exact PR work labels take precedence; otherwise read the ticket's labels."""
+    classes = {"speed", "bug", "polish"}
+    matched = sorted({label["name"] for label in labels} & classes)
+    source = "pr"
+    if not matched and ticket is not None:
+        source = f"ticket:{ticket}"
+        try:
+            issue = gh_json(["issue", "view", str(ticket), "--repo", REPO, "--json", "labels"])
+            matched = sorted({label["name"] for label in issue.get("labels", [])} & classes)
+        except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+            source += ":unavailable"
+    return {
+        "work_type": matched[0] if len(matched) == 1 else "unclassified",
+        "work_type_source": source,
+        "work_type_labels": matched,
+    }

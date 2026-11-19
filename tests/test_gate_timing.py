@@ -46,17 +46,17 @@ class GateTimingTest(unittest.TestCase):
 
     def timing_rows(self, path: Path | None = None) -> list[dict]:
         return [row for row in lifecycle.read_events(path or self.events)
-                if row.get("event") in {"gate-start", "gate-run"}]
+                if row.get("gate_event") in {"gate-start", "gate-run"}]
 
     def assert_pair(self, start: dict, end: dict) -> None:
-        self.assertEqual((start["event"], end["event"]), ("gate-start", "gate-run"))
+        self.assertEqual((start["gate_event"], end["gate_event"]), ("gate-start", "gate-run"))
         self.assertEqual(start["run_id"], end["run_id"])
         for key in ("started_at", "ticket", "head", "host", "tier", "rerun"):
             self.assertEqual(start[key], end[key])
         self.assertIsNone(start["ended_at"])
         self.assertIsNone(start["duration_seconds"])
-        self.assertEqual(start["at"], start["started_at"])
-        self.assertEqual(end["at"], end["ended_at"])
+        self.assertEqual((start["event"], start["kind"]), ("lifecycle", "result"))
+        self.assertEqual((end["event"], end["kind"]), ("lifecycle", "result"))
         self.assertTrue(math.isfinite(end["duration_seconds"]))
         self.assertGreaterEqual(end["duration_seconds"], 0)
         started = datetime.fromisoformat(start["started_at"])
@@ -66,8 +66,7 @@ class GateTimingTest(unittest.TestCase):
 
     def test_public_main_tracks_repeat_attempt_and_first_pr_across_heads(self) -> None:
         with mock.patch.object(gate, "execute", return_value=0), \
-                mock.patch.object(gate.socket, "gethostname",
-                                  side_effect=["socket-a", "socket-b", "socket-c"]):
+                mock.patch("socket.gethostname", side_effect=["socket-a", "socket-b", "socket-c"]):
             self.assertEqual(gate.main([]), 0)
             lifecycle.append(self.events, {
                 "event": "attempt", "ticket": 41, "head": self.git("rev-parse", "HEAD"),
@@ -145,7 +144,7 @@ class GateTimingTest(unittest.TestCase):
             for ticket in (41, 41, 42, 42):
                 self.assertEqual(gate.main(["--ticket", str(ticket)]), 0)
 
-        starts = [row for row in self.timing_rows() if row["event"] == "gate-start"]
+        starts = [row for row in self.timing_rows() if row["gate_event"] == "gate-start"]
         by_ticket = {
             ticket: [row["rerun"] for row in starts if row["ticket"] == ticket]
             for ticket in (41, 42)

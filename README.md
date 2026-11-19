@@ -407,10 +407,11 @@ no match produce `unclassified`. Sources are `pr`, `ticket:<number>`, or
 and `chore`/`enhancement` labels do not imply a class. Historical merge receipts
 without a class remain `unknown`, distinct from an explicit `unclassified`.
 
-Every `factory gate` invocation writes a `gate-start` receipt and a final
-`gate-run` receipt to the inherited dispatcher's journal (or the local journal
-for a standalone invocation). Both carry `run_id`, `started_at`, `ended_at`,
-`duration_seconds`, `ticket`, `head`, `host`, `tier`, and `rerun`.
+Every `factory gate` invocation writes lifecycle `kind: "result"` receipts with
+`gate_event: "gate-start"` and a final `gate_event: "gate-run"` to the inherited
+dispatcher's journal (or the local journal for a standalone invocation). Both
+carry `run_id`, `started_at`, `ended_at`, `duration_seconds`, `ticket`, `head`,
+`host`, `tier`, and `rerun`, alongside the normal lifecycle execution identity.
 Starts have null end/duration; final receipts carry UTC wall-clock timestamps
 and monotonic elapsed seconds, including failed runs and gate waits.
 `--ticket N` supplies attribution explicitly; otherwise the inherited lifecycle

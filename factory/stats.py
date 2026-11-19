@@ -219,7 +219,8 @@ def _gate_runs(rows: list[dict]) -> list[dict]:
     """Normalize current gate events and retained legacy evidence without double counting."""
     custom: dict[str, dict] = {}
     for row in rows:
-        if not isinstance(row, dict) or row.get("event") not in {"gate-start", "gate-run"}:
+        if (not isinstance(row, dict) or row.get("event") != "lifecycle"
+                or row.get("gate_event") not in {"gate-start", "gate-run"}):
             continue
         run_id = row.get("run_id")
         if not isinstance(run_id, str) or not run_id:
@@ -227,7 +228,7 @@ def _gate_runs(rows: list[dict]) -> list[dict]:
         previous = custom.get(run_id)
         if previous is None:
             custom[run_id] = row
-        elif row["event"] == "gate-run" or previous.get("event") == "gate-start":
+        elif row["gate_event"] == "gate-run" or previous.get("gate_event") == "gate-start":
             custom[run_id] = {**previous, **row}
 
     def run(row: dict, *, run_id: str, tier: str | None = None,

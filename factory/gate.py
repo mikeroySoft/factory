@@ -15,13 +15,10 @@ import math
 import os
 import re
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
-import time
 import tomllib
-from datetime import UTC, datetime
 from pathlib import Path
 
 from factory import config, lifecycle, mutation_scope, runner
@@ -1077,15 +1074,15 @@ def _gate_rerun(rows: list[dict], ticket: int | None, tier: str, run_id: str) ->
         return None
     previous = [row for row in rows
                 if row.get("ticket") == ticket and row.get("execution_id") != run_id]
-    if any(row.get("event") in ("gate-start", "gate-run") and row.get("tier") == tier
+    if any(row.get("gate_event") in ("gate-start", "gate-run") and row.get("tier") == tier
            for row in previous):
         return True
     attempt_heads = {row.get("head") for row in previous
-                     if row.get("event") in ("gate-start", "gate-run")
+                     if row.get("gate_event") in ("gate-start", "gate-run")
                      and row.get("tier") == "attempt" and row.get("head")}
     unknown = any(
         (
-            row.get("event") in ("gate-start", "gate-run") and row.get("tier") is None
+            row.get("gate_event") in ("gate-start", "gate-run") and row.get("tier") is None
             or row.get("event") in ("attempt", "gate", "gate-rerun")
             and row.get("gate") in ("PASS", "FAIL")
             and row.get("head") not in attempt_heads
@@ -1098,21 +1095,23 @@ def _gate_rerun(rows: list[dict], ticket: int | None, tier: str, run_id: str) ->
 
 
 def _utc_now() -> str:
+    from datetime import UTC, datetime
+
     return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _gate_event(event: str, execution, args: argparse.Namespace, started_at: str,
-                ended_at: str | None, duration: float | None, ticket: int | None,
+                ended_at: str | None, duration: float | None,
                 head: str | None, host: str, rerun: bool | None) -> None:
-    at = ended_at or started_at
-    lifecycle.append(execution.path, {
-        "at": at, "event": event, "run_id": execution.execution_id,
-        "started_at": started_at, "ended_at": ended_at, "duration_seconds": duration,
-        "ticket": ticket, "head": head, "host": host, "tier": args.tier, "rerun": rerun,
-    })
+    execution.emit("result", gate_event=event, run_id=execution.execution_id,
+                   started_at=started_at, ended_at=ended_at, duration_seconds=duration,
+                   head=head, host=host, tier=args.tier, rerun=rerun)
 
 
 def main(argv: list[str]) -> int:
+    import socket
+    import time
+
     parser = argparse.ArgumentParser(description="Quality gate for agent worktrees.")
     parser.add_argument("--base", default=None, help="base ref for leak scan and protected paths")
     parser.add_argument(
@@ -1204,7 +1203,7 @@ def main(argv: list[str]) -> int:
                 started_at = _utc_now()
                 _gate_event(
                     "gate-start", execution, args, started_at, None, None,
-                    ticket, head, host, rerun,
+                    head, host, rerun,
                 )
                 try:
                     return execute(args, execution)
@@ -1213,7 +1212,7 @@ def main(argv: list[str]) -> int:
                     _gate_event(
                         "gate-run", execution, args, started_at, ended_at,
                         max(0.0, time.monotonic() - started_clock),
-                        ticket, head, host, rerun,
+                        head, host, rerun,
                     )
         finally:
             if previous_tmpdir is None:
