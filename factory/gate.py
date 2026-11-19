@@ -121,12 +121,19 @@ def timed(
         if execution and proc.poll() is not None:
             execution.child_done(proc.pid)
 
+def focused_head(cwd: Path | None = None) -> str:
+    try:
+        return mutation_scope.resolve("HEAD", cwd)
+    except mutation_scope.ScopeError:
+        return "unknown"
+
+
 def test_command(
     cmd: list[str], *, command: str | None = None, cwd: Path | None = None,
     pythonpath: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Capture execution, not handoff claims; keep receipts for the dispatcher's next gate."""
-    head = timed(["git", "rev-parse", "HEAD"], cwd=cwd).stdout.strip()
+    head = focused_head(cwd)
     proc = timed(cmd, cwd=cwd, pythonpath=pythonpath)
     output = proc.stdout + proc.stderr
     summary = re.findall(
@@ -141,7 +148,7 @@ def test_command(
         receipt = {
             "command": command if command is not None else shlex.join(cmd),
             "head": head,
-            "end_head": timed(["git", "rev-parse", "HEAD"], cwd=cwd).stdout.strip(),
+            "end_head": focused_head(cwd),
             "result": "PASS" if proc.returncode == 0 else "FAIL",
             "counts": "; ".join(summary) if has_counts else "counts unavailable",
             "exit": proc.returncode,
@@ -1233,7 +1240,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     if LEAK_RE is None:
         skip.add("leak-scan")
     audit = []  # the reviewed protected transition this run actually verified and exempted
-    head = timed(["git", "rev-parse", "HEAD"]).stdout.strip()
+    head = focused_head()
 
     def evidence_header() -> str:
         return f"Head SHA: {head}\n" + "\n".join(focused_test_lines(head)) + "\n"
