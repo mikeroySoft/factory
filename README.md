@@ -1065,10 +1065,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    timings are excluded. A `round-budget` journal row records the reserved
    seconds, source (`last_gate` or `floor`), remaining work window and admission.
    If no work window remains, no worker or gate starts; the round ends as
-   `budget` with the worktree preserved. Otherwise the worker prompt and
-   watchdog use the earlier work cutoff, leaving the reservation for the
-   dispatcher's unchanged, full gate. A worker cut off at that point is still
-   gated before any push.
+   `budget` with the worktree preserved. Otherwise the watchdog uses the
+   earlier work cutoff, leaving the reservation for the dispatcher's unchanged,
+   full gate. A worker cut off at that point is still gated before any push.
    A live worker-owned gate identified by descendant lifecycle evidence is
    exempt from the work cutoff and quiet watchdogs. Per-check `[gate].timeout`
    limits remain unchanged; the watchdog also bounds the extension to

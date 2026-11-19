@@ -464,7 +464,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         )
         if not ok:
             budget = report.startswith("budget exceeded")
-            reason = report if budget else "gate failed after manager FIX"
+            reason = f"{report}; budget_min / budget_exceeded" if budget else "gate failed after manager FIX"
             code = "budget" if budget else "gate_failed"
             if already_human:
                 dispatch.log(f"#{n}: manager FIX failed ({code}: {reason}); ticket is already ready-for-human")

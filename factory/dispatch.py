@@ -5239,15 +5239,8 @@ def worker_round(
         head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         record("attempt", ticket=n, attempt=attempt, worker_exit=None, gate=None,
                log=str(logfile), head=head, timeout="budget_min", reason="budget_exceeded")
-        report = (f"budget exceeded before work (budget_min / budget_exceeded): "
-                  f"{reserve:g}s reserved for gate ({reserve_source})")
+        report = f"budget exceeded before work: {reserve:g}s reserved for gate ({reserve_source})"
         return False, report, logfile, head
-    extra += (
-        f"\n\n## Round budget\n\nFinish fix work and your gate within "
-        f"{work_deadline - started:g} seconds of this round's start; commit and exit promptly. "
-        f"The dispatcher reserves {reserve:g} seconds for its full gate ({reserve_source}). "
-        "Never push or skip gate checks to meet the deadline.\n"
-    )
     plan_dir = attempt_plan_dir(wt, attempt)
     shutil.rmtree(plan_dir, ignore_errors=True)
     promptfile = wt / ".factory-prompt.md"
@@ -5349,7 +5342,7 @@ def worker_round(
             log=str(logfile), transcript=transcript, head=head, handoff=handoff,
             **identity, **timeout,
         )
-        return False, "budget exceeded before gate (budget_min / budget_exceeded)", logfile, head
+        return False, "budget exceeded before gate", logfile, head
     flags = gate_flags(
         sync, labels, body, handoff_path.read_text() if handoff_path.exists() else "",
         comments=comments,
@@ -5701,7 +5694,7 @@ def process_ticket(
                 if ok:
                     break
                 if report.startswith("budget exceeded"):
-                    escalate(n, report, logfile, code="budget")
+                    escalate(n, f"{report}; budget_min / budget_exceeded", logfile, code="budget")
                     return
                 if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
@@ -5826,7 +5819,7 @@ def process_ticket(
                     comments=fresh.get("comments"),
                 )
                 if report.startswith("budget exceeded"):
-                    escalate(n, report, logfile, code="budget")
+                    escalate(n, f"{report}; budget_min / budget_exceeded", logfile, code="budget")
                     return
                 if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
