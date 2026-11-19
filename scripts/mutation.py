@@ -387,6 +387,65 @@ def load_equivalents(path: str | None) -> dict[tuple, dict]:
     return reviewed
 
 
+def resolve_equivalents(path: str | None, reviewed: dict[tuple, dict]) -> dict[tuple, dict]:
+    """The registry's last committed revision pins its reviewed source windows.
+
+    Untracked, ad-hoc registries have no reviewed window: keep them line-pinned,
+    never guess a relocation from the candidate's own context.
+    """
+    if not reviewed:
+        return reviewed
+    revision = subprocess.run(
+        ["git", "log", "-1", "--format=%H", "--", path],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    if not revision:
+        return reviewed
+    if subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip() != "false":
+        raise ValueError("equivalent context requires complete Git history")
+    sources = {}
+    resolved = {}
+    for key, entry in reviewed.items():
+        file, line, operator, original, mutated = key
+        if file not in sources:
+            reference = subprocess.run(
+                ["git", "show", f"{revision}:{file}"],
+                capture_output=True, text=True, check=True,
+            ).stdout.splitlines()
+            try:
+                current = Path(file).read_text().splitlines()
+            except (OSError, UnicodeError):
+                current = []
+            sources[file] = reference, current
+        reference, current = sources[file]
+        expected = original.split("\n")
+        start, end = line - 1, line - 1 + len(expected)
+        left, right = max(0, start - 3), min(len(reference), end + 3)
+        window = reference[left:right]
+        matches = [
+            offset + start - left + 1
+            for offset in range(len(current) - len(window) + 1)
+            if reference[start:end] == expected
+            and current[offset:offset + len(window)] == window
+            # Missing neighbours at BOF/EOF are boundaries, not wildcard context.
+            and (start >= 3 or offset == 0)
+            and (end + 3 <= len(reference) or offset + len(window) == len(current))
+        ]
+        if len(matches) != 1:
+            print(f"stale equivalent: {file}:{line}: {operator} "
+                  f"{original!r} -> {mutated!r} ({len(matches)} source/context matches)")
+            raise ValueError("expected exactly one reviewed source/context window")
+        relocated = matches[0]
+        if relocated != line:
+            print(f"relocated equivalent: {file}:{line} -> {relocated}: {operator} "
+                  f"{original!r} -> {mutated!r} (context revision {revision})")
+        resolved[(file, relocated, operator, original, mutated)] = {**entry, "line": relocated}
+    return resolved
+
+
 def mutation_key(mutation, result) -> tuple:
     lines = (result.diff or "").splitlines()
     # Ignore unified-diff headers, preserving all changed source lines verbatim.
@@ -438,6 +497,8 @@ def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: boo
     parser = argparse.ArgumentParser()
     parser.add_argument("--blocking", action="store_true")
     parser.add_argument("--equivalents", metavar="FILE", help="reviewed equivalent-mutants JSON file")
+    parser.add_argument("--check-equivalents", action="store_true",
+                        help="validate reviewed source/context without selecting or running mutants")
     parser.add_argument("--test-module", default=None)
     parser.add_argument("--duration", type=total_duration, default=None, metavar="SECONDS",
                         help="explicit total: the deadline is SECONDS - RESERVE after the anchor, "
@@ -451,14 +512,18 @@ def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: boo
         outcome.update(status="error", reason="missing-base")
         return 1
     try:
-        reviewed = load_equivalents(args.equivalents)
-    except (OSError, ValueError, TypeError) as exc:
+        reviewed = resolve_equivalents(args.equivalents, load_equivalents(args.equivalents))
+    except (OSError, ValueError, TypeError, subprocess.CalledProcessError) as exc:
         print(f"invalid equivalents: {exc}")
         outcome.update(status="error", reason="invalid-equivalents")
         return 1
     if stale_equivalents(reviewed, set()):
         outcome.update(status="error", reason="stale-equivalents")
         return 1
+    if args.check_equivalents:
+        print(f"equivalents: {len(reviewed)} validated")
+        outcome.update(status="complete", reason="equivalents-validated")
+        return 0
     computed: list = []
     lines = scope_lines(base, computed) if proof else changed_lines()
     # The exact scope the lines below came from (absent only when scope_lines is replaced).

@@ -66,7 +66,7 @@ class MutationRelocationTest(unittest.TestCase):
              "uv", "run", "--project", str(ROOT), "--frozen", "--no-managed-python",
              "--python", sys.executable, "--group", "mutation", "python", "scripts/mutation.py",
              "--blocking", "--equivalents", "reviewed.json", *args],
-            cwd=self.root, capture_output=True, text=True, timeout=90,
+            cwd=self.root, capture_output=True, text=True, timeout=90, check=False,
             env={key: value for key, value in os.environ.items()
                  if key not in ("FACTORY_MUTATION_PROOF", "FACTORY_MUTATION_PROOF_BASE")},
         )
@@ -114,20 +114,73 @@ class MutationRelocationTest(unittest.TestCase):
         self.assertIn("2 killed; 0 survived", report)
         self.assertEqual(report.count("stale equivalent: factory/example.py:7:"), 2, report)
 
-    def test_attempt_gate_rejects_orphan_before_pr_mutation(self):
-        self.change(SOURCE.replace("# before 2", "# changed context"))
+    def attempt_gate(self):
         result = subprocess.run(
             [sys.executable, "-c",
-             f"import sys; sys.path.insert(0, {str(ROOT)!r}); "
-             "from factory import gate; raise SystemExit(gate.main(sys.argv[1:]))",
+             (f"import sys; sys.path.insert(0, {str(ROOT)!r}); "
+              "from factory import gate; raise SystemExit(gate.main(sys.argv[1:]))"),
              "--report", ".factory/report.md"],
-            cwd=self.root, capture_output=True, text=True, timeout=30,
+            cwd=self.root, capture_output=True, text=True, timeout=30, check=False,
         )
         report = (self.root / ".factory/report.md").read_text()
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        return result.returncode, report
+
+    def test_attempt_gate_rejects_orphan_before_pr_mutation(self):
+        self.change(SOURCE.replace("# before 2", "# changed context"))
+        status, report = self.attempt_gate()
+        self.assertEqual(status, 1, report)
         self.assertIn("mutation-equivalents: FAIL", report)
         self.assertIn("stale equivalent:", report)
         self.assertIn("mutation: SKIP (pr tier)", report)
+
+    def test_attempt_gate_journals_relocations_without_running_mutants(self):
+        self.change("# inserted\n\n" + SOURCE)
+        status, report = self.attempt_gate()
+        self.assertEqual(status, 0, report)
+        self.assertIn("mutation-equivalents: PASS", report)
+        self.assertIn("mutation: SKIP (pr tier)", report)
+        events = [json.loads(line) for line in
+                  (self.root / ".factory/events.jsonl").read_text().splitlines()]
+        relocations = [event["detail"] for event in events
+                       if event.get("kind") == "equivalent-relocation"]
+        self.assertEqual(len(relocations), 2, events)
+        self.assertTrue(all("factory/example.py:5 -> 7:" in line for line in relocations))
+        self.assertTrue(all("context revision" in line for line in relocations))
+
+    def test_absent_identity_at_moved_line_is_stale(self):
+        self.entries[0]["operator"] = "core/ObsoleteReplacer"
+        (self.root / "reviewed.json").write_text(json.dumps(self.entries))
+        self.git("add", "reviewed.json")
+        self.git("commit", "-m", "review obsolete operator fixture")
+        self.change("# inserted\n\n" + SOURCE)
+        status, report = self.cli()
+        self.assertEqual(status, 1, report)
+        self.assertIn("stale equivalent: factory/example.py:7: core/ObsoleteReplacer", report)
+
+    def test_shallow_history_cannot_supply_reviewed_context(self):
+        clone = self.root / "shallow"
+        self.git("clone", "--quiet", "--depth=1", self.root.as_uri(), str(clone))
+        self.root = clone
+        status, report = self.cli("--check-equivalents")
+        self.assertEqual(status, 1, report)
+        self.assertIn("requires complete Git history", report)
+
+    def test_attempt_gate_ignores_unrelated_pr_commands(self):
+        commands = (
+            [sys.executable, "-c", "raise SystemExit(7)", "--equivalents", "unrelated.json"],
+            [sys.executable, "scripts/mutation.py", "--test-module", "missing_test_module"],
+        )
+        configuration = self.root / ".factory.toml"
+        original = configuration.read_text()
+        for command in commands:
+            with self.subTest(command=command):
+                configuration.write_text(
+                    original + '\n[[gate.check]]\nname = "unrelated"\nwhen = "pr"\n'
+                    f"run = {json.dumps(command)}\n"
+                )
+                status, report = self.attempt_gate()
+                self.assertEqual(status, 0, report)
+                self.assertIn("unrelated: SKIP (pr tier)", report)
 
 
 if __name__ == "__main__":
