@@ -613,6 +613,19 @@ def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
         if len(owners) != 1:
             return False  # Ambiguous ownership cannot justify removing a lease.
         owner = next(iter(owners.values()))
+        # Closed lifecycle rows expire; durable claim receipts do not. A later
+        # different owner makes this surviving acquisition insufficient proof.
+        acquired = datetime.fromisoformat(owner["at"]).replace(microsecond=0)
+        for row in rows:
+            if (row.get("event") != "claimed" or row.get("ticket") != n
+                    or row.get("execution_id") == owner.get("execution_id")):
+                continue
+            try:
+                if datetime.fromisoformat(row["at"]) < acquired:
+                    continue
+            except (KeyError, TypeError, ValueError):
+                pass
+            return False
     if owner is None or not owner.get("execution_id"):
         return False
     events = [row for row in rows if lifecycle._lifecycle(row)]

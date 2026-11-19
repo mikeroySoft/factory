@@ -1686,7 +1686,10 @@ New claims journal their nonce before publication; older claims match resolved
 ticket-lock paths and the latest acquisition before creation, independently of
 journal archive placement. GitHub creation timestamps have second precision;
 acquisitions within that second are also possible owners, and ambiguous ownership
-retains the hold.
+retains the hold. Closed lifecycle rows can expire while older interrupted runs
+survive; a later durable `claimed` receipt from another execution rules out
+legacy ownership inference and retains the hold even after that owner's lifecycle
+rows are pruned.
 Missing/unknown evidence, live owners, foreign claims and completed PR owners retain
 the usual holds. Admission rechecks
 under its own ticket lock, preserves the shared assignment until a replacement
