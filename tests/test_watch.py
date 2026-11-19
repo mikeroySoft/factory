@@ -856,5 +856,40 @@ class ControlBandWatchTest(unittest.TestCase):
             self.assertEqual(self.gh.issues[101]["state"], "CLOSED")
             log.assert_any_call("watch: escape attribution unavailable (RuntimeError)")
 
+    def test_saturated_escape_listing_keeps_escape_alarm_open(self) -> None:
+        rule = config.BandRule(
+            kind="sigma", tier="act", sigma=3.0, count=1, span=1, min_tickets=2,
+        )
+        self.cfg.watch_bands.append(config.Band(
+            metric="revert_rate_by_tier", window_days=28, rules=(rule,),
+        ))
+        fp = f"band:{watch.fingerprint('revert_rate_by_tier:High', watch._rule_name(rule))}"
+        at = (self.NOW - timedelta(days=3)).isoformat()
+        self.gh.issues[99] = {
+            "body": f"Fingerprint: {fp}\n",
+            "state": "OPEN", "labels": [{"name": "needs-triage"}],
+            "assignees": [], "comments": [],
+        }
+        self.journal([
+            *self.rows(),
+            {"event": "watch", "fingerprint": fp, "issue": 99,
+             "repo": self.ENGINE, "latest": at, "at": at},
+        ])
+        with (
+            mock.patch.object(watch.stats, "escapes", side_effect=RuntimeError(
+                "gh issue list returned 1000 results; results may be truncated",
+            )),
+            mock.patch.object(watch, "_age", return_value=timedelta(days=3)),
+            mock.patch.object(dispatch, "log") as log,
+        ):
+            watch.run_pass(self.cfg, now=self.NOW)
+        self.assertEqual(self.gh.issues[99]["state"], "OPEN")
+        self.assertEqual(len(self.gh.created), 1)
+        self.assertFalse(any(
+            row.get("closed") and row.get("issue") == 99
+            for row in lifecycle.read_events(dispatch.EVENTS)
+        ))
+        log.assert_any_call(f"watch: retaining {fp}: escape attribution unavailable")
+
 if __name__ == "__main__":
     unittest.main()
