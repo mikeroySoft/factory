@@ -3076,9 +3076,9 @@ def _mutation_status(report: str) -> str:
     return match.group(1) if match else "MISSING"
 
 
-def _mutation_proof_opted() -> bool:
+def _mutation_proof_opted(configuration: Config | None = None) -> bool:
     """The repository's own `.factory.toml` declared a `proof = "mutation-v1"` pr check."""
-    checks = getattr(globals().get("cfg"), "checks", None) or []
+    checks = getattr(configuration or globals().get("cfg"), "checks", None) or []
     return any(c.when == "pr" and c.proof == config.MUTATION_PROOF for c in checks)
 
 
@@ -3540,7 +3540,7 @@ def push_and_pr(
 
 def pr_comment(n: int, text: str) -> None:
     body_file = FACTORY / f"review-{n}.md"
-    body_file.write_text(text + "\n")
+    body_file.write_text("Factory reviewer:\n\n" + text + "\n")
     posted = run(
         [
             "gh",
@@ -3874,6 +3874,7 @@ FACTORY_APPROVED = LABEL_APPROVED
 
 def _head_evidence_matches(
     events: list[dict], n: int, head: str, *, changed_paths: list[str] | None = None,
+    configuration: Config | None = None,
 ) -> bool:
     """True when every tier-specific premise passed for this exact head."""
     tier, rules = risk_for_head(n, head, events)
@@ -3892,6 +3893,10 @@ def _head_evidence_matches(
     for event in events:
         if event.get("ticket") != n:
             continue
+        if event.get("event") == "approval-revoked" and event.get("head") == head:
+            gate = None
+            reviews.clear()
+            mutation = pr_gate = mutation_proof = None
         if (
             event.get("event") == "attempt" and event.get("head") == head
             or event.get("event") == "refreshed" and event.get("gate_head") == head
@@ -3932,7 +3937,7 @@ def _head_evidence_matches(
         and pr_gate == "PASS"
         # Opted-in repositories accept only a risk-check decided by the completion record
         # and bound to a gate-validated scope (rows without one, e.g. legacy, never qualify).
-        and (mutation_proof == config.MUTATION_PROOF or not _mutation_proof_opted())
+        and (mutation_proof == config.MUTATION_PROOF or not _mutation_proof_opted(configuration))
         and all(isinstance(model, str) and model for model in models)
         and len(set(models)) == 3
     )
@@ -3945,6 +3950,160 @@ def manager_approval(events: list[dict], n: int, head: str) -> bool:
         and e.get("decision") == "APPROVE"
         for e in events
     )
+
+
+def approval_publication_pass(dry_run: bool) -> None:
+    """Publish valid source approvals and retract receipts whose premises were revoked."""
+    if dry_run or cfg.host_name is None:
+        return
+    pending = {}
+    states = {"approved", "approval-published", "approval-revoked", "approval-retracted", "merged"}
+    for row in reversed(lifecycle.read_events(EVENTS)):
+        if type(row.get("ticket")) is int and row.get("event") in states:
+            pending.setdefault(row["ticket"], row)
+    pending = {n: row for n, row in pending.items()
+               if row["event"] in {"approved", "approval-published", "approval-revoked"}}
+    if not pending:
+        return
+    for n, approval in pending.items():
+        head, pr = approval.get("head"), approval.get("pr")
+        if not isinstance(head, str) or type(pr) is not int:
+            continue
+        with ticket_lock(n).open("w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            events = lifecycle.read_events(EVENTS)
+            latest = next((row for row in reversed(events) if row.get("ticket") == n
+                           and row.get("event") in states), None)
+            if latest != approval:
+                continue
+            try:
+                current = gh_json([
+                    "pr", "view", str(pr), "--repo", REPO, "--json",
+                    "state,isDraft,headRefOid,headRefName,baseRefName,reviewDecision,files,labels",
+                ])
+                labelled = any(row["name"] == FACTORY_APPROVED for row in current.get("labels", []))
+                valid = (
+                    current.get("state") == "OPEN" and not current.get("isDraft")
+                    and current.get("headRefOid") == head
+                    and current.get("headRefName") == f"agent/{n}"
+                    and current.get("baseRefName") == cfg.main
+                    and current.get("reviewDecision") != "CHANGES_REQUESTED"
+                    and latest_head_review_verdict(events, n, pr, head) not in {"REVISE", "REQUEST_CHANGES"}
+                    and _head_evidence_matches(
+                        events, n, head, configuration=cfg,
+                        changed_paths=[row["path"] for row in current.get("files", [])],
+                    )
+                    and not (cfg.manager and cfg.manager_review == "all"
+                             and not manager_approval(events, n, head))
+                )
+                if valid:
+                    timeline = gh_json(["api", "--paginate", "--slurp",
+                                        f"repos/{REPO}/issues/{pr}/timeline"])
+                    valid = not _approval_label_removed(events, n, pr, head, timeline)
+                published = approval["event"] != "approved"
+                if published and (
+                    not valid or approval["event"] == "approval-revoked"
+                    or approval.get("labelled", True) and not labelled
+                ):
+                    if approval["event"] != "approval-revoked":
+                        record("approval-revoked", ticket=n, pr=pr, head=head)
+                    _retract_approval(n, pr, head)
+                    record("approval-retracted", ticket=n, pr=pr, head=head)
+                elif not published and valid and all(
+                    approval.get(key) == head for key in ("gate_head", "review_head")
+                ):
+                    _publish_approval(n, pr, head, events)
+                    record("approval-published", ticket=n, pr=pr, head=head, labelled=labelled)
+                elif published and labelled and not approval.get("labelled", True):
+                    record("approval-published", ticket=n, pr=pr, head=head, labelled=True)
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                _approval_transport_failure(n, exc)
+
+
+def _approval_transport_failure(n: int, exc: Exception) -> None:
+    reason = f"approval receipt transport failed ({type(exc).__name__})"
+    log(f"#{n}: {reason}")
+    try:
+        escalate(n, reason, None, code="approval_missing")
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as escalation_error:
+        log(f"#{n}: approval receipt escalation failed ({type(escalation_error).__name__})")
+
+
+def _approval_label_removed(events: list[dict], n: int, pr: int, head: str, pages: list) -> bool:
+    """An approval label removal is a veto, even if the label was subsequently readded."""
+    approval = next((row for row in reversed(events) if row.get("event") == "approved"
+                     and row.get("ticket") == n and row.get("pr") == pr and row.get("head") == head), {})
+    try:
+        at = datetime.fromisoformat(approval["at"]).replace(microsecond=0)
+        if at.tzinfo is None or not isinstance(pages, list):
+            return True
+        for page in pages:
+            if not isinstance(page, list):
+                return True
+            for row in page:
+                if row.get("event") != "unlabeled" or row.get("label", {}).get("name") != FACTORY_APPROVED:
+                    continue
+                removed_at = datetime.fromisoformat(row["created_at"])
+                if removed_at.tzinfo is None or removed_at >= at:
+                    return True
+    except (KeyError, TypeError, ValueError):
+        return True
+    return False
+
+
+def _retract_approval(n: int, pr: int, head: str) -> None:
+    """Invalidate only this producer's own immutable approval comments."""
+    login = gh_json(["api", "user"])["login"]
+    pages = gh_json(["api", "--paginate", "--slurp", f"repos/{REPO}/issues/{pr}/comments"])
+    for page in pages:
+        for comment in page:
+            if not _same_github_login(comment.get("user", {}).get("login", ""), login):
+                continue
+            body = comment.get("body", "")
+            if not body.startswith("Factory approval v1\n"):
+                continue
+            try:
+                receipt = json.loads(body.partition("\n")[2])
+            except (ValueError, RecursionError):
+                continue
+            if not isinstance(receipt, dict) or any(receipt.get(key) != value for key, value in (
+                ("ticket", n), ("pr", pr), ("head", head), ("host", cfg.host_name),
+            )):
+                continue
+            run(["gh", "api", "--method", "PATCH",
+                 f"repos/{REPO}/issues/comments/{comment['id']}",
+                 "-f", f"body=Factory approval revoked for #{n} at {head}"])
+
+
+def _publish_approval(n: int, pr: int, head: str, events: list[dict]) -> None:
+    """Share journal premises using the authenticated Factory approval v1 protocol."""
+    fields = {
+        "event", "ticket", "at", "head", "gate_head", "actual_head", "gate",
+        "worker_model", "role", "accepted", "verdict", "model", "tier", "matched_rules",
+        "mutation", "pr_gate", "mutation_scope", "mutation_proof", "decision",
+    }
+    rows = {}
+    for row in events:
+        if (row.get("ticket") == n
+            and (row.get("head") == head or row.get("gate_head") == head)
+            and row.get("event") in {
+                "attempt", "refreshed", "gate-fixup", "review", "risk", "risk-check", "manage",
+            }):
+            rows[row["event"], row.get("role")] = {key: value for key, value in row.items() if key in fields}
+    worker_model = _worker_model_for_head(n, head)
+    for row in rows.values():
+        if row["event"] in {"attempt", "refreshed", "gate-fixup"} and not row.get("worker_model"):
+            row["worker_model"] = worker_model
+    receipt = {
+        "ticket": n, "pr": pr, "host": cfg.host_name,
+        "head": head, "gate_head": head, "review_head": head,
+        "at": datetime.now(UTC).isoformat(timespec="seconds"), "evidence": list(rows.values()),
+    }
+    run(["gh", "pr", "comment", str(pr), "--repo", REPO, "--body",
+         "Factory approval v1\n" + json.dumps(receipt, separators=(",", ":"))])
 
 
 def approve_pr(n: int, head: str) -> bool:
@@ -3976,6 +4135,12 @@ def approve_pr(n: int, head: str) -> bool:
         or pr.get("reviewDecision") == "CHANGES_REQUESTED"
     ):
         return False
+    if cfg.host_name is not None:
+        try:
+            _publish_approval(n, pr["number"], head, events)
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            _approval_transport_failure(n, exc)
+            return False
     changed = run(
         [
             "gh",
@@ -4036,6 +4201,8 @@ def approve_pr(n: int, head: str) -> bool:
         "approved", ticket=n, pr=pr["number"], head=head,
         gate_head=head, review_head=head,
     )
+    if cfg.host_name is not None:
+        record("approval-published", ticket=n, pr=pr["number"], head=head, labelled=True)
     retain_handoff(n, head)
     return True
 
@@ -6100,6 +6267,7 @@ def main(argv: list[str]) -> int:
         # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
         # which GitHub cannot union-merge), and a new one opens only after landing.
         release_step(open_pr=False)
+        approval_publication_pass(args.dry_run)
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)
         if yield_for_update:
