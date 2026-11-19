@@ -1839,6 +1839,7 @@ def comment_receipt(n: int, kind: str, stdout: str, **fields: object) -> bool:
 
 
 WATCH_POLL = 5.0  # seconds between worker activity checks
+WORKER_STOP_GRACE = 10.0  # SIGTERM grace before killing the worker's process group
 # Which timeout stopped a worker -> the journal reason it records.
 TIMEOUT_REASONS = {"idle_timeout": "stuck", "exit_grace": "hung_after_done", "budget_min": "budget_exceeded",
                    "gate_timeout": "gate_hard_cap"}
@@ -1925,7 +1926,7 @@ def _stop(proc: subprocess.Popen) -> None:
     with suppress(ProcessLookupError):
         os.killpg(proc.pid, signal.SIGTERM)
     with suppress(subprocess.TimeoutExpired):
-        proc.wait(timeout=10)
+        proc.wait(timeout=WORKER_STOP_GRACE)
     with suppress(ProcessLookupError):
         os.killpg(proc.pid, signal.SIGKILL)
     proc.wait()
@@ -5228,11 +5229,14 @@ def worker_round(
         lifecycle.current().attempt = attempt
     started = time.monotonic()
     reserve, reserve_source = round_gate_reserve(wt, n)
-    work_deadline = deadline - reserve
+    # Cover a late watchdog poll, the full stop grace, then one poll's worth of finalization.
+    stop_reserve = 2 * WATCH_POLL + WORKER_STOP_GRACE
+    work_deadline = deadline - reserve - stop_reserve
     logfile = LOGS / f"{n}-attempt-{attempt}.log"
     admitted = started < work_deadline
     record("round-budget", ticket=n, attempt=attempt, worktree=str(wt),
            gate_reserve_seconds=reserve, gate_reserve_source=reserve_source,
+           stop_reserve_seconds=stop_reserve,
            remaining_seconds=max(0, deadline - started) if math.isfinite(deadline) else None,
            work_seconds=max(0, work_deadline - started) if math.isfinite(deadline) else None, admitted=admitted)
     if not admitted:

@@ -1062,8 +1062,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Each round reserves its last measured dispatcher attempt-gate duration for
    that worktree, or `[dispatch].gate_reserve_seconds` (default 30 seconds,
    finite and positive) when there is no history. PR-tier and other-worktree
-   timings are excluded. A `round-budget` journal row records the reserved
-   seconds, source (`last_gate` or `floor`), remaining work window and admission.
+   timings are excluded. Each round also reserves 20 seconds for watchdog
+   polling (5 s), worker SIGTERM grace (10 s), and finalization (5 s).
+   A `round-budget` journal row records gate-reserved seconds, source
+   (`last_gate` or `floor`), `stop_reserve_seconds`, remaining work window and admission.
    If no work window remains, no worker or gate starts; the round ends as
    `budget` with the worktree preserved. Otherwise the watchdog uses the
    earlier work cutoff, leaving the reservation for the dispatcher's unchanged,

@@ -56,8 +56,8 @@ class RoundGateBudgetTest(unittest.TestCase):
             self.measure(wt, 20)
 
             def work(*args, **kwargs):
-                self.assertEqual(args[4], 40)
-                clock[0] = 40
+                self.assertEqual(args[4], 20)
+                clock[0] = 20
                 (wt / "change.txt").write_text("fixed\n")
                 return 143, "budget_min"
 
@@ -149,6 +149,7 @@ class RoundGateBudgetTest(unittest.TestCase):
             gate.assert_not_called()
         row, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "round-budget"]
         self.assertFalse(row["admitted"])
+        self.assertEqual(row["stop_reserve_seconds"], 20)
 
     def test_configured_floor_is_used_without_worktree_history(self):
         path = self.repo / ".factory.toml"
@@ -162,8 +163,8 @@ class RoundGateBudgetTest(unittest.TestCase):
             with mock.patch.object(dispatch.time, "monotonic", return_value=0), \
                     mock.patch.object(dispatch, "run_worker", return_value=(0, None)) as worker, \
                     mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
-                dispatch.worker_round(7, wt, set(), "fix", "resume", 1, 60)
-            self.assertEqual(worker.call_args.args[4], 15)
+                dispatch.worker_round(7, wt, set(), "fix", "resume", 1, 90)
+            self.assertEqual(worker.call_args.args[4], 25)
         row, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "round-budget"]
         self.assertEqual(row["gate_reserve_source"], "floor")
         self.assertEqual(row["gate_reserve_seconds"], 45)
