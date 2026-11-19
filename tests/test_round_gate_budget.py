@@ -414,6 +414,63 @@ class RoundGateBudgetTest(unittest.TestCase):
             self.assertEqual(self.git("show", f"{head}:fixed.txt").stdout, "fixed\n")
             self.assertIn("Re-ran gate", report)
 
+    def assert_short_budget_escalation(self, mode):
+        from factory import manage
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+            logfile = dispatch.LOGS / "7-attempt-1.log"
+            detail = "- protected-paths: FAIL\n\n" + "offending diff\n" * 6000 + "report-tail\n"
+            with mock.patch.object(dispatch.cfg, "fixups", [["must-not-run"]]):
+                ok, report, candidate = dispatch.retry_gate_fixups(
+                    wt, 7, detail, head, work_deadline=0,
+                )
+            self.assertFalse(ok)
+            failure = (ok, report, logfile, candidate)
+            rounds = [(True, "PASS", logfile, head), failure] if mode == "bounce" else [failure]
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            packet = self.repo / ".factory" / "manager-packet.md"
+            packet.write_text("fix it")
+            with mock.patch.object(dispatch, "worker_round", side_effect=rounds), \
+                    mock.patch.object(dispatch, "log"), \
+                    mock.patch.object(dispatch, "push_and_pr", return_value=True) as publish, \
+                    mock.patch.object(dispatch, "push_agent") as push, \
+                    mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])), \
+                    mock.patch.object(dispatch, "pr_gate_and_review", return_value=("REVISE", "fix it", False)), \
+                    mock.patch.object(dispatch, "run", wraps=dispatch.run) as run:
+                if mode == "manager":
+                    manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
+                else:
+                    dispatch.process_ticket(issue, 1, False, forced=True)
+            push.assert_not_called()
+            self.assertEqual(publish.call_count, int(mode == "bounce"))
+            comments = [
+                call.args[0][-1] for call in run.call_args_list
+                if call.args[0][:3] == ["gh", "issue", "comment"]
+            ]
+            self.assertEqual(len(comments), 1)
+            self.assertLess(len(comments[0]), 65536, "budget explanation must fit a GitHub comment")
+            self.assertIn("budget exceeded during mechanical fixups", comments[0])
+            self.assertIn("budget_min / budget_exceeded", comments[0])
+            self.assertNotIn("offending diff", comments[0])
+            self.assertIn(detail, (wt / ".factory/gate-report-7.md").read_text())
+            escalation, = [
+                row for row in lifecycle.read_events(self.events) if row.get("event") == "escalate"
+            ]
+            self.assertEqual(escalation["code"], "budget")
+            self.assertNotIn("offending diff", escalation["reason"])
+            self.assertIn("report-tail", (dispatch.FACTORY / "escalations/7.md").read_text())
+
+    def test_attempt_budget_escalation_keeps_large_report_out_of_comment(self):
+        self.assert_short_budget_escalation("attempt")
+
+    def test_bounce_budget_escalation_keeps_large_report_out_of_comment(self):
+        self.assert_short_budget_escalation("bounce")
+
+    def test_manager_fix_budget_escalation_keeps_large_report_out_of_comment(self):
+        self.assert_short_budget_escalation("manager")
+
     def test_floor_rejects_invalid_config_values(self):
         path = self.repo / ".factory.toml"
         original = path.read_text()
