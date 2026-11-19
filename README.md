@@ -1158,7 +1158,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Evidence reads inspect at most the newest 64 KiB, flag truncation or invalid rows,
    and continue to later valid receipts. Reads and appends reject symlinks and
    nonregular files and use nonblocking file locks; unsafe evidence cannot block
-   report generation or redirect receipt writes.
+   report generation or redirect receipt writes. Failed appends retain the command,
+   result and SHAs in the current gate's report with an evidence-unavailable warning;
+   those receipts cannot be recovered by later gates from the file.
    Every report states its head and says `Focused tests: none recorded` when no
    execution evidence exists, including early protection failures. Receipts from
    another SHA, an unresolved SHA, or a command that changed HEAD are flagged

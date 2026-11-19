@@ -43,6 +43,7 @@ MUTATION_PROOF_KEYS = {"protocol", "version", "mode", "status", "reason", "exit"
                        "scope"}
 SKIP_NO_FACTORY_CODE = "SKIP (no changed factory code)"
 FOCUSED_MAX_BYTES = 64 * 1024
+FOCUSED_UNSAVED: list[bytes] = []
 
 
 def configure(c: Config) -> None:
@@ -153,8 +154,8 @@ def _focused_evidence(receipt: dict | None = None) -> bytes:
         if size > FOCUSED_MAX_BYTES:
             return b"truncated execution receipts\n" + data.partition(b"\n")[2]
         return data
-    except FileNotFoundError:
-        return b""
+    except FileNotFoundError as exc:
+        return f"unreadable execution receipts: {exc}\n".encode() if receipt is not None else b""
     except OSError as exc:
         return f"unreadable execution receipts: {exc}\n".encode()
     finally:
@@ -193,14 +194,15 @@ def test_command(
             "counts": "; ".join(summary) if has_counts else "counts unavailable",
             "exit": proc.returncode,
         }
-        _focused_evidence(receipt)
+        if error := _focused_evidence(receipt):
+            FOCUSED_UNSAVED.extend([error, json.dumps(receipt, ensure_ascii=False).encode() + b"\n"])
     return proc
 
 
 def focused_test_lines(head: str) -> list[str]:
     """File-sourced receipts are unverified even when their revision matches the reported head."""
     lines = []
-    for raw in _focused_evidence().splitlines():
+    for raw in (_focused_evidence() + b"".join(FOCUSED_UNSAVED)).splitlines():
         if not raw.strip():
             continue
         try:
@@ -1268,6 +1270,7 @@ def toolchain() -> dict[str, str]:
 
 def execute(args: argparse.Namespace, execution) -> int:
     global CHECK_TIMEOUT
+    FOCUSED_UNSAVED.clear()
     host = toolchain()
     execution.emit("toolchain", **host)
     if args.base is None:
