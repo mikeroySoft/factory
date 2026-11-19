@@ -966,10 +966,10 @@ def _prepare_action_request(cfg, request, target, action, guard, deadline):
             request["add"].extend(sorted(pins))
             return
         if name.startswith("host:"):
-            if kind == "unlabeled":
-                pins.add(name)
-            else:
+            if kind == "labeled":
                 pins.discard(name)
+            else:
+                pins.add(name)
 
 
 @contextmanager
