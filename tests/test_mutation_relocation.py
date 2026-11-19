@@ -199,6 +199,17 @@ class MutationRelocationTest(unittest.TestCase):
         self.assertEqual(status, 1, report)
         self.assertIn("stale equivalent:", report)
 
+    def test_attempt_gate_accepts_python_options_before_producer(self):
+        self.change("# inserted\n\n" + SOURCE)
+        configuration = self.root / ".factory.toml"
+        command = [sys.executable, "scripts/mutation.py", "--equivalents", "reviewed.json"]
+        configuration.write_text(configuration.read_text().replace(
+            json.dumps(command), json.dumps([command[0], "-B", *command[1:]]),
+        ))
+        status, report = self.attempt_gate()
+        self.assertEqual(status, 0, report)
+        self.assertIn("mutation-equivalents: PASS", report)
+
 
 if __name__ == "__main__":
     unittest.main()
