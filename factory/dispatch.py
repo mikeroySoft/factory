@@ -3948,6 +3948,64 @@ def manager_approval(events: list[dict], n: int, head: str) -> bool:
     )
 
 
+def approval_publication_pass(dry_run: bool) -> None:
+    """Share existing journal approvals without rerunning review or changing labels."""
+    if dry_run or cfg.host_name is None:
+        return
+    pending = {}
+    for row in reversed(lifecycle.read_events(EVENTS)):
+        if type(row.get("ticket")) is int and row.get("event") in {
+            "approved", "approval-published", "merged",
+        }:
+            pending.setdefault(row["ticket"], row)
+    pending = {n: row for n, row in pending.items() if row["event"] == "approved"}
+    if not pending:
+        return
+    prs = gh_json([
+        "pr", "list", "--repo", REPO, "--state", "open", "--limit", "1000",
+        "--json", "number,headRefName,headRefOid",
+    ])
+    for pr in prs:
+        branch = re.fullmatch(r"agent/([1-9][0-9]*)", pr.get("headRefName") or "")
+        if branch is None:
+            continue
+        n, head = int(branch[1]), pr["headRefOid"]
+        approval = pending.get(n)
+        if not approval or approval.get("pr") != pr["number"] or any(
+            approval.get(key) != head for key in ("head", "gate_head", "review_head")
+        ):
+            continue
+        with ticket_lock(n).open("w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            events = lifecycle.read_events(EVENTS)
+            latest = next((row for row in reversed(events) if row.get("ticket") == n
+                           and row.get("event") in {"approved", "approval-published", "merged"}), None)
+            if latest != approval:
+                continue
+            current = gh_json([
+                "pr", "view", str(pr["number"]), "--repo", REPO, "--json",
+                "state,isDraft,headRefOid,headRefName,baseRefName,reviewDecision,files",
+            ])
+            if (
+                current.get("state") != "OPEN" or current.get("isDraft")
+                or current.get("headRefOid") != head
+                or current.get("headRefName") != f"agent/{n}"
+                or current.get("baseRefName") != cfg.main
+                or current.get("reviewDecision") == "CHANGES_REQUESTED"
+                or not _head_evidence_matches(
+                    events, n, head, configuration=cfg,
+                    changed_paths=[row["path"] for row in current.get("files", [])],
+                )
+                or cfg.manager and cfg.manager_review == "all" and not manager_approval(events, n, head)
+            ):
+                continue
+            _publish_approval(n, pr["number"], head, events)
+            record("approval-published", ticket=n, pr=pr["number"], head=head)
+
+
 def _publish_approval(n: int, pr: int, head: str, events: list[dict]) -> None:
     """Share journal premises using the authenticated Factory approval v1 protocol."""
     fields = {
@@ -4067,6 +4125,8 @@ def approve_pr(n: int, head: str) -> bool:
         "approved", ticket=n, pr=pr["number"], head=head,
         gate_head=head, review_head=head,
     )
+    if cfg.host_name is not None:
+        record("approval-published", ticket=n, pr=pr["number"], head=head)
     retain_handoff(n, head)
     return True
 
@@ -6131,6 +6191,7 @@ def main(argv: list[str]) -> int:
         # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
         # which GitHub cannot union-merge), and a new one opens only after landing.
         release_step(open_pr=False)
+        approval_publication_pass(args.dry_run)
         land_pass(args.dry_run)
         review_intake_pass(args.dry_run)
         if yield_for_update:

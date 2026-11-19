@@ -70,7 +70,7 @@ class ApprovalEditMetadataTest(unittest.TestCase):
                 lambda: setattr(
                     self,
                     "graphql_response",
-                    {"data": {"nodes": [{"id": self.NODE_ID}]},},
+                    {"data": {"nodes": [{"id": self.NODE_ID}]}},
                 ),
             ),
             ("malformed", lambda: setattr(self, "graphql_response", self._metadata(7))),

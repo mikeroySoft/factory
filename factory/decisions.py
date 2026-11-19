@@ -39,6 +39,11 @@ REQUEST_CAP = 64 * 1024
 MAX_REQUESTS = 16
 COMMENT_CAP = 20_000
 SUMMARY_CAP = 4_000
+_COMMENT_EDIT_QUERY = """query($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on IssueComment { id lastEditedAt }
+  }
+}"""
 
 ACT_LABELS = frozenset({
     LABEL_TRIAGE,
@@ -658,8 +663,9 @@ def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadl
     # A dashboard token must not override the dispatcher's gh credential store.
     env = {key: value for key, value in _environment(cfg).items()
            if key not in {"GH_TOKEN", "GITHUB_TOKEN"}}
+    provider_env = {**env, **dispatcher_env}
     user = _read_json(cfg, ["gh", "api", "--hostname", "github.com", "user"], deadline,
-                      env={**env, **dispatcher_env})
+                      env=provider_env)
     login = user.get("login") if isinstance(user, dict) else None
     if not isinstance(login, str) or _LOGIN.fullmatch(login) is None:
         raise DecisionError("dispatcher identity is unavailable", "provider_unavailable")
@@ -671,10 +677,10 @@ def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadl
             "map(select(.user.login? | strings | ascii_downcase == "
             + json.dumps(login.casefold()) + ")"
             ' | select(.body? | strings | startswith("Factory approval v1\\n"))'
-            " | {user, body, created_at, updated_at}) | @json"
+            " | {node_id, user, body, created_at, updated_at}) | @json"
         ),
         f"repos/{cfg.repo}/issues/{target['number']}/comments",
-    ], deadline)
+    ], deadline, env=provider_env)
     # gh cannot combine --jq and --slurp; @json emits one compact array per page.
     try:
         pages = [json.loads(page) for page in result.stdout.splitlines()]
@@ -691,7 +697,7 @@ def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadl
             "attempt", "refreshed", "gate-fixup", "review", "review-result",
             "risk", "risk-check", "manage",
         }]
-    latest = None
+    candidates = []
     for page in pages:
         for comment in page:
             if not isinstance(comment, dict):
@@ -701,10 +707,14 @@ def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadl
                 continue
             if not dispatch._same_github_login(author["login"], login):
                 continue
-            # Repository writers can edit a dispatcher's comment without changing its author.
+            # REST timestamps expose obvious edits, but same-second edits require
+            # IssueComment.lastEditedAt from GraphQL below.
             created = comment.get("created_at")
             created_at = _parse_time(created)
             if created_at is None or comment.get("updated_at") != created:
+                continue
+            node_id = comment.get("node_id")
+            if not isinstance(node_id, str) or not node_id:
                 continue
             body = comment.get("body")
             if not isinstance(body, str) or not body.startswith("Factory approval v1\n"):
@@ -735,10 +745,53 @@ def _shared_approval_events(cfg: Config, target: dict, events: list[dict], deadl
                 # Unknown or newer local evidence cannot be overwritten by a remote receipt.
                 if any((local_at := _parse_time(row.get("at"))) is None or local_at >= evidence_at for row in local):
                     continue
-                if latest is None or evidence_at > latest[0]:
-                    latest = evidence_at, evidence
+                candidates.append((evidence_at, evidence, node_id))
             except (KeyError, TypeError, ValueError, RecursionError):
                 continue
+    if not candidates:
+        return events
+
+    node_ids = list(dict.fromkeys(candidate[2] for candidate in candidates))
+    edit_metadata: dict[str, object] = {}
+    duplicate_metadata = set()
+    for start in range(0, len(node_ids), 100):
+        batch = node_ids[start:start + 100]
+        response = _read_json(cfg, [
+            "gh", "api", "--hostname", "github.com", "--method", "POST", "graphql",
+            "-f", f"query={_COMMENT_EDIT_QUERY}",
+            *(value for node_id in batch for value in ("-f", f"ids[]={node_id}")),
+        ], deadline, env=provider_env)
+        try:
+            if not isinstance(response, dict) or "errors" in response:
+                raise ValueError
+            nodes = response["data"]["nodes"]
+            if not isinstance(nodes, list):
+                raise ValueError
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DecisionError("provider returned invalid comment edit metadata",
+                                "provider_unavailable") from exc
+        for node in nodes:
+            if (
+                not isinstance(node, dict)
+                or not isinstance(node.get("id"), str)
+                or "lastEditedAt" not in node
+                or node["id"] not in batch
+            ):
+                continue
+            if node["id"] in edit_metadata:
+                duplicate_metadata.add(node["id"])
+            edit_metadata[node["id"]] = node["lastEditedAt"]
+
+    latest = None
+    for evidence_at, evidence, node_id in candidates:
+        if (
+            node_id not in edit_metadata
+            or node_id in duplicate_metadata
+            or edit_metadata[node_id] is not None
+        ):
+            continue
+        if latest is None or evidence_at > latest[0]:
+            latest = evidence_at, evidence
     return [*events, *latest[1]] if latest else events
 
 

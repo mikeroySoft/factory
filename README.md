@@ -1888,8 +1888,10 @@ branches, or merge state.
   decisions on a named host can use this receipt when the producing journal is
   on another host. Consumption requires `[install].dispatch_env` credentials
   authenticating a dispatcher login distinct from the human actor. The comment
-  must be unedited, its author must match that dispatcher, and ticket, PR, head,
-  gate head and review head must match.
+  must be unedited (GitHub GraphQL `lastEditedAt` must explicitly be null), its
+  author must match that dispatcher, and ticket, PR, head, gate head and review
+  head must match. Missing or unreadable provider edit metadata fails closed;
+  equal REST creation/update timestamps alone do not establish an unedited comment.
   Gate/review, High-tier mutation/model separation and manager requirements are
   rechecked at prepare and apply. All shared premises must be timestamped no later
   than the receipt, and the receipt no later than the server's comment creation.
@@ -1897,9 +1899,13 @@ branches, or merge state.
   republishing old evidence cannot renew it. Untrusted reviewer comments have a
   fixed prefix distinct from the receipt marker. Provider-side filtering excludes
   unrelated discussion before bounded capture.
-  Missing, malformed or stale receipts fail closed. Pre-upgrade journal-only
-  approvals need the source dispatcher to approve that same head again to publish
-  the receipt. CI, branch freshness and human-veto safeguards are unchanged.
+  Missing, malformed or stale receipts fail closed. Each source dispatcher's
+  normal pass also publishes pre-upgrade journal-only approvals for still-open
+  matching heads, rechecking current gate/review, High-tier/manager requirements,
+  branch and human veto under the ticket lock. This shares existing evidence
+  without rerunning review or adding the label, and records publication to avoid
+  duplicate comments on later passes. CI, branch freshness and human-veto
+  safeguards are unchanged.
   Triage executes the controller's trusted Python package, not a shadow package
   in the selected checkout. Cleanup coordinates with both landing and ticket
   claims, binds local revisions, refuses dirty worktrees, and deletes the branch

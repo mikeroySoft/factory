@@ -35,6 +35,15 @@ class CrossHostDecisionTest(unittest.TestCase):
                 not token and env.get("GH_CONFIG_DIR") == "/dispatcher/gh")
             login = "factory" if machine else "alice"
             return self.driver.completed(argv, out=json.dumps({"login": login}))
+        if argv[:2] == ["gh", "api"] and "graphql" in argv:
+            nodes = [
+                {"id": comment["node_id"],
+                 "lastEditedAt": comment.get("lastEditedAt")}
+                for comment in self.comments
+                if isinstance(comment.get("node_id"), str)
+                and f"ids[]={comment['node_id']}" in argv
+            ]
+            return self.driver.completed(argv, out=json.dumps({"data": {"nodes": nodes}}))
         if argv[:2] == ["gh", "api"] and argv[-1] == f"repos/{self.cfg.repo}/issues/17/comments":
             if "--jq" in argv:
                 return self.driver.completed(argv, out=json.dumps(self.comments))
@@ -54,7 +63,8 @@ class CrossHostDecisionTest(unittest.TestCase):
             })
         rows = lifecycle.read_events(self.source.factory / "events.jsonl")
         receipt = {**rows[-1], "host": "ultron", "evidence": rows[:-1]}
-        self.comments = [{"user": {"login": "factory"},
+        self.comments = [{"node_id": "IC_factory_approval",
+                          "user": {"login": "factory"},
                           "created_at": "2026-11-18T19:15:24Z",
                           "updated_at": "2026-11-18T19:15:24Z",
                           "body": "Factory approval v1\n" + json.dumps(receipt)}]
@@ -159,7 +169,8 @@ class CrossHostDecisionTest(unittest.TestCase):
                 elif defect == "malformed":
                     receipt = []
                 self.comments = [] if defect == "missing" else [{
-                    "user": {"login": author}, "body": "Factory approval v1\n" + json.dumps(receipt),
+                    "node_id": "IC_factory_approval", "user": {"login": author},
+                    "body": "Factory approval v1\n" + json.dumps(receipt),
                     "created_at": "2026-11-18T19:15:24Z", "updated_at": "2026-11-18T19:15:24Z",
                 }]
                 with self.assertRaises(decisions.DecisionError) as caught:
@@ -240,7 +251,8 @@ class CrossHostDecisionTest(unittest.TestCase):
         self.assertLess(commands.index(publication), commands.index(label))
         body = publication[publication.index("--body") + 1]
         self.assertTrue(body.startswith("Factory approval v1\n"))
-        self.comments = [{"user": {"login": "factory"}, "body": body,
+        self.comments = [{"node_id": "IC_factory_approval",
+                          "user": {"login": "factory"}, "body": body,
                           "created_at": "2026-11-18T19:15:24Z", "updated_at": "2026-11-18T19:15:24Z"}]
         published_at = json.loads(body.partition("\n")[2])["at"]
         self.comments[0].update(created_at=published_at, updated_at=published_at)
