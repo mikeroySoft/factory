@@ -1907,7 +1907,8 @@ branches, or merge state.
   duplicate comments on later passes. Published receipts are retracted on a later
   source pass when the head moves, review is revoked, or the approval label is
   removed. The provider timeline catches removals even if the label was readded
-  between passes. Retraction edits only that source host's authenticated comments and
+  between passes; ambiguous same-second removals also revoke. Retraction edits
+  only that source host's authenticated comments and
   journals revocation before the provider mutation; failed retractions are retried.
   Prepare/apply on the source host cannot resurrect its own revoked approval from
   a receipt. Publication/retraction transport failures log and escalate the affected

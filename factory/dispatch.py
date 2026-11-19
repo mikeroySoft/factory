@@ -4037,7 +4037,7 @@ def _approval_label_removed(events: list[dict], n: int, pr: int, head: str, page
     approval = next((row for row in reversed(events) if row.get("event") == "approved"
                      and row.get("ticket") == n and row.get("pr") == pr and row.get("head") == head), {})
     try:
-        at = datetime.fromisoformat(approval["at"])
+        at = datetime.fromisoformat(approval["at"]).replace(microsecond=0)
         if at.tzinfo is None or not isinstance(pages, list):
             return True
         for page in pages:
