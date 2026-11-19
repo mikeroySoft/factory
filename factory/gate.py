@@ -14,6 +14,7 @@ import json
 import math
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -120,10 +121,72 @@ def timed(
         if execution and proc.poll() is not None:
             execution.child_done(proc.pid)
 
+def test_command(
+    cmd: list[str], *, command: str | None = None, cwd: Path | None = None,
+    pythonpath: Path | None = None,
+) -> subprocess.CompletedProcess:
+    """Capture execution, not handoff claims; keep receipts for the dispatcher's next gate."""
+    head = timed(["git", "rev-parse", "HEAD"], cwd=cwd).stdout.strip()
+    proc = timed(cmd, cwd=cwd, pythonpath=pythonpath)
+    output = proc.stdout + proc.stderr
+    summary = re.findall(
+        r"^(?:Ran \d+ tests? in .+|OK(?: \(.+\))?|FAILED \(.+\)|"
+        r"=+ .*\d+ (?:passed|failed|error|skipped|deselected|xfailed|xpassed).*=+|"
+        r"\d+ (?:passed|failed|error|skipped|deselected|xfailed|xpassed).+|"
+        r"test result: .+)$",
+        output, re.MULTILINE,
+    )
+    has_counts = any(re.search(r"\d+ (?:tests?|passed|failed|errors?|skipped|deselected|xfailed|xpassed)", line) for line in summary)
+    if command is not None or has_counts or any(token in cmd for token in ("unittest", "pytest", "test", "--test")):
+        receipt = {
+            "command": command if command is not None else shlex.join(cmd),
+            "head": head,
+            "end_head": timed(["git", "rev-parse", "HEAD"], cwd=cwd).stdout.strip(),
+            "result": "PASS" if proc.returncode == 0 else "FAIL",
+            "counts": "; ".join(summary) if has_counts else "counts unavailable",
+            "exit": proc.returncode,
+        }
+        cfg.factory.mkdir(parents=True, exist_ok=True)
+        with (cfg.factory / "focused-tests.jsonl").open("a") as evidence:
+            evidence.write(json.dumps(receipt, ensure_ascii=False) + "\n")
+    return proc
+
+
+def focused_test_lines(head: str) -> list[str]:
+    """One line per execution; a different or unresolved revision is never current proof."""
+    path = cfg.factory / "focused-tests.jsonl"
+    if not path.exists():
+        return ["Focused tests: none recorded"]
+    lines = []
+    try:
+        for raw in path.read_text().splitlines():
+            row = json.loads(raw)
+            if (
+                not isinstance(row, dict)
+                or any(not isinstance(row.get(key), str) for key in ("command", "head", "end_head", "result", "counts"))
+                or row["result"] not in ("PASS", "FAIL")
+                or type(row.get("exit")) is not int
+            ):
+                raise ValueError("invalid execution receipt")
+            current = (
+                re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) is not None
+                and row["head"] == row["end_head"] == head
+            )
+            binding = "" if current else f"STALE / revision mismatch (reported-head={head}) "
+            lines.append(
+                f"Focused test: {binding}{row['result']} "
+                f"({json.dumps(row['counts'], ensure_ascii=False)}; exit={row['exit']}) "
+                f"command={json.dumps(row['command'], ensure_ascii=False)} "
+                f"head={json.dumps(row['head'])} end-head={json.dumps(row['end_head'])}"
+            )
+    except (OSError, ValueError):
+        lines.append("Focused tests: evidence unavailable (unreadable or invalid execution receipt)")
+    return lines or ["Focused tests: none recorded"]
+
 
 def run(cmd: list[str]) -> tuple[bool, str]:
     """Run a command, return (passed, combined output)."""
-    proc = timed(cmd)
+    proc = test_command(cmd)
     execution = lifecycle.current()
     if execution and proc.returncode != 0 and execution.outcome == "completed":
         execution.outcome = "product_feedback"
@@ -947,7 +1010,7 @@ def _run_at(
         if added.returncode:
             return added, False
         try:
-            return timed(command, cwd=checkout, pythonpath=checkout), True
+            return test_command(command, cwd=checkout, pythonpath=checkout), True
         finally:
             timed(["git", "worktree", "remove", "--force", str(checkout)])
 
@@ -1036,7 +1099,7 @@ def check_bug_reproduction(
                 "FAIL",
                 f"declared reproduction test changed at HEAD: `{test_id}`",
             )]
-        fixed = timed(command, cwd=Path.cwd(), pythonpath=Path.cwd())
+        fixed = test_command(command, cwd=Path.cwd(), pythonpath=Path.cwd())
         return [
             *results,
             (
@@ -1055,6 +1118,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--base", default=None, help="base ref for leak scan and protected paths")
     parser.add_argument(
         "--report", default=".factory/gate-report.md", help="report output path"
+    )
+    parser.add_argument(
+        "--focused-command", action="append", default=[], metavar="COMMAND",
+        help="run an exact shell test command alongside the gate and retain its SHA-bound result (repeatable)",
     )
     parser.add_argument(
         "--skip",
@@ -1166,6 +1233,10 @@ def execute(args: argparse.Namespace, execution) -> int:
     if LEAK_RE is None:
         skip.add("leak-scan")
     audit = []  # the reviewed protected transition this run actually verified and exempted
+    head = timed(["git", "rev-parse", "HEAD"]).stdout.strip()
+
+    def evidence_header() -> str:
+        return f"Head SHA: {head}\n" + "\n".join(focused_test_lines(head)) + "\n"
 
     if args.tier == "attempt":
         if not args.protected_override:
@@ -1183,7 +1254,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 report = Path(args.report)
                 report.parent.mkdir(parents=True, exist_ok=True)
                 note = f" ({ADD_ONLY_NOTE})" if reason == "add_only_paths" else ""
-                report.write_text(f"# Gate report\n\n- protected-paths: FAIL{note}\n\n"
+                report.write_text(f"# Gate report\n\n{evidence_header()}\n- protected-paths: FAIL{note}\n\n"
                                   "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
                 print(f"report: {report}\ngate FAIL: protected-paths")
                 return 1
@@ -1196,7 +1267,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 report = Path(args.report)
                 report.parent.mkdir(parents=True, exist_ok=True)
                 report.write_text(
-                    "# Gate report\n\n"
+                    f"# Gate report\n\n{evidence_header()}\n"
                     "- protected-tests: FAIL (existing test deleted or modified)\n\n"
                     "## protected-tests failure\n\n```\n" + detail + "\n```\n"
                 )
@@ -1233,14 +1304,24 @@ def execute(args: argparse.Namespace, execution) -> int:
     ] if args.tier == "attempt" else configured
     later_tier = {check.name: check.when for check in listed if check.when != args.tier}
 
-    results: list[tuple[str, str, str]] = (
+    focused_results = []
+    for index, cmd in enumerate(args.focused_command, 1):
+        proc = test_command(["sh", "-c", cmd], command=cmd)
+        focused_results.append((
+            f"focused-{index}", "PASS" if proc.returncode == 0 else "FAIL",
+            proc.stdout + proc.stderr,
+        ))
+
+    results: list[tuple[str, str, str]] = focused_results + (
         check_bug_reproduction(
             args.base, args.repro_test, args.no_repro_test, execution
         )
         if args.bug and args.tier == "attempt" else []
     )
     outcome, reason = (
-        ("product_feedback", "bug_reproduction_failed")
+        ("product_feedback", "focused_command_failed")
+        if any(status == "FAIL" for _, status, _ in focused_results)
+        else ("product_feedback", "bug_reproduction_failed")
         if any(status == "FAIL" for _, status, _ in results)
         else ("completed", None)
     )
@@ -1279,6 +1360,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                    for name, (status, binding) in proofs.items()]
     lines = [
         "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "",
+        evidence_header(), "",
         *([*proof_lines, ""] if proof_lines else []), "## Host toolchain",
         f"ROCm: {host['rocm']}", f"Kernel: {host['kernel']}", f"amdgpu: {host['amdgpu']}", "",
         *audit,

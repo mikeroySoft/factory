@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Gate reports retain focused test commands, PASS/FAIL with runner counts (or explicit unavailable counts), and execution SHAs on individual lines; stale revisions and absent evidence are explicit. Workers can execute and retain exact shell commands with `factory gate --focused-command` for the dispatcher's subsequent report (#865).
 - Hosts can set `[defaults.gate] mutation_duration = 5400` (or a per-repository host override) for opted High-risk PR mutation proof runs. Values must be finite numeric seconds greater than 60; absent values preserve the timeout-minus-60 runner budget. Manual durations take precedence, and host settings do not invalidate cached PR gates (#850).
 - MCP named action `approve_pr` accepts a PR number and optional `ruling_id`, restores only `factory-approved` through the existing exact-head approval policy, and records the authenticated actor with source `mcp`. Draft, held, closed and non-main PRs are refused, including holds observed after applying approval; post-edit policy refusals, journal-read failures and head changes withdraw approval without an approved event and retain a failure receipt. Hold snapshot/restore behavior is unchanged (#848).
 - Test venvs share a pip-free builder using symlinks on POSIX, preserving uv-managed macOS Python's libpython lookup; interpreter probes include stderr on failure, with launch and builder-centralization regressions (#820).
