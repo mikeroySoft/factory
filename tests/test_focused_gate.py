@@ -244,6 +244,27 @@ class FocusedGateTest(unittest.TestCase):
             self.assertEqual(exit_event["outcome"], "unknown")
             self.assertEqual(exit_event["reason"], "check_timeout")
 
+    def test_failed_append_keeps_current_execution_in_report(self):
+        import fcntl
+
+        for configured in (False, True):
+            for failing in (False, True):
+                with self.subTest(configured=configured, failing=failing), tempfile.TemporaryDirectory() as directory:
+                    repo, command, head = self.make_repo(directory, configured=configured, failing=failing)
+                    path = repo / ".factory" / "focused-tests.jsonl"
+                    path.parent.mkdir(exist_ok=True)
+                    with path.open("w") as locked:
+                        fcntl.flock(locked, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                        args = [] if configured else ["--focused-command", command]
+                        code, output, report = gate(repo, *args)
+                        self.assertEqual(code, int(failing), report + output)
+                        [line] = self.focused_lines(report)
+                        for text in (command, head, "FAIL" if failing else "PASS", "Ran 2 tests"):
+                            self.assertIn(text, line)
+                        self.assertNotIn("STALE", line)
+                        self.assertNotIn("Focused tests: none recorded", report)
+                        self.assertEqual(path.read_text(), "")
+
 
 if __name__ == "__main__":
     unittest.main()
