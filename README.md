@@ -820,8 +820,8 @@ unassigned after its latest escalation, with none of those rows after it, was re
 by a human. A journal with no `generation` row is generation 0 and counts exactly as
 before.
 
-Escalation releases the claim comment and assignee but keeps the ticket's host label,
-so owner requeues stay pinned to the same host. Tickets without a host label remain unpinned.
+`requeue_agent` restores the host label removed by the latest escalation's journaled
+claim cleanup, unless the ticket already has a host pin. Unpinned tickets stay unpinned.
 `requeue_agent` takes an optional `intent`. With `resume` (the default, and what a
 plain relabel means), the branch, worktree and refresh context are kept. Before
 reusing a worktree (or its local branch), dispatch fetches origin and explicitly
@@ -1785,8 +1785,8 @@ unclaim also retires older stale claims before deleting its own comment, so
 leftover claims cannot strand a later refresh requeue or escalation/relabel.
 Unassigned stale claims can be released before election. A foreign host label without
 a claim comment remains a hold; inspect it before removing it.
-Except on escalation, cleanup removes the host label before deleting its last claim
-comment, so a failed label edit retains TTL recovery evidence for the next pass. Another
+Cleanup removes the host label before deleting its last claim comment, so a
+failed label edit retains TTL recovery evidence for the next pass. Another
 same-host contender keeps its label. If comment deletion fails with the comment
 still present, cleanup restores the label and surfaces the error.
 Hosts need synchronized clocks and current GitHub reads. This comment-based
