@@ -23,10 +23,13 @@ class ApprovalRevocationTest(unittest.TestCase):
         self.publisher = self.fixture.publish
         dispatch.run.side_effect = self.publish
         self.edits = []
+        self.timeline = []
 
     def read_provider(self, argv, **kwargs):
         if argv == ["api", "user"]:
             return {"login": "factory"}
+        if argv[:2] == ["api", "--paginate"] and argv[-1].endswith("/timeline"):
+            return [self.timeline]
         if argv[:2] == ["api", "--paginate"]:
             return [[{**comment, "id": 123} for comment in self.case.comments]]
         return self.provider(argv, **kwargs)
@@ -101,6 +104,19 @@ class ApprovalRevocationTest(unittest.TestCase):
                 self.assertFalse(any(row["event"] == "approval-published" for row in
                                      lifecycle.read_events(self.case.source.factory / "events.jsonl")))
 
+    def test_label_removed_between_source_passes_revokes_even_if_readded(self):
+        self.fixture.pr["labels"] = []
+        self.assertEqual(dispatch.main([]), 0)
+        preview = self.case.prepare()
+        self.timeline = [{"event": "unlabeled", "label": {"name": config.LABEL_APPROVED},
+                          "created_at": "2026-11-18T19:16:00Z"}]
+        self.fixture.pr["labels"] = [{"name": config.LABEL_APPROVED}]
+        self.assertEqual(dispatch.main([]), 0)
+        with self.assertRaises(decisions.DecisionError) as caught:
+            self.case.driver.apply(preview)
+        self.assertEqual(caught.exception.code, "approval_evidence")
+        self.assertEqual(len(self.fixture.commands), 1)
+
 
 class MergeReceiptGuardTest(unittest.TestCase):
     def setUp(self):
@@ -124,6 +140,22 @@ class MergeReceiptGuardTest(unittest.TestCase):
                 target = {"ticket": 7, "number": 17, "head": self.case.head}
                 events = decisions._shared_approval_events(self.case.cfg, target, local, float("inf"))
                 self.assertEqual(dispatch.latest_head_review_verdict(events, 7, 17, self.case.head), "REVISE")
+                with mock.patch.dict(dispatch.__dict__):
+                    dispatch.configure(self.case.cfg)
+                    for row in local:
+                        lifecycle.append(dispatch.EVENTS, row)
+                    pr = {**self.case.driver.pr, "labels": [{"name": config.LABEL_APPROVED}]}
+                    with (mock.patch.object(dispatch, "gh_json", return_value=[pr]),
+                          mock.patch.object(dispatch, "host_claims", return_value=[]),
+                          mock.patch.object(dispatch, "initiative_kind", return_value=False),
+                          mock.patch("factory.learn.promote_pass"),
+                          mock.patch.object(dispatch, "record_merge_decision"),
+                          mock.patch.object(dispatch, "escalate"),
+                          mock.patch.object(dispatch, "run") as run):
+                        dispatch.merge_pass_locked(False)
+                    commands = [call.args[0] for call in run.call_args_list]
+                    self.assertFalse(any(cmd[:3] == ["gh", "pr", "merge"] for cmd in commands))
+                    self.assertTrue(any("--remove-label" in cmd for cmd in commands))
                 self.assertFalse(dispatch._head_evidence_matches(events, 7, self.case.head))
 
 

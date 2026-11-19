@@ -37,6 +37,8 @@ class ApprovalBackfillTest(unittest.TestCase):
         self.enterContext(mock.patch.object(dispatch, "approve_pr", side_effect=AssertionError("reapproval")))
 
     def read_provider(self, argv, **kwargs):
+        if argv[:2] == ["api", "--paginate"] and argv[-1].endswith("/timeline"):
+            return [[]]
         if argv[:2] == ["pr", "list"]:
             return [self.pr]
         if argv[:2] == ["pr", "view"]:
