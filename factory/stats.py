@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import math
 import os
 import re
 import subprocess
@@ -168,6 +169,279 @@ def _stamp(value: datetime) -> str:
 def window_rows(rows: list[dict], start: datetime, end: datetime) -> list[dict]:
     """Rows whose timestamps fall inside the inclusive UTC window."""
     return [row for row in rows if (at := _timestamp(row.get("at"))) is not None and start <= at <= end]
+
+WORK_TYPES = ("speed", "bug", "polish", "unclassified")
+
+
+def _merge_receipts(rows: list[dict]) -> dict[tuple[str, int], dict]:
+    """One best receipt per merged ticket, falling back to the PR identity."""
+    ticket_by_pr = {
+        row["pr"]: row["ticket"]
+        for row in rows
+        if (isinstance(row, dict) and row.get("event") == "merged"
+            and type(row.get("pr")) is int and type(row.get("ticket")) is int)
+    }
+    receipts: dict[tuple[str, int], dict] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("event") != "merged":
+            continue
+        key = (("ticket", row["ticket"]) if type(row.get("ticket")) is int
+               else ("ticket", ticket_by_pr[row["pr"]])
+               if type(row.get("pr")) is int and row["pr"] in ticket_by_pr
+               else ("pr", row["pr"]) if type(row.get("pr")) is int else None)
+        if key is None:
+            continue
+        previous = receipts.get(key)
+        if previous is None or row.get("work_type") in WORK_TYPES:
+            receipts[key] = row
+    return receipts
+
+
+def work_type_metrics(rows: list[dict]) -> dict[str, Any]:
+    """Merged work classes; missing legacy classification is distinct from unclassified."""
+    receipts = _merge_receipts(rows)
+    counts = dict.fromkeys((*WORK_TYPES, "unknown"), 0)
+    for row in receipts.values():
+        work_type = row.get("work_type")
+        counts[work_type if work_type in WORK_TYPES else "unknown"] += 1
+    total = len(receipts)
+    return {
+        "total": total,
+        "counts": counts,
+        "percentages": {
+            work_type: round(100 * count / total, 1) if total else None
+            for work_type, count in counts.items()
+        },
+    }
+
+
+def _gate_runs(rows: list[dict]) -> list[dict]:
+    """Normalize current gate events and retained legacy evidence without double counting."""
+    custom: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("event") not in {"gate-start", "gate-run"}:
+            continue
+        run_id = row.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            continue
+        previous = custom.get(run_id)
+        if previous is None:
+            custom[run_id] = row
+        elif row["event"] == "gate-run" or previous.get("event") == "gate-start":
+            custom[run_id] = {**previous, **row}
+
+    def run(row: dict, *, run_id: str, tier: str | None = None,
+            started_at: object = None, ended_at: object = None,
+            duration: object = None) -> dict:
+        seconds = duration if type(duration) in {int, float} and math.isfinite(duration) and duration >= 0 else None
+        return {
+            "run_id": run_id,
+            "at": ended_at or started_at or row.get("at"),
+            "ticket": row.get("ticket") if type(row.get("ticket")) is int else None,
+            "head": row.get("head") if isinstance(row.get("head"), str) else None,
+            "host": row.get("host") if isinstance(row.get("host"), str) and row["host"] else "unknown",
+            "tier": tier if tier in ("attempt", "pr", "release") else "unknown",
+            "rerun": row.get("rerun") if type(row.get("rerun")) is bool else None,
+            "started_at": started_at if _timestamp(started_at) is not None else None,
+            "ended_at": ended_at if _timestamp(ended_at) is not None else None,
+            "duration_seconds": seconds,
+        }
+
+    result = [
+        run(
+            row, run_id=run_id, tier=row.get("tier"),
+            started_at=row.get("started_at"), ended_at=row.get("ended_at"),
+            duration=row.get("duration_seconds"),
+        )
+        for run_id, row in custom.items()
+    ]
+
+    lifecycle_runs: dict[str, list[dict]] = {}
+    for row in rows:
+        if (isinstance(row, dict) and row.get("event") == "lifecycle"
+                and row.get("stage") == "gate" and row.get("kind") in {"enter", "exit"}
+                and isinstance(row.get("execution_id"), str) and row["execution_id"]):
+            lifecycle_runs.setdefault(row["execution_id"], []).append(row)
+    legacy_slots: Counter[tuple[int, int]] = Counter()
+    for execution_id, events in lifecycle_runs.items():
+        if execution_id in custom:
+            continue
+        entered = next((event for event in events if event.get("kind") == "enter"), None)
+        exited = next((event for event in reversed(events) if event.get("kind") == "exit"), None)
+        evidence = exited or entered or events[-1]
+        started_at = entered.get("at") if entered else None
+        ended_at = exited.get("at") if exited else None
+        result.append(run(
+            evidence, run_id=execution_id, started_at=started_at,
+            ended_at=ended_at,
+        ))
+        if type(evidence.get("ticket")) is int and type(evidence.get("attempt")) is int:
+            legacy_slots[(evidence["ticket"], evidence["attempt"])] += 1
+
+    custom_attempt_heads = {
+        (item["ticket"], item["head"]) for item in result
+        if item["tier"] == "attempt" and item["head"] is not None
+    }
+    seen_attempts: set[tuple[int, int]] = set()
+    for index, row in enumerate(rows):
+        if (not isinstance(row, dict) or row.get("event") != "attempt"
+                or row.get("gate") not in {"PASS", "FAIL"}
+                or type(row.get("ticket")) is not int):
+            continue
+        attempt = row.get("attempt")
+        key = (row["ticket"], attempt) if type(attempt) is int else None
+        if key is not None and key in seen_attempts:
+            continue
+        if (row["ticket"], row.get("head")) in custom_attempt_heads:
+            continue
+        if key is not None:
+            seen_attempts.add(key)
+            if legacy_slots[key]:
+                legacy_slots[key] -= 1
+                continue
+        result.append(run(row, run_id=f"legacy-attempt-{index}", tier="attempt"))
+    return result
+
+
+def _gate_totals(runs: list[dict]) -> dict[str, Any]:
+    durations = [row["duration_seconds"] for row in runs if row["duration_seconds"] is not None]
+    reruns = [row for row in runs if row["rerun"] is True]
+    rerun_known = [row for row in runs if row["rerun"] is not None]
+    rerun_durations = [
+        row["duration_seconds"] for row in reruns if row["duration_seconds"] is not None
+    ]
+    total_wall = sum(durations) if runs and len(durations) == len(runs) else None
+    rerun_wall = (sum(rerun_durations)
+                  if runs and len(rerun_known) == len(runs)
+                  and len(rerun_durations) == len(reruns) else None)
+    return {
+        "total_count": len(runs),
+        "rerun_count": len(reruns) if runs and len(rerun_known) == len(runs) else None,
+        "known_rerun_count": len(reruns),
+        "missing_rerun_count": len(runs) - len(rerun_known),
+        "total_wall_time_seconds": total_wall,
+        "known_total_wall_time_seconds": sum(durations),
+        "missing_duration_count": len(runs) - len(durations),
+        "rerun_wall_time_seconds": rerun_wall,
+        "known_rerun_wall_time_seconds": sum(rerun_durations),
+        "rerun_share": (len(reruns) / len(runs)
+                        if runs and len(rerun_known) == len(runs) else None),
+        "rerun_wall_time_share": (rerun_wall / total_wall
+                                  if rerun_wall is not None and total_wall else None),
+    }
+
+
+def gate_cost_metrics(
+    rows: list[dict], start: datetime | None = None, end: datetime | None = None,
+) -> dict[str, Any]:
+    """Gate count and wall-time cost by ticket and host, preserving unknown evidence."""
+    runs = _gate_runs(rows)
+    if start is not None and end is not None:
+        runs = window_rows(runs, start, end)
+        rows = window_rows(rows, start, end)
+    hosts = {
+        row["host"] for row in rows
+        if isinstance(row, dict) and isinstance(row.get("host"), str) and row["host"]
+    } | {run["host"] for run in runs}
+    tickets = {
+        str(row["ticket"]) for row in rows
+        if isinstance(row, dict) and type(row.get("ticket")) is int
+    } | {str(run["ticket"]) if run["ticket"] is not None else "unknown" for run in runs}
+
+    def grouped(key: str, values: set[str]) -> dict[str, dict]:
+        result = {}
+        for value in sorted(values, key=lambda item: (item == "unknown", item)):
+            selected = [
+                row for row in runs
+                if (str(row[key]) if row[key] is not None else "unknown") == value
+            ]
+            totals = _gate_totals(selected)
+            totals["by_tier"] = {
+                tier: _gate_totals([row for row in selected if row["tier"] == tier])
+                for tier in ("attempt", "pr", "release", "unknown")
+                if any(row["tier"] == tier for row in selected)
+            }
+            result[value] = totals
+        return result
+
+    by_ticket = grouped("ticket", tickets)
+    by_host = grouped("host", hosts)
+    for ticket, totals in by_ticket.items():
+        selected = [run for run in runs
+                    if (str(run["ticket"]) if run["ticket"] is not None else "unknown") == ticket]
+        ticket_hosts = hosts | {run["host"] for run in selected}
+        totals["by_host"] = {
+            host: _gate_totals([run for run in selected if run["host"] == host])
+            for host in sorted(ticket_hosts)
+        }
+    return {"by_ticket": by_ticket, "by_host": by_host}
+
+
+def enrich_ticket_rows(ticket_rows: list[dict], journal_rows: list[dict]) -> None:
+    """Add merge classification and gate cost while retaining the default JSON list."""
+    receipts = _merge_receipts(journal_rows)
+    costs = gate_cost_metrics(journal_rows)
+    empty_hosts = {
+        host: _gate_totals([]) for host in costs["by_host"]
+    }
+    for row in ticket_rows:
+        receipt = receipts.get(("ticket", row["ticket"]))
+        work_type = receipt.get("work_type") if receipt else None
+        row["work_type"] = work_type if work_type in WORK_TYPES else None
+        row["work_type_source"] = (
+            receipt.get("work_type_source")
+            if row["work_type"] is not None
+            and receipt and isinstance(receipt.get("work_type_source"), str) else None
+        )
+        empty = {**_gate_totals([]), "by_tier": {}, "by_host": empty_hosts.copy()}
+        row["gate_cost"] = costs["by_ticket"].get(str(row["ticket"]), empty)
+
+    counts = _ticket_work_metrics(ticket_rows, journal_rows)
+    for row in ticket_rows:
+        if row.get("state") != "merged":
+            row["work_type_count"] = None
+            row["work_type_percentage"] = None
+            continue
+        key = row["work_type"] or "unknown"
+        row["work_type_count"] = counts["counts"][key]
+        row["work_type_percentage"] = counts["percentages"][key]
+
+
+def print_work_types(metrics: dict[str, Any]) -> None:
+    print("\nWork classes")
+    print("type          count  percentage")
+    for work_type in (*WORK_TYPES, "unknown"):
+        percentage = metrics["percentages"][work_type]
+        shown = "n/a" if percentage is None else f"{percentage:.1f}%"
+        print(f"{work_type:<13} {metrics['counts'][work_type]:>5}  {shown:>10}")
+
+
+def print_gate_cost(metrics: dict[str, Any]) -> None:
+    def table(title: str, groups: dict[str, dict]) -> None:
+        print(f"\nGate cost by {title}")
+        print(f"{title:<10} total  reruns  wall seconds  rerun seconds  rerun share  rerun wall share")
+        for name, values in groups.items():
+            reruns = str(values["rerun_count"]) if values["rerun_count"] is not None else "unknown"
+            wall = (f"{values['total_wall_time_seconds']:.1f}"
+                    if values["total_wall_time_seconds"] is not None else "unknown")
+            rerun_wall = (f"{values['rerun_wall_time_seconds']:.1f}"
+                          if values["rerun_wall_time_seconds"] is not None else "unknown")
+            share = "unknown" if values["rerun_share"] is None else f"{100 * values['rerun_share']:.1f}%"
+            wall_share = ("unknown" if values["rerun_wall_time_share"] is None
+                          else f"{100 * values['rerun_wall_time_share']:.1f}%")
+            print(f"{name:<10} {values['total_count']:>5}  {reruns:>7}  "
+                  f"{wall:>12}  {rerun_wall:>13}  {share:>11}  {wall_share:>16}")
+
+    table("ticket", metrics["by_ticket"])
+    table("host", metrics["by_host"])
+
+
+def _ticket_work_metrics(rows: list[dict], journal_rows: list[dict]) -> dict[str, Any]:
+    return work_type_metrics([
+        *journal_rows,
+        *({"event": "merged", "ticket": row["ticket"], "work_type": row.get("work_type")}
+          for row in rows if row.get("state") == "merged"),
+    ])
 SKILL_AFTER_CALLS = 10
 
 
@@ -632,10 +906,13 @@ def make_row(
     }
 
 
-def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
+def collect_rows(
+    progress: bool = False, journal_rows: list[dict] | None = None,
+) -> list[dict[str, Any]]:
     """One row per agent PR, open escalated/queued issue, and journaled ticket. Per-ticket
     reads (issue, PR comments, timeline) run on WORKERS threads; `progress` counts them on stderr."""
-    audit = audit_by_ticket(cfg.factory / "events.jsonl")
+    journal_rows = lifecycle.read_events(cfg.factory / "events.jsonl") if journal_rows is None else journal_rows
+    audit = audit_by_ticket(cfg.factory / "events.jsonl", journal_rows)
     pulls: dict[int, dict] = {}
     for pull_request in gh("pr", "list", "--state", "all", "--limit", "1000",
                            "--json", "number,state,headRefName,mergedAt"):
@@ -698,7 +975,9 @@ def collect_rows(progress: bool = False) -> list[dict[str, Any]]:
         if any(event.get("event") == "review" for event in audit.get(number, [])):
             row["rework_rounds"] = rework_rounds(audit.get(number, []))
 
-    return [rows[number] for number in sorted(rows)]
+    result = [rows[number] for number in sorted(rows)]
+    enrich_ticket_rows(result, journal_rows)
+    return result
 
 
 def promotions(path: Path) -> list[dict]:
@@ -996,11 +1275,16 @@ def main(argv: list[str]) -> int:
     if args.week:
         now = _now()
         start = now - timedelta(days=7)
-        journal_rows = window_rows(lifecycle.read_events(journal), start, now)
+        all_rows = lifecycle.read_events(journal)
+        journal_rows = window_rows(all_rows, start, now)
         rows = weekly_metrics(
             journal_rows, start, now,
             cfg.llm_model if config.local_endpoint(cfg.llm_url) else None,
         )
+        rows["work_types"] = work_type_metrics(journal_rows)
+        rows["merges"] = rows["work_types"]["total"]
+        rows["human_touches_per_merge"] = rows["human_touches"] / rows["merges"] if rows["merges"] else None
+        rows["gate_cost"] = gate_cost_metrics(all_rows, start, now)
         rows.setdefault("skills", skill_metrics(journal_rows))
         rows.setdefault("skill_coverage", skill_coverage(journal_rows))
         rows["stuck_over_days"] = stuck_over_days(now)
@@ -1018,6 +1302,8 @@ def main(argv: list[str]) -> int:
                   f"{rows['review_nonconvergence_share_denominator']})")
             print(f"Local token share: {rows['local_token_share']}; missing usage: {rows['usage_missing']}")
             print(f"Stuck over 7 days: {rows['stuck_over_days']}")
+            print_work_types(rows["work_types"])
+            print_gate_cost(rows["gate_cost"])
             print_skills(rows["skills"], rows["skill_coverage"])
         return 0
     if args.stages:
@@ -1048,7 +1334,10 @@ def main(argv: list[str]) -> int:
             },
         )
     else:
-        rows = collect_rows(progress=not args.quiet)
+        journal_rows = lifecycle.read_events(journal)
+        rows = collect_rows(progress=not args.quiet, journal_rows=journal_rows)
+        default_work_types = _ticket_work_metrics(rows, journal_rows)
+        default_gate_cost = gate_cost_metrics(journal_rows)
     if args.json:
         print(json.dumps(rows, indent=2))
     elif args.escapes:
@@ -1063,6 +1352,8 @@ def main(argv: list[str]) -> int:
         print_risk_metrics(rows)
     else:
         print_table(rows)
+        print_work_types(default_work_types)
+        print_gate_cost(default_gate_cost)
         totals = human_touch_metrics(rows)
         human = totals["human_resolved_pct"]
         print(f"\nWorker tokens: {worker_tokens(rows)}")

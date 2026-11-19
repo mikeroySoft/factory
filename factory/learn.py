@@ -1547,7 +1547,7 @@ def _reconcile_human_merges(
         try:
             state = dispatch.gh_json([
                 "pr", "view", str(n), "--repo", cfg.repo,
-                "--json", "state,mergedBy,headRefName,headRefOid",
+                "--json", "state,mergedBy,headRefName,headRefOid,labels",
             ])
         except Exception as exc:  # noqa: BLE001 - reconciliation never blocks the merge stage
             dispatch.log(f"PR #{n}: could not reconcile promotion state ({type(exc).__name__}: {exc})")
@@ -1574,6 +1574,7 @@ def _reconcile_human_merges(
             dispatch.record(
                 "merged", pr=n, head=current_head, branch=branch,
                 method="external", by="human", actor=actor,
+                **dispatch.merge_work_type(state.get("labels", [])),
             )
             events.append({
                 "event": "merged",
@@ -1793,7 +1794,8 @@ def promote(cfg: config.Config, pr: dict, events: list[dict], dry_run: bool) -> 
             fields = {"restored_score": restored_score} if restored_score is not None else {}
             dispatch.record("approved", pr=n, head=head, branch=branch, gate_head=head,
                             review_head=None if restored_score is not None else head, **fields)
-        dispatch.record("merged", pr=n, head=head, branch=branch, method="squash", by="factory")
+        dispatch.record("merged", pr=n, head=head, branch=branch, method="squash", by="factory",
+                        **dispatch.merge_work_type(pr.get("labels", [])))
     events.append({"event": "merged", "pr": n, "head": head, "branch": branch, "method": "squash"})
     dispatch.log(f"PR #{n}: merged {branch} into {cfg.main}")
     _open_promotion(events, n, branch, head, False)
