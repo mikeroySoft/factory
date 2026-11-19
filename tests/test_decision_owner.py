@@ -1,7 +1,7 @@
 """Decision-owner section boundaries through the routing entry point."""
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from factory import config, plan
