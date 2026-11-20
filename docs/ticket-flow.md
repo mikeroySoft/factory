@@ -204,6 +204,10 @@ foreign claim has expired. It releases that nonce through the dispatcher's
 eligibility or refresh. The old claim comments remain evidence; the takeover
 journal records the foreign host and nonce. A live foreign claim still blocks,
 and a non-land host never enters landing.
+If a takeover refresh requeues a conflict, its retained local claim stops
+heartbeating; worker admission waits for that claim's normal TTL to expire.
+An unchanged head with only the other host's journal evidence also goes through
+the normal gate and review path to establish local exact-head approval evidence.
 
 The guarded `release_claim` named action uses the same expired-claim release
 transition after confirmation, with a fresh claim check at apply. It refuses
@@ -218,6 +222,7 @@ requires re-gating and re-review at the new head before re-approval and landing.
 | `decisions._plan_request` | `*` | `*` | Human action; labels limited to `decisions.ACT_LABELS`, `factory-approved` routed to `decisions._approve` |
 | `decisions._withdraw_approval` | `factory-approved` | — | Human approve step found the PR changed |
 | `dispatch.acquire_host_claim` | — | `*` | Add this host's `host:<name>` label before the comment election |
+| `dispatch.release_expired_claim` | expired owner's `host:<name>` | `ready-for-agent` | Dispatcher `unclaim` transition for confirmed release or land-host takeover; preserves claim comments |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
 | `dispatch.delete_host_claim` | `*` | `*` | Remove the host label before deleting its last claim; restore it if comment deletion fails and the claim remains |
 | `dispatch._record_rework` | `ready-for-human` | `ready-for-agent` | Deferred actionable findings: durable round charged, packet retained, owner queue cleared and assignee removed for the next pass |

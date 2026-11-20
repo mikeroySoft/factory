@@ -118,14 +118,51 @@ class LandClaimTakeoverTest(unittest.TestCase):
         self.assertTrue(self.github.merged)
         self.assert_no_deletes()
 
-    def test_expired_takeover_cannot_supply_missing_exact_head_approval(self):
-        tank = self.dispatcher("tank")
+    def test_foreign_journal_is_replaced_by_fresh_local_proof_before_unchanged_head_lands(self):
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        head = self.approve(ultron)
         self.claim("ultron", age=3 * 3600)
+        self.assertFalse(tank.EVENTS.exists())
+        with mock.patch.object(tank, "run_gate", return_value=(True, "fresh local gate")) as gate, \
+                mock.patch.object(tank, "review", wraps=tank.review) as review:
+            tank.land_pass(False)
+        self.assertFalse(self.github.merged)
+        self.assertEqual(self.github.head(), head)
+        gate.assert_called_once()
+        self.assertEqual(review.call_args.args[-1], head)
+        self.assertEqual([row["head"] for row in self.events(tank, "refreshed")], [head])
+        self.assertEqual([row["head"] for row in self.events(tank, "review")], [head])
+        self.assertEqual([row["head"] for row in self.events(tank, "approved")], [head])
+        self.assertEqual(self.events(tank, "escalate"), [])
+        tank.land_pass(False)
+        self.assertTrue(self.github.merged)
+        self.assertEqual([row["head"] for row in self.events(tank, "merged")], [head])
+        self.assert_no_deletes()
+
+    def test_unclaimed_pr_still_refuses_missing_exact_head_approval(self):
+        tank = self.dispatcher("tank")
         with mock.patch.object(tank, "escalate") as escalate:
             tank.land_pass(False)
         self.assertFalse(self.github.merged)
         self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
         self.assertEqual(escalate.call_args.kwargs["code"], "approval_missing")
+
+    def test_expired_takeover_cannot_supply_missing_exact_head_approval(self):
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        self.approve(ultron)
+        self.claim("ultron", age=3 * 3600)
+        tank.cfg.reviewer = [
+            sys.executable, "-c",
+            "print('```json\\n{\"verdict\":\"REVISE\",\"findings\":[]}\\n```\\nVERDICT: REVISE')",
+        ]
+        with mock.patch.object(tank, "run_gate", return_value=(True, "fresh local gate")), \
+                mock.patch.object(tank, "escalate") as escalate:
+            tank.land_pass(False)
+        self.assertFalse(self.github.merged)
+        self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+        self.assertEqual(escalate.call_args.kwargs["code"], "review_revise")
+        self.assertEqual(self.events(tank, "approved"), [])
+        self.assertEqual([row["verdict"] for row in self.events(tank, "review")], ["REVISE"])
         self.assert_no_deletes()
 
     def test_changed_remote_head_cannot_use_old_approval(self):

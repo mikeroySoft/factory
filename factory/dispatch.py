@@ -5088,10 +5088,12 @@ def merge_pass_locked(dry_run: bool) -> None:
                         and e.get("review_head") == head
                         for e in events
                     )
-                    log(
-                        f"PR #{pr_num}: would "
-                        f"{'merge' if approved else 'refuse (missing SHA-bound approval evidence)'}"
+                    action = (
+                        "merge" if approved else
+                        "refresh (fresh local gate and review required after takeover)" if foreign is not None else
+                        "refuse (missing SHA-bound approval evidence)"
                     )
+                    log(f"PR #{pr_num}: would {action}")
                 return
             run(["git", "fetch", "origin", cfg.main, f"agent/{n}"], cwd=ROOT)
             if UPSTREAM is None:
@@ -5152,6 +5154,15 @@ def merge_pass_locked(dry_run: bool) -> None:
                 and e.get("review_head") == head
                 for e in events
             )
+            if not approved and foreign is not None:
+                record_merge_decision(
+                    n, pr_num, "refresh branch",
+                    f"land-host takeover requires fresh local gate and review evidence for {head}",
+                    head, None, checks,
+                )
+                if refresh_pr_branch(n, pr_num, carries_upstream):
+                    execution.outcome = "refreshed"
+                return
             if not approved:
                 record_merge_decision(
                     n, pr_num, "remove stale factory-approved label",
