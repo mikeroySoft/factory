@@ -10,6 +10,7 @@ import argparse
 import ast
 import fcntl
 import fnmatch
+import itertools
 import json
 import math
 import os
@@ -1182,7 +1183,9 @@ def toolchain() -> dict[str, str]:
 
 def execute(args: argparse.Namespace, execution) -> int:
     global CHECK_TIMEOUT
-    head = config.git(None, "rev-parse", "HEAD") if args.tier == "attempt" else None
+    head = None
+    if args.tier == "attempt":
+        head = timed(["git", "rev-parse", "--verify", "-q", "HEAD"]).stdout.strip() or "unavailable"
     host = toolchain()
     execution.emit("toolchain", **host)
     if args.base is None:
@@ -1241,7 +1244,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     def command(check: config.Check) -> list[str]:
         blocking = args.blocking_mutation and (check.name == "mutation" or proved(check))
         cmd = [*check.run, *(["--blocking"] if blocking else [])]
-        if args.tier == "attempt" and ("-m", "unittest") in zip(cmd, cmd[1:]):
+        if args.tier == "attempt" and ("-m", "unittest") in itertools.pairwise(cmd):
             cmd.append("--verbose")  # unittest's default progress omits skipped-test names
         return cmd
 
