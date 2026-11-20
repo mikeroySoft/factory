@@ -69,3 +69,26 @@ class MissingPrTest(unittest.TestCase):
             compose.assert_not_called()
             self.assertEqual(len(self.paths), 3)
             self.assertFalse(any("command failed" in call.args[0] for call in self.logs.call_args_list))
+
+
+class LookupScopeTest(unittest.TestCase):
+    def test_required_lookup_still_logs_after_optional_lookup(self):
+        cmd = ["gh", "pr", "view", "agent/7"]
+        error = subprocess.CalledProcessError(1, cmd, stderr='no pull requests found for branch "agent/7"')
+        with mock.patch.object(dispatch, "_run", side_effect=error), mock.patch.object(dispatch, "log") as log:
+            with dispatch.optional_pr_lookup("agent/7"):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    dispatch.run(cmd)
+            log.assert_not_called()
+            with self.assertRaises(subprocess.CalledProcessError):
+                dispatch.run(cmd)
+            self.assertIn("command failed (exit 1)", log.call_args.args[0])
+
+    def test_different_command_inside_scope_still_logs(self):
+        cmd = ["gh", "issue", "view", "agent/7"]
+        error = subprocess.CalledProcessError(1, cmd, stderr='no pull requests found for branch "agent/7"')
+        with mock.patch.object(dispatch, "_run", side_effect=error), mock.patch.object(dispatch, "log") as log:
+            with dispatch.optional_pr_lookup("agent/7"):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    dispatch.run(cmd)
+            self.assertIn("command failed (exit 1)", log.call_args.args[0])

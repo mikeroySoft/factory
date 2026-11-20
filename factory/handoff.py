@@ -93,7 +93,8 @@ def observe(cfg, n: int, escalation: dict) -> dict | None:
     reason = "ci" if code == "ci_failed" else "implementation"
     pr, paths = None, []
     try:
-        pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", cfg.repo, "--json", "url,files"], missing_pr=True)
+        with dispatch.optional_pr_lookup(f"agent/{n}"):
+            pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", cfg.repo, "--json", "url,files"])
         paths = [f["path"] for f in pr.get("files") or [] if isinstance(f, dict) and f.get("path")][:plan.PATHS]
     except (CalledProcessError, ValueError, AttributeError):
         pr = None
