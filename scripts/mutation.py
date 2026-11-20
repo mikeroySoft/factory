@@ -36,6 +36,7 @@ without a record path keep the historical changed_lines() and never import the h
 from __future__ import annotations
 
 import argparse
+import ast
 import collections
 import errno
 import json
@@ -240,12 +241,35 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
     with use_db(scratch / "session.sqlite") as db:
         cosmic_ray.commands.init([Path(p) for p in lines], db, {})
         items = list(db.work_items)
-    source = {path: Path(path).read_text().splitlines() for path in lines}
+    source = {}
+    annotations = {}
+    for path in lines:
+        text = Path(path).read_text()
+        source[path] = text.splitlines()
+        tree = ast.parse(text)
+        if not any(isinstance(node, ast.ImportFrom) and node.module == "__future__"
+                   and any(name.name == "annotations" for name in node.names)
+                   for node in tree.body):
+            continue
+        spans = []
+        for node in ast.walk(tree):
+            annotation = getattr(node, "annotation", None) or getattr(node, "returns", None)
+            if annotation is not None:
+                spans.append(((annotation.lineno, annotation.col_offset),
+                              (annotation.end_lineno, annotation.end_col_offset)))
+        annotations[path] = spans
 
     def key(m):
         return (str(m.module_path), m.start_pos, m.end_pos, m.operator_name, m.occurrence)
 
     def applicable(m):
+        path = str(m.module_path)
+        if annotations.get(path):
+            # AST columns are UTF-8 byte offsets; cosmic-ray columns count characters.
+            start, end = ((row, len(source[path][row - 1][:column].encode()))
+                          for row, column in (m.start_pos, m.end_pos))
+            if any(left <= start and end <= right for left, right in annotations[path]):
+                return False
         # cosmic-ray 8.7.0's ExceptionReplacer crashes on a dotted name (`config.ConfigError`)
         # in an except clause; its span is then not a bare identifier.
         if not m.operator_name.endswith("ExceptionReplacer"):
@@ -360,7 +384,66 @@ def load_equivalents(path: str | None) -> dict[tuple, dict]:
         if key in reviewed:
             raise ValueError(f"entry {index}: duplicate equivalent")
         reviewed[key] = entry
-    return reviewed
+    return resolve_equivalents(path, reviewed)
+
+
+def resolve_equivalents(path: str | None, reviewed: dict[tuple, dict]) -> dict[tuple, dict]:
+    """The registry's last committed revision pins its reviewed source windows.
+
+    Untracked, ad-hoc registries have no reviewed window: keep them line-pinned,
+    never guess a relocation from the candidate's own context.
+    """
+    if not reviewed:
+        return reviewed
+    revision = subprocess.run(
+        ["git", "log", "-1", "--format=%H", "--", path],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    if not revision:
+        return reviewed
+    if subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip() != "false":
+        raise ValueError("equivalent context requires complete Git history")
+    sources = {}
+    resolved = {}
+    for key, entry in reviewed.items():
+        file, line, operator, original, mutated = key
+        if file not in sources:
+            reference = subprocess.run(
+                ["git", "show", f"{revision}:{file}"],
+                capture_output=True, text=True, check=True,
+            ).stdout.splitlines()
+            try:
+                current = Path(file).read_text().splitlines()
+            except (OSError, UnicodeError):
+                current = []
+            sources[file] = reference, current
+        reference, current = sources[file]
+        expected = original.split("\n")
+        start, end = line - 1, line - 1 + len(expected)
+        left, right = max(0, start - 3), min(len(reference), end + 3)
+        window = reference[left:right]
+        matches = [
+            offset + start - left + 1
+            for offset in range(len(current) - len(window) + 1)
+            if reference[start:end] == expected
+            and current[offset:offset + len(window)] == window
+            # Missing neighbours at BOF/EOF are boundaries, not wildcard context.
+            and (start >= 3 or offset == 0)
+            and (end + 3 <= len(reference) or offset + len(window) == len(current))
+        ]
+        if len(matches) != 1:
+            print(f"stale equivalent: {file}:{line}: {operator} "
+                  f"{original!r} -> {mutated!r} ({len(matches)} source/context matches)")
+            raise ValueError("expected exactly one reviewed source/context window")
+        relocated = matches[0]
+        if relocated != line:
+            print(f"relocated equivalent: {file}:{line} -> {relocated}: {operator} "
+                  f"{original!r} -> {mutated!r} (context revision {revision})")
+        resolved[(file, relocated, operator, original, mutated)] = {**entry, "line": relocated}
+    return resolved
 
 
 def mutation_key(mutation, result) -> tuple:
@@ -414,6 +497,8 @@ def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: boo
     parser = argparse.ArgumentParser()
     parser.add_argument("--blocking", action="store_true")
     parser.add_argument("--equivalents", metavar="FILE", help="reviewed equivalent-mutants JSON file")
+    parser.add_argument("--check-equivalents", action="store_true",
+                        help="validate reviewed source/context without selecting or running mutants")
     parser.add_argument("--test-module", default=None)
     parser.add_argument("--duration", type=total_duration, default=None, metavar="SECONDS",
                         help="explicit total: the deadline is SECONDS - RESERVE after the anchor, "
@@ -428,13 +513,17 @@ def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: boo
         return 1
     try:
         reviewed = load_equivalents(args.equivalents)
-    except (OSError, ValueError, TypeError) as exc:
+    except (OSError, ValueError, TypeError, subprocess.CalledProcessError) as exc:
         print(f"invalid equivalents: {exc}")
         outcome.update(status="error", reason="invalid-equivalents")
         return 1
     if stale_equivalents(reviewed, set()):
         outcome.update(status="error", reason="stale-equivalents")
         return 1
+    if args.check_equivalents:
+        print(f"equivalents: {len(reviewed)} validated")
+        outcome.update(status="complete", reason="equivalents-validated")
+        return 0
     computed: list = []
     lines = scope_lines(base, computed) if proof else changed_lines()
     # The exact scope the lines below came from (absent only when scope_lines is replaced).

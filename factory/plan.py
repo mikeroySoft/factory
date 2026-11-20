@@ -180,6 +180,7 @@ class Reader:
         # 1. explicit per-ticket override
         declared = next((text for name, text in _sections(body) if name == "Decision owner"), None)
         if declared is not None:
+            declared = re.split(r"\r?\n[ \t]*\r?\n|^ {0,3}#{1,6}(?:[ \t]+|$)", declared, maxsplit=1, flags=re.MULTILINE)[0].strip()
             match = config.OWNER.fullmatch(declared)
             if step("decision_owner", "selected" if match else "invalid",
                     f"ticket body declares {declared!r}" + ("" if match else ": not a GitHub login or @org/team"),

@@ -591,6 +591,32 @@ def _release_exclusive(execution, lock) -> None:
 
 
 
+def check_mutation_equivalents(checks: list[config.Check]) -> tuple[bool, str]:
+    """Validate configured registries during the attempt gate, before PR proof work."""
+    outputs = []
+    for check in checks:
+        index = check.run.index("scripts/mutation.py")
+        path = check.run[check.run.index("--equivalents") + 1]
+        # Use the established validator interface, not a version-specific CLI flag.
+        command = [
+            *check.run[:index], "-c",
+            ("import runpy, sys; producer = runpy.run_path(sys.argv[1]); "
+             "reviewed = producer['load_equivalents'](sys.argv[2]); "
+             "sys.exit(producer['stale_equivalents'](reviewed, set()))"),
+            check.run[index], path,
+        ]
+        passed, output = run(command)
+        outputs.append(output)
+        execution = lifecycle.current()
+        if execution:
+            for line in output.splitlines():
+                if line.startswith("relocated equivalent:"):
+                    execution.emit("equivalent-relocation", detail=line)
+        if not passed:
+            return False, "\n".join(outputs)
+    return True, "\n".join(outputs)
+
+
 def check_conflict_markers() -> tuple[bool, str]:
     proc = timed(
         # Exactly-7-char markers only; long ===== separator lines are legit.
@@ -1345,8 +1371,14 @@ def execute(args: argparse.Namespace, execution) -> int:
         (check.name, (lambda c=check: run_proved(c)) if proved(check) else (lambda c=check: run(command(c))))
         for check in listed
     ]
+    registries = [
+        check for check in cfg.checks
+        if "scripts/mutation.py" in check.run and "--equivalents" in check.run
+    ]
     checks = [
         ("conflict-markers", check_conflict_markers),
+        *([("mutation-equivalents", lambda: check_mutation_equivalents(registries))]
+          if registries else []),
         *configured,
         ("leak-scan", lambda: check_leaks(args.upstream[0] if args.upstream else args.base)),
     ] if args.tier == "attempt" else configured
