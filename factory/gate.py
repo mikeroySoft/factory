@@ -1230,6 +1230,7 @@ def toolchain() -> dict[str, str]:
 
 def execute(args: argparse.Namespace, execution) -> int:
     global CHECK_TIMEOUT
+    head = config.git(None, "rev-parse", "HEAD") if args.tier == "attempt" else None
     host = toolchain()
     execution.emit("toolchain", **host)
     if args.base is None:
@@ -1288,7 +1289,10 @@ def execute(args: argparse.Namespace, execution) -> int:
 
     def command(check: config.Check) -> list[str]:
         blocking = args.blocking_mutation and (check.name == "mutation" or proved(check))
-        return [*check.run, *(["--blocking"] if blocking else [])]
+        cmd = [*check.run, *(["--blocking"] if blocking else [])]
+        if args.tier == "attempt" and ("-m", "unittest") in zip(cmd, cmd[1:]):
+            cmd.append("--verbose")  # unittest's default progress omits skipped-test names
+        return cmd
 
     def run_proved(check: config.Check) -> tuple[bool, str]:
         duration = args.mutation_duration
@@ -1367,6 +1371,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                    for name, (status, binding) in proofs.items()]
     lines = [
         "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "",
+        *([f"Head SHA: {head}", ""] if head is not None else []),
         *([*proof_lines, ""] if proof_lines else []),
         *[f"Mutation slot wait: {name} {waited:.3f}s" for name, waited in slot_waits.items()],
         "## Host toolchain",
@@ -1376,6 +1381,13 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, _ in results:
         lines.append(f"- {name}: {status}")
     for name, status, output in results:
+        if args.tier == "attempt" and status == "PASS":
+            evidence = re.findall(
+                r"^Ran \d+ tests?\b[^\n]*|^(?:[^\n]+ \([^\n]+\)\n)?[^\n]* \.\.\. skipped [^\n]*",
+                output, re.MULTILINE,
+            )
+            if evidence:
+                lines += ["", f"## {name} test evidence", "```", *evidence, "```"]
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
         # them only through this report, so keep their output when they pass too.
         if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):

@@ -402,6 +402,7 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 "        pass\n"
                 "    @unittest.skip('needs network')\n"
                 "    def test_b_network(self):\n"
+                "        \"\"\"Network-only acceptance.\"\"\"\n"
                 "        pass\n"
                 "    def test_z_pass(self):\n"
                 "        print('noise\\n' * 100, file=sys.stderr)\n"
