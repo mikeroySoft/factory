@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import unittest
 from contextlib import chdir
@@ -183,4 +184,75 @@ class WorktreeResumeTest(unittest.TestCase):
         self.git("update-ref", "refs/remotes/origin/agent/7", child)
         self.assert_runs_at(self.parent)
         self.assertEqual(self.events_named("worktree-fast-forward"), [])
+
+    def failed_command(self, command, returncode=-15):
+        run = dispatch.run
+
+        def fail(cmd, *args, **kwargs):
+            if cmd == command:
+                if kwargs.get("check", True):
+                    raise subprocess.CalledProcessError(returncode, cmd, "", "injected command failure")
+                return subprocess.CompletedProcess(cmd, returncode, "", "injected command failure")
+            return run(cmd, *args, **kwargs)
+
+        return mock.patch.object(dispatch, "run", side_effect=fail)
+
+    def test_equal_worktree_accepts_keyword_ticket_number(self):
+        self.prepare()
+        with chdir(self.repo), mock.patch.dict("os.environ", self.env):
+            dispatch.configure(config.load(self.repo))
+            self.assertEqual(dispatch.ensure_worktree(n=7), self.wt)
+        self.assertEqual(self.git("-C", str(self.wt), "rev-parse", "HEAD").stdout.strip(), self.parent)
+
+    def test_interrupted_local_lookup_does_not_reuse_branch(self):
+        self.prepare()
+        self.git("worktree", "remove", str(self.wt))
+        with chdir(self.repo), mock.patch.dict("os.environ", self.env), \
+                self.failed_command(["git", "rev-parse", "--verify", "agent/7"]):
+            dispatch.configure(config.load(self.repo))
+            with self.assertRaises(subprocess.CalledProcessError):
+                dispatch.ensure_worktree(7)
+        self.assertFalse(self.wt.exists())
+        self.assertEqual(self.git("rev-parse", "agent/7").stdout.strip(), self.parent)
+
+    def test_interrupted_missing_remote_lookup_starts_from_main(self):
+        with chdir(self.repo), mock.patch.dict("os.environ", self.env), \
+                self.failed_command(["git", "rev-parse", "--verify", "origin/agent/7"]):
+            dispatch.configure(config.load(self.repo))
+            wt = dispatch.ensure_worktree(7)
+        self.assertEqual(
+            self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip(),
+            self.git("rev-parse", "origin/main").stdout.strip(),
+        )
+
+    def test_interrupted_ancestry_check_preserves_kept_head(self):
+        self.prepare()
+        remote = self.advance_remote()
+        with chdir(self.repo), mock.patch.dict("os.environ", self.env), \
+                self.failed_command(["git", "merge-base", "--is-ancestor", self.parent, remote]):
+            dispatch.configure(config.load(self.repo))
+            with self.assertRaises(dispatch.WorktreeRefused) as refused:
+                dispatch.ensure_worktree(7)
+        self.assertIn(self.parent, str(refused.exception))
+        self.assertIn(remote, str(refused.exception))
+        self.assertEqual(self.git("-C", str(self.wt), "rev-parse", "HEAD").stdout.strip(), self.parent)
+        self.assertEqual(self.events_named("worktree-fast-forward"), [])
+
+    def test_diverged_refresh_still_escalates_when_unapproval_fails(self):
+        self.prepare()
+        remote = self.advance_remote()
+        self.git("-C", str(self.wt), "commit", "--allow-empty", "-qm", "local fork")
+        local = self.git("rev-parse", "agent/7").stdout.strip()
+        with chdir(self.repo), mock.patch.dict("os.environ", self.env), \
+                self.failed_command(["gh", "pr", "edit", "70", "--repo", "local/smoke",
+                                     "--remove-label", "factory-approved"], returncode=1), \
+                mock.patch.object(dispatch, "run_gate") as gate:
+            dispatch.configure(config.load(self.repo))
+            self.assertFalse(dispatch.refresh_pr_branch(7, 70, False))
+        gate.assert_not_called()
+        [escalation] = self.events_named("escalate")
+        self.assertEqual(escalation["code"], "refresh_head")
+        self.assertIn(local, escalation["reason"])
+        self.assertIn(remote, escalation["reason"])
+        self.assertEqual(self.git("rev-parse", "agent/7").stdout.strip(), local)
 
