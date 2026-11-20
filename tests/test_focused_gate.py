@@ -265,6 +265,53 @@ class FocusedGateTest(unittest.TestCase):
                         self.assertNotIn("Focused tests: none recorded", report)
                         self.assertEqual(path.read_text(), "")
 
+    def test_unrecognized_configured_command_always_has_a_receipt(self):
+        for mode, status in (("pass", 0), ("fail", 3), ("timeout", 124), ("missing", 127)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                executable = Path(directory) / "repo" / "ctest"
+                command = [str(executable), "-R", "focused_test", "--output-on-failure"]
+                toml = TOML + '\n[[gate.check]]\nname = "focused"\nrun = ' + json.dumps(command) + '\n'
+                repo = repo_with_test(Path(directory), toml)
+                if mode != "missing":
+                    executable.write_text(
+                        f"#!{sys.executable}\n"
+                        + ("import time\ntime.sleep(60)\n" if mode == "timeout"
+                           else f"print('custom runner')\nraise SystemExit({status})\n")
+                    )
+                    executable.chmod(0o755)
+                head = git(repo, "rev-parse", "HEAD")
+                code, output, report = gate(repo, "--check-timeout", "1")
+                self.assertEqual(code, int(status != 0), report + output)
+                [line] = self.focused_lines(report)
+                for text in (
+                    shlex.join(command), "PASS" if status == 0 else "FAIL",
+                    "counts unavailable", f"exit={status}", f'head="{head}"', f'end-head="{head}"',
+                ):
+                    self.assertIn(text, line)
+                self.assertNotIn("STALE", line)
+                self.assertNotIn("Focused tests: none recorded", report)
+
+    def test_full_suite_receipt_is_separate_from_focused_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            command = [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
+            toml = TOML + '\n[[gate.check]]\nname = "test"\nrun = ' + json.dumps(command) + '\n'
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_suite.py").write_text(
+                "import unittest\nclass Suite(unittest.TestCase):\n"
+                "    def test_value(self):\n        self.assertEqual(2 + 2, 4)\n"
+            )
+            git(repo, "add", "tests/test_suite.py")
+            git(repo, "commit", "-qm", "suite test")
+            head = git(repo, "rev-parse", "HEAD")
+            code, output, report = gate(repo)
+            self.assertEqual(code, 0, report + output)
+            [line] = [line for line in report.splitlines() if line.startswith("Full suite:")]
+            for text in (shlex.join(command), "PASS", "Ran 1 test", head, "exit=0"):
+                self.assertIn(text, line)
+            self.assertNotIn("STALE", line)
+            self.assertEqual(self.focused_lines(report), [])
+            self.assertIn("Focused tests: none recorded", report.splitlines())
+
 
 if __name__ == "__main__":
     unittest.main()
