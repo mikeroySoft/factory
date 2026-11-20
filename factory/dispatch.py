@@ -5718,6 +5718,7 @@ def process_ticket(
                 pending_risk_requeue_head(n) if resolve == local_context else None
             )
             extra, logfile, report = resolve, None, ""
+            failed_gate_log = None
             staged = None if resolve else sync_staged(n, wt)
             if staged is not None:
                 report, gate_head = staged
@@ -5740,8 +5741,13 @@ def process_ticket(
                              code="protected_paths")
                     return
                 has_gate = _gate_has_result(report)
+                if has_gate:
+                    failed_gate_log = logfile
                 if not has_gate and report.startswith("budget exceeded"):
-                    escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
+                    if failed_gate_log is not None:
+                        escalate(n, f"gate failed; worktree kept at {wt}", failed_gate_log, code="gate_failed")
+                    else:
+                        escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
                     return
                 if time.monotonic() > deadline:
                     if has_gate:

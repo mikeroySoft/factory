@@ -1066,9 +1066,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    polling (5 s), worker SIGTERM grace (10 s), and finalization (5 s).
    A `round-budget` journal row records gate-reserved seconds, source
    (`last_gate` or `floor`), `stop_reserve_seconds`, remaining work window and admission.
-   If no work window remains, no worker or gate starts; the round ends as
-   `budget` with the worktree preserved. Admission is checked again immediately
-   before each process launch, including fallbacks, after prompt and worker setup.
+   If no work window remains, no worker or gate starts; the worktree is preserved.
+   An earlier failed gate keeps its failure classification; otherwise the round
+   ends as `budget`. Admission is checked again immediately before each process
+   launch, including fallbacks, after prompt and worker setup.
    Otherwise the watchdog uses the
    earlier work cutoff, leaving the reservation for the dispatcher's unchanged,
    full gate. A worker cut off at that point is still gated before any push.
@@ -1174,9 +1175,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    check timeout. Worker-round repairs share the remaining work window: each
    command's timeout is capped at that cutoff, preserving gate and finalization
    reserves. If no repair time remains, or that cutoff interrupts repairs, the
-   round ends as `budget`, not `gate_failed`; a `gate-fixup-budget` journal row
-   and the gate report identify commands not run or stopped. Partial changes
-   remain in the worktree without publication. If all commands succeed within
+   failed gate keeps its classification (`gate_failed` or `protected_paths`).
+   A `gate-fixup-budget` journal row and the gate report identify commands not run
+   or stopped. Partial changes remain in the worktree without publication.
+   If all commands succeed within
    the work window and change files, Factory commits those changes and re-runs
    the full gate with the same flags at the new SHA, without a round-budget kill.
    No changes, a command failure before the cutoff, or another failed gate leaves
