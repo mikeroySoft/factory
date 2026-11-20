@@ -46,6 +46,7 @@ ACT_LABELS = frozenset({
     LABEL_AGENT,
     LABEL_HUMAN,
     "wontfix",
+    "factory-held",
     LABEL_APPROVED,
 })
 CLOSE_REASONS = frozenset({"completed", "not planned"})
