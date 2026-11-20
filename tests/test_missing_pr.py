@@ -76,9 +76,8 @@ class LookupScopeTest(unittest.TestCase):
         cmd = ["gh", "pr", "view", "agent/7"]
         error = subprocess.CalledProcessError(1, cmd, stderr='no pull requests found for branch "agent/7"')
         with mock.patch.object(dispatch, "_run", side_effect=error), mock.patch.object(dispatch, "log") as log:
-            with dispatch.optional_pr_lookup("agent/7"):
-                with self.assertRaises(subprocess.CalledProcessError):
-                    dispatch.run(cmd)
+            with dispatch.optional_pr_lookup("agent/7"), self.assertRaises(subprocess.CalledProcessError):
+                dispatch.run(cmd)
             log.assert_not_called()
             with self.assertRaises(subprocess.CalledProcessError):
                 dispatch.run(cmd)
@@ -88,9 +87,8 @@ class LookupScopeTest(unittest.TestCase):
         cmd = ["gh", "issue", "view", "agent/7"]
         error = subprocess.CalledProcessError(1, cmd, stderr='no pull requests found for branch "agent/7"')
         with mock.patch.object(dispatch, "_run", side_effect=error), mock.patch.object(dispatch, "log") as log:
-            with dispatch.optional_pr_lookup("agent/7"):
-                with self.assertRaises(subprocess.CalledProcessError):
-                    dispatch.run(cmd)
+            with dispatch.optional_pr_lookup("agent/7"), self.assertRaises(subprocess.CalledProcessError):
+                dispatch.run(cmd)
             self.assertIn("command failed (exit 1)", log.call_args.args[0])
 
 
@@ -109,7 +107,7 @@ class ManagerLookupTest(unittest.TestCase):
                     cfg = config.Config(Path(tmp), "acme/widgets")
                     commands = []
 
-                    def command(cmd, *args):
+                    def command(cmd, *args, commands=commands, code=code, stderr=stderr):
                         commands.append(cmd)
                         if cmd[1:3] == ["pr", "view"]:
                             raise subprocess.CalledProcessError(code, cmd, stderr=stderr)
