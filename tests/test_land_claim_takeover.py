@@ -57,9 +57,9 @@ class LandClaimTakeoverTest(unittest.TestCase):
                                              f"at={datetime.now(UTC).isoformat()}")
             return row
 
-        with mock.patch.object(tank, "gh_json", side_effect=heartbeat_after_read):
-            with self.assertRaisesRegex(ValueError, "still live"):
-                tank.release_expired_claim(9)
+        with mock.patch.object(tank, "gh_json", side_effect=heartbeat_after_read), \
+                self.assertRaisesRegex(ValueError, "still live"):
+            tank.release_expired_claim(9)
         self.assertEqual(len(self.comments), 1)
         self.assertEqual(self.commands["tank"], [])
 
