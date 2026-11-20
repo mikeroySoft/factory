@@ -3971,8 +3971,8 @@ def approve_pr(n: int, head: str) -> bool:
 
     With `manager.review = "all"` the label additionally waits for a manager APPROVE
     bound to `head`; until the PR frontier obtains one this returns True without
-    labelling (nothing is wrong, so callers must not escalate). A refreshed head is a
-    new head and needs a fresh decision; nothing is ever re-bound.
+    labelling (nothing is wrong, so callers must not escalate). A held PR likewise
+    returns True without approval. A refreshed head needs a fresh decision.
     """
     events = lifecycle.read_events(EVENTS)
     if not _head_evidence_matches(events, n, head):
@@ -3980,8 +3980,11 @@ def approve_pr(n: int, head: str) -> bool:
     if cfg.manager and cfg.manager_review == "all" and not manager_approval(events, n, head):
         log(f"#{n}: gate and review passed at {head[:12]}; waiting for manager approval (manager.review = all)")
         return True
-    fields = "number,state,headRefOid,baseRefName,reviewDecision,files"
+    fields = "number,state,headRefOid,baseRefName,reviewDecision,files,labels"
     pr = gh_json(["pr", "view", f"agent/{n}", "--repo", REPO, "--json", fields])
+    if any(label["name"] == "factory-held" for label in pr.get("labels", [])):
+        log(f"#{n}: approval skipped (factory-held)")
+        return True
     changed_paths = [
         item["path"] for item in pr.get("files", [])
         if isinstance(item, dict) and isinstance(item.get("path"), str)
@@ -4011,8 +4014,10 @@ def approve_pr(n: int, head: str) -> bool:
     if changed.returncode:
         return False
     fresh = gh_json(["pr", "view", str(pr["number"]), "--repo", REPO, "--json", fields])
+    held = any(label["name"] == "factory-held" for label in fresh.get("labels", []))
     if (
-        fresh.get("state") != "OPEN"
+        held
+        or fresh.get("state") != "OPEN"
         or fresh.get("headRefOid") != head
         or fresh.get("baseRefName") != cfg.main
         or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
@@ -4022,7 +4027,9 @@ def approve_pr(n: int, head: str) -> bool:
              "--remove-label", FACTORY_APPROVED],
             check=False,
         )
-        return False
+        if held:
+            log(f"#{n}: approval withdrawn (factory-held)")
+        return held
     if not manager_approval(events, n, head):
         from factory import trace
 
