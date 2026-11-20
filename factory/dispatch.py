@@ -2561,6 +2561,8 @@ def escalate(
         body = f"{first}\nFactory requeue: nonce={elected['nonce']}\n{rest}"
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
+    if code == "protected_paths" and extra:
+        body += "\n\n" + extra.partition("\n\n")[0]
     handoff = wt / ".factory" / f"handoff-{n}.md"
     if handoff.exists():
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
@@ -5485,6 +5487,10 @@ def transcript_usage(path: Path) -> dict:
     return usage
 
 
+def _gate_has_result(report: str) -> bool:
+    return bool(re.search(r"(?m)^- [^:\n]+: (?:PASS|FAIL|SKIP)\b", report.partition("```")[0]))
+
+
 def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
     summary = report.partition("```")[0]
     protected_tests = bool(re.search(r"(?m)^- protected-tests: FAIL\b", summary))
@@ -5723,23 +5729,23 @@ def process_ticket(
                 )
                 if ok:
                     break
-                if report.startswith("budget exceeded"):
-                    escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
-                    return
                 if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
                     reason = (
                         "worker removed or changed existing tests"
                         if tests else "worker edited protected paths"
                     )
-                    escalate(
-                        n, reason, logfile,
-                        extra=f"{guidance}\n\n## Offending diff\n\n{report}",
-                        code="protected_paths",
-                    )
+                    escalate(n, reason, logfile, extra=guidance, code="protected_paths")
+                    return
+                has_gate = _gate_has_result(report)
+                if not has_gate and report.startswith("budget exceeded"):
+                    escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
                     return
                 if time.monotonic() > deadline:
-                    escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
+                    if has_gate:
+                        escalate(n, f"gate failed; worktree kept at {wt}", logfile, code="gate_failed")
+                    else:
+                        escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
                     return
                 extra = f"{resolve}## Previous gate report (attempt {attempt} failed)\n\n{report}"
             else:
@@ -5848,20 +5854,16 @@ def process_ticket(
                     body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
                 )
-                if report.startswith("budget exceeded"):
-                    escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
-                    return
                 if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
                     reason = (
                         "worker removed or changed existing tests"
                         if tests else "worker edited protected paths"
                     )
-                    escalate(
-                        n, reason, logfile,
-                        extra=f"{guidance}\n\n## Offending diff\n\n{report}",
-                        code="protected_paths",
-                    )
+                    escalate(n, reason, logfile, extra=guidance, code="protected_paths")
+                    return
+                if not _gate_has_result(report) and report.startswith("budget exceeded"):
+                    escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
                     return
                 if not ok:
                     stuck = report.startswith("worker stuck")

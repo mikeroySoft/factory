@@ -470,7 +470,7 @@ class RoundGateBudgetTest(unittest.TestCase):
             self.assertNotIn("offending diff", escalation["reason"])
             self.assertIn("report-tail", (dispatch.FACTORY / "escalations/7.md").read_text())
             if check == "protected-paths":
-                for text in (escalation["reason"], comments[0], (dispatch.FACTORY / "escalations/7.md").read_text()):
+                for text in (comments[0], (dispatch.FACTORY / "escalations/7.md").read_text()):
                     self.assertIn("factory-protected-override", text)
                     self.assertIn("Human-only authority", text)
 

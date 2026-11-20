@@ -463,13 +463,19 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             comments=comments,
         )
         if not ok:
-            budget = report.startswith("budget exceeded")
-            reason = f"{report.splitlines()[0]}; budget_min / budget_exceeded" if budget else "gate failed after manager FIX"
-            code = "budget" if budget else "gate_failed"
-            if already_human:
-                dispatch.log(f"#{n}: manager FIX failed ({code}: {reason}); ticket is already ready-for-human")
+            labels = {label["name"] for label in issue.get("labels", [])}
+            guidance = dispatch._protected_gate_guidance(report, labels)
+            budget = not dispatch._gate_has_result(report) and report.startswith("budget exceeded")
+            if guidance:
+                reason, code = "gate blocked by protected paths after manager FIX", "protected_paths"
+            elif budget:
+                reason, code = f"{report.splitlines()[0]}; budget_min / budget_exceeded", "budget"
             else:
-                dispatch.escalate(n, reason, logfile, code=code)
+                reason, code = "gate failed after manager FIX", "gate_failed"
+            if already_human:
+                dispatch.log(f"#{n}: manager FIX failed ({code}: {reason}); {guidance or ''} ticket is already ready-for-human")
+            else:
+                dispatch.escalate(n, reason, logfile, extra=guidance or "", code=code)
             return
         fresh = dispatch.gh_json(
             ["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "baseRefName"]
