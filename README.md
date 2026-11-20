@@ -1690,6 +1690,24 @@ comment; human removals and later edits still hold automatic management.
 Expired claims are admitted through the frontier only when no other hold exists.
 A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
 hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
+Same-host claims from interrupted ticket executions are excluded from live leases
+and expired elections as soon as lifecycle evidence proves the execution interrupted
+(including an earlier boot) and the ticket lock is free. A dead dispatcher alone
+does not prove interruption: live children and unproven current-boot descendants
+retain the lease. Unknown exits are re-evaluated using the same evidence.
+New claims journal their nonce before publication; older claims match resolved
+ticket-lock paths and the latest acquisition before creation, independently of
+journal archive placement. GitHub creation timestamps have second precision;
+acquisitions within that second are also possible owners, and ambiguous ownership
+retains the hold. Closed lifecycle rows can expire while older interrupted runs
+survive; a later durable `claimed` receipt from another execution rules out
+legacy ownership inference and retains the hold even after that owner's lifecycle
+rows are pruned.
+Missing/unknown evidence, live owners, foreign claims and completed PR owners retain
+the usual holds. Admission rechecks
+under its own ticket lock, preserves the shared assignment until a replacement
+wins, then retires abandoned claims even when their old lease or PR would hold.
+This lets an owner resume requeue reuse its open PR on the first post-reboot pass.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
