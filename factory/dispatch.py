@@ -5735,7 +5735,9 @@ def process_ticket(
                         "worker removed or changed existing tests"
                         if tests else "worker edited protected paths"
                     )
-                    escalate(n, reason, logfile, extra=guidance, code="protected_paths")
+                    escalate(n, reason, logfile,
+                             extra=f"{guidance}\n\n## Offending diff\n\n{report[:6000]}",
+                             code="protected_paths")
                     return
                 has_gate = _gate_has_result(report)
                 if not has_gate and report.startswith("budget exceeded"):
@@ -5860,7 +5862,9 @@ def process_ticket(
                         "worker removed or changed existing tests"
                         if tests else "worker edited protected paths"
                     )
-                    escalate(n, reason, logfile, extra=guidance, code="protected_paths")
+                    escalate(n, reason, logfile,
+                             extra=f"{guidance}\n\n## Offending diff\n\n{report[:6000]}",
+                             code="protected_paths")
                     return
                 if not _gate_has_result(report) and report.startswith("budget exceeded"):
                     escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")

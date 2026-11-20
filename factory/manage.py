@@ -465,13 +465,9 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         if not ok:
             labels = {label["name"] for label in issue.get("labels", [])}
             guidance = dispatch._protected_gate_guidance(report, labels)
-            budget = not dispatch._gate_has_result(report) and report.startswith("budget exceeded")
-            if guidance:
-                reason, code = "gate blocked by protected paths after manager FIX", "protected_paths"
-            elif budget:
-                reason, code = f"{report.splitlines()[0]}; budget_min / budget_exceeded", "budget"
-            else:
-                reason, code = "gate failed after manager FIX", "gate_failed"
+            budget = not guidance and not dispatch._gate_has_result(report) and report.startswith("budget exceeded")
+            reason = f"{report.splitlines()[0]}; budget_min / budget_exceeded" if budget else "gate failed after manager FIX"
+            code = "protected_paths" if guidance else "budget" if budget else "gate_failed"
             if already_human:
                 dispatch.log(f"#{n}: manager FIX failed ({code}: {reason}); {guidance or ''} ticket is already ready-for-human")
             else:
