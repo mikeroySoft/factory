@@ -414,14 +414,14 @@ class RoundGateBudgetTest(unittest.TestCase):
             self.assertEqual(self.git("show", f"{head}:fixed.txt").stdout, "fixed\n")
             self.assertIn("Re-ran gate", report)
 
-    def assert_short_budget_escalation(self, mode):
+    def assert_gate_failure_precedes_fixup_budget(self, mode, check="protected-paths"):
         from factory import manage
 
         with chdir(self.repo), mock.patch.dict(os.environ, self.env):
             wt = self.configure_round()
             head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
             logfile = dispatch.LOGS / "7-attempt-1.log"
-            detail = "- protected-paths: FAIL\n\n" + "offending diff\n" * 6000 + "report-tail\n"
+            detail = f"- {check}: FAIL\n\n" + "offending diff\n" * 6000 + "report-tail\n"
             with mock.patch.object(dispatch.cfg, "fixups", [["must-not-run"]]):
                 ok, report, candidate = dispatch.retry_gate_fixups(
                     wt, 7, detail, head, work_deadline=0,
@@ -432,7 +432,16 @@ class RoundGateBudgetTest(unittest.TestCase):
             issue = dispatch.gh_json(["issue", "view", "7"])
             packet = self.repo / ".factory" / "manager-packet.md"
             packet.write_text("fix it")
-            with mock.patch.object(dispatch, "worker_round", side_effect=rounds), \
+            clock = [0]
+
+            def worker_round(*args, **kwargs):
+                result = rounds.pop(0)
+                if not result[0]:
+                    clock[0] = 61  # the failed gate also exhausted the round deadline
+                return result
+
+            with mock.patch.object(dispatch, "worker_round", side_effect=worker_round), \
+                    mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
                     mock.patch.object(dispatch, "log"), \
                     mock.patch.object(dispatch, "push_and_pr", return_value=True) as publish, \
                     mock.patch.object(dispatch, "push_agent") as push, \
@@ -450,26 +459,38 @@ class RoundGateBudgetTest(unittest.TestCase):
                 if call.args[0][:3] == ["gh", "issue", "comment"]
             ]
             self.assertEqual(len(comments), 1)
-            self.assertLess(len(comments[0]), 65536, "budget explanation must fit a GitHub comment")
-            self.assertIn("budget exceeded during mechanical fixups", comments[0])
-            self.assertIn("budget_min / budget_exceeded", comments[0])
+            self.assertLess(len(comments[0]), 65536, "gate explanation must fit a GitHub comment")
+            self.assertNotIn("budget_min / budget_exceeded", comments[0])
             self.assertNotIn("offending diff", comments[0])
             self.assertIn(detail, (wt / ".factory/gate-report-7.md").read_text())
             escalation, = [
                 row for row in lifecycle.read_events(self.events) if row.get("event") == "escalate"
             ]
-            self.assertEqual(escalation["code"], "budget")
+            self.assertEqual(escalation["code"], "protected_paths" if check == "protected-paths" else "gate_failed")
             self.assertNotIn("offending diff", escalation["reason"])
             self.assertIn("report-tail", (dispatch.FACTORY / "escalations/7.md").read_text())
+            if check == "protected-paths":
+                for text in (escalation["reason"], comments[0], (dispatch.FACTORY / "escalations/7.md").read_text()):
+                    self.assertIn("factory-protected-override", text)
+                    self.assertIn("Human-only authority", text)
 
-    def test_attempt_budget_escalation_keeps_large_report_out_of_comment(self):
-        self.assert_short_budget_escalation("attempt")
+    def test_attempt_gate_failure_precedes_fixup_budget(self):
+        self.assert_gate_failure_precedes_fixup_budget("attempt")
 
-    def test_bounce_budget_escalation_keeps_large_report_out_of_comment(self):
-        self.assert_short_budget_escalation("bounce")
+    def test_bounce_gate_failure_precedes_fixup_budget(self):
+        self.assert_gate_failure_precedes_fixup_budget("bounce")
 
-    def test_manager_fix_budget_escalation_keeps_large_report_out_of_comment(self):
-        self.assert_short_budget_escalation("manager")
+    def test_manager_fix_gate_failure_precedes_fixup_budget(self):
+        self.assert_gate_failure_precedes_fixup_budget("manager")
+
+    def test_attempt_generic_gate_failure_precedes_fixup_budget(self):
+        self.assert_gate_failure_precedes_fixup_budget("attempt", "code")
+
+    def test_bounce_generic_gate_failure_precedes_fixup_budget(self):
+        self.assert_gate_failure_precedes_fixup_budget("bounce", "code")
+
+    def test_manager_fix_generic_gate_failure_precedes_fixup_budget(self):
+        self.assert_gate_failure_precedes_fixup_budget("manager", "code")
 
     def test_floor_rejects_invalid_config_values(self):
         path = self.repo / ".factory.toml"
