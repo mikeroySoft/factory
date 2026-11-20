@@ -165,7 +165,7 @@ def _focused_evidence(receipt: dict | None = None) -> bytes:
 
 def test_command(
     cmd: list[str], *, command: str | None = None, cwd: Path | None = None,
-    pythonpath: Path | None = None,
+    pythonpath: Path | None = None, full_suite: bool = False,
 ) -> subprocess.CompletedProcess:
     """Capture executions for later reports; the worker-writable receipt file is unverified."""
     head = focused_head(cwd)
@@ -185,17 +185,17 @@ def test_command(
         output, re.MULTILINE,
     )
     has_counts = any(re.search(r"\d+ (?:tests?|passed|failed|errors?|skipped|deselected|xfailed|xpassed)", line) for line in summary)
-    if command is not None or has_counts or any(Path(token).name in ("unittest", "pytest", "test", "--test") for token in cmd):
-        receipt = {
-            "command": command if command is not None else shlex.join(cmd),
-            "head": head,
-            "end_head": focused_head(cwd),
-            "result": "PASS" if proc.returncode == 0 else "FAIL",
-            "counts": "; ".join(summary) if has_counts else "counts unavailable",
-            "exit": proc.returncode,
-        }
-        if error := _focused_evidence(receipt):
-            FOCUSED_UNSAVED.extend([error, json.dumps(receipt, ensure_ascii=False).encode() + b"\n"])
+    receipt = {
+        "command": command if command is not None else shlex.join(cmd),
+        "head": head,
+        "end_head": focused_head(cwd),
+        "result": "PASS" if proc.returncode == 0 else "FAIL",
+        "counts": "; ".join(summary) if has_counts else "counts unavailable",
+        "exit": proc.returncode,
+        "full_suite": full_suite,
+    }
+    if error := _focused_evidence(receipt):
+        FOCUSED_UNSAVED.extend([error, json.dumps(receipt, ensure_ascii=False).encode() + b"\n"])
     return proc
 
 
@@ -212,6 +212,7 @@ def focused_test_lines(head: str) -> list[str]:
                 or any(not isinstance(row.get(key), str) for key in ("command", "head", "end_head", "result", "counts"))
                 or row["result"] not in ("PASS", "FAIL")
                 or type(row.get("exit")) is not int
+                or type(row.get("full_suite", False)) is not bool
             ):
                 raise ValueError("invalid execution receipt")
             current = (
@@ -220,7 +221,8 @@ def focused_test_lines(head: str) -> list[str]:
             )
             binding = "" if current else f"STALE / revision mismatch (reported-head={head}) "
             lines.append(
-                f"Focused test: worker-recorded / unverified {binding}{row['result']} "
+                f"{'Full suite' if row.get('full_suite', False) else 'Focused test'}: "
+                f"worker-recorded / unverified {binding}{row['result']} "
                 f"({json.dumps(row['counts'], ensure_ascii=False)}; exit={row['exit']}) "
                 f"command={json.dumps(row['command'], ensure_ascii=False)} "
                 f"head={json.dumps(row['head'])} end-head={json.dumps(row['end_head'])}"
@@ -228,12 +230,14 @@ def focused_test_lines(head: str) -> list[str]:
         except ValueError:
             if "Focused tests: evidence unavailable (unreadable or invalid execution receipt)" not in lines:
                 lines.append("Focused tests: evidence unavailable (unreadable or invalid execution receipt)")
-    return lines or ["Focused tests: none recorded"]
+    if not lines or all(line.startswith("Full suite:") for line in lines):
+        lines.append("Focused tests: none recorded")
+    return lines
 
 
-def run(cmd: list[str]) -> tuple[bool, str]:
+def run(cmd: list[str], *, full_suite: bool = False) -> tuple[bool, str]:
     """Run a command, return (passed, combined output)."""
-    proc = test_command(cmd)
+    proc = test_command(cmd, full_suite=full_suite)
     execution = lifecycle.current()
     if execution and proc.returncode != 0 and execution.outcome == "completed":
         execution.outcome = "product_feedback"
@@ -1368,7 +1372,8 @@ def execute(args: argparse.Namespace, execution) -> int:
         return passed, output
 
     configured = [
-        (check.name, (lambda c=check: run_proved(c)) if proved(check) else (lambda c=check: run(command(c))))
+        (check.name, (lambda c=check: run_proved(c)) if proved(check) else
+         (lambda c=check: run(command(c), full_suite=c.name in ("test", "test-pr-tier"))))
         for check in listed
     ]
     registries = [

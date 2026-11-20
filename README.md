@@ -1149,11 +1149,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    main checkout's shared state directory); later dispatcher gates include
    each receipt on its own `Focused test:` line labelled `worker-recorded / unverified`:
    the file is worker-writable, so matching HEADs do not authenticate its contents.
-   Configured unittest, pytest (including absolute runner paths) and Cargo test commands
-   and recognized runner summaries are captured automatically, including bug-reproduction
-   runs. Failed launches and timeouts are retained even without a summary; unknown runner
-   counts are explicitly unavailable. Known bug-reproduction executions are recorded
-   even when imports fail or they time out before printing counts. Focused-command
+   Every configured command is captured automatically, without recognizing its
+   executable, argv or output; configured checks named `test` and `test-pr-tier`
+   use separate `Full suite:` receipt lines rather than `Focused test:` lines.
+   Bug-reproduction runs are also captured. Failed launches and timeouts are
+   retained even without a summary; unknown runner counts are explicitly unavailable.
+   Known bug-reproduction executions are recorded even when imports fail or they
+   time out before printing counts. Focused-command
    timeouts retain the lifecycle outcome `unknown / check_timeout`.
    Evidence reads inspect at most the newest 64 KiB, flag truncation or invalid rows,
    and continue to later valid receipts. Reads and appends reject symlinks and
@@ -1162,7 +1164,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    result and SHAs in the current gate's report with an evidence-unavailable warning;
    those receipts cannot be recovered by later gates from the file.
    Every report states its head and says `Focused tests: none recorded` when no
-   execution evidence exists, including early protection failures. Receipts from
+   focused execution evidence exists, even with full-suite receipts or early
+   protection failures. Receipts from
    another SHA, an unresolved SHA, or a command that changed HEAD are flagged
    `STALE / revision mismatch`, not current proof. Re-run after committing changes.
    Commands outside this capture path are not inferred from prose; manually written
