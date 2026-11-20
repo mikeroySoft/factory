@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 
-from factory import config, dispatch, lifecycle, runtime_events, stats
+from factory import config, dispatch, lifecycle, pause, runtime_events, stats
 
 LABELS = "bug,needs-triage"
 MAX_ISSUES = 5
@@ -747,6 +747,8 @@ def run_pass(
     cfg: config.Config, dry_run: bool = False, now: datetime | None = None,
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
+    if pause.check(cfg.root):
+        return []
     events = lifecycle.read_events(dispatch.EVENTS)
     if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
@@ -770,6 +772,8 @@ def run_pass(
     observed_signals = []
     actionable = []
     for signal in current:
+        if pause.check(cfg.root):
+            return observed_signals
         tier = signal.get("tier", "act")
         if tier == "act":
             actionable.append(signal)
@@ -802,6 +806,8 @@ def run_pass(
     listing = None
     filed = []
     for signal in actionable:
+        if pause.check(cfg.root):
+            return observed_signals + filed
         fp = signal["fingerprint"]
         if len(filed) >= MAX_ISSUES:
             dispatch.log(f"watch: deferring {fp} to the next pass (cap {MAX_ISSUES})")
@@ -858,6 +864,8 @@ def run_pass(
 
     closed = 0
     for fp, previous in filings.items():
+        if pause.check(cfg.root):
+            return filed
         if closed >= MAX_ISSUES:
             break
         repo = previous.get("repo", dispatch.REPO)
@@ -914,8 +922,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="print what would be filed or closed; no gh call, no journal row")
     args = parser.parse_args(argv)
     dispatch.configure(config.load())
+    if pause.check(dispatch.cfg.root):
+        return 0
     with nullcontext() if args.dry_run else lifecycle.scope(dispatch.EVENTS, "watch", lazy=True):
         run_pass(dispatch.cfg, args.dry_run)
-    if not args.dry_run:
+    if not args.dry_run and pause.read(dispatch.cfg.root) is None:
         lifecycle.record_stage_success(dispatch.EVENTS, "watch")
     return 0

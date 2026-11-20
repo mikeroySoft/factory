@@ -21,7 +21,7 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from factory import config, lifecycle, onboard
+from factory import config, lifecycle, onboard, pause
 from factory.config import (
     LABEL_AGENT,
     LABEL_APPROVED,
@@ -690,7 +690,10 @@ def probe_main(argv: list[str]) -> int:
         description="Probe the configured triage endpoint and restart its service after repeated failures.",
     )
     parser.parse_args(argv)
-    return run_probe(config.load())
+    c = config.load()
+    if pause.check(c.root):
+        return 0
+    return run_probe(c)
 
 
 def main(argv: list[str]) -> int:
@@ -707,6 +710,8 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     configure(config.load())
+    if pause.check(cfg.root):
+        return 0
     if cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host:
         print(f"triage: skipped, triage host is {cfg.triage_host}")
         return 0
@@ -716,12 +721,14 @@ def main(argv: list[str]) -> int:
         lifecycle.scope(cfg.factory / "events.jsonl", "triage", lazy=True) if recording else nullcontext()
     ) as execution:
         result = execute(args, execution)
-    if recording and result == 0:
+    if recording and result == 0 and pause.read(cfg.root) is None:
         lifecycle.record_stage_success(cfg.factory / "events.jsonl", "triage")
     return result
 
 
 def execute(args: argparse.Namespace, execution) -> int:
+    if pause.check(cfg.root):
+        return 0
     replay = bool(args.replay)
     from factory.plan import is_initiative  # plan -> evidence -> dashboard: import lazily
 
@@ -762,6 +769,8 @@ def execute(args: argparse.Namespace, execution) -> int:
             execution.emit("lock_acquired", lock=str(cfg.lock))
         try:
             for number in numbers:
+                if pause.check(cfg.root):
+                    return 0
                 ticket_execution = None
                 try:
                     with (

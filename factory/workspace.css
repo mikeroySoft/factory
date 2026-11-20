@@ -80,6 +80,17 @@ kbd { padding: 2px 5px; color: var(--muted); border: 1px solid var(--line-strong
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; min-height: 70px; padding: 14px clamp(16px,2.4vw,34px); border-bottom: 1px solid var(--line); background: color-mix(in srgb,var(--bg) 94%,transparent); }
 .repo-picker select { min-width: min(330px,72vw); }
 .collection { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; color: var(--muted); font-size: 12px; }
+.pause-banner { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px clamp(16px,2.4vw,34px); color: var(--text); border-bottom: 1px solid color-mix(in srgb,var(--warn) 45%,var(--line)); background: color-mix(in srgb,var(--warn) 11%,var(--surface)); }
+.pause-banner > div { min-width: 0; }
+.pause-banner .eyebrow { color: var(--warn); }
+.pause-banner strong { display: block; font-size: 20px; }
+.pause-banner p { max-width: 72ch; margin: 2px 0 0; overflow-wrap: anywhere; color: var(--muted); }
+.pause-banner dl { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px 22px; margin: 0; }
+.pause-banner dl div { display: grid; gap: 1px; }
+.pause-banner dt { color: var(--faint); font: 700 10px var(--mono); text-transform: uppercase; }
+.pause-banner dd { margin: 0; font: 12px/1.5 var(--mono); }
+.pause-unavailable { border-bottom-color: color-mix(in srgb,var(--bad) 45%,var(--line)); background: color-mix(in srgb,var(--bad) 10%,var(--surface)); }
+.pause-unavailable .eyebrow { color: var(--bad); }
 #main { width: min(1500px,100%); margin: 0 auto; padding: 28px clamp(16px,2.4vw,34px) 90px; outline: none; }
 .workspace-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
 .workspace-head h1 { max-width: 24ch; margin: 0; font-size: clamp(28px,4vw,48px); line-height: 1.02; letter-spacing: -.045em; text-wrap: balance; }
@@ -516,6 +527,8 @@ body[data-motion="on"]:not([data-hidden="true"]) .signal[data-status="refreshing
   .rail-tools { grid-template-columns: repeat(3,minmax(0,1fr)); margin-top: 10px; }
   .theme-picker span, .rail footer { display: none; }
   .toolbar { padding: 12px 14px; }
+  .pause-banner { align-items: flex-start; flex-direction: column; padding: 14px; }
+  .pause-banner dl { justify-content: flex-start; }
   #main { padding: 22px 14px 100px; }
   .workspace-head { align-items: flex-start; flex-direction: column; }
   .return-summary { grid-template-columns: 1fr 1fr; }
