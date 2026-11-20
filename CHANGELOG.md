@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Failed `test`/`tests`/`pytest`/`unittest` gate checks now put every failing test ID before the raw output tail. The first entry includes the full-output `path:line`, assertion or exception, and expected/actual excerpt; the lifecycle result journals the same detail. Embedded subprocess exception chains cannot replace the outer test's assertion evidence. Unparseable test output says so explicitly, while passing and non-test checks remain unchanged (#473).
 
 - Decision-owner routing stops the declared owner at the next Markdown heading or blank line instead of swallowing the ticket summary; empty or malformed declarations remain invalid without fallback (#859).
 - Mutation equivalents resolve pure line drift by a unique exact source window with ±3 lines of context from the protected registry's last committed revision. Changed, deleted or ambiguous windows fail closed; resolved lines govern accepted survivors, killed entries and absent identities. Attempt gates validate configured registries before PR-tier mutation proof and journal relocations (#778).
