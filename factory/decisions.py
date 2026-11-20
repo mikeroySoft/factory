@@ -652,7 +652,7 @@ def _approval_policy(cfg: Config, target: dict) -> None:
         or not isinstance(head, str)
         or _SHA.fullmatch(head) is None
         or target.get("state") != "OPEN"
-        or target.get("draft")
+        or target.get("draft") or "factory-held" in target.get("labels", [])
         or target.get("base") != cfg.main
         or target.get("review_decision") == "CHANGES_REQUESTED"
     ):
@@ -1086,16 +1086,16 @@ def _approve(cfg: Config, step: dict, deadline: float) -> dict:
         fresh = _pr_target(cfg, target["number"], deadline)[0]
     except DecisionError as exc:
         raise _AmbiguousCommand("approval result could not be revalidated") from exc
-    if (
-        fresh.get("head") != target.get("head")
-        or fresh.get("base") != target.get("base")
-        or fresh.get("state") != "OPEN"
-        or fresh.get("draft")
-        or fresh.get("review_decision") == "CHANGES_REQUESTED"
-        or LABEL_APPROVED not in fresh.get("labels", [])
-    ):
+    try:
+        _approval_policy(cfg, fresh)
+        if (
+            fresh.get("head") != target.get("head")
+            or LABEL_APPROVED not in fresh.get("labels", [])
+        ):
+            raise DecisionError("PR changed while approval was applied", "stale_target")
+    except (DecisionError, OSError) as exc:
         _withdraw_approval(cfg, target, deadline)
-        raise _FailedStep("PR changed while approval was applied; approval label withdrawn")
+        raise _FailedStep("approval revalidation failed; approval label withdrawn") from exc
     try:
         lifecycle.append(cfg.factory / "events.jsonl", {
             "at": _format_time(_now()),
@@ -1106,7 +1106,7 @@ def _approve(cfg: Config, step: dict, deadline: float) -> dict:
             "gate_head": target["head"],
             "review_head": target["head"],
             "actor": step.get("actor"),
-            "source": "human-decision",
+            "source": {"mcp": "mcp"}.get(step.get("caller"), "human-decision"),
         })
     except OSError as exc:
         try:
@@ -1231,7 +1231,7 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                 for step in document["steps"]:
                     try:
                         if step.get("kind") == "approve":
-                            step = {**step, "actor": actor}
+                            step = {**step, "actor": actor, "caller": preview.get("caller")}
                             step_results.append(_approve(cfg, step, deadline))
                         elif step.get("kind") == "command":
                             step_results.append(_mutation(cfg, step, deadline))

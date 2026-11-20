@@ -1321,9 +1321,22 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    identity has not changed. Matching survivors remain in the report as
    **accepted equivalent**, with the argument and reviewer, but do not block.
    Invalid entries fail in both blocking and report-only modes. Before selecting
-   mutants, every entry's complete `original` source must still match at its
-   recorded `file:line`; rewritten, moved, deleted or unreadable source makes the
-   entry stale and fails either mode, even with no changed mutable files.
+   mutants, committed registries resolve every entry using its complete `original`
+   text plus the three source lines before and after it, from the registry's last
+   committed revision. That protected registry revision is the review snapshot
+   for all entries; updating it reanchors their contexts. At file boundaries,
+   missing neighbours must remain BOF/EOF. Exactly one identical window must exist
+   in the current file: zero or multiple matches, changed context, rewritten or
+   deleted source, unreadable files, and shallow history fail closed. Pure line
+   drift uses the resolved line in every identity comparison without editing the
+   registry; each relocation reports old/new lines, operator, source and context
+   revision. Ad-hoc uncommitted registries remain strictly line-pinned and cannot
+   relocate without a committed review snapshot.
+   The attempt gate runs `mutation-equivalents` validation for configured
+   `scripts/mutation.py --equivalents FILE` commands, even when mutation itself
+   belongs to the PR tier. Relocations are journaled as `equivalent-relocation`
+   events. To validate without enumerating or running mutants:
+   `python scripts/mutation.py --equivalents mutation-equivalents.json --check-equivalents`.
    An exact reviewed mutant that was tested and killed also fails either mode.
    When every changed-line candidate was sampled and completed, an entry on any
    enumerated changed line with no matching surviving identity is also stale
@@ -3237,6 +3250,7 @@ two MCP tools call that same function. Nothing else composes these label edits.
 | `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
 | `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
 | `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
+| `approve_pr` | PR `number`, `ruling_id?` (string) | PR open, not draft or `factory-held`, targets configured `main`, no changes-requested review; existing exact-head gate, independent review and required manager evidence | add only `factory-approved` through `decisions.apply` → `_approve` → `_approval_policy` |
 
 Preconditions run against the exact target the proposal binds to, so `apply`'s
 stale-target check guarantees they still held when the effect ran. Refusals are
@@ -3245,6 +3259,15 @@ structured `{ok: false, error: {code, message}}` with the same `code` on both pa
 `decisions` code. Every proposal records `caller` (`dashboard` or `mcp`) and
 `action` (`{name, args}`); the `human-decision` journal rows for `prepared`,
 `started` and the final status, and the receipt, carry both.
+
+For agent re-approval, prepare `{"action": "approve_pr", "args": {"number": 257,
+"ruling_id": "r3-0740"}}` with `factory_prepare_action` and the registered
+`repository`, then pass the returned `proposal_id` and `confirmation` to
+`factory_apply_action`. `ruling_id` is optional audit context, not an approval
+waiver; it is stored in the action arguments on journal rows and receipts.
+No label arrays, comments or other effects are accepted. The approval event
+records the authenticated GitHub actor and `source: "mcp"`; approval policy
+is checked again at apply.
 
 ## Read-only Factory Manager console (`factory chat`)
 
