@@ -60,3 +60,32 @@ class ReleaseClaimTest(unittest.TestCase):
         with self.assertRaisesRegex(decisions.DecisionError, "target changed"):
             decisions.apply(self.cfg, preview["proposal_id"], preview["confirmation"])
         self.assertEqual(self.mutations, [])
+
+    def test_claim_renewed_after_preview_refuses_before_mutation(self):
+        preview = actions.prepare(self.cfg, "release_claim", {"number": 7}, caller="dashboard")
+        self.refusal = "live host claim (remote)"
+        with self.assertRaisesRegex(decisions.DecisionError, "live host claim"):
+            decisions.apply(self.cfg, preview["proposal_id"], preview["confirmation"])
+        self.assertEqual(self.mutations, [])
+
+    def test_release_operation_rejects_unrelated_mutations(self):
+        with self.assertRaisesRegex(decisions.DecisionError, "fields are closed"):
+            decisions.prepare(self.cfg, [{"op": "release_claim", "number": 7, "add": ["other"]}])
+        self.assertEqual(self.mutations, [])
+
+    def test_dispatcher_failure_is_durable_uncertain_receipt_not_retried(self):
+        preview = actions.prepare(self.cfg, "release_claim", {"number": 7}, caller="dashboard")
+        transport = self.transport
+
+        def failure(argv, **kwargs):
+            if "-c" in argv and "apply" in argv:
+                self.mutations.append(argv)
+                return subprocess.CompletedProcess(argv, 1, "", "dispatcher transport failed")
+            return transport(argv, **kwargs)
+
+        with mock.patch.object(decisions, "_run", side_effect=failure):
+            result = decisions.apply(self.cfg, preview["proposal_id"], preview["confirmation"])
+            self.assertEqual(result["status"], "uncertain")
+            self.assertIn("dispatcher transport failed", result["steps"][0]["output"])
+            self.assertEqual(decisions.apply(self.cfg, preview["proposal_id"], preview["confirmation"]), result)
+        self.assertEqual(len(self.mutations), 1)
