@@ -176,3 +176,11 @@ class WorktreeResumeTest(unittest.TestCase):
         self.git("push", "origin", "--delete", "agent/7")
         self.assert_runs_at(self.parent)
 
+    def test_deleted_remote_branch_ignores_stale_tracking_ref(self):
+        self.prepare()
+        child = self.advance_remote()
+        self.git("push", "origin", "--delete", "agent/7")
+        self.git("update-ref", "refs/remotes/origin/agent/7", child)
+        self.assert_runs_at(self.parent)
+        self.assertEqual(self.events_named("worktree-fast-forward"), [])
+
