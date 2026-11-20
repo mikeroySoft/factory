@@ -230,7 +230,9 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``worker edited protected paths`` | worker round → escalate |
 | `dispatch.process_ticket` | ``worker removed or changed existing tests`` | worker round → escalate (add-only or protected-tests check; the escalation detail names the check and clearing label) |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded`` | worker round → escalate |
+| `dispatch.process_ticket` | ``{}; budget_min / budget_exceeded`` | Worker or bounce round → escalate (`budget`): insufficient gate reservation or expired work before validation |
 | `dispatch.process_ticket` | ``gate failed {} times; worktree kept at {}`` | worker round → escalate |
+| `dispatch.process_ticket` | ``gate failed; worktree kept at {}`` | A failing gate exhausts the deadline → escalate (`gate_failed`, not `budget`) |
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) on attempt {}; worktree kept at {}`` | worker round → escalate |
 | `dispatch.process_ticket` | ``agent/{}: worker committed nothing over {}; read the handoff`` | push → escalate (`no_change`, only when the handoff exists; `factory watch` never files it) |
 | `dispatch.process_ticket` | ``agent/{}: PR not published (no commits over main and no handoff, or existing PR targets a base other than {}); inspect dispatcher log`` | push → escalate |
@@ -275,6 +277,7 @@ event. `{}` is a runtime value.
 | `manage.frontier_pass` | ``PR #{}: approval evidence, head, or human review state changed before manager approval`` | manager PR frontier → escalate |
 | `manage.frontier_pass` | ``PR #{}: manager requires a human: {}`` | manager PR frontier → escalate |
 | `manage.apply` | ``gate failed after manager FIX`` | manager FIX → escalate |
+| `manage.apply` | ``{}; budget_min / budget_exceeded`` | Manager FIX round → escalate (`budget`): insufficient gate reservation or expired work before validation |
 | `manage.apply` | ``review requested changes after manager FIX`` | manager FIX → escalate |
 | `manage.apply` | ``reviewer unavailable after manager FIX`` | manager FIX review tooling retries exhausted → escalate (`reviewer_unavailable`) |
 | `manage.apply` | ``pr checks failed`` | manager FIX → escalate |

@@ -1059,6 +1059,25 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
    reviewer's findings. Up to `max_attempts` attempts within `budget_min`.
+   Each round reserves its last measured dispatcher attempt-gate duration for
+   that worktree, or `[dispatch].gate_reserve_seconds` (default 30 seconds,
+   finite and positive) when there is no history. PR-tier and other-worktree
+   timings are excluded. Each round also reserves 20 seconds for watchdog
+   polling (5 s), worker SIGTERM grace (10 s), and finalization (5 s).
+   A `round-budget` journal row records gate-reserved seconds, source
+   (`last_gate` or `floor`), `stop_reserve_seconds`, remaining work window and admission.
+   If no work window remains, no worker or gate starts; the round ends as
+   `budget` with the worktree preserved. Admission is checked again immediately
+   before each process launch, including fallbacks, after prompt and worker setup.
+   Otherwise the watchdog uses the
+   earlier work cutoff, leaving the reservation for the dispatcher's unchanged,
+   full gate. A worker cut off at that point is still gated before any push.
+   A live worker-owned gate identified by descendant lifecycle evidence is
+   exempt from the work cutoff and quiet watchdogs. Per-check `[gate].timeout`
+   limits remain unchanged; the watchdog also bounds the extension to
+   `gate.timeout * (number of configured checks + 3)` seconds from the work
+   cutoff (or an earlier quiet timeout), including exclusive-lock waits
+   (`gate_timeout` / `gate_hard_cap`).
    A fresh handoff with an empty `Still unverified` or `Unverified` section
    (blank or `None.`) and a clean, committed worktree is the finish signal:
    after expiry, the dispatcher still gates that head and proceeds through
@@ -1077,7 +1096,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    gate in the current generation passed, escalation uses `budget`, not
    `gate_failed`; the comment and packet name `budget_min` / `budget_exceeded`
    so the budget cut is identifiable for a not-a-strike owner requeue.
-   An actual failing gate retains its existing classification.
+   Budget escalation reasons include only the status line; detailed gate output
+   stays in the gate report and the bounded escalation packet.
+   Initial attempts, review bounces and manager FIX classify actual gate results
+   before budget stops, including when mechanical repairs exhaust the work window.
+   Protected-path failures retain human-clearing guidance in the comment and packet;
+   other gate failures remain `gate_failed`. `budget` applies only without a gate result.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to
@@ -1147,10 +1171,17 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    never infers commands. Before escalating the last failed worker gate (including
    manager FIX and review-bounce workers), it runs these commands once, in order,
    in the clean ticket worktree, stopping on the first failure and using the gate
-   check timeout. If all succeed and change files, Factory commits those changes
-   and re-runs the gate with the same flags at the new SHA. No changes, a command
-   failure, or another failed gate leaves the normal escalation in place; the
-   report and escalation comment state that fixups ran. An empty/absent list
+   check timeout. Worker-round repairs share the remaining work window: each
+   command's timeout is capped at that cutoff, preserving gate and finalization
+   reserves. If no repair time remains, or that cutoff interrupts repairs, the
+   round ends as `budget`, not `gate_failed`; a `gate-fixup-budget` journal row
+   and the gate report identify commands not run or stopped. Partial changes
+   remain in the worktree without publication. If all commands succeed within
+   the work window and change files, Factory commits those changes and re-runs
+   the full gate with the same flags at the new SHA, without a round-budget kill.
+   No changes, a command failure before the cutoff, or another failed gate leaves
+   the normal escalation in place; the report and escalation comment state what ran.
+   An empty/absent list
    leaves behavior unchanged. Refresh failures get the same repair pass after
    their existing same-head retry; PR-tier failures get one pass per uncached
    head, then recheck the attempt gate before publishing and reviewing a new
