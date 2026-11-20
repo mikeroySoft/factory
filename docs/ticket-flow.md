@@ -79,7 +79,6 @@ flowchart TB
   RFA -->|"its PR's red CI completed before the release: no escalation, waits for a worker: manage.frontier_pass"| CLAIM
   RFA -->|"its PR's CI red after the release, or idle stale_days counted from the release: manage.frontier_pass, manage.released_at"| ESC
   CLAIM -->|"dispatch.process_ticket"| WR
-  CLAIM -->|"dirty or diverged kept worktree, both heads retained: dispatch.ensure_worktree, dispatch.process_ticket"| ESC
   WR -->|"gate FAIL or worker stuck, attempts left, report fed back: dispatch.process_ticket"| WR
   WR -->|"gate FAIL or stuck max_attempts, protected paths, or budget with unfinished handoff: dispatch.process_ticket"| ESC
   WR -->|"gate PASS, including expired clean finish: dispatch.worker_round"| PUSH
