@@ -227,14 +227,19 @@ def run(
     stderr=subprocess.PIPE,
     env: dict[str, str] | None = None,
     timeout: float | None = None,
+    missing_pr: bool = False,
 ) -> subprocess.CompletedProcess:
     """`env` replaces the inherited environment (lifecycle context is still added).
 
     A failed checked command logs its redacted stderr tail, then raises as before.
+    `missing_pr` suppresses only the exact exit-1 branch miss from `gh pr view`;
+    the exception still reaches the caller's existing no-PR handling.
     """
     try:
         return _run(cmd, cwd, check, stdout, stderr, env, timeout)
     except subprocess.CalledProcessError as exc:
+        if missing_pr and is_missing_pr(exc, cmd[3]):
+            raise
         tail = stderr_tail(exc.stderr)
         if tail:
             log(f"command failed (exit {exc.returncode}); stderr tail:\n{tail}")
@@ -290,8 +295,12 @@ def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedP
     return result
 
 
-def gh_json(args: list[str], env: dict[str, str] | None = None) -> object:
-    out = run(["gh", *args], env=env).stdout
+def is_missing_pr(exc: subprocess.CalledProcessError, branch: str) -> bool:
+    return exc.returncode == 1 and (exc.stderr or "").strip() == f'no pull requests found for branch "{branch}"'
+
+
+def gh_json(args: list[str], env: dict[str, str] | None = None, *, missing_pr: bool = False) -> object:
+    out = run(["gh", *args], env=env, **({"missing_pr": True} if missing_pr else {})).stdout
     return json.loads(out)
 
 
