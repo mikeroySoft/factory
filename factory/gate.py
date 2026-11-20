@@ -14,7 +14,9 @@ import json
 import math
 import os
 import re
+import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -40,6 +42,8 @@ MUTATION_PROOF_COUNTS = ("planned", "ran", "killed", "survived", "timeouts", "bl
 MUTATION_PROOF_KEYS = {"protocol", "version", "mode", "status", "reason", "exit", "files", "counts",
                        "scope"}
 SKIP_NO_FACTORY_CODE = "SKIP (no changed factory code)"
+FOCUSED_MAX_BYTES = 64 * 1024
+FOCUSED_UNSAVED: list[bytes] = []
 
 
 def configure(c: Config) -> None:
@@ -120,10 +124,120 @@ def timed(
         if execution and proc.poll() is not None:
             execution.child_done(proc.pid)
 
+def focused_head(cwd: Path | None = None) -> str:
+    try:
+        return mutation_scope.resolve("HEAD", cwd)
+    except mutation_scope.ScopeError:
+        return "unknown"
 
-def run(cmd: list[str]) -> tuple[bool, str]:
+
+def _focused_evidence(receipt: dict | None = None) -> bytes:
+    """Worktree-local evidence; never follow links or wait on worker-owned files/locks."""
+    path = Path.cwd() / ".factory" / "focused-tests.jsonl"
+    fd = None
+    try:
+        if receipt is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND if receipt is not None else os.O_RDONLY
+        fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("execution receipt is not a regular file")
+        fcntl.flock(fd, (fcntl.LOCK_EX if receipt is not None else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        if receipt is not None:
+            # Separate a prior interrupted append from this complete row.
+            os.write(fd, b"\n" + json.dumps(receipt, ensure_ascii=False).encode() + b"\n")
+            return b""
+        size = os.fstat(fd).st_size
+        if size > FOCUSED_MAX_BYTES:
+            os.lseek(fd, size - FOCUSED_MAX_BYTES, os.SEEK_SET)
+        data = os.read(fd, FOCUSED_MAX_BYTES)
+        if size > FOCUSED_MAX_BYTES:
+            return b"truncated execution receipts\n" + data.partition(b"\n")[2]
+        return data
+    except FileNotFoundError as exc:
+        return f"unreadable execution receipts: {exc}\n".encode() if receipt is not None else b""
+    except OSError as exc:
+        return f"unreadable execution receipts: {exc}\n".encode()
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def test_command(
+    cmd: list[str], *, command: str | None = None, cwd: Path | None = None,
+    pythonpath: Path | None = None, full_suite: bool = False,
+) -> subprocess.CompletedProcess:
+    """Capture executions for later reports; the worker-writable receipt file is unverified."""
+    head = focused_head(cwd)
+    try:
+        proc = timed(cmd, cwd=cwd, pythonpath=pythonpath)
+    except OSError as exc:
+        if execution := lifecycle.current():
+            execution.outcome = "mechanism_failure" if isinstance(exc, (FileNotFoundError, PermissionError)) else "unknown"
+            execution.reason = f"{type(exc).__name__}: {exc}"
+        proc = subprocess.CompletedProcess(cmd, 127, f"command could not start: {exc}\n", "")
+    output = proc.stdout + proc.stderr
+    summary = re.findall(
+        r"^(?:Ran \d+ tests? in .+|OK(?: \(.+\))?|FAILED \(.+\)|"
+        r"=+ .*\d+ (?:passed|failed|error|skipped|deselected|xfailed|xpassed).*=+|"
+        r"\d+ (?:passed|failed|error|skipped|deselected|xfailed|xpassed).+|"
+        r"test result: .+)$",
+        output, re.MULTILINE,
+    )
+    has_counts = any(re.search(r"\d+ (?:tests?|passed|failed|errors?|skipped|deselected|xfailed|xpassed)", line) for line in summary)
+    receipt = {
+        "command": command if command is not None else shlex.join(cmd),
+        "head": head,
+        "end_head": focused_head(cwd),
+        "result": "PASS" if proc.returncode == 0 else "FAIL",
+        "counts": "; ".join(summary) if has_counts else "counts unavailable",
+        "exit": proc.returncode,
+        "full_suite": full_suite,
+    }
+    if error := _focused_evidence(receipt):
+        FOCUSED_UNSAVED.extend([error, json.dumps(receipt, ensure_ascii=False).encode() + b"\n"])
+    return proc
+
+
+def focused_test_lines(head: str) -> list[str]:
+    """File-sourced receipts are unverified even when their revision matches the reported head."""
+    lines = []
+    for raw in (_focused_evidence() + b"".join(FOCUSED_UNSAVED)).splitlines():
+        if not raw.strip():
+            continue
+        try:
+            row = json.loads(raw)
+            if (
+                not isinstance(row, dict)
+                or any(not isinstance(row.get(key), str) for key in ("command", "head", "end_head", "result", "counts"))
+                or row["result"] not in ("PASS", "FAIL")
+                or type(row.get("exit")) is not int
+                or type(row.get("full_suite", False)) is not bool
+            ):
+                raise ValueError("invalid execution receipt")
+            current = (
+                re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head) is not None
+                and row["head"] == row["end_head"] == head
+            )
+            binding = "" if current else f"STALE / revision mismatch (reported-head={head}) "
+            lines.append(
+                f"{'Full suite' if row.get('full_suite', False) else 'Focused test'}: "
+                f"worker-recorded / unverified {binding}{row['result']} "
+                f"({json.dumps(row['counts'], ensure_ascii=False)}; exit={row['exit']}) "
+                f"command={json.dumps(row['command'], ensure_ascii=False)} "
+                f"head={json.dumps(row['head'])} end-head={json.dumps(row['end_head'])}"
+            )
+        except ValueError:
+            if "Focused tests: evidence unavailable (unreadable or invalid execution receipt)" not in lines:
+                lines.append("Focused tests: evidence unavailable (unreadable or invalid execution receipt)")
+    if not lines or all(line.startswith("Full suite:") for line in lines):
+        lines.append("Focused tests: none recorded")
+    return lines
+
+
+def run(cmd: list[str], *, full_suite: bool = False) -> tuple[bool, str]:
     """Run a command, return (passed, combined output)."""
-    proc = timed(cmd)
+    proc = test_command(cmd, full_suite=full_suite)
     execution = lifecycle.current()
     if execution and proc.returncode != 0 and execution.outcome == "completed":
         execution.outcome = "product_feedback"
@@ -973,7 +1087,7 @@ def _run_at(
         if added.returncode:
             return added, False
         try:
-            return timed(command, cwd=checkout, pythonpath=checkout), True
+            return test_command(command, command=shlex.join(command), cwd=checkout, pythonpath=checkout), True
         finally:
             timed(["git", "worktree", "remove", "--force", str(checkout)])
 
@@ -1062,7 +1176,7 @@ def check_bug_reproduction(
                 "FAIL",
                 f"declared reproduction test changed at HEAD: `{test_id}`",
             )]
-        fixed = timed(command, cwd=Path.cwd(), pythonpath=Path.cwd())
+        fixed = test_command(command, command=shlex.join(command), cwd=Path.cwd(), pythonpath=Path.cwd())
         return [
             *results,
             (
@@ -1081,6 +1195,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--base", default=None, help="base ref for leak scan and protected paths")
     parser.add_argument(
         "--report", default=".factory/gate-report.md", help="report output path"
+    )
+    parser.add_argument(
+        "--focused-command", action="append", default=[], metavar="COMMAND",
+        help="run an exact shell test command alongside the gate and retain its SHA-bound result (repeatable)",
     )
     parser.add_argument(
         "--skip",
@@ -1182,6 +1300,7 @@ def toolchain() -> dict[str, str]:
 
 def execute(args: argparse.Namespace, execution) -> int:
     global CHECK_TIMEOUT
+    FOCUSED_UNSAVED.clear()
     host = toolchain()
     execution.emit("toolchain", **host)
     if args.base is None:
@@ -1192,6 +1311,10 @@ def execute(args: argparse.Namespace, execution) -> int:
     if LEAK_RE is None:
         skip.add("leak-scan")
     audit = []  # the reviewed protected transition this run actually verified and exempted
+    head = focused_head()
+
+    def evidence_header() -> str:
+        return f"Head SHA: {head}\n" + "\n".join(focused_test_lines(head)) + "\n"
 
     if args.tier == "attempt":
         if not args.protected_override:
@@ -1209,7 +1332,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 report = Path(args.report)
                 report.parent.mkdir(parents=True, exist_ok=True)
                 note = f" ({ADD_ONLY_NOTE})" if reason == "add_only_paths" else ""
-                report.write_text(f"# Gate report\n\n- protected-paths: FAIL{note}\n\n"
+                report.write_text(f"# Gate report\n\n{evidence_header()}\n- protected-paths: FAIL{note}\n\n"
                                   "## protected-paths failure\n\n```diff\n" + detail + "\n```\n")
                 print(f"report: {report}\ngate FAIL: protected-paths")
                 return 1
@@ -1222,7 +1345,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 report = Path(args.report)
                 report.parent.mkdir(parents=True, exist_ok=True)
                 report.write_text(
-                    "# Gate report\n\n"
+                    f"# Gate report\n\n{evidence_header()}\n"
                     "- protected-tests: FAIL (existing test deleted or modified)\n\n"
                     "## protected-tests failure\n\n```\n" + detail + "\n```\n"
                 )
@@ -1249,7 +1372,8 @@ def execute(args: argparse.Namespace, execution) -> int:
         return passed, output
 
     configured = [
-        (check.name, (lambda c=check: run_proved(c)) if proved(check) else (lambda c=check: run(command(c))))
+        (check.name, (lambda c=check: run_proved(c)) if proved(check) else
+         (lambda c=check: run(command(c), full_suite=c.name in ("test", "test-pr-tier"))))
         for check in listed
     ]
     registries = [
@@ -1265,14 +1389,25 @@ def execute(args: argparse.Namespace, execution) -> int:
     ] if args.tier == "attempt" else configured
     later_tier = {check.name: check.when for check in listed if check.when != args.tier}
 
-    results: list[tuple[str, str, str]] = (
+    focused_results = []
+    for index, cmd in enumerate(args.focused_command, 1):
+        proc = test_command(["sh", "-c", cmd], command=cmd)
+        focused_results.append((
+            f"focused-{index}", "PASS" if proc.returncode == 0 else "FAIL",
+            proc.stdout + proc.stderr,
+        ))
+
+    results: list[tuple[str, str, str]] = focused_results + (
         check_bug_reproduction(
             args.base, args.repro_test, args.no_repro_test, execution
         )
         if args.bug and args.tier == "attempt" else []
     )
     outcome, reason = (
-        ("product_feedback", "bug_reproduction_failed")
+        (execution.outcome, execution.reason) if execution.outcome != "completed"
+        else ("product_feedback", "focused_command_failed")
+        if any(status == "FAIL" for _, status, _ in focused_results)
+        else ("product_feedback", "bug_reproduction_failed")
         if any(status == "FAIL" for _, status, _ in results)
         else ("completed", None)
     )
@@ -1311,6 +1446,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                    for name, (status, binding) in proofs.items()]
     lines = [
         "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "",
+        evidence_header(), "",
         *([*proof_lines, ""] if proof_lines else []), "## Host toolchain",
         f"ROCm: {host['rocm']}", f"Kernel: {host['kernel']}", f"amdgpu: {host['amdgpu']}", "",
         *audit,
