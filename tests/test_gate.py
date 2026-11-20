@@ -384,5 +384,45 @@ class GateTempdirTest(unittest.TestCase):
                 self.assertEqual(code, expected, report + out)
                 self.assertFalse(Path(marker.read_text()).exists())
 
+class PassingAttemptEvidenceTest(unittest.TestCase):
+    def test_report_records_head_count_and_skipped_test_names(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_evidence.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class EvidenceTest(unittest.TestCase):\n"
+                "    @unittest.skip('needs hardware')\n"
+                "    def test_a_hardware(self):\n"
+                "        pass\n"
+                "    @unittest.skip('needs network')\n"
+                "    def test_b_network(self):\n"
+                "        pass\n"
+                "    def test_z_pass(self):\n"
+                "        print('noise\\n' * 100, file=sys.stderr)\n"
+                "        self.assertEqual(2 + 2, 4)\n"
+            )
+            commit(repo, "test suite")
+            head = git(repo, "rev-parse", "HEAD")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            for evidence in (
+                f"Head SHA: {head}",
+                "Ran 3 tests",
+                "test_evidence.EvidenceTest.test_a_hardware",
+                "test_evidence.EvidenceTest.test_b_network",
+            ):
+                with self.subTest(evidence=evidence):
+                    self.assertIn(evidence, report)
+
+
 if __name__ == "__main__":
     unittest.main()
