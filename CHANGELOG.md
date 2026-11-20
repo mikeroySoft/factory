@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- GitHub CLI issue/PR listings now set explicit limits, including landing/refresh, host-claim probes, existing-PR lookup and triage. Shared decoding rejects lists at or above their limit instead of silently making pipeline or metrics decisions from incomplete results; doctor's label lookup has the same guard. Landing now considers approved PRs beyond the default 30-result window. Watch logs unavailable escape attribution on saturation, skips escape-dependent evaluation and explicitly retains escape alarms using their stored metric family (including tier-qualified historical metrics), independent of rule changes. New band alarms store their metric classification; unclassifiable legacy band alarms are retained conservatively. Independent filing and closure continue; complete evidence permits resolved escape alarms to close (#718).
 
 - Decision-owner routing stops the declared owner at the next Markdown heading or blank line instead of swallowing the ticket summary; empty or malformed declarations remain invalid without fallback (#859).
 - Mutation equivalents resolve pure line drift by a unique exact source window with ±3 lines of context from the protected registry's last committed revision. Changed, deleted or ambiguous windows fail closed; resolved lines govern accepted survivors, killed entries and absent identities. Attempt gates validate configured registries before PR-tier mutation proof and journal relocations (#778).

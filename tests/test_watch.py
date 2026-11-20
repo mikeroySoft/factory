@@ -830,5 +830,143 @@ class ControlBandWatchTest(unittest.TestCase):
         self.assertEqual(model.call_count, 1)
         self.assertEqual(self.gh.calls, [])
 
+    def test_saturated_escape_listing_does_not_stop_filing_or_closure(self) -> None:
+        self.cfg.watch_bands.append(config.Band(
+            metric="revert_rate_by_tier",
+            window_days=28,
+            rules=(config.BandRule(
+                kind="sigma", tier="act", sigma=3.0, count=1, span=1,
+                min_tickets=2,
+            ),),
+        ))
+        self.journal(self.rows())
+        with (
+            mock.patch.object(watch.stats, "escapes", side_effect=RuntimeError(
+                "gh issue list returned 1000 results; results may be truncated",
+            )),
+            mock.patch.object(dispatch, "log") as log,
+        ):
+            watch.run_pass(self.cfg, now=self.NOW)
+            self.assertEqual(len(self.gh.created), 1)
+            self.assertIn(self.TEST_ID, self.gh.created[0][
+                self.gh.created[0].index("--body") + 1
+            ])
+            with mock.patch.object(watch, "_age", return_value=timedelta(days=2)):
+                watch.run_pass(self.cfg, now=self.NOW + timedelta(days=2))
+            self.assertEqual(self.gh.issues[101]["state"], "CLOSED")
+            log.assert_any_call("watch: escape attribution unavailable (RuntimeError)")
+
+    def test_saturated_escape_listing_keeps_escape_alarm_open(self) -> None:
+        rule = config.BandRule(
+            kind="sigma", tier="act", sigma=3.0, count=1, span=1, min_tickets=2,
+        )
+        self.cfg.watch_bands.append(config.Band(
+            metric="revert_rate_by_tier", window_days=28, rules=(rule,),
+        ))
+        fp = f"band:{watch.fingerprint('revert_rate_by_tier:High', watch._rule_name(rule))}"
+        at = (self.NOW - timedelta(days=3)).isoformat()
+        self.gh.issues[99] = {
+            "body": f"Fingerprint: {fp}\n",
+            "state": "OPEN", "labels": [{"name": "needs-triage"}],
+            "assignees": [], "comments": [],
+        }
+        self.journal([
+            *self.rows(),
+            {"event": "watch", "fingerprint": fp, "issue": 99,
+             "repo": self.ENGINE, "latest": at, "at": at},
+        ])
+        with (
+            mock.patch.object(watch.stats, "escapes", side_effect=RuntimeError(
+                "gh issue list returned 1000 results; results may be truncated",
+            )),
+            mock.patch.object(watch, "_age", return_value=timedelta(days=3)),
+            mock.patch.object(dispatch, "log") as log,
+        ):
+            watch.run_pass(self.cfg, now=self.NOW)
+        self.assertEqual(self.gh.issues[99]["state"], "OPEN")
+        self.assertEqual(len(self.gh.created), 1)
+        self.assertFalse(any(
+            row.get("closed") and row.get("issue") == 99
+            for row in lifecycle.read_events(dispatch.EVENTS)
+        ))
+        log.assert_any_call(f"watch: retaining {fp}: escape attribution unavailable")
+
+    def test_saturated_escape_listing_keeps_alarm_from_previous_rule_open(self) -> None:
+        old_rule = config.BandRule(
+            kind="sigma", tier="act", sigma=2.0, count=2, span=3, min_tickets=2,
+        )
+        self.cfg.watch_bands.append(config.Band(
+            metric="revert_rate_by_tier", window_days=28,
+            rules=(config.BandRule(
+                kind="sigma", tier="act", sigma=3.0, count=1, span=1, min_tickets=2,
+            ),),
+        ))
+        fp = f"band:{watch.fingerprint('revert_rate_by_tier:High', watch._rule_name(old_rule))}"
+        at = (self.NOW - timedelta(days=3)).isoformat()
+        self.gh.issues[99] = {
+            "body": f"Fingerprint: {fp}\n\n`factory watch` observed metric "
+                    "`revert_rate_by_tier` outside its configured control band",
+            "state": "OPEN", "labels": [{"name": "needs-triage"}],
+            "assignees": [], "comments": [],
+        }
+        self.journal([
+            *self.rows(),
+            {"event": "watch", "fingerprint": fp, "issue": 99,
+             "repo": self.ENGINE, "latest": at, "at": at},
+        ])
+        with (
+            mock.patch.object(watch.stats, "escapes", side_effect=RuntimeError("saturated listing")),
+            mock.patch.object(watch, "_age", return_value=timedelta(days=3)),
+        ):
+            watch.run_pass(self.cfg, now=self.NOW)
+        self.assertEqual(self.gh.issues[99]["state"], "OPEN")
+        self.assertEqual(len(self.gh.created), 1)
+        self.assertFalse(any(
+            row.get("closed") and row.get("issue") == 99
+            for row in lifecycle.read_events(dispatch.EVENTS)
+        ))
+
+    def test_stored_escape_metric_controls_closure_after_rule_changes(self) -> None:
+        self.cfg.watch_bands.append(config.Band(
+            metric="revert_rate_by_tier", window_days=28,
+            rules=(config.BandRule(
+                kind="sigma", tier="act", sigma=5.0, count=3, span=5, min_tickets=2,
+            ),),
+        ))
+        old_rule = config.BandRule(
+            kind="sigma", tier="act", sigma=2.0, count=2, span=3, min_tickets=2,
+        )
+        fp = f"band:{watch.fingerprint('revert_rate_by_tier:High', watch._rule_name(old_rule))}"
+        at = (self.NOW - timedelta(days=3)).isoformat()
+        self.journal([{"event": "watch", "fingerprint": fp, "issue": 99,
+                       "repo": self.ENGINE, "latest": at, "at": at}])
+        events = lifecycle.read_events(dispatch.EVENTS)
+        reader = mock.patch.object(lifecycle, "read_events", return_value=events)
+        reader.start()
+        self.addCleanup(reader.stop)
+        for stored in (
+            "`factory watch` observed metric `revert_rate_by_tier:High` outside its configured control band",
+            "Watch metric: revert_rate_by_tier:High",
+            "",
+        ):
+            with self.subTest(stored=stored):
+                self.gh.issues[99] = {
+                    "body": f"Fingerprint: {fp}\n\n{stored}\n",
+                    "state": "OPEN", "labels": [{"name": "needs-triage"}],
+                    "assignees": [], "comments": [],
+                }
+                with (
+                    mock.patch.object(watch.stats, "escapes", side_effect=RuntimeError("saturated listing")),
+                    mock.patch.object(watch, "_age", return_value=timedelta(days=3)),
+                ):
+                    watch.run_pass(self.cfg, now=self.NOW)
+                self.assertEqual(self.gh.issues[99]["state"], "OPEN")
+        with (
+            mock.patch.object(watch.stats, "escapes", return_value=[]),
+            mock.patch.object(watch, "_age", return_value=timedelta(days=3)),
+        ):
+            watch.run_pass(self.cfg, now=self.NOW)
+        self.assertEqual(self.gh.issues[99]["state"], "CLOSED")
+
 if __name__ == "__main__":
     unittest.main()

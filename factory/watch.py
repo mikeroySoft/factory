@@ -21,6 +21,7 @@ import shlex
 import subprocess
 import sys
 from contextlib import nullcontext
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
@@ -694,6 +695,7 @@ def body(signal: dict, install: str) -> str:
             "Filed automatically; no human has looked at it yet."
         ),
         "",
+        *([f"Watch metric: {signal['metric']}", ""] if signal["kind"] == "band" else []),
         OBSERVED, f"- `{install}`", "",
         "## Evidence", *evidence(signal),
         "## Reproduce", f"In the `{install}` checkout:", "```", signal["command"], "factory watch --dry-run", "```",
@@ -748,21 +750,27 @@ def run_pass(
 ) -> list[dict]:
     """Log, diagnose, file/comment, and close configured signals."""
     events = lifecycle.read_events(dispatch.EVENTS)
+    evaluation_cfg = cfg
+    escape_attribution_available = True
     if any(band.metric == "revert_rate_by_tier" for band in cfg.watch_bands):
         stats.configure(cfg)
         try:
             events.extend(stats.escape_events(stats.escapes()))
         except (
-            OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, SystemExit,
+            OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError, SystemExit,
         ) as exc:
             dispatch.log(f"watch: escape attribution unavailable ({type(exc).__name__})")
+            escape_attribution_available = False
+            evaluation_cfg = replace(cfg, watch_bands=[
+                band for band in cfg.watch_bands if band.metric != "revert_rate_by_tier"
+            ])
     rows = [r for r in events if r.get("event") == "watch"]
     filings = {r["fingerprint"]: r for r in rows}
     # Issues this install opened; only the opener closes one (rows without `repo` predate routing).
     opened = {(r["fingerprint"], r["issue"], r.get("repo", dispatch.REPO))
               for r in rows if not r.get("commented") and not r.get("closed")}
     engine, install = cfg.watch_engine_repo, cfg.repo
-    current = signals(cfg, events, now)
+    current = signals(evaluation_cfg, events, now)
     observations = {
         row["fingerprint"]: row for row in events
         if row.get("event") == "watch-band" and isinstance(row.get("fingerprint"), str)
@@ -863,6 +871,21 @@ def run_pass(
         repo = previous.get("repo", dispatch.REPO)
         if previous.get("closed") or (fp, previous["issue"], repo) not in opened:
             continue
+        if not escape_attribution_available and fp.startswith("band:"):
+            try:
+                alarm = dispatch.gh_json([
+                    "issue", "view", str(previous["issue"]), "--repo", repo, "--json", "body",
+                ])
+            except (OSError, subprocess.SubprocessError, RuntimeError, ValueError, KeyError, TypeError):
+                dispatch.log(f"watch: retaining {fp}: alarm metric unavailable")
+                continue
+            text = alarm.get("body") or ""
+            metric = re.search(r"^Watch metric: (\S+)$", text, re.MULTILINE)
+            if metric is None:
+                metric = re.search(r"observed metric `([^`]+)`", text)
+            if metric is None or metric[1].split(":", 1)[0] == "revert_rate_by_tier":
+                dispatch.log(f"watch: retaining {fp}: escape attribution unavailable")
+                continue
         # A signal stays in the journal window long after it stops happening, so judge by the
         # newest evidence, not presence; `latest is None` means it is failing right now.
         if fp in latest_by_fingerprint and latest_by_fingerprint[fp] is None:
