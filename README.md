@@ -1313,9 +1313,22 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    identity has not changed. Matching survivors remain in the report as
    **accepted equivalent**, with the argument and reviewer, but do not block.
    Invalid entries fail in both blocking and report-only modes. Before selecting
-   mutants, every entry's complete `original` source must still match at its
-   recorded `file:line`; rewritten, moved, deleted or unreadable source makes the
-   entry stale and fails either mode, even with no changed mutable files.
+   mutants, committed registries resolve every entry using its complete `original`
+   text plus the three source lines before and after it, from the registry's last
+   committed revision. That protected registry revision is the review snapshot
+   for all entries; updating it reanchors their contexts. At file boundaries,
+   missing neighbours must remain BOF/EOF. Exactly one identical window must exist
+   in the current file: zero or multiple matches, changed context, rewritten or
+   deleted source, unreadable files, and shallow history fail closed. Pure line
+   drift uses the resolved line in every identity comparison without editing the
+   registry; each relocation reports old/new lines, operator, source and context
+   revision. Ad-hoc uncommitted registries remain strictly line-pinned and cannot
+   relocate without a committed review snapshot.
+   The attempt gate runs `mutation-equivalents` validation for configured
+   `scripts/mutation.py --equivalents FILE` commands, even when mutation itself
+   belongs to the PR tier. Relocations are journaled as `equivalent-relocation`
+   events. To validate without enumerating or running mutants:
+   `python scripts/mutation.py --equivalents mutation-equivalents.json --check-equivalents`.
    An exact reviewed mutant that was tested and killed also fails either mode.
    When every changed-line candidate was sampled and completed, an entry on any
    enumerated changed line with no matching surviving identity is also stale
