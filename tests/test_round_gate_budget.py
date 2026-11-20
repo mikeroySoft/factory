@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import unittest
 from contextlib import chdir
 from unittest import mock
@@ -225,6 +226,38 @@ class RoundGateBudgetTest(unittest.TestCase):
         self.assertEqual(json.loads(self.state.read_text())["reviews"], 1)
         remote = self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0]
         self.assertEqual(remote, attempts[0]["head"])
+
+    def test_retry_admission_refusal_preserves_previous_gate_failure(self):
+        self.write_config(check=[sys.executable, "-c", "print('prior gate failed'); raise SystemExit(1)"])
+        fixtures.LocalCLI.commit_config(self)
+        clock = [0]
+        original_gate = dispatch.run_gate
+
+        def gate(*args, **kwargs):
+            result = original_gate(*args, **kwargs)
+            clock[0] = 50  # work cutoff exhausted, but the overall deadline is still 60
+            return result
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(dispatch, "run_gate", side_effect=gate) as check, \
+                mock.patch.object(dispatch, "run_worker", wraps=dispatch.run_worker) as worker, \
+                mock.patch.object(dispatch, "push_and_pr") as publish:
+            dispatch.configure(config.load(self.repo))
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            dispatch.process_ticket(issue, 1, False, forced=True)
+        worker.assert_called_once()
+        check.assert_called_once()
+        publish.assert_not_called()
+        rows = lifecycle.read_events(self.events)
+        self.assertEqual([r["admitted"] for r in rows if r.get("event") == "round-budget"], [True, False])
+        self.assertEqual([r["gate"] for r in rows if r.get("event") == "attempt"], ["FAIL", None])
+        escalation, = [r for r in rows if r.get("event") == "escalate"]
+        self.assertEqual(escalation["code"], "gate_failed")
+        self.assertIn("gate failed", escalation["reason"])
+        self.assertNotIn("budget_min / budget_exceeded", escalation["reason"])
+        self.assertIn("prior gate failed", (dispatch.FACTORY / "escalations/7.md").read_text())
+        self.assertFalse(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout)
 
     def test_active_gate_extension_has_a_hard_cap(self):
         with chdir(self.repo), mock.patch.dict(os.environ, self.env):
