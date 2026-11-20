@@ -2090,7 +2090,8 @@ def ensure_worktree(n: int, *, preserved: str | None = None) -> Path:
     wt, branch = FACTORY / f"wt-{n}", f"agent/{n}"
     with _REMOTE_REFS:
         run(["git", "fetch", "origin"], cwd=ROOT)
-        if _remote_agent_head(ROOT, n):
+        remote = _remote_agent_head(ROOT, n)
+        if remote:
             run(["git", "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=ROOT)
     if not wt.is_dir():
         if run(["git", "rev-parse", "--verify", branch], cwd=ROOT, check=False).returncode == 0:
@@ -2102,10 +2103,6 @@ def ensure_worktree(n: int, *, preserved: str | None = None) -> Path:
                 start = f"origin/{cfg.main}"
             run(["git", "worktree", "add", str(wt), "-b", branch, start], cwd=ROOT)
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
-    remote = run(
-        ["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
-        cwd=ROOT, check=False,
-    ).stdout.strip()
     context = f"{branch}: kept HEAD {head}, origin/{branch} {remote or '(none)'}; worktree kept at {wt}"
     if run([
         "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
