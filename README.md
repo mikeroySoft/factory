@@ -3239,7 +3239,7 @@ two MCP tools call that same function. Nothing else composes these label edits.
 
 | Action | `args` | Preconditions | Effect |
 |---|---|---|---|
-| `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
+| `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `from_held?` (boolean), `comment?` | issue open and `ready-for-human`, or `factory-held` with explicit `from_held: true`; not upstream-sync or initiative (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human` (also issue `factory-held` with `from_held: true`), unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations); never touches the PR |
 | `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
 | `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
 | `approve_pr` | PR `number`, `ruling_id?` (string) | PR open, not draft or `factory-held`, targets configured `main`, no changes-requested review; existing exact-head gate, independent review and required manager evidence | add only `factory-approved` through `decisions.apply` → `_approve` → `_approval_policy` |
@@ -3251,6 +3251,16 @@ structured `{ok: false, error: {code, message}}` with the same `code` on both pa
 `decisions` code. Every proposal records `caller` (`dashboard` or `mcp`) and
 `action` (`{name, args}`); the `human-decision` journal rows for `prepared`,
 `started` and the final status, and the receipt, carry both.
+
+To resume a parked issue, prepare `{"action": "requeue_agent", "args": {"number":
+854, "from_held": true, "comment": "Resume parked work"}}`, then apply the returned
+proposal with its confirmation. The guarded issue edit removes `factory-held`,
+adds `ready-for-agent` and unassigns only the authenticated actor; the exact stored
+comment is posted. Without `from_held: true`, a non-`ready-for-human` issue still
+returns `precondition_failed` / `issue is not ready-for-human`. The flag does not
+bypass closed, upstream-sync or initiative refusals. PR draft status, `factory-held`
+and approval labels are untouched: this action neither marks a PR ready nor adds
+`factory-approved`.
 
 For agent re-approval, prepare `{"action": "approve_pr", "args": {"number": 257,
 "ruling_id": "r3-0740"}}` with `factory_prepare_action` and the registered

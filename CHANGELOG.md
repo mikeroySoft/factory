@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `requeue_agent` accepts an open `factory-held` issue without `ready-for-human` only with explicit boolean `from_held: true`; the guarded issue edit removes its hold, adds `ready-for-agent`, unassigns the actor and posts the stored comment. Default admission and closed/upstream-sync/initiative refusals remain unchanged; no PR is read or edited, preserving its draft/held state (#874).
 - Decision-owner routing stops the declared owner at the next Markdown heading or blank line instead of swallowing the ticket summary; empty or malformed declarations remain invalid without fallback (#859).
 - Mutation equivalents resolve pure line drift by a unique exact source window with ±3 lines of context from the protected registry's last committed revision. Changed, deleted or ambiguous windows fail closed; resolved lines govern accepted survivors, killed entries and absent identities. Attempt gates validate configured registries before PR-tier mutation proof and journal relocations (#778).
 - Hosts can set `[defaults.gate] mutation_duration = 5400` (or a per-repository host override) for opted High-risk PR mutation proof runs. Values must be finite numeric seconds greater than 60; absent values preserve the timeout-minus-60 runner budget. Manual durations take precedence, and host settings do not invalidate cached PR gates (#850).

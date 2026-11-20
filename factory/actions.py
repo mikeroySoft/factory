@@ -43,6 +43,8 @@ def _validate(schema: dict, args: object) -> dict:
         spec = properties[key]
         if spec["type"] == "integer":
             ok = type(value) is int and spec["minimum"] <= value <= spec["maximum"]
+        elif spec["type"] == "boolean":
+            ok = type(value) is bool
         else:
             ok = (isinstance(value, str) and "\x00" not in value
                   and len(value) <= spec.get("maxLength", len(value))
@@ -52,19 +54,19 @@ def _validate(schema: dict, args: object) -> dict:
     return dict(args)
 
 
-def _open(target: dict) -> None:
+def _open(target: dict, args: dict) -> None:
     if target["state"] != "OPEN":
         raise DecisionError("issue is not open", "precondition_failed")
 
 
-def _requeue_check(target: dict) -> None:
-    _open(target)
-    if LABEL_HUMAN not in target["labels"]:
+def _requeue_check(target: dict, args: dict) -> None:
+    _open(target, args)
+    if LABEL_HUMAN not in target["labels"] and not (args.get("from_held") and "factory-held" in target["labels"]):
         raise DecisionError(f"issue is not {LABEL_HUMAN}", "precondition_failed")
 
 
-def _triage_check(target: dict) -> None:
-    _open(target)
+def _triage_check(target: dict, args: dict) -> None:
+    _open(target, args)
     held = sorted(PIPELINE_LABELS & set(target["labels"]))
     if held:
         raise DecisionError(f"issue is already in the pipeline: {held}", "precondition_failed")
@@ -86,12 +88,17 @@ ACTIONS = {
     "requeue_agent": {
         "description": (
             f"Move an open {LABEL_HUMAN} issue back to {LABEL_AGENT} and unassign the actor; refuses upstream-sync "
-            "issues. Opens a new generation with fresh round budgets. intent `resume` (default) continues the kept "
+            "and initiative issues. from_held: true also accepts factory-held issues without ready-for-human "
+            "and removes the issue hold. Issue-only: never changes the PR's draft, held or approval state. "
+            "Opens a new generation with fresh round budgets. intent `resume` (default) continues the kept "
             "branch; `fresh` recuts agent/<n> from main, keeping the old heads as evidence refs."
         ),
-        "schema": _schema(optional={"intent": {"type": "string", "enum": list(generation.INTENTS)}}),
+        "schema": _schema(optional={"intent": {"type": "string", "enum": list(generation.INTENTS)},
+                                   "from_held": {"type": "boolean"}}),
         "check": _requeue_check,
-        "compile": lambda args: _request(args, add=[LABEL_AGENT], remove=[LABEL_HUMAN], unassign=True),
+        "compile": lambda args: _request(args, add=[LABEL_AGENT],
+                                        remove=[LABEL_HUMAN, "factory-held"] if args.get("from_held") else [LABEL_HUMAN],
+                                        unassign=True),
     },
     "resolve_and_close": {
         "description": "Close an open issue with a recorded reason.",
@@ -126,5 +133,6 @@ def prepare(cfg: Config, name: object, args: object, *, caller: str) -> dict:
         raise DecisionError(f"unknown action; expected one of {sorted(ACTIONS)}", "unknown_action")
     args = _validate(action["schema"], args)
     return decisions.prepare(
-        cfg, action["compile"](args), caller=caller, action={"name": name, "args": args}, guard=action["check"],
+        cfg, action["compile"](args), caller=caller, action={"name": name, "args": args},
+        guard=(lambda target: action["check"](target, args)) if action["check"] is not None else None,
     )

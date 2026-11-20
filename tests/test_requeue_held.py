@@ -4,8 +4,9 @@ from __future__ import annotations
 import copy
 import unittest
 
-from factory import config, decisions, dispatch
+from factory import actions, config, decisions, dispatch
 from tests import test_actions as action_suite
+from tests import test_decisions as decision_suite
 
 
 class HeldRequeueTest(unittest.TestCase):
@@ -40,8 +41,6 @@ class HeldRequeueTest(unittest.TestCase):
 
     def test_explicit_held_requeue_applies_comment_unassignment_and_labels_without_pr_calls(self):
         self.park()
-        pr = {"headRefName": "agent/7", "isDraft": True, "labels": [{"name": "factory-held"}]}
-        before = copy.deepcopy(pr)
         args = {"number": 7, "from_held": True, "comment": "Resume the parked work"}
         preview = self.via_mcp("requeue_agent", args)
         self.assertNotIn("error", preview, preview)
@@ -56,9 +55,6 @@ class HeldRequeueTest(unittest.TestCase):
         comment, edit = self.mutations
         self.assertEqual(comment[comment.index("--body") + 1], args["comment"])
         self.assertEqual(edit.count("--remove-label"), 2)
-        self.assertEqual(pr, before)
-        self.assertTrue(pr["isDraft"])
-        self.assertNotIn({"name": "factory-approved"}, pr["labels"])
         self.assertEqual(self.journal()[-1]["action"]["args"], args)
         self.assertEqual(self.apply_mcp(preview), receipt)
         self.assertEqual(len(self.mutations), 2)
@@ -112,6 +108,28 @@ class HeldRequeueTest(unittest.TestCase):
         receipt = self.apply_mcp(preview)
         self.assertEqual(receipt["error"]["code"], "stale_target")
         self.assertEqual(self.mutations, [])
+
+
+class HeldRequeuePRTest(unittest.TestCase):
+    setUp = decision_suite.DecisionTest.setUp
+    transport = decision_suite.DecisionTest.transport
+    completed = staticmethod(decision_suite.DecisionTest.completed)
+    touch = decision_suite.DecisionTest.touch
+    edit = decision_suite.DecisionTest.edit
+
+    def test_draft_or_held_pr_is_untouched_by_issue_requeue(self):
+        for draft, held in ((True, True), (True, False), (False, True)):
+            with self.subTest(draft=draft, held=held):
+                self.issue["labels"] = [{"name": "factory-held"}, {"name": "host:tank"}]
+                self.pr.update(isDraft=draft, labels=[{"name": "factory-held"}] if held else [])
+                before = copy.deepcopy(self.pr)
+                preview = actions.prepare(self.cfg, "requeue_agent", {"number": 7, "from_held": True}, caller="mcp")
+                receipt = decisions.apply(self.cfg, preview["proposal_id"], preview["confirmation"])
+                self.assertEqual(receipt["status"], "success")
+                self.assertEqual(self.pr, before)
+                self.assertNotIn({"name": "factory-approved"}, self.pr["labels"])
+                self.assertTrue(self.calls)
+                self.assertTrue(all(command[:3] == ["gh", "issue", "edit"] for command in self.calls))
 
 
 if __name__ == "__main__":
