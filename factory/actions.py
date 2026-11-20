@@ -105,6 +105,17 @@ ACTIONS = {
         "check": _triage_check,
         "compile": lambda args: _request(args, add=[LABEL_TRIAGE]),
     },
+    "approve_pr": {
+        "description": "Restore factory-approved on an eligible PR through the exact-head approval policy; no other edits.",
+        "schema": {
+            "type": "object",
+            "properties": {"number": NUMBER, "ruling_id": {"type": "string"}},
+            "required": ["number"],
+            "additionalProperties": False,
+        },
+        "check": None,
+        "compile": lambda args: [{"op": "pr", "number": args["number"], "add": [decisions.LABEL_APPROVED]}],
+    },
 }
 
 
