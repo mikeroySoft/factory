@@ -196,6 +196,22 @@ CLOSE do not add an error to the exit.
 One row per function that edits labels (`--add-label`, `--remove-label`, or
 `--label` on `gh ... create`). `*` is a label chosen at runtime.
 
+### Expired host-claim transitions
+
+The configured land host may take over an approved ticket PR whose elected
+foreign claim has expired. It releases that nonce through the dispatcher's
+`unclaim` requeue transition, then claims the ticket and follows normal merge
+eligibility or refresh. The old claim comments remain evidence; the takeover
+journal records the foreign host and nonce. A live foreign claim still blocks,
+and a non-land host never enters landing.
+
+The guarded `release_claim` named action uses the same expired-claim release
+transition after confirmation, with a fresh claim check at apply. It refuses
+live claims and does not delete comments or grant approval. Refresh still
+requires re-gating and re-review at the new head before re-approval and landing.
+
+### Label transition index
+
 | Code | Removes | Adds | Path |
 |------|---------|------|------|
 | `decisions._approve` | — | `factory-approved` | Human approve step; withdrawn again if the PR changed while labelling |

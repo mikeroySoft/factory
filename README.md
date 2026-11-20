@@ -1645,10 +1645,14 @@ without a manager, and act only on this host's own `escalate` rows. A PR claimed
 only by the other host has no local `claimed` or `escalate` row, so those passes
 leave it alone.
 
-Independently, the ticket merge stage skips PRs whose elected claim belongs to
-another host, even after that claim expires. It neither refreshes those branches
-nor consumes local approval evidence, removes `factory-approved`, or escalates
-them. PRs without a claim retain ordinary eligibility checks.
+The ticket merge stage skips a live elected claim belonging to another host.
+Once that claim expires, the configured `land_host` may release it through
+the dispatcher's matching `Factory requeue: nonce=...` transition and claim the
+approved PR for normal landing or refresh. Claim comments remain evidence;
+takeover records the previous host and nonce. Other hosts still cannot land.
+Takeover does not waive exact-head gate, review, approval or green-CI checks.
+Behind or conflicting branches follow the normal refresh and fresh-head review
+path; they are never merged at the stale approved head.
 
 Before any GitHub mutation, dispatch reads `gh api rate_limit` and requires at
 least **100 remaining** in both GraphQL and REST (`core`). Below either floor,
@@ -3248,6 +3252,7 @@ two MCP tools call that same function. Nothing else composes these label edits.
 | Action | `args` | Preconditions | Effect |
 |---|---|---|---|
 | `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
+| `release_claim` | issue `number`, `comment?` | elected claim expired; shared dispatcher login; no live claim | post the matching dispatcher requeue transition without deleting claim comments; live claims are refused with a reason |
 | `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
 | `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
 | `approve_pr` | PR `number`, `ruling_id?` (string) | PR open, not draft or `factory-held`, targets configured `main`, no changes-requested review; existing exact-head gate, independent review and required manager evidence | add only `factory-approved` through `decisions.apply` → `_approve` → `_approval_policy` |
