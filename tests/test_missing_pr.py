@@ -58,14 +58,14 @@ class MissingPrTest(unittest.TestCase):
             cfg = SimpleNamespace(repo=self.cfg.repo, factory=root)
             rows = []
             for n in (7, 8, 9):
-                rows.extend([{"event": "escalate", "ticket": n, "packet": "packet", "round": 1}, {"event": "comment", "ticket": n, "kind": "handoff", "request": f"{n}/1", "target": "alice"}])
+                rows.extend([{"event": "escalate", "ticket": n, "packet": "packet", "round": 1}, {"event": "comment", "ticket": n, "kind": "handoff", "request": f"{n}/1", "target": "@alice"}])
             def command(cmd, *args):
                 if cmd[1:3] == ["issue", "list"]:
                     return subprocess.CompletedProcess(cmd, 0, json.dumps([{"number": n} for n in (7, 8, 9)]), "")
                 branch = cmd[3]
                 raise subprocess.CalledProcessError(1, cmd, stderr=f'no pull requests found for branch "{branch}"\n')
-            with mock.patch.object(dispatch, "cfg", cfg, create=True), mock.patch.object(dispatch, "EVENTS", root / "events", create=True), mock.patch.object(dispatch, "_run", side_effect=command), mock.patch.object(dispatch, "lock_held", return_value=False), mock.patch.object(dispatch, "initiative_kind", return_value=None), mock.patch.object(handoff.lifecycle, "read_events", return_value=rows), mock.patch.object(handoff, "terminal", return_value="human"), mock.patch.object(plan.Reader, "__init__", self.reader), mock.patch.object(handoff, "compose") as compose:
-                handoff.handoff_pass(dry_run=True)
+            with mock.patch.object(dispatch, "FACTORY", root, create=True), mock.patch.object(dispatch, "cfg", cfg, create=True), mock.patch.object(dispatch, "EVENTS", root / "events", create=True), mock.patch.object(dispatch, "_run", side_effect=command), mock.patch.object(dispatch, "initiative_kind", return_value=None), mock.patch.object(handoff.lifecycle, "read_events", return_value=rows), mock.patch.object(handoff, "terminal", return_value="human"), mock.patch.object(plan.Reader, "__init__", self.reader), mock.patch.object(handoff, "compose") as compose:
+                handoff.handoff_pass()
             compose.assert_not_called()
             self.assertEqual(len(self.paths), 3)
             self.assertFalse(any("command failed" in call.args[0] for call in self.logs.call_args_list))
@@ -92,3 +92,38 @@ class LookupScopeTest(unittest.TestCase):
                 with self.assertRaises(subprocess.CalledProcessError):
                     dispatch.run(cmd)
             self.assertIn("command failed (exit 1)", log.call_args.args[0])
+
+
+class ManagerLookupTest(unittest.TestCase):
+    def test_expected_miss_is_quiet_but_other_failures_refuse(self):
+        from factory import config, manage
+
+        for decision in ("CLOSE", "RESOLVE"):
+            for stderr, code, expected in [
+                ('no pull requests found for branch "agent/7"', 1, True),
+                ("authentication failed", 1, False),
+                ('no pull requests found for branch "agent/7"', 2, False),
+                ('no pull requests found for branch "agent/8"', 1, False),
+            ]:
+                with self.subTest(decision=decision, stderr=stderr, code=code), tempfile.TemporaryDirectory() as tmp:
+                    cfg = config.Config(Path(tmp), "acme/widgets")
+                    commands = []
+
+                    def command(cmd, *args):
+                        commands.append(cmd)
+                        if cmd[1:3] == ["pr", "view"]:
+                            raise subprocess.CalledProcessError(code, cmd, stderr=stderr)
+                        if cmd[1] == "api":
+                            return subprocess.CompletedProcess(cmd, 0, '{"ahead_by": 0}', "")
+                        return subprocess.CompletedProcess(cmd, 0, "https://example.test/comment", "")
+
+                    with mock.patch.object(dispatch, "cfg", cfg, create=True), mock.patch.object(dispatch, "REPO", cfg.repo, create=True), mock.patch.object(dispatch, "EVENTS", Path(tmp) / "events", create=True), mock.patch.object(dispatch, "_run", side_effect=command), mock.patch.object(dispatch, "log") as log, mock.patch.object(dispatch, "comment_receipt"), mock.patch.object(dispatch, "record"):
+                        if expected:
+                            manage.apply(7, {"title": "done"}, decision, "Already shipped.", None, Path("unused"))
+                            log.assert_not_called()
+                            self.assertTrue(any(cmd[1:3] == ["issue", "comment"] for cmd in commands))
+                        else:
+                            with self.assertRaises(subprocess.CalledProcessError):
+                                manage.apply(7, {"title": "done"}, decision, "Already shipped.", None, Path("unused"))
+                            self.assertEqual(len(commands), 1)
+                            self.assertIn(f"command failed (exit {code})", log.call_args.args[0])
