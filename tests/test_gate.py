@@ -551,6 +551,39 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ],
             )
 
+    def test_report_keeps_distinct_parameterized_subtest_skips(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_subtests.py").write_text(
+                "import unittest\n\n"
+                "class SubtestTest(unittest.TestCase):\n"
+                "    def test_parameters(self):\n"
+                "        for i in range(2):\n"
+                "            with self.subTest(i=i):\n"
+                "                self.skipTest('needs hardware')\n"
+            )
+            commit(repo, "parameterized skipped subtests")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 1 test", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_parameters (test_subtests.SubtestTest.test_parameters) (i=0) ... skipped 'needs hardware'",
+                    "test_parameters (test_subtests.SubtestTest.test_parameters) (i=1) ... skipped 'needs hardware'",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
