@@ -1329,7 +1329,10 @@ def execute(args: argparse.Namespace, execution) -> int:
             evidence = []
             identity = ""
             for line in output.splitlines():
-                test = re.search(r"\b\w+ \((?:\w+\.)+\w+\)(?: \(.*\))?(?= \.\.\. |$)", line)
+                test = re.search(
+                    r"\b(?:\w+ \((?:\w+\.)+\w+\)|(?:setUpModule|tearDownModule) \(\w+\))"
+                    r"(?: \[.*\])?(?: \(.*\))?(?= \.\.\. |$)", line,
+                )
                 if test:
                     identity = test.group()
                 skipped = re.search(r"\bskipped (?:'.*'|\".*\")$", line)
