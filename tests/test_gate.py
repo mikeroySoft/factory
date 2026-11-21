@@ -465,6 +465,44 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                     self.assertNotIn("test evidence", report)
                     self.assertNotIn("test_noisy.NoisyTest", report)
 
+    def test_report_keeps_exact_skip_identities_with_parenthesized_noise(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_parentheses.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class ParenthesesTest(unittest.TestCase):\n"
+                "    @unittest.skip('needs hardware')\n"
+                "    def test_a_decorated(self):\n"
+                "        \"\"\"Hardware (optional)\"\"\"\n"
+                "        pass\n"
+                "    def test_b_runtime(self):\n"
+                "        \"\"\"Retries (once) on failure.\"\"\"\n"
+                "        print('diagnostic\\n* (HEAD detached at abc)', file=sys.stderr)\n"
+                "        self.skipTest('needs network')\n"
+                "    def test_c_pass(self):\n"
+                "        print('passing diagnostic', file=sys.stderr)\n"
+            )
+            commit(repo, "parenthesized skipped suite")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 3 tests", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_a_decorated (test_parentheses.ParenthesesTest.test_a_decorated) ... skipped 'needs hardware'",
+                    "test_b_runtime (test_parentheses.ParenthesesTest.test_b_runtime) ... skipped 'needs network'",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
