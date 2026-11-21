@@ -1329,7 +1329,7 @@ def execute(args: argparse.Namespace, execution) -> int:
             evidence = []
             identity = ""
             for line in output.splitlines():
-                test = re.match(r"^\w+ \((?:\w+\.)+\w+\)(?= \.\.\. |$)", line)
+                test = re.search(r"\b\w+ \((?:\w+\.)+\w+\)(?= \.\.\. |$)", line)
                 if test:
                     identity = test.group()
                 skipped = re.search(r"\bskipped (?:'.*'|\".*\")$", line)
@@ -1337,6 +1337,8 @@ def execute(args: argparse.Namespace, execution) -> int:
                     evidence.append(f"{identity} ... {skipped[0]}")
                 elif re.match(r"^Ran \d+ tests?\b", line):
                     evidence.append(line)
+                if skipped or re.search(r"(?:^| \.\.\. )(?:ok|FAIL|ERROR|expected failure|unexpected success)$", line):
+                    identity = ""
             if evidence:
                 lines += ["", f"## {name} test evidence", "```", *evidence, "```"]
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
