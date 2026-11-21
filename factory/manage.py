@@ -540,14 +540,15 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
     elif decision == "RESOLVE":
         pr = None
         try:
-            candidate = dispatch.gh_json([
-                "pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
-                "--json", "number,state,changedFiles,baseRefName",
-            ])
+            with dispatch.optional_pr_lookup(f"agent/{n}"):
+                candidate = dispatch.gh_json([
+                    "pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
+                    "--json", "number,state,changedFiles,baseRefName",
+                ])
             if candidate.get("state") == "OPEN":
                 pr = candidate
         except CalledProcessError as exc:
-            if "no pull requests found" not in (exc.stderr or "").lower():
+            if not dispatch.is_missing_pr(exc, f"agent/{n}"):
                 raise
             # A push whose `gh pr create` failed leaves work on the branch with no PR.
             try:
@@ -574,12 +575,13 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         message = "Factory manager: " + body
         pr = None
         try:
-            pr = dispatch.gh_json([
-                "pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
-                "--json", "number,state,baseRefName",
-            ])
+            with dispatch.optional_pr_lookup(f"agent/{n}"):
+                pr = dispatch.gh_json([
+                    "pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
+                    "--json", "number,state,baseRefName",
+                ])
         except CalledProcessError as exc:
-            if "no pull requests found" not in (exc.stderr or "").lower():
+            if not dispatch.is_missing_pr(exc, f"agent/{n}"):
                 raise
         if pr is not None and pr.get("state") == "CLOSED":
             pr = None

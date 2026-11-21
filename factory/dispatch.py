@@ -231,10 +231,14 @@ def run(
     """`env` replaces the inherited environment (lifecycle context is still added).
 
     A failed checked command logs its redacted stderr tail, then raises as before.
+    `optional_pr_lookup` scopes the one expected branch-miss diagnostic.
     """
     try:
         return _run(cmd, cwd, check, stdout, stderr, env, timeout)
     except subprocess.CalledProcessError as exc:
+        branch = _OPTIONAL_PR.get()
+        if branch is not None and cmd[:4] == ["gh", "pr", "view", branch] and is_missing_pr(exc, branch):
+            raise
         tail = stderr_tail(exc.stderr)
         if tail:
             log(f"command failed (exit {exc.returncode}); stderr tail:\n{tail}")
@@ -288,6 +292,22 @@ def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedP
     if check:
         result.check_returncode()
     return result
+
+
+_OPTIONAL_PR = contextvars.ContextVar("optional_pr", default=None)
+
+
+@contextmanager
+def optional_pr_lookup(branch: str):
+    token = _OPTIONAL_PR.set(branch)
+    try:
+        yield
+    finally:
+        _OPTIONAL_PR.reset(token)
+
+
+def is_missing_pr(exc: subprocess.CalledProcessError, branch: str) -> bool:
+    return exc.returncode == 1 and (exc.stderr or "").strip() == f'no pull requests found for branch "{branch}"'
 
 
 def gh_json(args: list[str], env: dict[str, str] | None = None) -> object:
