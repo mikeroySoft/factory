@@ -589,6 +589,7 @@ def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[lis
         raise HostSetupError(problem)
     claims = []
     requeues = {}
+    retained_nonces = set()
     context = ""
     for page in pages:
         for comment in page:
@@ -600,6 +601,9 @@ def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[lis
                 first = comment["body"].split("\n", 2)[1] if "\n" in comment["body"] else ""
             if match := re.fullmatch(r"Factory requeue: nonce=(\S+)", first):
                 context = comment["body"] if escalated else comment["body"].partition("\n")[2]
+                if context.startswith("Factory claim history: retained\n"):
+                    retained_nonces.add(match[1])
+                    context = context.partition("\n")[2]
                 requeues[match[1]] = context
                 continue
             match = re.fullmatch(r"Factory claim: host=(\S+) nonce=(\S+) at=(\S+)", first)
@@ -614,10 +618,13 @@ def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[lis
             except (ValueError, KeyError):
                 continue
             claims.append({**comment, "host": host, "nonce": nonce, "at": at,
-                           "heartbeat": heartbeat, "created": created})
+                           "heartbeat": heartbeat, "created": created,
+                           "preserve_history": "Factory claim history: retained" in comment["body"].splitlines()[1:]})
     for claim in claims:
         if claim["nonce"] in requeues:
             claim["requeue"] = requeues[claim["nonce"]]
+        if claim["nonce"] in retained_nonces:
+            claim["preserve_history"] = True
     claims.sort(key=lambda row: (row["created"], row["id"]))
     elected = elected_host_claim(claims)
     return claims, elected.get("requeue", "") if elected else context
@@ -686,6 +693,8 @@ def delete_host_claim(n: int, claim: dict) -> None:
 
 
 def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement: int | None = None) -> dict:
+    if any(row.get("preserve_history") for row in claims):
+        return issue
     claims = [row for row in claims if row["id"] != replacement]
     live_ids = {row["id"] for row in live_host_claims(claims)}
     stale = [row for row in claims if row["id"] not in live_ids]
@@ -729,8 +738,9 @@ class HostClaim:
         self.preserve_history = False
 
     def body(self) -> str:
-        return (f"Factory claim: host={cfg.host_name} nonce={self.comment['nonce']} "
+        body = (f"Factory claim: host={cfg.host_name} nonce={self.comment['nonce']} "
                 f"at={datetime.now(UTC).isoformat()}")
+        return body + ("\nFactory claim history: retained" if self.preserve_history else "")
 
     def heartbeat(self) -> None:
         while not self.stopped.wait(cfg.claim_ttl_seconds / 4):
@@ -772,7 +782,7 @@ def acquire_host_claim(
     run(["gh", "label", "create", label, "--repo", REPO, "--color", "ededed", "--force"])
     run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-label", label])
     claim = HostClaim(n, {"nonce": str(uuid.uuid4())})
-    claim.preserve_history = preserve_history
+    claim.preserve_history = preserve_history or any(row.get("preserve_history") for row in claims)
     try:
         comment = gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                            "-f", f"body={claim.body()}"])
@@ -815,26 +825,21 @@ def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
 
 def unclaim(
     n: int, *label_args: str, check: bool = False, assignee_last: bool = False,
-    preserve_claims: bool = False, expected_expired_nonce: str | None = None,
 ) -> None:
     """Apply lifecycle transitions; release host resources only when this host owns them."""
     claims = host_claims(n) if cfg.host_name else []
-    if expected_expired_nonce is not None:
-        elected = elected_host_claim(claims)
-        if elected is None or elected["nonce"] != expected_expired_nonce:
-            raise ValueError("elected host claim changed")
-        if live_host_claims(claims):
-            raise ValueError("host claim is still live")
     owned = owned_host_claim(n, claims)
     local = _HOST_CLAIMS.get(n)
-    preserve_claims = preserve_claims or bool(local and local.preserve_history)
+    preserve_claims = (bool(local and local.preserve_history)
+                       or any(row.get("preserve_history") for row in claims))
     if cfg.host_name and any(
         flag == "--add-label" and label == LABEL_AGENT
         for flag, label in zip(label_args[::2], label_args[1::2])
     ) and (elected := elected_host_claim(claims)):
         context = refresh_requeue_context(n)
+        retained = "Factory claim history: retained\n" if preserve_claims else ""
         gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
+                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{retained}{context}"])
     if owned is not None:
         if not preserve_claims:
             fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,assignees"])
@@ -853,7 +858,7 @@ def release_expired_claim(
     n: int, *, dry_run: bool = False, reason: str = "expired host claim",
     expected_nonce: str | None = None,
 ) -> dict:
-    """Release an authenticated expired election without erasing its durable claim."""
+    """Release expired host ownership without changing ticket routing or claim history."""
     if not cfg.host_name:
         raise ValueError("host_name is required to release a host claim")
     try:
@@ -873,9 +878,23 @@ def release_expired_claim(
     if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
         raise ValueError("ticket has a human assignee")
     if not dry_run:
-        # unclaim publishes the same nonce-bound requeue used by every worker transition.
-        unclaim(n, "--remove-label", f"host:{elected['host']}", "--add-label", LABEL_AGENT,
-                check=True, preserve_claims=True, expected_expired_nonce=elected["nonce"])
+        context = refresh_requeue_context(n)
+        try:
+            current, shared_context = host_claim_state(n, require_shared_login=True)
+        except HostSetupError as exc:
+            raise ValueError(str(exc)) from exc
+        fresh = elected_host_claim(current)
+        if fresh is None or fresh["nonce"] != elected["nonce"]:
+            raise ValueError("elected host claim changed")
+        if live_host_claims(current):
+            raise ValueError(f"host claim ({fresh['host']}) is still live")
+        elected = fresh
+        context = context or shared_context
+        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
+                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n"
+                 f"Factory claim history: retained\n{context}"])
+        run(["gh", "issue", "edit", str(n), "--repo", REPO,
+             "--remove-label", f"host:{elected['host']}"])
         record("claim-released", ticket=n, host=elected["host"], nonce=elected["nonce"],
                last_heartbeat=elected["at"], reason=reason)
         log(f"#{n}: released expired claim host={elected['host']} nonce={elected['nonce']} ({reason})")
@@ -888,7 +907,9 @@ def can_takeover_land_claim(claims: list[dict]) -> bool:
 
 
 @contextmanager
-def landing_host_claim(n: int, foreign: dict | None, *, dry_run: bool):
+def landing_host_claim(
+    n: int, foreign: dict | None, *, dry_run: bool, pr: int, head: str,
+):
     """Keep takeover ownership alive through refresh/merge, preserving claim history."""
     claim = None
     try:
@@ -910,7 +931,8 @@ def landing_host_claim(n: int, foreign: dict | None, *, dry_run: bool):
                     yield False
                     return
                 run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
-                record("claim-takeover", ticket=n, host=cfg.host_name, nonce=claim.comment["nonce"],
+                record("claim-takeover", ticket=n, pr=pr, head=head, host=cfg.host_name,
+                       nonce=claim.comment["nonce"],
                        foreign_host=foreign["host"], foreign_nonce=foreign["nonce"])
                 log(f"#{n}: land-host takeover from host={foreign['host']} nonce={foreign['nonce']}")
         elif not dry_run and cfg.host_name and cfg.land_host == cfg.host_name:
@@ -4928,13 +4950,21 @@ def merge_pass_locked(dry_run: bool) -> None:
                     continue
                 foreign = elected
         with (
-            landing_host_claim(n, foreign, dry_run=dry_run) as owned,
+            landing_host_claim(n, foreign, dry_run=dry_run, pr=pr_num, head=listed_head) as owned,
             (nullcontext() if dry_run else lifecycle.scope(
                 EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
             )) as execution,
         ):
             if not owned:
                 continue
+            recovery_claim = owned_host_claim(n) if cfg.host_name and cfg.land_host == cfg.host_name else None
+            recovering = bool(recovery_claim) and any(
+                row.get("event") == "claim-takeover"
+                and row.get("ticket") == n and row.get("pr") == pr_num
+                and row.get("head") == listed_head and row.get("host") == cfg.host_name
+                and row.get("nonce") == recovery_claim["nonce"]
+                for row in lifecycle.read_events(EVENTS)
+            )
             if initiative_kind(n):
                 log(f"PR #{pr_num}: refused (ticket #{n} is an initiative record); not merging")
                 if execution:
@@ -5090,7 +5120,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     )
                     action = (
                         "merge" if approved else
-                        "refresh (fresh local gate and review required after takeover)" if foreign is not None else
+                        "refresh (fresh local gate and review required after takeover)" if foreign is not None or recovering else
                         "refuse (missing SHA-bound approval evidence)"
                     )
                     log(f"PR #{pr_num}: would {action}")
@@ -5154,7 +5184,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 and e.get("review_head") == head
                 for e in events
             )
-            if not approved and foreign is not None:
+            if not approved and (foreign is not None or recovering):
                 record_merge_decision(
                     n, pr_num, "refresh branch",
                     f"land-host takeover requires fresh local gate and review evidence for {head}",

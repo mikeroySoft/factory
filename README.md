@@ -1653,6 +1653,9 @@ takeover records the previous host and nonce. Other hosts still cannot land.
 Takeover does not waive exact-head gate, review, approval or green-CI checks.
 Behind or conflicting branches follow the normal refresh and fresh-head review
 path; they are never merged at the stale approved head.
+Takeover recovery persists across pending-CI passes: once CI is green, foreign-only
+approval evidence still requires a fresh local gate and independent review.
+Retained claim history survives conflict requeue and subsequent worker recovery.
 
 Before any GitHub mutation, dispatch reads `gh api rate_limit` and requires at
 least **100 remaining** in both GraphQL and REST (`core`). Below either floor,
@@ -3252,10 +3255,14 @@ two MCP tools call that same function. Nothing else composes these label edits.
 | Action | `args` | Preconditions | Effect |
 |---|---|---|---|
 | `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
-| `release_claim` | issue `number`, `comment?` | elected claim expired; shared dispatcher login; no live claim | post the matching dispatcher requeue transition without deleting claim comments; live claims are refused with a reason |
+| `release_claim` | issue `number`, `comment?` | elected claim expired; shared dispatcher login; no live claim | post the matching dispatcher requeue marker and remove only the elected host label; retain comments, routing labels, assignees and generation budgets; refuse live claims |
 | `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
 | `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
 | `approve_pr` | PR `number`, `ruling_id?` (string) | PR open, not draft or `factory-held`, targets configured `main`, no changes-requested review; existing exact-head gate, independent review and required manager evidence | add only `factory-approved` through `decisions.apply` → `_approve` → `_approval_policy` |
+
+Releasing a claim is not a ticket requeue: upstream-sync routing and human
+escalation holds remain intact. A held ticket still needs the separate authorized
+`requeue_agent` action to open a new generation.
 
 Preconditions run against the exact target the proposal binds to, so `apply`'s
 stale-target check guarantees they still held when the effect ran. Refusals are

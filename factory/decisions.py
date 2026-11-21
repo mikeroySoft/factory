@@ -696,7 +696,11 @@ def _effect(request: dict, actor: str, target: dict) -> dict:
     if request["op"] == "outcome":
         changes.append("post one canonical owner attestation; no release or install is run")
     if request["op"] == "release_claim":
-        changes.append("release the expired elected host claim through the dispatcher; retain claim comments")
+        changes.extend([
+            f"remove label host:{target['claim']['host']}",
+            "post a nonce-bound dispatcher release marker carrying recovery context; retain claim comments",
+            "preserve pipeline labels, assignees and generation budgets; held tickets require a separate authorized requeue_agent",
+        ])
     if LABEL_APPROVED in request.get("add", []):
         changes.append("require exact-head gate and independent review evidence before approval")
     return {
@@ -1402,7 +1406,7 @@ def _postcondition(request: dict, actor: str, actual: dict | None) -> dict:
     elif op == "outcome":
         evidence.append("canonical comment identity was not collected; attestation postcondition is unknown")
     elif op == "release_claim":
-        evidence.append("claim comments are retained; requeue comment identity was not collected and is unknown")
+        evidence.append("claim comments are retained; release marker identity was not collected and is unknown")
     else:
         evidence.append("triage target state is observed, but its model-selected postcondition is not inferred")
     status = "unknown" if not checks else "satisfied" if all(checks) else "not_satisfied"

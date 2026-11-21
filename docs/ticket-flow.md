@@ -208,11 +208,17 @@ If a takeover refresh requeues a conflict, its retained local claim stops
 heartbeating; worker admission waits for that claim's normal TTL to expire.
 An unchanged head with only the other host's journal evidence also goes through
 the normal gate and review path to establish local exact-head approval evidence.
+Recovery remains pending across CI waits; a later green pass establishes fresh
+local evidence rather than treating the takeover claim as an ordinary approval.
+Claim history remains intact through conflict requeue, expiry and worker recovery.
 
-The guarded `release_claim` named action uses the same expired-claim release
-transition after confirmation, with a fresh claim check at apply. It refuses
-live claims and does not delete comments or grant approval. Refresh still
-requires re-gating and re-review at the new head before re-approval and landing.
+The guarded `release_claim` named action posts the matching dispatcher requeue
+marker and removes only the elected host label after confirmation and a fresh
+claim check at apply. It preserves routing labels, assignees, escalation holds
+and generation budgets, including upstream-sync routing. It refuses live claims
+and does not delete comments or grant approval. Releasing a held ticket does not
+authorize its requeue. Refresh still requires re-gating and re-review at the new
+head before re-approval and landing.
 
 ### Label transition index
 
@@ -222,7 +228,7 @@ requires re-gating and re-review at the new head before re-approval and landing.
 | `decisions._plan_request` | `*` | `*` | Human action; labels limited to `decisions.ACT_LABELS`, `factory-approved` routed to `decisions._approve` |
 | `decisions._withdraw_approval` | `factory-approved` | — | Human approve step found the PR changed |
 | `dispatch.acquire_host_claim` | — | `*` | Add this host's `host:<name>` label before the comment election |
-| `dispatch.release_expired_claim` | `*` | `ready-for-agent` | Dispatcher `unclaim` removes the expired owner's host label for confirmed release or land-host takeover; preserves claim comments |
+| `dispatch.release_expired_claim` | `*` | — | Remove only the expired owner's host label and post a nonce-bound dispatcher release marker; preserve routing, assignments, generations and claim comments |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
 | `dispatch.delete_host_claim` | `*` | `*` | Remove the host label before deleting its last claim; restore it if comment deletion fails and the claim remains |
 | `dispatch._record_rework` | `ready-for-human` | `ready-for-agent` | Deferred actionable findings: durable round charged, packet retained, owner queue cleared and assignee removed for the next pass |
