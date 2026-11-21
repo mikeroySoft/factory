@@ -384,5 +384,296 @@ class GateTempdirTest(unittest.TestCase):
                 self.assertEqual(code, expected, report + out)
                 self.assertFalse(Path(marker.read_text()).exists())
 
+class PassingAttemptEvidenceTest(unittest.TestCase):
+    def test_report_records_head_count_and_skipped_test_names(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_evidence.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class EvidenceTest(unittest.TestCase):\n"
+                "    @unittest.skip('needs hardware')\n"
+                "    def test_a_hardware(self):\n"
+                "        pass\n"
+                "    @unittest.skip('needs network')\n"
+                "    def test_b_network(self):\n"
+                "        \"\"\"Network-only acceptance.\"\"\"\n"
+                "        pass\n"
+                "    def test_z_pass(self):\n"
+                "        print('noise\\n' * 100, file=sys.stderr)\n"
+                "        self.assertEqual(2 + 2, 4)\n"
+            )
+            commit(repo, "test suite")
+            head = git(repo, "rev-parse", "HEAD")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            for evidence in (
+                f"Head SHA: {head}",
+                "Ran 3 tests",
+                "test_evidence.EvidenceTest.test_a_hardware",
+                "test_evidence.EvidenceTest.test_b_network",
+            ):
+                with self.subTest(evidence=evidence):
+                    self.assertIn(evidence, report)
+
+    def test_report_retains_skips_across_diagnostics_and_explicit_tiers(self) -> None:
+        import json
+
+        for tier in ("attempt", "pr", "release"):
+            with self.subTest(tier=tier), tempfile.TemporaryDirectory() as directory:
+                toml = TOML + (
+                    '\n[[gate.check]]\nname = "test"\n'
+                    f'when = "{tier}"\n'
+                    f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+                )
+                repo = repo_with_test(Path(directory), toml)
+                (repo / "tests" / "test_noisy.py").write_text(
+                    "import sys\nimport unittest\n\n"
+                    "class NoisyTest(unittest.TestCase):\n"
+                    "    def test_a_pass(self):\n"
+                    "        print('passing diagnostic', file=sys.stderr)\n"
+                    "    def test_b_hardware(self):\n"
+                    "        print('hardware unavailable\\nmore diagnostics', file=sys.stderr)\n"
+                    "        self.skipTest('needs hardware')\n"
+                    "    def test_c_network(self):\n"
+                    "        \"\"\"Network-only acceptance.\"\"\"\n"
+                    "        print('network unavailable\\nmore diagnostics', file=sys.stderr)\n"
+                    "        self.skipTest('needs network')\n"
+                )
+                commit(repo, "noisy skipped suite")
+
+                code, out, report = gate(repo, "--tier", tier)
+
+                self.assertEqual(code, 0, out + report)
+                self.assertIn("- test: PASS", report)
+                if tier == "attempt":
+                    self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+                    self.assertIn("Ran 3 tests", report)
+                    self.assertIn("test_noisy.NoisyTest.test_b_hardware", report)
+                    self.assertIn("test_noisy.NoisyTest.test_c_network", report)
+                    self.assertNotIn("test_noisy.NoisyTest.test_a_pass", report)
+                else:
+                    self.assertNotIn("Head SHA:", report)
+                    self.assertNotIn("test evidence", report)
+                    self.assertNotIn("test_noisy.NoisyTest", report)
+
+    def test_report_keeps_exact_skip_identities_with_parenthesized_noise(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_parentheses.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class ParenthesesTest(unittest.TestCase):\n"
+                "    @unittest.skip('needs hardware')\n"
+                "    def test_a_decorated(self):\n"
+                "        \"\"\"Hardware (optional)\"\"\"\n"
+                "        pass\n"
+                "    def test_b_runtime(self):\n"
+                "        \"\"\"Retries (once) on failure.\"\"\"\n"
+                "        print('diagnostic\\n* (HEAD detached at abc)', file=sys.stderr)\n"
+                "        self.skipTest('needs network')\n"
+                "    def test_c_pass(self):\n"
+                "        print('passing diagnostic', file=sys.stderr)\n"
+            )
+            commit(repo, "parenthesized skipped suite")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 3 tests", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_a_decorated (test_parentheses.ParenthesesTest.test_a_decorated) ... skipped 'needs hardware'",
+                    "test_b_runtime (test_parentheses.ParenthesesTest.test_b_runtime) ... skipped 'needs network'",
+                ],
+            )
+
+    def test_report_keeps_skip_identities_after_partial_fixture_diagnostics(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_fixtures.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "def setUpModule():\n"
+                "    print('module setup: ', end='', file=sys.stderr)\n"
+                "def tearDownModule():\n"
+                "    print(\"module diagnostic skipped 'not a test'\", file=sys.stderr)\n"
+                "class AFixtureTest(unittest.TestCase):\n"
+                "    @classmethod\n"
+                "    def tearDownClass(cls):\n"
+                "        print(\"class diagnostic skipped 'not a test'\", file=sys.stderr)\n"
+                "    @unittest.skip('needs hardware')\n"
+                "    def test_a_decorated(self):\n"
+                "        pass\n"
+                "    def test_b_pass(self):\n"
+                "        pass\n"
+                "class ZFixtureTest(unittest.TestCase):\n"
+                "    @classmethod\n"
+                "    def setUpClass(cls):\n"
+                "        print('class setup: ', end='', file=sys.stderr)\n"
+                "    def test_c_runtime(self):\n"
+                "        \"\"\"Network (optional)\"\"\"\n"
+                "        print('runtime diagnostic', file=sys.stderr)\n"
+                "        self.skipTest('needs network')\n"
+            )
+            commit(repo, "partial fixture diagnostics")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 3 tests", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_a_decorated (test_fixtures.AFixtureTest.test_a_decorated) ... skipped 'needs hardware'",
+                    "test_c_runtime (test_fixtures.ZFixtureTest.test_c_runtime) ... skipped 'needs network'",
+                ],
+            )
+
+    def test_report_keeps_distinct_parameterized_subtest_skips(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_subtests.py").write_text(
+                "import unittest\n\n"
+                "class SubtestTest(unittest.TestCase):\n"
+                "    def test_parameters(self):\n"
+                "        for i in range(2):\n"
+                "            with self.subTest(i=i):\n"
+                "                self.skipTest('needs hardware')\n"
+            )
+            commit(repo, "parameterized skipped subtests")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 1 test", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_parameters (test_subtests.SubtestTest.test_parameters) (i=0) ... skipped 'needs hardware'",
+                    "test_parameters (test_subtests.SubtestTest.test_parameters) (i=1) ... skipped 'needs hardware'",
+                ],
+            )
+
+    def test_report_keeps_labelled_subtests_and_module_fixture_skips(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_module_skip.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "def setUpModule():\n"
+                "    print('module setup: ', end='', file=sys.stderr)\n"
+                "    raise unittest.SkipTest('needs module hardware')\n"
+                "class ModuleTest(unittest.TestCase):\n"
+                "    def test_unused(self):\n"
+                "        pass\n"
+            )
+            (repo / "tests" / "test_labels.py").write_text(
+                "import unittest\n\n"
+                "class LabelTest(unittest.TestCase):\n"
+                "    def test_subtests(self):\n"
+                "        for label in ('first', 'second'):\n"
+                "            with self.subTest(label):\n"
+                "                self.skipTest('needs labelled hardware')\n"
+                "        for i in range(2):\n"
+                "            with self.subTest('parameterized', i=i):\n"
+                "                self.skipTest('needs parameterized hardware')\n"
+            )
+            commit(repo, "labelled subtests and module skip")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 1 test", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_subtests (test_labels.LabelTest.test_subtests) [first] ... skipped 'needs labelled hardware'",
+                    "test_subtests (test_labels.LabelTest.test_subtests) [second] ... skipped 'needs labelled hardware'",
+                    "test_subtests (test_labels.LabelTest.test_subtests) [parameterized] (i=0) ... skipped 'needs parameterized hardware'",
+                    "test_subtests (test_labels.LabelTest.test_subtests) [parameterized] (i=1) ... skipped 'needs parameterized hardware'",
+                    "setUpModule (test_module_skip) ... skipped 'needs module hardware'",
+                ],
+            )
+
+    def test_report_keeps_skip_after_diagnostic_status_text(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_status.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class StatusTest(unittest.TestCase):\n"
+                "    def test_a_hardware(self):\n"
+                "        print('hardware probe ... ERROR', file=sys.stderr)\n"
+                "        self.skipTest('needs hardware')\n"
+                "    def test_b_network(self):\n"
+                "        \"\"\"Network (optional)\"\"\"\n"
+                "        print('network probe ... ERROR', file=sys.stderr)\n"
+                "        self.skipTest('needs network')\n"
+                "    def test_c_pass(self):\n"
+                "        \"\"\"Completed test\"\"\"\n"
+                "        pass\n"
+                "    @classmethod\n"
+                "    def tearDownClass(cls):\n"
+                "        print(\"class diagnostic skipped 'not a test'\", file=sys.stderr)\n"
+            )
+            commit(repo, "diagnostic status before skips")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 3 tests", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_a_hardware (test_status.StatusTest.test_a_hardware) ... skipped 'needs hardware'",
+                    "test_b_network (test_status.StatusTest.test_b_network) ... skipped 'needs network'",
+                ],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

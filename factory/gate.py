@@ -10,6 +10,7 @@ import argparse
 import ast
 import fcntl
 import fnmatch
+import itertools
 import json
 import math
 import os
@@ -1182,6 +1183,7 @@ def toolchain() -> dict[str, str]:
 
 def execute(args: argparse.Namespace, execution) -> int:
     global CHECK_TIMEOUT
+    head = None
     host = toolchain()
     execution.emit("toolchain", **host)
     if args.base is None:
@@ -1194,6 +1196,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     audit = []  # the reviewed protected transition this run actually verified and exempted
 
     if args.tier == "attempt":
+        head = timed(["git", "rev-parse", "--verify", "-q", "HEAD"]).stdout.strip() or "unavailable"
         if not args.protected_override:
             passed, reason, detail = check_protected_paths(
                 args.base, args.upstream, args.add_only_override,
@@ -1239,7 +1242,10 @@ def execute(args: argparse.Namespace, execution) -> int:
 
     def command(check: config.Check) -> list[str]:
         blocking = args.blocking_mutation and (check.name == "mutation" or proved(check))
-        return [*check.run, *(["--blocking"] if blocking else [])]
+        cmd = [*check.run, *(["--blocking"] if blocking else [])]
+        if not rank and ("-m", "unittest") in itertools.pairwise(cmd):
+            cmd.append("--verbose")  # unittest's default progress omits skipped-test names
+        return cmd
 
     def run_proved(check: config.Check) -> tuple[bool, str]:
         duration = args.mutation_duration
@@ -1311,6 +1317,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                    for name, (status, binding) in proofs.items()]
     lines = [
         "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "",
+        *([f"Head SHA: {head}", ""] if head is not None else []),
         *([*proof_lines, ""] if proof_lines else []), "## Host toolchain",
         f"ROCm: {host['rocm']}", f"Kernel: {host['kernel']}", f"amdgpu: {host['amdgpu']}", "",
         *audit,
@@ -1318,6 +1325,33 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, _ in results:
         lines.append(f"- {name}: {status}")
     for name, status, output in results:
+        if not rank and status in {"PASS"}:
+            evidence = []
+            identity = ""
+            description = False
+            for line in output.splitlines():
+                test = re.search(
+                    r"\b(?:\w+ \((?:\w+\.)+\w+\)|(?:setUpModule|tearDownModule) \(\w+\))"
+                    r"(?: \[.*\])?(?: \(.*\))?(?= \.\.\. |$)", line,
+                )
+                completion = line
+                if test:
+                    identity = test.group()
+                    completion = line[test.end():]
+                elif description:
+                    completion = line.partition(" ... ")[2]
+                description = bool(test and test.end() == len(line))
+                skipped = re.search(r"\bskipped (?:'.*'|\".*\")$", line)
+                if skipped and identity:
+                    evidence.append(f"{identity} ... {skipped[0]}")
+                elif re.match(r"^Ran \d+ tests?\b", line):
+                    evidence.append(line)
+                if skipped or re.fullmatch(
+                    r"(?: \.\.\. )?(?:ok|FAIL|ERROR|expected failure|unexpected success)", completion,
+                ):
+                    identity = ""
+            if evidence:
+                lines += ["", f"## {name} test evidence", "```", *evidence, "```"]
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
         # them only through this report, so keep their output when they pass too.
         if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
