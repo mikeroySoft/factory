@@ -758,6 +758,95 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ],
             )
 
+    def test_report_keeps_identities_through_dotted_description_and_diagnostics(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_dotted.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class DottedTest(unittest.TestCase):\n"
+                "    @unittest.skip('needs decorated GPU')\n"
+                "    def test_a_decorated(self):\n"
+                "        \"\"\"Uses backend (torch.cuda)\"\"\"\n"
+                "        pass\n"
+                "    def test_b_runtime(self):\n"
+                "        \"\"\"Uses backend (torch.cuda)\"\"\"\n"
+                "        self.skipTest('needs runtime GPU')\n"
+                "    def test_c_diagnostic(self):\n"
+                "        print('probing\\nusing backend (torch.cuda)', file=sys.stderr)\n"
+                "        self.skipTest('needs diagnostic GPU')\n"
+                "    def test_d_diagnostic_description(self):\n"
+                "        \"\"\"Uses backend (torch.cuda)\"\"\"\n"
+                "        print('probing\\nusing backend (torch.cuda)', file=sys.stderr)\n"
+                "        self.skipTest('needs described diagnostic GPU')\n"
+            )
+            commit(repo, "dotted descriptions and diagnostics")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 4 tests", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_a_decorated (test_dotted.DottedTest.test_a_decorated) ... skipped 'needs decorated GPU'",
+                    "test_b_runtime (test_dotted.DottedTest.test_b_runtime) ... skipped 'needs runtime GPU'",
+                    "test_c_diagnostic (test_dotted.DottedTest.test_c_diagnostic) ... skipped 'needs diagnostic GPU'",
+                    "test_d_diagnostic_description (test_dotted.DottedTest.test_d_diagnostic_description) ... skipped 'needs described diagnostic GPU'",
+                ],
+            )
+
+    def test_report_keeps_skips_with_description_separators(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_descriptions.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class DescriptionTest(unittest.TestCase):\n"
+                "    @unittest.skip('needs decorated hardware')\n"
+                "    def test_a_decorated(self):\n"
+                "        \"\"\"Hardware ... optional\"\"\"\n"
+                "        pass\n"
+                "    def test_b_runtime(self):\n"
+                "        \"\"\"Hardware ... optional ... (torch.cuda)\"\"\"\n"
+                "        self.skipTest('needs runtime hardware')\n"
+                "    def test_c_diagnostic(self):\n"
+                "        \"\"\"Hardware ... optional\"\"\"\n"
+                "        print('hardware probe ... ERROR', file=sys.stderr)\n"
+                "        self.skipTest('needs diagnostic hardware')\n"
+                "    def test_d_pass(self):\n"
+                "        \"\"\"Hardware ... optional\"\"\"\n"
+                "        print(\"hardware probe ... skipped 'not a test'\", file=sys.stderr)\n"
+            )
+            commit(repo, "description separators and diagnostic status suffixes")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 4 tests", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_a_decorated (test_descriptions.DescriptionTest.test_a_decorated) ... skipped 'needs decorated hardware'",
+                    "test_b_runtime (test_descriptions.DescriptionTest.test_b_runtime) ... skipped 'needs runtime hardware'",
+                    "test_c_diagnostic (test_descriptions.DescriptionTest.test_c_diagnostic) ... skipped 'needs diagnostic hardware'",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
