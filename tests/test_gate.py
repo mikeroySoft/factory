@@ -928,6 +928,75 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ],
             )
 
+    def test_attempt_preserves_noninterpreter_unittest_arguments(self) -> None:
+        import json
+
+        commands = (
+            ("coverage", "run", "-m", "unittest"),
+            ("pytest", "-m", "unittest"),
+            (sys.executable, "wrapper.py", "-m", "unittest"),
+            (sys.executable, "-m", "coverage", "run", "-m", "unittest"),
+            ("uv", "run", "--offline", "coverage", "run", "-m", "unittest"),
+        )
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                repo = Path(directory) / "repo"
+                argv = [str(repo / command[0]), *command[1:]] if command[0] in {"coverage", "pytest", "uv"} else list(command)
+                expected = list(command[1:])
+                filename = command[0]
+                if command[0] == sys.executable:
+                    filename = "coverage.py" if command[1] == "-m" else "wrapper.py"
+                    expected = list(command[3:] if command[1] == "-m" else command[2:])
+                toml = TOML + (
+                    '\n[[gate.check]]\nname = "test"\n'
+                    f'run = {json.dumps(argv)}\n'
+                )
+                repo = repo_with_test(Path(directory), toml)
+                program = repo / filename
+                program.write_text(
+                    f"#!{sys.executable}\n"
+                    "import sys\n"
+                    f"assert sys.argv[1:] == {expected!r}, sys.argv\n"
+                )
+                program.chmod(0o755)
+                commit(repo, "commands with unrelated unittest arguments")
+
+                code, out, report = gate(repo)
+
+                self.assertEqual(code, 0, out + report)
+                self.assertIn("- test: PASS", report)
+
+    def test_report_keeps_skip_after_unterminated_runtime_diagnostic(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_partial.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class PartialTest(unittest.TestCase):\n"
+                "    def test_hardware(self):\n"
+                "        print('hardware probe: ', end='', file=sys.stderr)\n"
+                "        self.skipTest('needs hardware')\n"
+            )
+            commit(repo, "unterminated runtime diagnostic")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 1 test", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_hardware (test_partial.PartialTest.test_hardware) ... skipped 'needs hardware'",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
