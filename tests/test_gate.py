@@ -503,6 +503,54 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ],
             )
 
+    def test_report_keeps_skip_identities_after_partial_fixture_diagnostics(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_fixtures.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "def setUpModule():\n"
+                "    print('module setup: ', end='', file=sys.stderr)\n"
+                "def tearDownModule():\n"
+                "    print(\"module diagnostic skipped 'not a test'\", file=sys.stderr)\n"
+                "class AFixtureTest(unittest.TestCase):\n"
+                "    @classmethod\n"
+                "    def tearDownClass(cls):\n"
+                "        print(\"class diagnostic skipped 'not a test'\", file=sys.stderr)\n"
+                "    @unittest.skip('needs hardware')\n"
+                "    def test_a_decorated(self):\n"
+                "        pass\n"
+                "    def test_b_pass(self):\n"
+                "        pass\n"
+                "class ZFixtureTest(unittest.TestCase):\n"
+                "    @classmethod\n"
+                "    def setUpClass(cls):\n"
+                "        print('class setup: ', end='', file=sys.stderr)\n"
+                "    def test_c_runtime(self):\n"
+                "        \"\"\"Network (optional)\"\"\"\n"
+                "        print('runtime diagnostic', file=sys.stderr)\n"
+                "        self.skipTest('needs network')\n"
+            )
+            commit(repo, "partial fixture diagnostics")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 3 tests", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_a_decorated (test_fixtures.AFixtureTest.test_a_decorated) ... skipped 'needs hardware'",
+                    "test_c_runtime (test_fixtures.ZFixtureTest.test_c_runtime) ... skipped 'needs network'",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
