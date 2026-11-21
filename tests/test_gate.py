@@ -674,6 +674,57 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ],
             )
 
+    def test_report_matches_skips_only_at_completion_position(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            # A long header exercises description matching beyond cached small integers.
+            long_name = "test_f_" + "hardware_" * 35
+            (repo / "tests" / "test_completion.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class CompletionTest(unittest.TestCase):\n"
+                "    def test_a_pass(self):\n"
+                "        print(\"hardware probe skipped 'not a test'\", file=sys.stderr)\n"
+                "    def test_b_skip(self):\n"
+                "        print(\"hardware probe skipped 'not a test'\", file=sys.stderr)\n"
+                "        self.skipTest('needs hardware')\n"
+                "    def test_c_pass_description(self):\n"
+                "        \"\"\"Passing hardware probe\"\"\"\n"
+                "        print(\"hardware probe skipped 'not a test'\", file=sys.stderr)\n"
+                "    def test_d_skip_description(self):\n"
+                "        \"\"\"Optional hardware probe\"\"\"\n"
+                "        print(\"hardware probe skipped 'not a test'\", file=sys.stderr)\n"
+                "        self.skipTest('needs described hardware')\n"
+                "    def test_e_trailing_diagnostic(self):\n"
+                "        print('trailing diagnostic\\nx ... ok', file=sys.stderr)\n"
+                "        self.skipTest('needs trailing hardware')\n"
+                f"    def {long_name}(self):\n"
+                "        \"\"\"Long header description\"\"\"\n"
+                "        self.skipTest('needs long-named hardware')\n"
+            )
+            commit(repo, "diagnostic skip suffixes and completion boundaries")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 6 tests", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_b_skip (test_completion.CompletionTest.test_b_skip) ... skipped 'needs hardware'",
+                    "test_d_skip_description (test_completion.CompletionTest.test_d_skip_description) ... skipped 'needs described hardware'",
+                    "test_e_trailing_diagnostic (test_completion.CompletionTest.test_e_trailing_diagnostic) ... skipped 'needs trailing hardware'",
+                    f"{long_name} (test_completion.CompletionTest.{long_name}) ... skipped 'needs long-named hardware'",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
