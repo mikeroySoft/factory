@@ -1053,6 +1053,72 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 self.assertEqual(code, 0, out + report)
                 self.assertIn("- test: PASS", report)
 
+    def test_attempt_preserves_uv_option_values_and_module_mode(self) -> None:
+        import json
+
+        prefixes = (
+            ("--python", sys.executable),
+            ("-p", sys.executable),
+            ("--offline", "--python", sys.executable),
+            ("--python", sys.executable, "python"),
+            (f"--python={sys.executable}", "python"),
+            ("--project", "python"),
+            ("--unknown-option", "python"),
+        )
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as directory:
+                repo = Path(directory) / "repo"
+                arguments = ["run", *prefix, "-m", "unittest", "discover", "-s", "tests"]
+                toml = TOML + (
+                    '\n[[gate.check]]\nname = "test"\n'
+                    f'run = {json.dumps([str(repo / "uv"), *arguments])}\n'
+                )
+                repo = repo_with_test(Path(directory), toml)
+                program = repo / "uv"
+                program.write_text(
+                    f"#!{sys.executable}\n"
+                    "import sys\n"
+                    f"assert sys.argv[1:] == {arguments!r}, sys.argv\n"
+                )
+                program.chmod(0o755)
+                commit(repo, "uv option values and module mode")
+
+                code, out, report = gate(repo)
+
+                self.assertEqual(code, 0, out + report)
+                self.assertIn("- test: PASS", report)
+
+    def test_report_ignores_bare_diagnostic_skips_before_identified_results(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_bare_status.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class BareStatusTest(unittest.TestCase):\n"
+                "    def test_a_pass(self):\n"
+                "        print(\"\\nskipped 'not a test'\", file=sys.stderr)\n"
+                "    def test_b_skip(self):\n"
+                "        print(\"\\nskipped 'not a test'\", file=sys.stderr)\n"
+                "        self.skipTest('needs hardware')\n"
+            )
+            commit(repo, "bare diagnostic skips before real results")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 2 tests", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                ["test_b_skip (test_bare_status.BareStatusTest.test_b_skip) ... skipped 'needs hardware'"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
