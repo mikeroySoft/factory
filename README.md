@@ -1592,9 +1592,12 @@ Checks named `mutation`, declaring `proof = "mutation-v1"`, or invoking the exac
 `scripts/mutation.py` token acquire one of `/tmp/factory-mutation-<slot>.lock`
 with `flock`, independently of `gate.lock`, the repository, and `TMPDIR`.
 Both report-only and blocking proof runs use slots; other checks and tiers do not.
-Each slot is released when the check returns, fails, or times out. Do not remove
-the lock files while gates run. The report records `Mutation slot wait: <check> <seconds>s`
-separately; waiting does not consume the check timeout or mutation duration.
+The mutation subprocess inherits its slot descriptor, so interrupting or killing
+the gate cannot admit another run while that child survives. Each slot is released
+when the check returns, fails, or times out (or when an orphaned child exits).
+Do not remove the lock files while gates run. The report records
+`Mutation slot wait: <check> <seconds>s` separately; waiting does not consume the
+check timeout or mutation duration.
 Contention is also recorded as a `mutation_slot` lifecycle wait.
 
 `[engine] yield_for_update = true` in `.factory.toml` opts a repository into

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextvars
 import fcntl
 import fnmatch
 import json
@@ -44,6 +45,7 @@ MUTATION_PROOF_KEYS = {"protocol", "version", "mode", "status", "reason", "exit"
 SKIP_NO_FACTORY_CODE = "SKIP (no changed factory code)"
 # Fixed host namespace: never under a repo, gate.lock, or the gate's private TMPDIR.
 MUTATION_SLOT_PREFIX = Path("/tmp/factory-mutation")
+_MUTATION_SLOT_FDS = contextvars.ContextVar("factory_mutation_slot_fds", default=())
 
 
 def configure(c: Config) -> None:
@@ -97,6 +99,7 @@ def timed(
     proc = subprocess.Popen(
         cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         encoding="utf-8", errors="replace", start_new_session=True, env=env,
+        pass_fds=_MUTATION_SLOT_FDS.get(),
     )
     if execution:
         execution.child(proc.pid)
@@ -511,14 +514,18 @@ def _mutation_slot(slots: int, execution):
                 time.sleep(0.1)
         execution.resource("acquired", path, scope="host", blocking=True)
         execution.wait_end()
-        waiting = False
-        yield time.monotonic() - started
+        token = _MUTATION_SLOT_FDS.set((lock.fileno(),))
+        try:
+            # Share the flock's open file description with the mutation process.
+            # Parent interruption (even SIGKILL) cannot release a live child's slot.
+            yield time.monotonic() - started
+        finally:
+            _MUTATION_SLOT_FDS.reset(token)
     finally:
         if lock is not None:
             lock.close()  # release without unlinking: other processes may hold this inode
             execution.resource("released", path, scope="host", blocking=True)
-        if waiting:
-            execution.wait_end()
+        execution.wait_end()
 
 
 

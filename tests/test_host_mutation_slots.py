@@ -227,7 +227,7 @@ class HostMutationSlotsTest(unittest.TestCase):
         for interrupt in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
             with self.subTest(signal=interrupt):
                 first, p1 = self.launch()
-                self.wait_for(lambda: (first / "started").exists(), p1)
+                self.wait_for(lambda first=first: (first / "started").exists(), p1)
                 p1.send_signal(interrupt)
                 p1.wait(timeout=10)
                 # The command is in its own session and still waiting for release.
@@ -235,11 +235,11 @@ class HostMutationSlotsTest(unittest.TestCase):
                         self.assertRaises(BlockingIOError, msg="orphan mutation lost admission"):
                     fcntl.flock(slot, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 second, p2 = self.launch()
-                self.wait_for(lambda: self.waiting_or_started(second), p2)
+                self.wait_for(lambda second=second: self.waiting_or_started(second), p2)
                 self.assertFalse((second / "started").exists(), "orphan mutation overlapped")
                 (first / "release").write_text("0")
                 p1.communicate(timeout=10)
-                self.wait_for(lambda: (second / "started").exists(), p2)
+                self.wait_for(lambda second=second: (second / "started").exists(), p2)
                 self.finish(second, p2)
                 self.assertGreaterEqual(float((second / "started").read_text()),
                                         float((first / "finished").read_text()))
