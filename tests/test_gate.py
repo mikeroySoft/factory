@@ -584,6 +584,54 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ],
             )
 
+    def test_report_keeps_labelled_subtests_and_module_fixture_skips(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_module_skip.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "def setUpModule():\n"
+                "    print('module setup: ', end='', file=sys.stderr)\n"
+                "    raise unittest.SkipTest('needs module hardware')\n"
+                "class ModuleTest(unittest.TestCase):\n"
+                "    def test_unused(self):\n"
+                "        pass\n"
+            )
+            (repo / "tests" / "test_labels.py").write_text(
+                "import unittest\n\n"
+                "class LabelTest(unittest.TestCase):\n"
+                "    def test_subtests(self):\n"
+                "        for label in ('first', 'second'):\n"
+                "            with self.subTest(label):\n"
+                "                self.skipTest('needs labelled hardware')\n"
+                "        for i in range(2):\n"
+                "            with self.subTest('parameterized', i=i):\n"
+                "                self.skipTest('needs parameterized hardware')\n"
+            )
+            commit(repo, "labelled subtests and module skip")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 1 test", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_subtests (test_labels.LabelTest.test_subtests) [first] ... skipped 'needs labelled hardware'",
+                    "test_subtests (test_labels.LabelTest.test_subtests) [second] ... skipped 'needs labelled hardware'",
+                    "test_subtests (test_labels.LabelTest.test_subtests) [parameterized] (i=0) ... skipped 'needs parameterized hardware'",
+                    "test_subtests (test_labels.LabelTest.test_subtests) [parameterized] (i=1) ... skipped 'needs parameterized hardware'",
+                    "setUpModule (test_module_skip) ... skipped 'needs module hardware'",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
