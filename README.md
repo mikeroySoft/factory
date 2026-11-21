@@ -1218,9 +1218,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    failure leaves an already-`ready-for-human` ticket on its existing escalation
    instead of posting another escalation comment or consuming another manager
    round.
-   `APPROVE` adds the `factory-approved` label only while the remote PR still
-   points to the exact commit that passed the gate and review. The successful
-   label operation and gate/review commit are recorded in `.factory/events.jsonl`.
+   `APPROVE` skips PRs carrying `factory-held`, draft or not, without adding
+   `factory-approved` or recording approval. After a hold is removed, approval
+   still requires the exact remote commit that passed the gate and review.
+   A hold observed in the post-label check withdraws the label without recording
+   approval. Successful label operations and gate/review commits are recorded
+   in `.factory/events.jsonl`.
    The optional `[review].policy` path defaults to `REVIEW.md`. Factory reads it
    from the base ref, never the worker head, so add that path to
    `[gate].protected_paths`. The policy can define bug/security/spec passes,
