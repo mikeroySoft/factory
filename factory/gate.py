@@ -1296,7 +1296,9 @@ def execute(args: argparse.Namespace, execution) -> int:
         entry = 0
         if (Path(cmd[0]).name, *cmd[1:2]) == ("uv", "run"):
             # Leave unknown wrappers/options alone rather than rewrite their arguments.
-            entry = next((i for i in range(2, len(cmd)) if not cmd[i].startswith("-")), entry)
+            entry = next((i for i in range(2, len(cmd)) if cmd[i] not in {
+                "--frozen", "--no-managed-python", "--no-project", "--offline",
+            }), entry)
         if not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(cmd[entry]).name):
             return cmd
         for index in range(entry + 1, len(cmd)):
@@ -1409,7 +1411,6 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, output in results:
         if not rank and status in {"PASS"}:
             evidence = []
-            identity = ""
             for line in output.splitlines():
                 test = re.search(
                     r"\b(?:(?P<method>\w+) \((?:\w+\.)+(?P=method)\)"
@@ -1417,19 +1418,10 @@ def execute(args: argparse.Namespace, execution) -> int:
                     r"|(?:setUpModule|tearDownModule) \((?:\w+\.)*\w+\))"
                     r"(?: \[.*\])?(?: \(.*\))?(?= \.\.\. |$)", line,
                 )
-                completion = line
-                if test:
-                    identity = test.group()
-                    completion = line[test.end():]
-                skipped = re.fullmatch(r"(?: \.\.\. )?skipped (?:'.*'|\".*\")", completion)
-                if skipped and identity:
-                    evidence.append(f"{identity} ... {skipped[0].removeprefix(' ... ')}")
+                if test and re.fullmatch(r" \.\.\. skipped (?:'.*'|\".*\")", line[test.end():]):
+                    evidence.append(line[test.start():])
                 elif re.match(r"^Ran \d+ tests?\b", line):
                     evidence.append(line)
-                if skipped or re.fullmatch(
-                    r"(?: \.\.\. )?(?:ok|FAIL|ERROR|expected failure|unexpected success)", completion,
-                ):
-                    identity = ""
             if evidence:
                 lines += ["", f"## {name} test evidence", "```", *evidence, "```"]
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees

@@ -1153,12 +1153,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Attempt-tier reports record the starting `Head SHA` and retain a `## <check>
    test evidence` section for passing unittest checks: the `Ran N tests` summary
    and skipped-test identities with reasons, without the failure-output tail
-   limit. Direct Python and `uv run` Python invocations with flag-only uv options
-   run with `--verbose` and a unittest runner configured with `descriptions=False`:
+   limit. Direct Python and `uv run` Python invocations with only the recognized uv
+   flags (`--frozen`, `--no-managed-python`, `--no-project`, `--offline`) run with
+   `--verbose` and a unittest runner configured with `descriptions=False`:
    identities remain visible, while docstrings cannot be mistaken for identities or
    status delimiters. Runner completion records start on fresh lines with their
-   identities, even after diagnostics without trailing newlines. Other commands
-   (including coverage and pytest) are left unchanged.
+   identities, even after diagnostics without trailing newlines. Only identified
+   completion records contribute skipped-test evidence; bare diagnostic statuses
+   do not inherit a prior identity. Other commands (including coverage, pytest,
+   and uv commands with value-taking or unknown options) are left unchanged.
    PR creation preserves bodies up to 60,000 characters; larger
    bodies carry that prefix and a truncation notice. The full gate report remains
    in the worktree.
