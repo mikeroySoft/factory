@@ -219,3 +219,27 @@ class HostMutationSlotsTest(unittest.TestCase):
                 mock.patch.dict(os.environ, self.env), \
                 self.assertRaisesRegex(config.ConfigError, r"gate\.mutation_slots is host-only"):
             config.load(repo)
+
+    def test_interrupted_gate_keeps_slot_until_mutation_finishes(self) -> None:
+        import signal
+
+        self.slots(1)
+        for interrupt in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(signal=interrupt):
+                first, p1 = self.launch()
+                self.wait_for(lambda: (first / "started").exists(), p1)
+                p1.send_signal(interrupt)
+                p1.wait(timeout=10)
+                # The command is in its own session and still waiting for release.
+                with (self.root / "host-mutation-0.lock").open("a") as slot, \
+                        self.assertRaises(BlockingIOError, msg="orphan mutation lost admission"):
+                    fcntl.flock(slot, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                second, p2 = self.launch()
+                self.wait_for(lambda: self.waiting_or_started(second), p2)
+                self.assertFalse((second / "started").exists(), "orphan mutation overlapped")
+                (first / "release").write_text("0")
+                p1.communicate(timeout=10)
+                self.wait_for(lambda: (second / "started").exists(), p2)
+                self.finish(second, p2)
+                self.assertGreaterEqual(float((second / "started").read_text()),
+                                        float((first / "finished").read_text()))
