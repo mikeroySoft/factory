@@ -997,6 +997,36 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ],
             )
 
+    def test_report_keeps_evidence_with_python_interpreter_flags(self) -> None:
+        import json
+
+        for prefix in ((sys.executable, "-P", "-E"), ("uv", "run", sys.executable)):
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as directory:
+                toml = TOML + (
+                    '\n[[gate.check]]\nname = "test"\n'
+                    f'run = {json.dumps([*prefix, "-m", "unittest", "discover", "-s", "tests"])}\n'
+                )
+                repo = repo_with_test(Path(directory), toml)
+                (repo / "tests" / "test_flags.py").write_text(
+                    "import unittest\n\n"
+                    "class FlagsTest(unittest.TestCase):\n"
+                    "    @unittest.skip('needs hardware')\n"
+                    "    def test_hardware(self):\n"
+                    "        \"\"\"Hardware ... optional\"\"\"\n"
+                    "        pass\n"
+                )
+                commit(repo, "Python interpreter flags and bare uv run")
+
+                code, out, report = gate(repo)
+
+                self.assertEqual(code, 0, out + report)
+                self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+                self.assertIn("Ran 1 test", report)
+                self.assertEqual(
+                    [line for line in report.splitlines() if " ... skipped " in line],
+                    ["test_hardware (test_flags.FlagsTest.test_hardware) ... skipped 'needs hardware'"],
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,7 +11,6 @@ import ast
 import contextvars
 import fcntl
 import fnmatch
-import itertools
 import json
 import math
 import os
@@ -1292,19 +1291,33 @@ def execute(args: argparse.Namespace, execution) -> int:
     def command(check: config.Check) -> list[str]:
         blocking = args.blocking_mutation and (check.name == "mutation" or proved(check))
         cmd = [*check.run, *(["--blocking"] if blocking else [])]
-        if not rank:
-            for index, pair in enumerate(itertools.pairwise(cmd)):
-                if pair == ("-m", "unittest"):
-                    # Descriptions and diagnostics share the status delimiter; omit descriptions.
-                    cmd[index:index + 2] = ["-c", (
-                        "import unittest\n"
-                        "class Runner(unittest.TextTestRunner):\n"
-                        "    def __init__(self, **kwargs):\n"
-                        "        super().__init__(descriptions=False, **kwargs)\n"
-                        "unittest.main(module=None, testRunner=Runner)\n"
-                    )]
-                    cmd.append("--verbose")  # default progress omits skipped-test names
-                    return cmd
+        if rank:
+            return cmd
+        entry = 0
+        if Path(cmd[0]).name == "uv" and cmd[1:2] == ["run"]:
+            # Leave unknown wrappers/options alone rather than rewrite their arguments.
+            entry = next((i for i in range(2, len(cmd)) if not cmd[i].startswith("-")), entry)
+        if not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(cmd[entry]).name):
+            return cmd
+        for index in range(entry + 1, len(cmd)):
+            if cmd[index:index + 2] == ["-m", "unittest"]:
+                # Descriptions and diagnostics share the status delimiter; omit descriptions.
+                cmd[index:index + 2] = ["-c", (
+                    "import unittest\n"
+                    "class Result(unittest.TextTestResult):\n"
+                    "    def _write_status(self, test, status):\n"
+                    "        self.stream.writeln()\n"
+                    "        self._newline = True\n"
+                    "        super()._write_status(test, status)\n"
+                    "class Runner(unittest.TextTestRunner):\n"
+                    "    def __init__(self, **kwargs):\n"
+                    "        super().__init__(descriptions=False, resultclass=Result, **kwargs)\n"
+                    "unittest.main(module=None, testRunner=Runner)\n"
+                )]
+                cmd.append("--verbose")  # default progress omits skipped-test names
+                return cmd
+            if not re.fullmatch(r"-[bBdEiIOPqRsSuvx]+|-(?:W|X).+", cmd[index]):
+                return cmd  # a script, another module, or unsupported interpreter option
         return cmd
 
     def run_proved(check: config.Check) -> tuple[bool, str]:
