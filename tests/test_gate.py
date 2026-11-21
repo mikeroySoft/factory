@@ -632,6 +632,48 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ],
             )
 
+    def test_report_keeps_skip_after_diagnostic_status_text(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_status.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class StatusTest(unittest.TestCase):\n"
+                "    def test_a_hardware(self):\n"
+                "        print('hardware probe ... ERROR', file=sys.stderr)\n"
+                "        self.skipTest('needs hardware')\n"
+                "    def test_b_network(self):\n"
+                "        \"\"\"Network (optional)\"\"\"\n"
+                "        print('network probe ... ERROR', file=sys.stderr)\n"
+                "        self.skipTest('needs network')\n"
+                "    def test_c_pass(self):\n"
+                "        \"\"\"Completed test\"\"\"\n"
+                "        pass\n"
+                "    @classmethod\n"
+                "    def tearDownClass(cls):\n"
+                "        print(\"class diagnostic skipped 'not a test'\", file=sys.stderr)\n"
+            )
+            commit(repo, "diagnostic status before skips")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 3 tests", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_a_hardware (test_status.StatusTest.test_a_hardware) ... skipped 'needs hardware'",
+                    "test_b_network (test_status.StatusTest.test_b_network) ... skipped 'needs network'",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
