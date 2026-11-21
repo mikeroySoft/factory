@@ -847,6 +847,52 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ],
             )
 
+    def test_report_keeps_packaged_module_and_class_fixture_skips(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests", "-t", "."]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "__init__.py").touch()
+            (repo / "tests" / "test_module_fixture.py").write_text(
+                "import unittest\n\n"
+                "def setUpModule():\n"
+                "    raise unittest.SkipTest('needs module hardware')\n"
+                "class ModuleTest(unittest.TestCase):\n"
+                "    def test_unused(self):\n"
+                "        pass\n"
+            )
+            (repo / "tests" / "test_class_fixture.py").write_text(
+                "import unittest\n\n"
+                "class ClassTest(unittest.TestCase):\n"
+                "    @classmethod\n"
+                "    def setUpClass(cls):\n"
+                "        raise unittest.SkipTest('needs class hardware')\n"
+                "    def test_unused(self):\n"
+                "        pass\n"
+                "class PassingTest(unittest.TestCase):\n"
+                "    def test_pass(self):\n"
+                "        pass\n"
+            )
+            commit(repo, "packaged fixture skips")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 1 test", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "setUpClass (tests.test_class_fixture.ClassTest) ... skipped 'needs class hardware'",
+                    "setUpModule (tests.test_module_fixture) ... skipped 'needs module hardware'",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
