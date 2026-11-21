@@ -1386,7 +1386,7 @@ def execute(args: argparse.Namespace, execution) -> int:
         if not rank and status in {"PASS"}:
             evidence = []
             identity = ""
-            description = False
+            description = None
             for line in output.splitlines():
                 test = re.search(
                     r"\b(?:\w+ \((?:\w+\.)+\w+\)|(?:setUpModule|tearDownModule) \(\w+\))"
@@ -1398,7 +1398,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                     completion = line[test.end():]
                 elif description:
                     completion = line.partition(" ... ")[2]
-                description = bool(test and test.end() == len(line))
+                description = test if not completion else None
                 skipped = re.fullmatch(r"(?: \.\.\. )?skipped (?:'.*'|\".*\")", completion)
                 if skipped and identity:
                     evidence.append(f"{identity} ... {skipped[0].removeprefix(' ... ')}")
