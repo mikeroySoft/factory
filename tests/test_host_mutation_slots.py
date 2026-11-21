@@ -1,6 +1,7 @@
 """Host mutation admission across independent gate processes and repositories."""
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -20,12 +21,16 @@ import sys
 from pathlib import Path
 from unittest import mock
 from factory import config, gate
-root, prefix, timeout = sys.argv[1:]
+root, prefix, timeout = sys.argv[1:4]
+def proof(cmd, base, duration=None):
+    passed, output = gate.run(cmd)
+    return passed, output, "PASS" if passed else "FAIL", ""
 with mock.patch.object(config, "repo_root", return_value=Path(root)), \
      mock.patch.object(gate, "MUTATION_SLOT_PREFIX", Path(prefix), create=True), \
-     mock.patch.object(gate, "toolchain", return_value=dict(rocm="n/a", kernel="test", amdgpu="n/a")):
+     mock.patch.object(gate, "toolchain", return_value=dict(rocm="n/a", kernel="test", amdgpu="n/a")), \
+     mock.patch.object(gate, "run_mutation_proof", side_effect=proof):
     raise SystemExit(gate.main(["--tier", "pr", "--check-timeout", timeout,
-                               "--report", str(Path(root) / "report.md")]))
+                               "--report", str(Path(root) / "report.md"), *sys.argv[4:]]))
 '''
 CHECK = r'''
 import sys, time
@@ -64,7 +69,8 @@ class HostMutationSlotsTest(unittest.TestCase):
     def slots(self, value: int | None) -> None:
         self.host.write_text("" if value is None else f"[defaults.gate]\nmutation_slots = {value}\n")
 
-    def launch(self, *, timeout: int = 10, name: str = "mutation", when: str = "pr"):
+    def launch(self, *, timeout: int = 10, name: str = "mutation", when: str = "pr",
+               proof: bool = False):
         root = self.root / f"repo-{len(self.processes)}"
         root.mkdir()
         command = [sys.executable, "-c", CHECK, str(root / "started"),
@@ -72,9 +78,11 @@ class HostMutationSlotsTest(unittest.TestCase):
         (root / ".factory.toml").write_text(
             '[repo]\nslug = "acme/widgets"\n[[gate.check]]\n'
             f'name = "{name}"\nwhen = "{when}"\nrun = {json.dumps(command)}\n'
+            + ('proof = "mutation-v1"\n' if proof else "")
         )
         proc = subprocess.Popen([sys.executable, "-c", GATE, str(root),
-                                 str(self.root / "host-mutation"), str(timeout)],
+                                 str(self.root / "host-mutation"), str(timeout),
+                                 *(["--mutation-proof"] if proof else [])],
                                 env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, cwd=root)
         self.processes.append((root, proc))
@@ -92,7 +100,10 @@ class HostMutationSlotsTest(unittest.TestCase):
     def waiting_or_started(self, root: Path) -> bool:
         events = root / ".factory/events.jsonl"
         return (root / "started").exists() or (
-            events.exists() and '"reason": "mutation_slot"' in events.read_text())
+            events.exists() and any(
+                json.loads(row).get("wait", {}).get("reason") == "mutation_slot"
+                for row in events.read_text().splitlines(keepends=True) if row.endswith("\n")
+            ))
 
     def finish(self, root: Path, proc, code: int = 0) -> str:
         (root / "release").write_text(str(code))
@@ -172,3 +183,40 @@ class HostMutationSlotsTest(unittest.TestCase):
                         self.host.write_text(f'[{section}.gate]\nmutation_slots = {value}\n')
                         with self.assertRaisesRegex(config.ConfigError, r"gate\.mutation_slots"):
                             config.load(repo)
+
+    def test_renamed_proof_check_uses_slots_independent_of_exclusive_lock(self) -> None:
+        self.slots(1)
+        exclusive = self.root / "exclusive.lock"
+        with exclusive.open("a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            self.host.write_text(f'[defaults.gate]\nmutation_slots = 1\nlock = "{exclusive}"\n')
+            first, p1 = self.launch()
+            self.wait_for(lambda: (first / "started").exists(), p1)
+            second, p2 = self.launch(name="renamed-proof", proof=True)
+            self.wait_for(lambda: self.waiting_or_started(second), p2)
+            self.assertFalse((second / "started").exists(), "proof run bypassed host slots")
+            self.finish(first, p1)
+            self.wait_for(lambda: (second / "started").exists(), p2)
+            self.assertIn("Mutation proof: renamed-proof PASS", self.finish(second, p2))
+
+    def test_timeout_releases_slot_for_next_run(self) -> None:
+        self.slots(1)
+        first, p1 = self.launch(timeout=1)
+        self.wait_for(lambda: (first / "started").exists(), p1)
+        second, p2 = self.launch()
+        output = p1.communicate(timeout=10)[0]
+        self.assertEqual(p1.returncode, 1, output)
+        self.assertIn("check timed out after 1s", (first / "report.md").read_text())
+        self.wait_for(lambda: (second / "started").exists(), p2)
+        self.finish(second, p2)
+
+    def test_repository_cannot_override_host_admission_policy(self) -> None:
+        repo = self.root / "policy-repo"
+        repo.mkdir()
+        (repo / ".factory.toml").write_text(
+            '[repo]\nslug = "acme/widgets"\n[gate]\nmutation_slots = 3\n')
+        self.slots(1)
+        with mock.patch.object(config, "repo_root", return_value=repo), \
+                mock.patch.dict(os.environ, self.env):
+            with self.assertRaisesRegex(config.ConfigError, r"gate\.mutation_slots is host-only"):
+                config.load(repo)
