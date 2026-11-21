@@ -1304,7 +1304,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                         "unittest.main(module=None, testRunner=Runner)\n"
                     )]
                     cmd.append("--verbose")  # default progress omits skipped-test names
-                    break
+                    return cmd
         return cmd
 
     def run_proved(check: config.Check) -> tuple[bool, str]:
