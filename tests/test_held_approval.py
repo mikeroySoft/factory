@@ -121,6 +121,24 @@ class HeldApprovalTest(unittest.TestCase):
         self.assertEqual(self.approvals(), [])
         self.retain.assert_not_called()
 
+    def test_racing_hold_failed_withdrawal_reports_failure(self) -> None:
+        self.labels.clear()
+        self.hold_during_edit = True
+
+        def edit(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+            if "--remove-label" in args:
+                return subprocess.CompletedProcess(args, 1, "", "provider unavailable")
+            return self.edit(args, **kwargs)
+
+        with mock.patch.object(dispatch, "run", side_effect=edit):
+            approved = dispatch.approve_pr(7, HEAD)
+
+        self.assertIn("factory-held", self.labels)
+        self.assertIn(config.LABEL_APPROVED, self.labels)
+        self.assertEqual(self.approvals(), [])
+        self.retain.assert_not_called()
+        self.assertFalse(approved)
+
     def test_racing_push_after_hold_release_withdraws_approval(self) -> None:
         self.labels.clear()
         self.push_during_edit = True
