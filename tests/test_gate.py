@@ -725,6 +725,39 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ],
             )
 
+    def test_report_clears_skipped_identity_before_teardown_diagnostic(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_clear_skip.py").write_text(
+                "import sys\nimport unittest\n\n"
+                "class ClearSkipTest(unittest.TestCase):\n"
+                "    def test_hardware(self):\n"
+                "        self.skipTest('needs hardware')\n"
+                "    @classmethod\n"
+                "    def tearDownClass(cls):\n"
+                "        print(\"skipped 'teardown diagnostic'\", file=sys.stderr)\n"
+            )
+            commit(repo, "skip-shaped teardown diagnostic")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 1 test", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_hardware (test_clear_skip.ClearSkipTest.test_hardware) ... skipped 'needs hardware'",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
