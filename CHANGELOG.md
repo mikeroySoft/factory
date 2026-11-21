@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Host-only `gate.mutation_slots` caps concurrent PR-tier mutation checks using independent host-wide slot flocks inherited by mutation children, retaining admission after gate interruption. Gate reports record slot waits outside check timeouts and mutation durations; unset settings preserve uncapped execution (#884).
 - Reviewer approval skips `factory-held` PRs whether draft or not, rechecks holds after labeling, and withdraws racing approval without recording it. Failed withdrawal reports failure instead of successful approval. Releasing a hold preserves exact reviewed-SHA requirements (#877).
 - Resume fetches origin and explicitly fetches the remote ticket branch (including main-only fetch refspecs) before reusing a ticket worktree or local branch, fast-forwards clean ancestors to the remote PR head with a from/to journal receipt, and captures the lease at that head. The checked `ls-remote` SHA, not a stale tracking ref, identifies the remote head. Dirty or diverged worktrees escalate without running the worker or gate; local-ahead work and explicit fresh-generation restarts remain intact (#847).
 - Decision-owner routing stops the declared owner at the next Markdown heading or blank line instead of swallowing the ticket summary; empty or malformed declarations remain invalid without fallback (#859).

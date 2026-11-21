@@ -1578,6 +1578,28 @@ Other District metadata stays outside pipeline configuration; `doctor` accepts i
 only under `defaults`. An `engine` table under a per-repository host section
 still produces a host-config warning.
 
+To cap concurrent PR-tier mutation checks across repositories on one host:
+
+```toml
+[defaults.gate]
+mutation_slots = 1
+```
+
+`gate.mutation_slots` is a positive integer, host-only; a
+`[repo."owner/name".gate]` host override is also accepted. Use the same limit for
+all repositories sharing the host. Unset preserves uncapped behavior.
+Checks named `mutation`, declaring `proof = "mutation-v1"`, or invoking the exact
+`scripts/mutation.py` token acquire one of `/tmp/factory-mutation-<slot>.lock`
+with `flock`, independently of `gate.lock`, the repository, and `TMPDIR`.
+Both report-only and blocking proof runs use slots; other checks and tiers do not.
+The mutation subprocess inherits its slot descriptor, so interrupting or killing
+the gate cannot admit another run while that child survives. Each slot is released
+when the check returns, fails, or times out (or when an orphaned child exits).
+Do not remove the lock files while gates run. The report records
+`Mutation slot wait: <check> <seconds>s` separately; waiting does not consume the
+check timeout or mutation duration.
+Contention is also recorded as a `mutation_slot` lifecycle wait.
+
 `[engine] yield_for_update = true` in `.factory.toml` opts a repository into
 yielding when stale (default false). For the whole shared host, set:
 
