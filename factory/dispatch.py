@@ -4022,11 +4022,14 @@ def approve_pr(n: int, head: str) -> bool:
         or fresh.get("baseRefName") != cfg.main
         or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
     ):
-        run(
+        withdrawn = run(
             ["gh", "pr", "edit", str(pr["number"]), "--repo", REPO,
              "--remove-label", FACTORY_APPROVED],
             check=False,
         )
+        if withdrawn.returncode:
+            log(f"#{n}: approval withdrawal failed; {FACTORY_APPROVED} may remain")
+            return False
         if held:
             log(f"#{n}: approval withdrawn (factory-held)")
         return held

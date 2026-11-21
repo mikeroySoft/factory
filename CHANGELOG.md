@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Reviewer approval skips `factory-held` PRs whether draft or not, rechecks holds after labeling, and withdraws racing approval without recording it. Releasing a hold preserves exact reviewed-SHA requirements (#877).
+- Reviewer approval skips `factory-held` PRs whether draft or not, rechecks holds after labeling, and withdraws racing approval without recording it. Failed withdrawal reports failure instead of successful approval. Releasing a hold preserves exact reviewed-SHA requirements (#877).
 - Resume fetches origin and explicitly fetches the remote ticket branch (including main-only fetch refspecs) before reusing a ticket worktree or local branch, fast-forwards clean ancestors to the remote PR head with a from/to journal receipt, and captures the lease at that head. The checked `ls-remote` SHA, not a stale tracking ref, identifies the remote head. Dirty or diverged worktrees escalate without running the worker or gate; local-ahead work and explicit fresh-generation restarts remain intact (#847).
 - Decision-owner routing stops the declared owner at the next Markdown heading or blank line instead of swallowing the ticket summary; empty or malformed declarations remain invalid without fallback (#859).
 - Mutation equivalents resolve pure line drift by a unique exact source window with ±3 lines of context from the protected registry's last committed revision. Changed, deleted or ambiguous windows fail closed; resolved lines govern accepted survivors, killed entries and absent identities. Attempt gates validate configured registries before PR-tier mutation proof and journal relocations (#778).
