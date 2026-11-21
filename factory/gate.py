@@ -1399,9 +1399,9 @@ def execute(args: argparse.Namespace, execution) -> int:
                 elif description:
                     completion = line.partition(" ... ")[2]
                 description = bool(test and test.end() == len(line))
-                skipped = re.search(r"\bskipped (?:'.*'|\".*\")$", line)
+                skipped = re.fullmatch(r"(?: \.\.\. )?skipped (?:'.*'|\".*\")", completion)
                 if skipped and identity:
-                    evidence.append(f"{identity} ... {skipped[0]}")
+                    evidence.append(f"{identity} ... {skipped[0].removeprefix(' ... ')}")
                 elif re.match(r"^Ran \d+ tests?\b", line):
                     evidence.append(line)
                 if skipped or re.fullmatch(
