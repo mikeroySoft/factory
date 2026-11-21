@@ -424,6 +424,47 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 with self.subTest(evidence=evidence):
                     self.assertIn(evidence, report)
 
+    def test_report_retains_skips_across_diagnostics_and_explicit_tiers(self) -> None:
+        import json
+
+        for tier in ("attempt", "pr", "release"):
+            with self.subTest(tier=tier), tempfile.TemporaryDirectory() as directory:
+                toml = TOML + (
+                    '\n[[gate.check]]\nname = "test"\n'
+                    f'when = "{tier}"\n'
+                    f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+                )
+                repo = repo_with_test(Path(directory), toml)
+                (repo / "tests" / "test_noisy.py").write_text(
+                    "import sys\nimport unittest\n\n"
+                    "class NoisyTest(unittest.TestCase):\n"
+                    "    def test_a_pass(self):\n"
+                    "        print('passing diagnostic', file=sys.stderr)\n"
+                    "    def test_b_hardware(self):\n"
+                    "        print('hardware unavailable\\nmore diagnostics', file=sys.stderr)\n"
+                    "        self.skipTest('needs hardware')\n"
+                    "    def test_c_network(self):\n"
+                    "        \"\"\"Network-only acceptance.\"\"\"\n"
+                    "        print('network unavailable\\nmore diagnostics', file=sys.stderr)\n"
+                    "        self.skipTest('needs network')\n"
+                )
+                commit(repo, "noisy skipped suite")
+
+                code, out, report = gate(repo, "--tier", tier)
+
+                self.assertEqual(code, 0, out + report)
+                self.assertIn("- test: PASS", report)
+                if tier == "attempt":
+                    self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+                    self.assertIn("Ran 3 tests", report)
+                    self.assertIn("test_noisy.NoisyTest.test_b_hardware", report)
+                    self.assertIn("test_noisy.NoisyTest.test_c_network", report)
+                    self.assertNotIn("test_noisy.NoisyTest.test_a_pass", report)
+                else:
+                    self.assertNotIn("Head SHA:", report)
+                    self.assertNotIn("test evidence", report)
+                    self.assertNotIn("test_noisy.NoisyTest", report)
+
 
 if __name__ == "__main__":
     unittest.main()
