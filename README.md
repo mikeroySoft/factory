@@ -1150,6 +1150,13 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    runs only pr checks (release ones SKIP) and `--tier release` only release
    checks, with no built-ins. This attempt gate is what the worker and the
    dispatcher run after each attempt, and what the merge-stage refresh re-runs.
+   Attempt-tier reports record the starting `Head SHA` and retain a `## <check>
+   test evidence` section for passing unittest checks: the `Ran N tests` summary
+   and skipped-test identities with reasons, without the failure-output tail
+   limit. Attempt-tier unittest commands run with `--verbose` to expose those
+   identities. PR creation preserves bodies up to 60,000 characters; larger
+   bodies carry that prefix and a truncation notice. The full gate report remains
+   in the worktree.
    Repositories may opt into mechanical repairs with `[gate].fixups`, an array of
    argv arrays (for example `fixups = [["cargo", "xtask", "manifest"]]`). Factory
    never infers commands. Before escalating the last failed worker gate (including
