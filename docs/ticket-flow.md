@@ -282,3 +282,16 @@ event. `{}` is a runtime value.
 | `manage.apply` | ``FIX worktree head {} is not the PR head {} plus the worker's own commits; worktree kept at {}`` | manager FIX → escalate (`refresh_head`) |
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
 | `manage.escalation_pass` | ``manager_failed`` | manager decision → human |
+
+### Reused-worktree refusals
+
+`dispatch.ensure_worktree` raises `dispatch.WorktreeRefused` before any worker
+or gate runs. The reason is passed unchanged to `dispatch.escalate`:
+
+- `uncommitted changes; agent/{}: kept HEAD {}, origin/agent/{} {}; worktree kept at {}`
+- `diverged history; agent/{}: kept HEAD {}, origin/agent/{} {}; worktree kept at {}`
+
+`dispatch.process_ticket` records these as `lease_refused`.
+`dispatch.refresh_pr_branch` removes `factory-approved` and records them as
+`refresh_head`. Both paths retain the worktree and name both SHAs (or `(none)`
+for an unpublished remote branch); neither discards changes or recuts the branch.

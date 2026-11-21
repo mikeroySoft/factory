@@ -2082,22 +2082,41 @@ def _launch_failure(wt: Path, logfile: Path, offset: int, launch_head: str, code
     return "auth_failed", stderr_tail(line.strip())[-200:]
 
 
-def ensure_worktree(n: int) -> Path:
-    wt = FACTORY / f"wt-{n}"
-    if wt.is_dir():
-        return wt
+class WorktreeRefused(RuntimeError):
+    """A reused ticket worktree cannot safely continue from the fetched branch."""
+
+
+def ensure_worktree(n: int, *, preserved: str | None = None) -> Path:
+    wt, branch = FACTORY / f"wt-{n}", f"agent/{n}"
     with _REMOTE_REFS:
         run(["git", "fetch", "origin"], cwd=ROOT)
-    branch = f"agent/{n}"
-    if run(["git", "rev-parse", "--verify", branch], cwd=ROOT, check=False).returncode == 0:
-        run(["git", "worktree", "add", str(wt), branch], cwd=ROOT)
+        remote = _remote_agent_head(ROOT, n)
+        if remote:
+            run(["git", "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=ROOT)
+    if not wt.is_dir():
+        if run(["git", "rev-parse", "--verify", branch], cwd=ROOT, check=False).returncode == 0:
+            run(["git", "worktree", "add", str(wt), branch], cwd=ROOT)
+        else:
+            # Another host may have pushed the branch. Start from that copy, never main.
+            start = f"origin/{branch}"
+            if run(["git", "rev-parse", "--verify", start], cwd=ROOT, check=False).returncode != 0:
+                start = f"origin/{cfg.main}"
+            run(["git", "worktree", "add", str(wt), "-b", branch, start], cwd=ROOT)
+    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    context = f"{branch}: kept HEAD {head}, origin/{branch} {remote or '(none)'}; worktree kept at {wt}"
+    if run([
+        "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+        ":(exclude).factory-prompt.md", ":(exclude).factory",
+    ], cwd=wt).stdout:
+        raise WorktreeRefused(f"uncommitted changes; {context}")
+    # A fresh generation may replace exactly the head its restart preserved, not adopt it.
+    if not remote or head == remote or remote == preserved:
         return wt
-    # No local copy: the branch may have been pushed from another worktree,
-    # another host, or by a human. Start from the remote copy, never main.
-    start = f"origin/{branch}"
-    if run(["git", "rev-parse", "--verify", start], cwd=ROOT, check=False).returncode != 0:
-        start = f"origin/{cfg.main}"
-    run(["git", "worktree", "add", str(wt), "-b", branch, start], cwd=ROOT)
+    if run(["git", "merge-base", "--is-ancestor", head, remote], cwd=wt, check=False).returncode == 0:
+        run(["git", "merge", "--ff-only", remote], cwd=wt)
+        record("worktree-fast-forward", ticket=n, from_head=head, to_head=remote)
+    elif run(["git", "merge-base", "--is-ancestor", remote, head], cwd=wt, check=False).returncode:
+        raise WorktreeRefused(f"diverged history; {context}")
     return wt
 
 
@@ -4389,7 +4408,12 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     if target.get("baseRefName") != cfg.main:
         log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
         return False
-    wt = ensure_worktree(n)
+    try:
+        wt = ensure_worktree(n)
+    except WorktreeRefused as exc:
+        run(["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED], check=False)
+        escalate(n, str(exc), None, code="refresh_head")
+        return False
 
     def restore_pr_head(refreshed_head: str) -> str:
         """Keep the unpushed candidate as evidence before restoring the live PR head."""
@@ -5591,7 +5615,7 @@ def process_ticket(
                 wt = restart_worktree(n, ticket_generation.number)
                 receipt = generation.current(lifecycle.read_events(EVENTS), n).restart
             else:
-                wt = ensure_worktree(n)
+                wt = ensure_worktree(n, preserved=receipt["remote"]) if receipt else ensure_worktree(n)
             replay_base = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             record(
                 "claimed", ticket=n, title=title, labels=sorted(labels),
@@ -5814,7 +5838,7 @@ def process_ticket(
             log(f"#{n}: refused ({exc})")
             execution.outcome, execution.reason = "not_admitted", "host_setup"
             return False
-        except LeaseRefused as exc:
+        except (LeaseRefused, WorktreeRefused) as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except WorkerUnavailable as exc:
             # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.
