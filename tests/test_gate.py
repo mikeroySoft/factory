@@ -893,6 +893,41 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ],
             )
 
+    def test_report_keeps_evidence_for_uv_run_unittest_command(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            'run = ["uv", "run", "--no-project", "--no-managed-python", "--offline", '
+            f'{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_uv_evidence.py").write_text(
+                "import unittest\n\n"
+                "class UvEvidenceTest(unittest.TestCase):\n"
+                "    @unittest.skip('needs uv hardware')\n"
+                "    def test_hardware(self):\n"
+                "        \"\"\"Hardware ... optional (torch.cuda)\"\"\"\n"
+                "        pass\n"
+                "    def test_pass(self):\n"
+                "        pass\n"
+            )
+            commit(repo, "uv-run skipped suite")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 2 tests", report)
+            self.assertEqual(
+                [line for line in report.splitlines() if " ... skipped " in line],
+                [
+                    "test_hardware (test_uv_evidence.UvEvidenceTest.test_hardware) ... skipped 'needs uv hardware'",
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
