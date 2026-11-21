@@ -891,8 +891,8 @@ def release_expired_claim(
         elected = fresh
         context = context or shared_context
         gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n"
-                 f"Factory claim history: retained\n{context}"])
+                 "-f", (f"body=Factory requeue: nonce={elected['nonce']}\n"
+                        f"Factory claim history: retained\n{context}")])
         run(["gh", "issue", "edit", str(n), "--repo", REPO,
              "--remove-label", f"host:{elected['host']}"])
         record("claim-released", ticket=n, host=elected["host"], nonce=elected["nonce"],
