@@ -1027,6 +1027,32 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                     ["test_hardware (test_flags.FlagsTest.test_hardware) ... skipped 'needs hardware'"],
                 )
 
+    def test_attempt_preserves_wrapper_and_uv_subcommand_lookalikes(self) -> None:
+        import json
+
+        for name, subcommand in (("coverage", "run"), ("wrapper", "run"), ("uv", "help"), ("uv", "tree")):
+            with self.subTest(name=name, subcommand=subcommand), tempfile.TemporaryDirectory() as directory:
+                repo = Path(directory) / "repo"
+                arguments = [subcommand, sys.executable, "-m", "unittest", "discover", "-s", "tests"]
+                toml = TOML + (
+                    '\n[[gate.check]]\nname = "test"\n'
+                    f'run = {json.dumps([str(repo / name), *arguments])}\n'
+                )
+                repo = repo_with_test(Path(directory), toml)
+                program = repo / name
+                program.write_text(
+                    f"#!{sys.executable}\n"
+                    "import sys\n"
+                    f"assert sys.argv[1:] == {arguments!r}, sys.argv\n"
+                )
+                program.chmod(0o755)
+                commit(repo, "wrapper and uv subcommand lookalikes")
+
+                code, out, report = gate(repo)
+
+                self.assertEqual(code, 0, out + report)
+                self.assertIn("- test: PASS", report)
+
 
 if __name__ == "__main__":
     unittest.main()

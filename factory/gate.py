@@ -1294,7 +1294,7 @@ def execute(args: argparse.Namespace, execution) -> int:
         if rank:
             return cmd
         entry = 0
-        if Path(cmd[0]).name == "uv" and cmd[1:2] == ["run"]:
+        if (Path(cmd[0]).name, *cmd[1:2]) == ("uv", "run"):
             # Leave unknown wrappers/options alone rather than rewrite their arguments.
             entry = next((i for i in range(2, len(cmd)) if not cmd[i].startswith("-")), entry)
         if not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(cmd[entry]).name):
