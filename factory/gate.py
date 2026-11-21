@@ -1387,9 +1387,9 @@ def execute(args: argparse.Namespace, execution) -> int:
             evidence = []
             identity = ""
             for line in output.splitlines():
-                test = re.match(r"^\s*(\S+ \([^)]+\))", line)
+                test = re.match(r"^\w+ \((?:\w+\.)+\w+\)(?= \.\.\. |$)", line)
                 if test:
-                    identity = test[1]
+                    identity = test.group()
                 skipped = re.search(r"\bskipped (?:'.*'|\".*\")$", line)
                 if skipped and identity:
                     evidence.append(f"{identity} ... {skipped[0]}")
