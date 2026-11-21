@@ -1232,8 +1232,6 @@ def toolchain() -> dict[str, str]:
 def execute(args: argparse.Namespace, execution) -> int:
     global CHECK_TIMEOUT
     head = None
-    if args.tier == "attempt":
-        head = timed(["git", "rev-parse", "--verify", "-q", "HEAD"]).stdout.strip() or "unavailable"
     host = toolchain()
     execution.emit("toolchain", **host)
     if args.base is None:
@@ -1246,6 +1244,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     audit = []  # the reviewed protected transition this run actually verified and exempted
 
     if args.tier == "attempt":
+        head = timed(["git", "rev-parse", "--verify", "-q", "HEAD"]).stdout.strip() or "unavailable"
         if not args.protected_override:
             passed, reason, detail = check_protected_paths(
                 args.base, args.upstream, args.add_only_override,
@@ -1293,7 +1292,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     def command(check: config.Check) -> list[str]:
         blocking = args.blocking_mutation and (check.name == "mutation" or proved(check))
         cmd = [*check.run, *(["--blocking"] if blocking else [])]
-        if args.tier == "attempt" and ("-m", "unittest") in itertools.pairwise(cmd):
+        if not rank and ("-m", "unittest") in itertools.pairwise(cmd):
             cmd.append("--verbose")  # unittest's default progress omits skipped-test names
         return cmd
 
@@ -1384,11 +1383,18 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, _ in results:
         lines.append(f"- {name}: {status}")
     for name, status, output in results:
-        if args.tier == "attempt" and status == "PASS":
-            evidence = re.findall(
-                r"^Ran \d+ tests?\b[^\n]*|^(?:[^\n]+ \([^\n]+\)\n)?[^\n]* \.\.\. skipped [^\n]*",
-                output, re.MULTILINE,
-            )
+        if not rank and status in {"PASS"}:
+            evidence = []
+            identity = ""
+            for line in output.splitlines():
+                test = re.match(r"^\s*(\S+ \([^)]+\))", line)
+                if test:
+                    identity = test[1]
+                skipped = re.search(r"\bskipped (?:'.*'|\".*\")$", line)
+                if skipped and identity:
+                    evidence.append(f"{identity} ... {skipped[0]}")
+                elif re.match(r"^Ran \d+ tests?\b", line):
+                    evidence.append(line)
             if evidence:
                 lines += ["", f"## {name} test evidence", "```", *evidence, "```"]
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
