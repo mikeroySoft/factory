@@ -15,7 +15,6 @@ from unittest import mock
 
 from factory import config
 
-
 GATE = r'''
 import sys
 from pathlib import Path
@@ -217,6 +216,6 @@ class HostMutationSlotsTest(unittest.TestCase):
             '[repo]\nslug = "acme/widgets"\n[gate]\nmutation_slots = 3\n')
         self.slots(1)
         with mock.patch.object(config, "repo_root", return_value=repo), \
-                mock.patch.dict(os.environ, self.env):
-            with self.assertRaisesRegex(config.ConfigError, r"gate\.mutation_slots is host-only"):
-                config.load(repo)
+                mock.patch.dict(os.environ, self.env), \
+                self.assertRaisesRegex(config.ConfigError, r"gate\.mutation_slots is host-only"):
+            config.load(repo)
