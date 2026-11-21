@@ -1401,7 +1401,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                 test = re.search(
                     r"\b(?:(?P<method>\w+) \((?:\w+\.)+(?P=method)\)"
                     r"|(?:setUpClass|tearDownClass) \((?:\w+\.)+\w+\)"
-                    r"|(?:setUpModule|tearDownModule) \(\w+\))"
+                    r"|(?:setUpModule|tearDownModule) \((?:\w+\.)*\w+\))"
                     r"(?: \[.*\])?(?: \(.*\))?(?= \.\.\. |$)", line,
                 )
                 completion = line
