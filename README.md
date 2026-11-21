@@ -1153,8 +1153,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Attempt-tier reports record the starting `Head SHA` and retain a `## <check>
    test evidence` section for passing unittest checks: the `Ran N tests` summary
    and skipped-test identities with reasons, without the failure-output tail
-   limit. Attempt-tier unittest commands run with `--verbose` to expose those
-   identities. PR creation preserves bodies up to 60,000 characters; larger
+   limit. Attempt-tier unittest commands run with `--verbose` and a standard
+   unittest runner configured with `descriptions=False`: identities remain visible,
+   while docstrings cannot be mistaken for identities or status delimiters.
+   PR creation preserves bodies up to 60,000 characters; larger
    bodies carry that prefix and a truncation notice. The full gate report remains
    in the worktree.
    Repositories may opt into mechanical repairs with `[gate].fixups`, an array of

@@ -1292,8 +1292,19 @@ def execute(args: argparse.Namespace, execution) -> int:
     def command(check: config.Check) -> list[str]:
         blocking = args.blocking_mutation and (check.name == "mutation" or proved(check))
         cmd = [*check.run, *(["--blocking"] if blocking else [])]
-        if not rank and ("-m", "unittest") in itertools.pairwise(cmd):
-            cmd.append("--verbose")  # unittest's default progress omits skipped-test names
+        if not rank:
+            for index, pair in enumerate(itertools.pairwise(cmd)):
+                if pair == ("-m", "unittest"):
+                    # Descriptions and diagnostics share the status delimiter; omit descriptions.
+                    cmd[index:index + 2] = ["-c", (
+                        "import unittest\n"
+                        "class Runner(unittest.TextTestRunner):\n"
+                        "    def __init__(self, **kwargs):\n"
+                        "        super().__init__(descriptions=False, **kwargs)\n"
+                        "unittest.main(module=None, testRunner=Runner)\n"
+                    )]
+                    cmd.append("--verbose")  # default progress omits skipped-test names
+                    break
         return cmd
 
     def run_proved(check: config.Check) -> tuple[bool, str]:
@@ -1386,19 +1397,17 @@ def execute(args: argparse.Namespace, execution) -> int:
         if not rank and status in {"PASS"}:
             evidence = []
             identity = ""
-            description = None
             for line in output.splitlines():
                 test = re.search(
-                    r"\b(?:\w+ \((?:\w+\.)+\w+\)|(?:setUpModule|tearDownModule) \(\w+\))"
+                    r"\b(?:(?P<method>\w+) \((?:\w+\.)+(?P=method)\)"
+                    r"|(?:setUpClass|tearDownClass) \((?:\w+\.)+\w+\)"
+                    r"|(?:setUpModule|tearDownModule) \(\w+\))"
                     r"(?: \[.*\])?(?: \(.*\))?(?= \.\.\. |$)", line,
                 )
                 completion = line
                 if test:
                     identity = test.group()
                     completion = line[test.end():]
-                elif description:
-                    completion = line.partition(" ... ")[2]
-                description = test if not completion else None
                 skipped = re.fullmatch(r"(?: \.\.\. )?skipped (?:'.*'|\".*\")", completion)
                 if skipped and identity:
                     evidence.append(f"{identity} ... {skipped[0].removeprefix(' ... ')}")
