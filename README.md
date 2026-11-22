@@ -1721,8 +1721,14 @@ labels from the authenticated dispatcher only before the recorded escalation
 comment; human removals and later edits still hold automatic management.
 
 Expired claims are admitted through the frontier only when no other hold exists.
-A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
-hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
+A human assignee remains a hold. An open `agent/<ticket>` PR also remains a hold
+for foreign claims, completed attempts, or claims without local attempt evidence.
+When the elected own-host claim expires during a journaled attempt with no
+completion or escalation, the next pass instead escalates to `ready-for-human`
+under the ticket lock and posts a nonce-bearing `Factory requeue` comment.
+This includes a host kill with no terminal lifecycle row. Recovery rechecks the
+heartbeat and election, keeps the PR and worktree intact, and tells the next
+owner to merge main before resuming gate/review at the existing PR.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`

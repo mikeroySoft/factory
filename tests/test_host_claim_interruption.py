@@ -100,3 +100,43 @@ class HostClaimInterruptionTest(unittest.TestCase):
             tank.process_ticket(tank.frontier()[0], 1, False)
         escalate.assert_not_called()
         self.assertEqual(self.launched, ["tank", "tank"])
+
+    def test_oom_without_terminal_row_recovers_even_when_already_unassigned(self):
+        tank = self.dispatcher("tank")
+        claim = self.interrupt_pr_gate(tank)
+        self.github.issue["assignees"] = []
+        self.expire(tank)
+        read_events = lifecycle.read_events
+
+        def without_exit(path):
+            return [row for row in read_events(path)
+                    if not (row.get("event") == "lifecycle" and row.get("stage") == "ticket"
+                            and row.get("kind") == "exit")]
+
+        with mock.patch.object(lifecycle, "read_events", side_effect=without_exit), \
+                self.post_escalations(tank):
+            [issue] = tank.frontier()
+            self.assertNotIn("held", issue)
+            tank.process_ticket(issue, 1, False)
+
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-human"}])
+        self.assertEqual(self.github.open_prs, [{"number": 70}])
+        self.assertEqual(self.launched, ["tank"])
+        self.assertTrue(any(f"Factory requeue: nonce={claim['nonce']}" in row["body"]
+                            for row in self.github.comments))
+
+    def test_heartbeat_after_frontier_prevents_recovery(self):
+        tank = self.dispatcher("tank")
+        claim = self.interrupt_pr_gate(tank)
+        self.expire(tank)
+        [issue] = tank.frontier()
+        self.assertNotIn("held", issue)
+        comment = next(row for row in self.github.comments if row["id"] == claim["id"])
+        comment["body"] = (f"Factory claim: host=tank nonce={claim['nonce']} "
+                           f"at={tank.datetime.now(UTC).isoformat()}")
+        before = copy.deepcopy((self.github.issue, self.github.comments))
+        with mock.patch.object(tank, "escalate") as escalate:
+            tank.process_ticket(issue, 1, False)
+        escalate.assert_not_called()
+        self.assertEqual((self.github.issue, self.github.comments), before)
+        self.assertEqual(self.launched, ["tank"])

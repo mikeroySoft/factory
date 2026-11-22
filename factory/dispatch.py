@@ -647,6 +647,31 @@ def elected_host_claim(claims: list[dict]) -> dict | None:
     return elected
 
 
+def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
+    """An expired own-host election whose journaled ticket execution did not finish."""
+    elected = elected_host_claim(claims)
+    if (not elected or elected["host"] != cfg.host_name
+            or "requeue" in elected or live_host_claims(claims)):
+        return None
+    events = lifecycle.read_events(EVENTS)
+    # `claimed` timestamps have second precision; GitHub creation times may have fractions.
+    created = elected["created"].replace(microsecond=0)
+    attempt = next((row for row in reversed(events)
+                    if row.get("ticket") == n and row.get("event") == "claimed"
+                    and datetime.fromisoformat(row["at"]) >= created), None)
+    if attempt is None or not (execution := attempt.get("execution_id")):
+        return None
+    for row in events:
+        if row.get("execution_id") != execution:
+            continue
+        if row.get("event") in {"approved", "escalate", "merged"}:
+            return None
+        if (row.get("event") == "lifecycle" and row.get("kind") == "exit"
+                and row.get("outcome") not in {"unknown", "interrupted", "mechanism_failure"}):
+            return None
+    return elected
+
+
 def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     if live := live_host_claims(claims):
         return f"host claim ({live[0]['host']})"
@@ -662,7 +687,7 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
         if "requeue" not in elected_host_claim(claims) and gh_json(
             ["pr", "list", "--repo", REPO, "--state", "open",
              "--head", f"agent/{n}", "--json", "number"]
-        ):
+        ) and interrupted_host_claim(n, claims) is None:
             return "open PR"
     return None
 
@@ -686,6 +711,9 @@ def delete_host_claim(n: int, claim: dict) -> None:
 
 
 def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement: int | None = None) -> dict:
+    if replacement is None and interrupted_host_claim(n, claims) is not None:
+        # Keep the elected nonce for escalation, including when @me was already removed.
+        return issue
     claims = [row for row in claims if row["id"] != replacement]
     live_ids = {row["id"] for row in live_host_claims(claims)}
     stale = [row for row in claims if row["id"] not in live_ids]
@@ -5559,6 +5587,20 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "state_changed"
                 return
+            if cfg.host_name and (interrupted := interrupted_host_claim(n, claims)):
+                # Admission reads can race a heartbeat or another host's replacement.
+                current = host_claims(n)
+                owner = interrupted_host_claim(n, current)
+                if (owner is not None and owner["nonce"] == interrupted["nonce"]
+                        and host_claim_hold(n, fresh, current) is None
+                        and gh_json(["pr", "list", "--repo", REPO, "--state", "open",
+                                     "--head", f"agent/{n}", "--json", "number"])):
+                    escalate(
+                        n, f"own-host claim expired during an unfinished attempt with an open PR; "
+                        f"worktree kept at {wt}; resume agent/{n} after merging {cfg.main}",
+                        None, code="dispatcher_error",
+                    )
+                    return
             labels = {label["name"] for label in fresh["labels"]}
             observe_owner_requeue(n, fresh)
             profile = cfg.worker_key(labels)
