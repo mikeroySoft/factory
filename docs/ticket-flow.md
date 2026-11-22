@@ -78,7 +78,6 @@ flowchart TB
   RFA -->|"open, unassigned, no open blockers: dispatch.frontier"| CLAIM
   RFA -->|"its PR's red CI completed before the release: no escalation, waits for a worker: manage.frontier_pass"| CLAIM
   RFA -->|"its PR's CI red after the release, or idle stale_days counted from the release: manage.frontier_pass, manage.released_at"| ESC
-  RFA -->|"expired own-host claim, unfinished local attempt and open PR: dispatch.process_ticket"| ESC
   CLAIM -->|"dispatch.process_ticket"| WR
   WR -->|"gate FAIL or worker stuck, attempts left, report fed back: dispatch.process_ticket"| WR
   WR -->|"gate FAIL or stuck max_attempts, protected paths, or budget with unfinished handoff: dispatch.process_ticket"| ESC
@@ -121,6 +120,7 @@ flowchart TB
   NT -->|"untriaged watch issue, newest evidence 24 hours old, issue closed completed: watch.run_pass"| HUMAN
 
   %% Recovery
+  RFA -->|"expired own-host claim, unfinished local attempt and open PR: dispatch.process_ticket"| ESC
   ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
   UPSTREAM -->|"new sync ticket on a staged agent/N candidate; never moves main: dispatch.sync_pass"| RFA
   EXTPR -->|"review attempts exhausted, new issue: dispatch.review_intake_pass"| RFH
