@@ -73,7 +73,7 @@ def mutation_duration(value: str) -> float:
 def timed(
     cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None,
     proof_path: Path | None = None, proof_base: str | None = None,
-    timeout: float | None = None,
+    timeout: float | None = None, unittest_path: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a command with the per-check timeout (`timeout`, when given, for this call only).
 
@@ -90,6 +90,9 @@ def timed(
     # Only the gate names a completion-record path, and only for the opted-in check.
     env.pop(MUTATION_PROOF_ENV, None)
     env.pop(MUTATION_PROOF_BASE_ENV, None)
+    env.pop("FACTORY_UNITTEST_RESULT", None)
+    if unittest_path is not None:
+        env["FACTORY_UNITTEST_RESULT"] = str(unittest_path)
     if proof_path is not None:
         env[MUTATION_PROOF_ENV] = str(proof_path)
         if proof_base is not None:
@@ -128,9 +131,9 @@ def timed(
             execution.child_done(proc.pid)
 
 
-def run(cmd: list[str]) -> tuple[bool, str]:
+def run(cmd: list[str], unittest_path: Path | None = None) -> tuple[bool, str]:
     """Run a command, return (passed, combined output)."""
-    proc = timed(cmd)
+    proc = timed(cmd, unittest_path=unittest_path)
     execution = lifecycle.current()
     if execution and proc.returncode != 0 and execution.outcome == "completed":
         execution.outcome = "product_feedback"
@@ -1284,6 +1287,8 @@ def execute(args: argparse.Namespace, execution) -> int:
     listed = [check for check in cfg.checks if config.CHECK_TIERS.index(check.when) >= rank]
     proofs: dict[str, tuple[str, str]] = {}  # check name -> (record-decided status, binding)
     slot_waits: dict[str, float] = {}
+    test_evidence: dict[str, dict] = {}
+    unittest_checks: set[str] = set()
 
     def proved(check: config.Check) -> bool:
         return args.mutation_proof and check.proof == config.MUTATION_PROOF
@@ -1303,20 +1308,23 @@ def execute(args: argparse.Namespace, execution) -> int:
             return cmd
         for index in range(entry + 1, len(cmd)):
             if cmd[index:index + 2] == ["-m", "unittest"]:
-                # Descriptions and diagnostics share the status delimiter; omit descriptions.
+                unittest_checks.add(check.name)
                 cmd[index:index + 2] = ["-c", (
-                    "import unittest\n"
+                    "import json, os, unittest\n"
                     "class Result(unittest.TextTestResult):\n"
-                    "    def _write_status(self, test, status):\n"
-                    "        self.stream.writeln()\n"
-                    "        self._newline = True\n"
-                    "        super()._write_status(test, status)\n"
+                    "    def addSkip(self, test, reason):\n"
+                    "        super().addSkip(test, reason)\n"
+                    "        self.records.append({'id': test.id(), 'name': str(test), 'reason': reason})\n"
+                    "    def startTestRun(self):\n"
+                    "        self.records = []\n"
+                    "    def stopTestRun(self):\n"
+                    "        with open(os.environ['FACTORY_UNITTEST_RESULT'], 'w') as stream:\n"
+                    "            json.dump({'testsRun': self.testsRun, 'skipped': self.records}, stream)\n"
                     "class Runner(unittest.TextTestRunner):\n"
                     "    def __init__(self, **kwargs):\n"
-                    "        super().__init__(descriptions=False, resultclass=Result, **kwargs)\n"
+                    "        super().__init__(resultclass=Result, **kwargs)\n"
                     "unittest.main(module=None, testRunner=Runner)\n"
                 )]
-                cmd.append("--verbose")  # default progress omits skipped-test names
                 return cmd
             if not re.fullmatch(r"-[bBdEiIOPqRsSuvx]+|-(?:W|X).+", cmd[index]):
                 return cmd  # a script, another module, or unsupported interpreter option
@@ -1330,6 +1338,15 @@ def execute(args: argparse.Namespace, execution) -> int:
         return passed, output
 
     def run_configured(check: config.Check) -> tuple[bool, str]:
+        cmd = command(check)
+        if check.name in unittest_checks:
+            with tempfile.NamedTemporaryFile(prefix="factory-unittest-", suffix=".json") as record:
+                passed, output = run(cmd, unittest_path=Path(record.name))
+                try:
+                    test_evidence[check.name] = json.loads(Path(record.name).read_text())
+                except (ValueError, OSError) as error:
+                    return False, output + f"\nunittest result record unavailable: {error}"
+                return passed, output
         fn = (lambda: run_proved(check)) if proved(check) else (lambda: run(command(check)))
         mutation = (check.name == "mutation" or check.proof == config.MUTATION_PROOF
                     or "scripts/mutation.py" in check.run)
@@ -1409,21 +1426,13 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, _ in results:
         lines.append(f"- {name}: {status}")
     for name, status, output in results:
-        if not rank and status in {"PASS"}:
-            evidence = []
-            for line in output.splitlines():
-                test = re.search(
-                    r"\b(?:(?P<method>\w+) \((?:\w+\.)+(?P=method)\)"
-                    r"|(?:setUpClass|tearDownClass) \((?:\w+\.)+\w+\)"
-                    r"|(?:setUpModule|tearDownModule) \((?:\w+\.)*\w+\))"
-                    r"(?: \[.*\])?(?: \(.*\))?(?= \.\.\. |$)", line,
-                )
-                if test and re.fullmatch(r" \.\.\. skipped (?:'.*'|\".*\")", line[test.end():]):
-                    evidence.append(line[test.start():])
-                elif re.match(r"^Ran \d+ tests?\b", line):
-                    evidence.append(line)
-            if evidence:
-                lines += ["", f"## {name} test evidence", "```", *evidence, "```"]
+        if not rank and status == "PASS" and name in test_evidence:
+            record = test_evidence[name]
+            evidence = [
+                f"{skip['name']} ... skipped {skip['reason']!r}" for skip in record["skipped"]
+            ]
+            evidence.append(f"Ran {record['testsRun']} tests")
+            lines += ["", f"## {name} test evidence", "```", *evidence, "```"]
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
         # them only through this report, so keep their output when they pass too.
         if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
