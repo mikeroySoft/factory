@@ -69,5 +69,25 @@ class HostPinRetentionTest(unittest.TestCase):
         ultron.process_ticket(copy.deepcopy(self.github.issue), 1, False)
         self.assertEqual(self.launched, ["ultron"])
 
+    def test_old_same_host_claim_cannot_bypass_resume_pin(self):
+        self.github = TimelineGitHub()
+        now = datetime.now(UTC)
+        self.github.add_claim("tank", now - timedelta(hours=4))
+        self.github.add_claim("tank", now - timedelta(hours=3))
+        ultron = self.dispatcher("ultron")
+        ultron.unclaim(7, "--remove-label", "ready-for-human", "--add-label", "ready-for-agent")
+        ultron.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        self.assertEqual(self.launched, [])
+        self.assertIn({"name": "host:tank"}, self.github.issue["labels"])
+
+    def test_reescalation_preserves_all_existing_host_labels(self):
+        tank = self.set_up_owner()
+        self.github.add_claim("old", datetime.now(UTC) - timedelta(hours=3))
+        before = {row["name"] for row in self.github.issue["labels"] if row["name"].startswith("host:")}
+        tank.escalate(7, "gate failed", None, code="gate_failed")
+        tank.escalate(7, "gate failed again", None, code="gate_failed")
+        after = {row["name"] for row in self.github.issue["labels"] if row["name"].startswith("host:")}
+        self.assertEqual(after, before)
+
 
 del Harness

@@ -1711,7 +1711,13 @@ GitHub creation time and then numeric comment ID. A loser records `claim_lost`
 and removes its own comment and label without assigning or launching a worker.
 The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
 pipeline runs. Unclaim always applies escalation/requeue labels; only the owning
-host can remove an existing claim's `@me`, host label and comment, even after expiry.
+host can remove an existing claim's `@me` and comment, even after expiry.
+Escalation and requeue preserve every existing `host:<name>` label, including
+manager RETRY/continue and named-action `requeue_agent` with `intent: resume`.
+The retained pin blocks other hosts even after a requeued claim expires.
+To move retained work to another host, explicitly remove the named pin (for
+example `gh issue edit <ticket> --remove-label host:tank`) after transferring
+its unpublished commits; escalation or continue never authorizes that removal.
 An in-process claim must also match the elected nonce before cleanup. Tickets
 assigned before host claims were enabled retain the original `@me` release path.
 If the label/assignee edit fails, unclaim retains its comment and host label so
@@ -1752,18 +1758,20 @@ just because loser cleanup failed. A claim created at or after that lease expire
 starts a new election, so an old requeue cannot release newer completed work.
 Assigned stale claims stay intact until a replacement wins and assigns, so admission
 or claim failures cannot strand the shared `@me` assignment without recovery evidence.
-Dispatch then rechecks the heartbeat, removes stale comments/labels without clearing
-the shared assignment, and records `claim-released` with the old host and last heartbeat.
+Dispatch then rechecks the heartbeat, removes stale comments and non-requeued
+claim labels without clearing the shared assignment, and records `claim-released`
+with the old host and last heartbeat. Requeued claims retain their host labels.
 The elected owner revalidates its nonce before cleanup; a losing contender still
 deleting its live claim cannot block retirement of old stale ownership. Owner
-unclaim also retires older stale claims before deleting its own comment, so
-leftover claims cannot strand a later refresh requeue or escalation/relabel.
+unclaim also retires older stale claims before deleting its own comment, preserving
+all host labels during escalation/requeue so retained local work stays pinned.
 Unassigned stale claims can be released before election. A foreign host label without
 a claim comment remains a hold; inspect it before removing it.
-Cleanup removes the host label before deleting its last claim comment, so a
-failed label edit retains TTL recovery evidence for the next pass. Another
-same-host contender keeps its label. If comment deletion fails with the comment
-still present, cleanup restores the label and surfaces the error.
+Outside escalation/requeue, cleanup of non-requeued claims removes the host label
+before deleting its last claim comment, so a failed label edit retains TTL recovery
+evidence for the next pass. Another same-host contender keeps its label. If comment
+deletion fails with the comment still present, cleanup restores any label it removed
+and surfaces the error.
 Hosts need synchronized clocks and current GitHub reads. This comment-based
 lease is not a fencing token for a disconnected worker that outlives its TTL.
 With `host_name` unset and no repository host evidence, ticket assignment retains

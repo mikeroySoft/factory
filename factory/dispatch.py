@@ -679,7 +679,10 @@ def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
 def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     if live := live_host_claims(claims):
         return f"host claim ({live[0]['host']})"
-    stale_hosts = {claim["host"] for claim in claims}
+    # A requeue releases the lease, not the pin protecting retained local work.
+    stale_hosts = {claim["host"] for claim in claims} - {
+        claim["host"] for claim in claims if "requeue" in claim
+    }
     foreign = {label["name"][5:] for label in issue.get("labels", [])
                if label["name"].startswith("host:")} - stale_hosts - {cfg.host_name}
     if foreign:
@@ -696,9 +699,10 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     return None
 
 
-def delete_host_claim(n: int, claim: dict) -> None:
-    remove_label = not any(row["host"] == claim["host"] and row["id"] != claim["id"]
-                           for row in host_claims(n))
+def delete_host_claim(n: int, claim: dict, *, preserve_label: bool = False) -> None:
+    remove_label = not (preserve_label or "requeue" in claim) and not any(
+        row["host"] == claim["host"] and row["id"] != claim["id"] for row in host_claims(n)
+    )
     if remove_label:
         # Keep the comment as durable TTL recovery evidence until label cleanup succeeds.
         run(["gh", "issue", "edit", str(n), "--repo", REPO,
@@ -714,7 +718,10 @@ def delete_host_claim(n: int, claim: dict) -> None:
         record("claim-label-removed", ticket=n, label=f"host:{claim['host']}")
 
 
-def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement: int | None = None) -> dict:
+def release_stale_claims(
+    n: int, issue: dict, claims: list[dict], *, replacement: int | None = None,
+    preserve_labels: bool = False,
+) -> dict:
     if replacement is None and interrupted_host_claim(n, claims) is not None:
         # Keep the elected nonce for escalation, including when @me was already removed.
         return issue
@@ -742,7 +749,7 @@ def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement
     live_ids = {row["id"] for row in live_host_claims(current)}
     stale = [row for row in current if row["id"] not in live_ids]
     for claim in stale:
-        delete_host_claim(n, claim)
+        delete_host_claim(n, claim, preserve_label=preserve_labels)
         record("claim-released", ticket=n, host=claim["host"], last_heartbeat=claim["at"])
     # All hosts share @me. Never clear it here: a replacement can assign between
     # any read and that edit. The elected replacement reapplies it idempotently.
@@ -839,9 +846,13 @@ def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
 
 
 def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
-    """Apply lifecycle transitions; release host resources only when this host owns them."""
+    """Apply lifecycle transitions without removing pins; release only owned claim resources."""
     claims = host_claims(n) if cfg.host_name else []
     owned = owned_host_claim(n, claims)
+    preserve_labels = any(
+        flag == "--add-label" and label in {LABEL_AGENT, LABEL_HUMAN}
+        for flag, label in zip(label_args[::2], label_args[1::2])
+    )
     if cfg.host_name and any(
         flag == "--add-label" and label == LABEL_AGENT
         for flag, label in zip(label_args[::2], label_args[1::2])
@@ -851,7 +862,7 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
                  "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
     if owned is not None:
         fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,assignees"])
-        release_stale_claims(n, fresh, claims, replacement=owned["id"])
+        release_stale_claims(n, fresh, claims, replacement=owned["id"], preserve_labels=preserve_labels)
         if (local := _HOST_CLAIMS.get(n)) is not None:
             local.stop()
     assignee = ["--remove-assignee", "@me"] if not claims or owned is not None else []
@@ -859,7 +870,7 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
     if args and run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check).returncode:
         return
     if owned is not None:
-        delete_host_claim(n, owned)
+        delete_host_claim(n, owned, preserve_label=preserve_labels)
 
 
 def frontier() -> list[dict]:
