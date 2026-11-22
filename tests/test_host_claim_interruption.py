@@ -4,6 +4,11 @@ import subprocess
 import unittest
 from datetime import UTC, datetime, timedelta
 from unittest import mock
+from contextlib import chdir
+
+from factory import config, dispatch
+from tests import test_dispatch_lifecycle as smoke
+from tests import test_worktree_resume as resume
 
 from factory import lifecycle
 from tests import test_host_claims
@@ -140,3 +145,151 @@ class HostClaimInterruptionTest(unittest.TestCase):
         escalate.assert_not_called()
         self.assertEqual((self.github.issue, self.github.comments), before)
         self.assertEqual(self.launched, ["tank"])
+
+    def test_expired_claim_without_claimed_row_escalates(self):
+        tank = self.dispatcher("tank")
+        self.github.open_prs = [{"number": 70}]
+        claim = self.github.add_claim("tank", datetime.now(UTC))
+        self.expire(tank)
+        with self.post_escalations(tank):
+            [issue] = tank.frontier()
+            self.assertNotIn("held", issue)
+            tank.process_ticket(issue, 1, False)
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-human"}])
+        self.assertTrue(any(claim["body"].split("nonce=")[1].split()[0] in row["body"]
+                            and "Factory requeue:" in row["body"]
+                            for row in self.github.comments))
+        self.assertEqual(self.launched, [])
+
+    def test_github_clock_ahead_of_local_journal_does_not_hold(self):
+        tank = self.dispatcher("tank")
+        claim = self.interrupt_pr_gate(tank)
+        comment = next(row for row in self.github.comments if row["id"] == claim["id"])
+        comment["created_at"] = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+        self.expire(tank)
+        with self.post_escalations(tank):
+            [issue] = tank.frontier()
+            self.assertNotIn("held", issue)
+            tank.process_ticket(issue, 1, False)
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-human"}])
+
+    def test_new_unjournaled_claim_cannot_inherit_previous_completion(self):
+        tank = self.dispatcher("tank")
+        tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        self.github.comments.clear()
+        self.github.add_claim("tank", datetime.now(UTC))
+        self.github.open_prs = [{"number": 70}]
+        self.expire(tank)
+        with self.post_escalations(tank):
+            [issue] = tank.frontier()
+            self.assertNotIn("held", issue)
+            tank.process_ticket(issue, 1, False)
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-human"}])
+
+    def test_completed_noninterned_ticket_remains_held(self):
+        self.github.issue["number"] = int("1000")
+        tank = self.dispatcher("tank")
+        tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        self.github.open_prs = [{"number": 70}]
+        self.expire(tank)
+        self.assertEqual(tank.frontier()[0].get("held"), "open PR")
+
+    def test_other_ticket_completion_cannot_complete_interrupted_claim(self):
+        tank = self.dispatcher("tank")
+        self.interrupt_pr_gate(tank)
+        tank.record("claimed", ticket=8, execution_id="other")
+        tank.record("approved", ticket=8, execution_id="other")
+        self.expire(tank)
+        self.assertNotIn("held", tank.frontier()[0])
+
+
+class HostClaimWorktreeInterruptionTest(unittest.TestCase):
+    setUp = smoke.LocalCLI.setUp
+    git = smoke.LocalCLI.git
+    write_config = smoke.LocalCLI.write_config
+    commit_config = smoke.LocalCLI.commit_config
+    prepare = resume.WorktreeResumeTest.prepare
+    post_escalations = HostClaimInterruptionTest.post_escalations
+
+    def test_expired_claim_reports_and_preserves_unpushed_commits_through_resume(self):
+        self.prepare()
+        self.github = test_host_claims.FakeGitHub()
+        self.github.open_prs = [{"number": 70}]
+        cfg = config.load(self.repo)
+        cfg.host_name = "tank"
+        worker_heads = []
+
+        def worker(*args, **kwargs):
+            dispatch.run(["git", "merge", "--no-edit", "origin/main"], cwd=self.wt)
+            head = self.git("-C", str(self.wt), "rev-parse", "HEAD").stdout.strip()
+            worker_heads.append(head)
+            return True, "gate passed", None, head
+
+        def publish(wt, branch, title, body, *, ticket, lease):
+            dispatch.push_agent(wt, ticket, lease)
+            return True
+
+        run = dispatch.run
+
+        def command(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "issue", "comment"]:
+                self.github.json("tank", [
+                    "api", "repos/local/smoke/issues/7/comments", "--method", "POST",
+                    "-f", f"body={cmd[cmd.index('--body') + 1]}",
+                ])
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if cmd[0] == "gh":
+                return self.github.run("tank", cmd, *args, **kwargs)
+            return run(cmd, *args, **kwargs)
+
+        with chdir(self.repo), mock.patch.dict("os.environ", self.env):
+            dispatch.configure(cfg)
+            self.enterContext(mock.patch.object(dispatch, "run", side_effect=command))
+            self.enterContext(mock.patch.object(dispatch, "gh_json",
+                                               side_effect=lambda args: self.github.json("tank", args)))
+            for name, value in {
+                "admit_plan": lambda *a: None,
+                "open_blockers": lambda *a: [],
+                "worker_round": worker,
+                "push_and_pr": publish,
+                "record_risk": lambda *a: None,
+                "pr_comment": lambda *a: None,
+                "approve_pr": lambda *a: True,
+            }.items():
+                self.enterContext(mock.patch.object(dispatch, name, value))
+            with mock.patch.object(dispatch, "pr_gate_and_review", side_effect=KeyboardInterrupt), \
+                    self.assertRaises(KeyboardInterrupt):
+                dispatch.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+
+            commits = []
+            for message in ("unpublished one", "unpublished two"):
+                self.git("-C", str(self.wt), "commit", "--allow-empty", "-qm", message)
+                commits.append(self.git("rev-parse", "agent/7").stdout.strip())
+            (self.repo / "main-change.txt").write_text("main advanced\n")
+            self.git("add", "main-change.txt")
+            self.git("commit", "-qm", "advance main")
+            self.git("push", "origin", "main")
+            main = self.git("rev-parse", "main").stdout.strip()
+            clock = self.enterContext(mock.patch.object(dispatch, "datetime", wraps=datetime))
+            clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
+            dispatch.process_ticket(dispatch.frontier()[0], 1, False)
+
+            self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-human"}])
+            self.assertEqual(self.git("rev-parse", "agent/7").stdout.strip(), commits[-1])
+            self.assertEqual(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0],
+                             self.parent)
+            [comment] = [row["body"] for row in self.github.comments
+                         if row["body"].startswith("Factory dispatcher escalating:")]
+            for head in commits:
+                self.assertIn(head, comment)
+
+            self.github.run("human", [
+                "gh", "issue", "edit", "7", "--remove-label", "ready-for-human",
+                "--add-label", "ready-for-agent",
+            ])
+            with mock.patch.object(dispatch, "pr_gate_and_review", return_value=("APPROVE", "", False)):
+                dispatch.process_ticket(dispatch.frontier()[0], 1, False)
+            pushed = self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0]
+            self.assertEqual(pushed, worker_heads[-1])
+            for head in [*commits, main]:
+                self.git("merge-base", "--is-ancestor", head, pushed)
