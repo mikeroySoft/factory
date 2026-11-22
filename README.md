@@ -1722,13 +1722,16 @@ comment; human removals and later edits still hold automatic management.
 
 Expired claims are admitted through the frontier only when no other hold exists.
 A human assignee remains a hold. An open `agent/<ticket>` PR also remains a hold
-for foreign claims, completed attempts, or claims without local attempt evidence.
-When the elected own-host claim expires during a journaled attempt with no
-completion or escalation, the next pass instead escalates to `ready-for-human`
+for foreign claims or completed attempts. When the elected own-host claim expires
+without completion or escalation, the next pass instead escalates to `ready-for-human`
 under the ticket lock and posts a nonce-bearing `Factory requeue` comment.
-This includes a host kill with no terminal lifecycle row. Recovery rechecks the
-heartbeat and election, keeps the PR and worktree intact, and tells the next
-owner to merge main before resuming gate/review at the existing PR.
+Missing local attempt evidence is recoverable, including a kill before `claimed`
+is journaled. New `claimed` receipts bind to the claim nonce, not GitHub creation
+time; legacy completion receipts use the owner's local heartbeat clock.
+Recovery rechecks heartbeat/election, keeps the PR and worktree intact, and reports
+the local HEAD, remote branch head and unpushed commit SHAs when readable (otherwise
+explicitly unavailable). It never resets or recreates the worktree. The next owner
+must merge main before resuming gate/review and publishing the retained commits.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`

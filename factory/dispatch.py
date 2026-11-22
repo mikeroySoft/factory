@@ -648,21 +648,25 @@ def elected_host_claim(claims: list[dict]) -> dict | None:
 
 
 def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
-    """An expired own-host election whose journaled ticket execution did not finish."""
+    """An expired own-host election without evidence of completion or escalation."""
     elected = elected_host_claim(claims)
     if (not elected or elected["host"] != cfg.host_name
             or "requeue" in elected or live_host_claims(claims)):
         return None
     events = lifecycle.read_events(EVENTS)
-    # `claimed` timestamps have second precision; GitHub creation times may have fractions.
-    created = elected["created"].replace(microsecond=0)
+    # New attempts bind directly to the nonce; GitHub and host clocks need not agree.
     attempt = next((row for row in reversed(events)
                     if row.get("ticket") == n and row.get("event") == "claimed"
-                    and datetime.fromisoformat(row["at"]) >= created), None)
+                    and row.get("claim_nonce") in (None, elected["nonce"])), None)
     if attempt is None or not (execution := attempt.get("execution_id")):
-        return None
+        return elected
     for row in events:
         if row.get("execution_id") != execution:
+            continue
+        # Old journals lack the nonce. Only completion after this owner's last
+        # heartbeat (both from the owning host's clock) can establish completion.
+        if (attempt.get("claim_nonce") is None
+                and datetime.fromisoformat(row["at"]) < elected["heartbeat"].replace(microsecond=0)):
             continue
         if row.get("event") in {"approved", "escalate", "merged"}:
             return None
@@ -5595,9 +5599,20 @@ def process_ticket(
                         and host_claim_hold(n, fresh, current) is None
                         and gh_json(["pr", "list", "--repo", REPO, "--state", "open",
                                      "--head", f"agent/{n}", "--json", "number"])):
+                    evidence = "local history unavailable"
+                    if (wt / ".git").exists():
+                        head = run(["git", "rev-parse", "HEAD"], cwd=wt, check=False).stdout.strip()
+                        remote = _remote_agent_head(wt, n, check=False)
+                        evidence = f"local HEAD {head or '(unavailable)'}; remote agent/{n} {remote or '(none)'}"
+                        if head and remote and remote != "(unavailable)":
+                            commits = run(["git", "log", "--format=%H", f"{remote}..{head}"],
+                                          cwd=wt, check=False)
+                            unpublished = (commits.stdout.strip().replace("\n", ", ") or "(none)"
+                                           if commits.returncode == 0 else "(unavailable)")
+                            evidence += f"; local commits not on remote: {unpublished}"
                     escalate(
                         n, f"own-host claim expired during an unfinished attempt with an open PR; "
-                        f"worktree kept at {wt}; resume agent/{n} after merging {cfg.main}",
+                        f"worktree kept at {wt}; {evidence}; resume agent/{n} after merging {cfg.main}",
                         None, code="dispatcher_error",
                     )
                     return
@@ -5674,6 +5689,7 @@ def process_ticket(
                 worker=worker_key, worker_version=cfg.worker_version.get(worker_key),
                 priority=tier, priority_source=why, experiment=schedule.is_experiment(fresh),
                 base=replay_base, generation=ticket_generation.number,
+                claim_nonce=host_claim.comment["nonce"] if host_claim is not None else None,
                 issue={key: fresh.get(key) for key in ("title", "body", "comments")},
             )
             if admitted := issue.get("_factory_admitted"):

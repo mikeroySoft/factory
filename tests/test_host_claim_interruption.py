@@ -2,16 +2,14 @@
 import copy
 import subprocess
 import unittest
+from contextlib import chdir
 from datetime import UTC, datetime, timedelta
 from unittest import mock
-from contextlib import chdir
 
-from factory import config, dispatch
+from factory import config, dispatch, lifecycle
 from tests import test_dispatch_lifecycle as smoke
-from tests import test_worktree_resume as resume
-
-from factory import lifecycle
 from tests import test_host_claims
+from tests import test_worktree_resume as resume
 
 
 class HostClaimInterruptionTest(unittest.TestCase):
@@ -293,3 +291,49 @@ class HostClaimWorktreeInterruptionTest(unittest.TestCase):
             self.assertEqual(pushed, worker_heads[-1])
             for head in [*commits, main]:
                 self.git("merge-base", "--is-ancestor", head, pushed)
+
+
+class LegacyHostClaimInterruptionTest(unittest.TestCase):
+    setUp = test_host_claims.HostClaimRaceTest.setUp
+    dispatcher = test_host_claims.HostClaimRaceTest.dispatcher
+    launch = test_host_claims.HostClaimRaceTest.launch
+    interrupt_pr_gate = HostClaimInterruptionTest.interrupt_pr_gate
+    expire = HostClaimInterruptionTest.expire
+
+    def test_legacy_completion_uses_own_host_clock_not_github_clock(self):
+        tank = self.dispatcher("tank")
+        tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        self.github.open_prs = [{"number": 70}]
+        self.github.comments[0]["created_at"] = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+        rows = lifecycle.read_events(tank.EVENTS)
+        for row in rows:
+            row.pop("claim_nonce", None)
+        self.expire(tank)
+        with mock.patch.object(lifecycle, "read_events", return_value=rows):
+            self.assertEqual(tank.frontier()[0].get("held"), "open PR")
+
+    def test_legacy_completion_before_latest_heartbeat_does_not_hold(self):
+        tank = self.dispatcher("tank")
+        tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        self.github.open_prs = [{"number": 70}]
+        comment = self.github.comments[0]
+        comment["body"] = comment["body"].rsplit("at=", 1)[0] + (
+            f"at={(datetime.now(UTC) + timedelta(minutes=5)).isoformat()}"
+        )
+        rows = lifecycle.read_events(tank.EVENTS)
+        for row in rows:
+            row.pop("claim_nonce", None)
+        self.expire(tank)
+        with mock.patch.object(lifecycle, "read_events", return_value=rows):
+            self.assertNotIn("held", tank.frontier()[0])
+
+    def test_legacy_claim_interrupted_with_skewed_github_clock_is_admitted(self):
+        tank = self.dispatcher("tank")
+        self.interrupt_pr_gate(tank)
+        self.github.comments[0]["created_at"] = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+        rows = lifecycle.read_events(tank.EVENTS)
+        for row in rows:
+            row.pop("claim_nonce", None)
+        self.expire(tank)
+        with mock.patch.object(lifecycle, "read_events", return_value=rows):
+            self.assertNotIn("held", tank.frontier()[0])
