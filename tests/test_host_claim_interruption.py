@@ -351,6 +351,7 @@ class InterruptedClaimRequeueTrustTest(unittest.TestCase):
             with self.subTest(kind=kind):
                 self.root = root / kind
                 self.github = test_host_claims.FakeGitHub()
+                tank = self.dispatcher("tank")
                 now = datetime.now(UTC)
                 prior = self.github.add_claim("ultron", now - timedelta(hours=6)) if kind == "obsolete" else None
                 current = self.github.add_claim("tank", now - timedelta(hours=3))
@@ -361,7 +362,6 @@ class InterruptedClaimRequeueTrustTest(unittest.TestCase):
                     "user": {"login": "@me" if prior else "outside-commenter"},
                 })
                 self.github.open_prs = [{"number": 70}]
-                tank = self.dispatcher("tank")
                 with self.post_escalations(tank):
                     [issue] = tank.frontier()
                     self.assertNotIn("held", issue)
