@@ -385,6 +385,34 @@ class GateTempdirTest(unittest.TestCase):
                 self.assertFalse(Path(marker.read_text()).exists())
 
 class PassingAttemptEvidenceTest(unittest.TestCase):
+    def test_report_records_skips_without_parsing_verbose_diagnostics(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_records.py").write_text(
+                "import sys, unittest\n"
+                "class Records(unittest.TestCase):\n"
+                "    def test_pass(self):\n"
+                "        print(\"skipped 'x'\", file=sys.stderr)\n"
+                "    def test_skip(self):\n"
+                "        print(\"skipped 'x'\", file=sys.stderr)\n"
+                "        self.skipTest('needs hardware')\n"
+            )
+            commit(repo, "diagnostic skip records")
+            code, out, report = gate(repo)
+            self.assertEqual(code, 0, out + report)
+            self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+            self.assertIn("Ran 2 tests", report)
+            self.assertNotIn("test_records.Records.test_pass", report)
+            self.assertEqual(report.count("test_records.Records.test_skip"), 1)
+            self.assertIn("skipped 'needs hardware'", report)
+            self.assertNotIn("skipped 'x'", report)
+
     def test_report_records_head_count_and_skipped_test_names(self) -> None:
         import json
 
