@@ -398,6 +398,29 @@ class LandClaimTakeoverTest(unittest.TestCase):
         self.assertEqual([row["head"] for row in self.events(tank, "merged")], [head])
         self.assert_no_deletes()
 
+    def test_foreign_claim_expires_at_exact_ttl_edge(self):
+        tank = self.dispatcher("tank")
+        head = self.approve(tank)
+        self.claim("ultron")
+        original = self.comments[0].copy()
+        heartbeat = datetime.fromisoformat(original["created_at"])
+        edge = heartbeat + timedelta(seconds=tank.cfg.claim_ttl_seconds)
+        commands_before = self.commands["tank"].copy()
+        with mock.patch.object(tank, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = edge - timedelta(microseconds=1)
+            tank.land_pass(False)
+            self.assert_untouched(tank)
+            self.assertEqual(self.commands["tank"], commands_before)
+            self.assertEqual(self.comments, [original])
+            clock.now.return_value = edge
+            tank.land_pass(False)
+        self.assertTrue(self.github.merged)
+        self.assertEqual([row["head"] for row in self.events(tank, "merged")], [head])
+        self.assertIn(original, self.comments)
+        self.assertTrue(any(row["body"].startswith("Factory requeue: nonce=ultron-nonce")
+                            for row in self.comments))
+        self.assert_no_deletes()
+
 
 if __name__ == "__main__":
     unittest.main()

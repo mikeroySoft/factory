@@ -205,6 +205,8 @@ foreign claim has expired. It releases that nonce through the dispatcher's
 eligibility or refresh. The old claim comments remain evidence; the takeover
 journal records the foreign host and nonce. A live foreign claim still blocks,
 and a non-land host never enters landing.
+The claim is expired exactly when heartbeat age reaches its configured TTL;
+even one microsecond before that edge, the foreign owner still blocks takeover.
 If a takeover refresh requeues a conflict, its retained local claim stops
 heartbeating; worker admission waits for that claim's normal TTL to expire.
 An unchanged head with only the other host's journal evidence also goes through
