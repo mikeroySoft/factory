@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- GitHub CLI issue/PR listings now set explicit limits, including landing/refresh, host-claim probes, existing-PR lookup and triage. Shared decoding rejects lists at or above their limit instead of silently making pipeline or metrics decisions from incomplete results; doctor's label lookup has the same guard. Landing now considers approved PRs beyond the default 30-result window. Watch logs unavailable escape attribution on saturation, skips escape-dependent evaluation and explicitly retains escape alarms using their stored metric family (including tier-qualified historical metrics), independent of rule changes. New band alarms store their metric classification; unclassifiable legacy band alarms are retained conservatively. Independent filing and closure continue; complete evidence permits resolved escape alarms to close (#718).
 
 - Host-only `gate.mutation_slots` caps concurrent PR-tier mutation checks using independent host-wide slot flocks inherited by mutation children, retaining admission after gate interruption. Gate reports record slot waits outside check timeouts and mutation durations; unset settings preserve uncapped execution (#884).
 - Reviewer approval skips `factory-held` PRs whether draft or not, rechecks holds after labeling, and withdraws racing approval without recording it. Failed withdrawal reports failure instead of successful approval. Releasing a hold preserves exact reviewed-SHA requirements (#877).
