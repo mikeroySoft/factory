@@ -337,3 +337,38 @@ class LegacyHostClaimInterruptionTest(unittest.TestCase):
         self.expire(tank)
         with mock.patch.object(lifecycle, "read_events", return_value=rows):
             self.assertNotIn("held", tank.frontier()[0])
+
+
+class InterruptedClaimRequeueTrustTest(unittest.TestCase):
+    setUp = test_host_claims.HostClaimRaceTest.setUp
+    dispatcher = test_host_claims.HostClaimRaceTest.dispatcher
+    launch = test_host_claims.HostClaimRaceTest.launch
+    post_escalations = HostClaimInterruptionTest.post_escalations
+
+    def test_untrusted_or_obsolete_requeue_does_not_silently_hold_incomplete_claim(self):
+        root = self.root
+        for kind in ("untrusted", "obsolete"):
+            with self.subTest(kind=kind):
+                self.root = root / kind
+                self.github = test_host_claims.FakeGitHub()
+                now = datetime.now(UTC)
+                prior = self.github.add_claim("ultron", now - timedelta(hours=6)) if kind == "obsolete" else None
+                current = self.github.add_claim("tank", now - timedelta(hours=3))
+                nonce = (prior or current)["body"].split("nonce=", 1)[1].split()[0]
+                self.github.comments.append({
+                    "id": 100, "body": f"Factory requeue: nonce={nonce}\nContinue work",
+                    "created_at": now.isoformat(),
+                    "user": {"login": "@me" if prior else "outside-commenter"},
+                })
+                self.github.open_prs = [{"number": 70}]
+                tank = self.dispatcher("tank")
+                with self.post_escalations(tank):
+                    [issue] = tank.frontier()
+                    self.assertNotIn("held", issue)
+                    tank.process_ticket(issue, 1, False)
+                self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-human"}])
+                self.assertEqual(self.launched, [])
+                current_nonce = current["body"].split("nonce=", 1)[1].split()[0]
+                self.assertTrue(any(f"Factory requeue: nonce={current_nonce}" in row["body"]
+                                    and row["body"].startswith("Factory dispatcher escalating:")
+                                    for row in self.github.comments))

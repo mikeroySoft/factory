@@ -363,6 +363,9 @@ class HostClaimRevisionTest(unittest.TestCase):
         })
         self.github.open_prs = [{"number": 70}]
         tank = self.dispatcher("tank")
+        # Completed PRs still require an authenticated requeue for this election.
+        tank.record("claimed", ticket=7, claim_nonce=nonce, execution_id="completed")
+        tank.record("approved", ticket=7, execution_id="completed")
 
         [issue] = tank.frontier()
         self.assertEqual(issue.get("held"), "open PR")
@@ -381,6 +384,10 @@ class HostClaimRevisionTest(unittest.TestCase):
         self.github.add_claim("tank", datetime.now(UTC) - timedelta(hours=3))
         self.github.open_prs = [{"number": 70}]
         tank = self.dispatcher("tank")
+        # A prior election's requeue cannot restart this completed attempt.
+        current_nonce = tank.elected_host_claim(tank.host_claims(7))["nonce"]
+        tank.record("claimed", ticket=7, claim_nonce=current_nonce, execution_id="completed")
+        tank.record("approved", ticket=7, execution_id="completed")
 
         [issue] = tank.frontier()
         self.assertEqual(issue.get("held"), "open PR")
