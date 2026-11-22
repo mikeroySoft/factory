@@ -120,6 +120,7 @@ flowchart TB
   NT -->|"untriaged watch issue, newest evidence 24 hours old, issue closed completed: watch.run_pass"| HUMAN
 
   %% Recovery
+  RFA -->|"expired own-host claim without completion and open PR (including missing local receipt): dispatch.process_ticket"| ESC
   ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
   UPSTREAM -->|"new sync ticket on a staged agent/N candidate; never moves main: dispatch.sync_pass"| RFA
   EXTPR -->|"review attempts exhausted, new issue: dispatch.review_intake_pass"| RFH
@@ -271,6 +272,7 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``High-risk machine checks disagreed on two successive heads`` | Non-actionable disagreement → one worker rework; next-head non-actionable disagreement → escalate (`risk_disagreement`) |
 | `dispatch.process_ticket` | ``approval evidence, head, or human review state changed before approval`` | review → escalate |
 | `dispatch.process_ticket` | ``dispatcher error: {}; worktree kept at {}`` | any post-claim exception → escalate (`dispatcher_error`), then re-raised; a `LeaseRefused` from `dispatch.push_agent` escalates as `lease_refused` with its own message |
+| `dispatch.process_ticket` | ``own-host claim expired during an unfinished attempt with an open PR; worktree kept at {}; local HEAD {}; remote agent/{} {}; resume agent/{} after merging {}`` | Elected own-host attempt interrupted before completion, including missing local receipts → escalate (`dispatcher_error`) with a nonce-bearing requeue comment; keep PR/worktree and report retained local history (unpushed SHAs when readable, unavailable otherwise) |
 | `dispatch.merge_pass_locked` | ``PR #{}: CI failed ({}); `{}` label removed`` | CI fail → escalate |
 | `dispatch.runner_unavailable` | ``PR #{}: CI runner unavailable ({}) in run {}; `{}` kept`` | CI no runner after rerun → escalate |
 | `dispatch.merge_pass_locked` | ``PR #{}: missing approval evidence bound to {}; `{}` label removed`` | CI pass, missing evidence → escalate |

@@ -654,6 +654,35 @@ def elected_host_claim(claims: list[dict]) -> dict | None:
     return elected
 
 
+def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
+    """An expired own-host election without evidence of completion or escalation."""
+    elected = elected_host_claim(claims)
+    if (not elected or elected["host"] != cfg.host_name
+            or "requeue" in elected or live_host_claims(claims)):
+        return None
+    events = lifecycle.read_events(EVENTS)
+    # New attempts bind directly to the nonce; GitHub and host clocks need not agree.
+    attempt = next((row for row in reversed(events)
+                    if row.get("ticket") == n and row.get("event") == "claimed"
+                    and row.get("claim_nonce") in (None, elected["nonce"])), None)
+    if attempt is None or not (execution := attempt.get("execution_id")):
+        return elected
+    for row in events:
+        if row.get("execution_id") != execution:
+            continue
+        # Old journals lack the nonce. Only completion after this owner's last
+        # heartbeat (both from the owning host's clock) can establish completion.
+        if (attempt.get("claim_nonce") is None
+                and datetime.fromisoformat(row["at"]) < elected["heartbeat"].replace(microsecond=0)):
+            continue
+        if row.get("event") in {"approved", "escalate", "merged"}:
+            return None
+        if (row.get("event") == "lifecycle" and row.get("kind") == "exit"
+                and row.get("outcome") not in {"unknown", "interrupted", "mechanism_failure"}):
+            return None
+    return elected
+
+
 def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     if live := live_host_claims(claims):
         return f"host claim ({live[0]['host']})"
@@ -669,7 +698,7 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
         if "requeue" not in elected_host_claim(claims) and gh_json(
             ["pr", "list", "--repo", REPO, "--state", "open",
              "--head", f"agent/{n}", "--json", "number"]
-        ):
+        ) and interrupted_host_claim(n, claims) is None:
             return "open PR"
     return None
 
@@ -693,7 +722,9 @@ def delete_host_claim(n: int, claim: dict) -> None:
 
 
 def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement: int | None = None) -> dict:
-    if any(row.get("preserve_history") for row in claims):
+    if (any(row.get("preserve_history") for row in claims)
+            or (replacement is None and interrupted_host_claim(n, claims) is not None)):
+        # Retain takeover history and interrupted-owner recovery evidence.
         return issue
     claims = [row for row in claims if row["id"] != replacement]
     live_ids = {row["id"] for row in live_host_claims(claims)}
@@ -4091,8 +4122,8 @@ def approve_pr(n: int, head: str) -> bool:
 
     With `manager.review = "all"` the label additionally waits for a manager APPROVE
     bound to `head`; until the PR frontier obtains one this returns True without
-    labelling (nothing is wrong, so callers must not escalate). A refreshed head is a
-    new head and needs a fresh decision; nothing is ever re-bound.
+    labelling (nothing is wrong, so callers must not escalate). A held PR likewise
+    returns True without approval. A refreshed head needs a fresh decision.
     """
     events = lifecycle.read_events(EVENTS)
     if not _head_evidence_matches(events, n, head):
@@ -4100,8 +4131,11 @@ def approve_pr(n: int, head: str) -> bool:
     if cfg.manager and cfg.manager_review == "all" and not manager_approval(events, n, head):
         log(f"#{n}: gate and review passed at {head[:12]}; waiting for manager approval (manager.review = all)")
         return True
-    fields = "number,state,headRefOid,baseRefName,reviewDecision,files"
+    fields = "number,state,headRefOid,baseRefName,reviewDecision,files,labels"
     pr = gh_json(["pr", "view", f"agent/{n}", "--repo", REPO, "--json", fields])
+    if any(label["name"] == "factory-held" for label in pr.get("labels", [])):
+        log(f"#{n}: approval skipped (factory-held)")
+        return True
     changed_paths = [
         item["path"] for item in pr.get("files", [])
         if isinstance(item, dict) and isinstance(item.get("path"), str)
@@ -4131,18 +4165,25 @@ def approve_pr(n: int, head: str) -> bool:
     if changed.returncode:
         return False
     fresh = gh_json(["pr", "view", str(pr["number"]), "--repo", REPO, "--json", fields])
+    held = any(label["name"] == "factory-held" for label in fresh.get("labels", []))
     if (
-        fresh.get("state") != "OPEN"
+        held
+        or fresh.get("state") != "OPEN"
         or fresh.get("headRefOid") != head
         or fresh.get("baseRefName") != cfg.main
         or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
     ):
-        run(
+        withdrawn = run(
             ["gh", "pr", "edit", str(pr["number"]), "--repo", REPO,
              "--remove-label", FACTORY_APPROVED],
             check=False,
         )
-        return False
+        if withdrawn.returncode:
+            log(f"#{n}: approval withdrawal failed; {FACTORY_APPROVED} may remain")
+            return False
+        if held:
+            log(f"#{n}: approval withdrawn (factory-held)")
+        return held
     if not manager_approval(events, n, head):
         from factory import trace
 
@@ -5697,6 +5738,31 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "state_changed"
                 return
+            if cfg.host_name and (interrupted := interrupted_host_claim(n, claims)):
+                # Admission reads can race a heartbeat or another host's replacement.
+                current = host_claims(n)
+                owner = interrupted_host_claim(n, current)
+                if (owner is not None and owner["nonce"] == interrupted["nonce"]
+                        and host_claim_hold(n, fresh, current) is None
+                        and gh_json(["pr", "list", "--repo", REPO, "--state", "open",
+                                     "--head", f"agent/{n}", "--json", "number"])):
+                    evidence = "local history unavailable"
+                    if (wt / ".git").exists():
+                        head = run(["git", "rev-parse", "HEAD"], cwd=wt, check=False).stdout.strip()
+                        remote = _remote_agent_head(wt, n, check=False)
+                        evidence = f"local HEAD {head or '(unavailable)'}; remote agent/{n} {remote or '(none)'}"
+                        if head and remote and remote != "(unavailable)":
+                            commits = run(["git", "log", "--format=%H", f"{remote}..{head}"],
+                                          cwd=wt, check=False)
+                            unpublished = (commits.stdout.strip().replace("\n", ", ") or "(none)"
+                                           if commits.returncode == 0 else "(unavailable)")
+                            evidence += f"; local commits not on remote: {unpublished}"
+                    escalate(
+                        n, f"own-host claim expired during an unfinished attempt with an open PR; "
+                        f"worktree kept at {wt}; {evidence}; resume agent/{n} after merging {cfg.main}",
+                        None, code="dispatcher_error",
+                    )
+                    return
             labels = {label["name"] for label in fresh["labels"]}
             observe_owner_requeue(n, fresh)
             profile = cfg.worker_key(labels)
@@ -5770,6 +5836,7 @@ def process_ticket(
                 worker=worker_key, worker_version=cfg.worker_version.get(worker_key),
                 priority=tier, priority_source=why, experiment=schedule.is_experiment(fresh),
                 base=replay_base, generation=ticket_generation.number,
+                claim_nonce=host_claim.comment["nonce"] if host_claim is not None else None,
                 issue={key: fresh.get(key) for key in ("title", "body", "comments")},
             )
             if admitted := issue.get("_factory_admitted"):
