@@ -75,6 +75,20 @@ class HostRequeueTest(unittest.TestCase):
                              for row in lifecycle.read_events(tank.EVENTS)))
 
 
+    def test_invalid_pin_or_non_requeue_is_rejected_before_cleanup(self):
+        tank = self.set_up_owner()
+        before = copy.deepcopy((self.github.issue, self.github.comments))
+        for host, args in (
+            ("", ("--add-label", "ready-for-agent")),
+            ("host:tank", ("--add-label", "ready-for-agent")),
+            (7, ("--add-label", "ready-for-agent")),
+            ("tank", ("--add-label", "ready-for-human")),
+        ):
+            with self.subTest(host=host, args=args), self.assertRaises(ValueError):
+                tank.unclaim(7, *args, host=host)
+        self.assertEqual((self.github.issue, self.github.comments), before)
+
+
 class HostRequeueActionTest(unittest.TestCase):
     setUp = ActionHarness.setUp
     base_transport = ActionHarness.transport
@@ -85,6 +99,8 @@ class HostRequeueActionTest(unittest.TestCase):
     journal = ActionHarness.journal
 
     def transport(self, argv, **kwargs):
+        if argv[:3] == ["gh", "label", "create"]:
+            return subprocess.CompletedProcess(argv, 0, "", "")
         result = self.base_transport(argv, **kwargs)
         if argv[:3] == ["gh", "issue", "edit"]:
             for index, flag in enumerate(argv[:-1]):
@@ -106,16 +122,50 @@ class HostRequeueActionTest(unittest.TestCase):
         self.assertEqual(self.issue["labels"], [{"name": "ready-for-agent"}, {"name": "host:tank"}])
         self.assertEqual(self.issue["assignees"], [])
         self.assertEqual(self.mutations[-1][-2:], ["--add-label", "host:tank"])
-        self.assertNotIn("host:tank", self.mutations[0])
+        self.assertNotIn("host:tank", self.mutations[-2])
         events = lifecycle.read_events(self.cfg.factory / "events.jsonl")
         [pin] = [row for row in events if row.get("event") == "requeue-host-pinned"]
         self.assertEqual((pin["ticket"], pin["host"], pin["actor"], pin["caller"]), (7, "tank", "alice", "mcp"))
         self.assertEqual(self.apply_mcp(preview), receipt)
-        self.assertEqual(len(self.mutations), 3)
+        self.assertEqual(len(self.mutations), 2)
         self.issue["labels"] = [{"name": "ready-for-human"}, {"name": "host:tank"}]
         second = self.via_dashboard("requeue_agent", {"number": 7})
         self.assertEqual(self.apply_dashboard(second)["status"], "success")
         self.assertIn({"name": "host:tank"}, self.issue["labels"])
+
+    def test_failed_pin_is_uncertain_not_journaled_or_retried(self):
+        preview = self.via_dashboard("requeue_agent", {"number": 7, "host": "tank"})
+        transport = self.transport
+
+        def fail_pin(argv, **kwargs):
+            if argv[:3] == ["gh", "issue", "edit"] and "host:tank" in argv:
+                return subprocess.CompletedProcess(argv, 1, "", "permission denied")
+            return transport(argv, **kwargs)
+
+        with mock.patch.object(decisions, "_run", side_effect=fail_pin):
+            receipt = self.apply_dashboard(preview)
+        self.assertEqual(receipt["status"], "uncertain")
+        self.assertEqual(self.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertFalse(any(row.get("event") == "requeue-host-pinned"
+                             for row in lifecycle.read_events(self.cfg.factory / "events.jsonl")))
+        self.assertEqual(self.apply_dashboard(preview), receipt)
+        self.assertNotIn({"name": "host:tank"}, self.issue["labels"])
+
+    def test_applied_pin_with_failed_audit_is_uncertain_and_not_repeated(self):
+        preview = self.via_dashboard("requeue_agent", {"number": 7, "host": "tank"})
+        append = lifecycle.append
+
+        def fail_audit(path, row):
+            if row.get("event") == "requeue-host-pinned":
+                raise OSError("disk full")
+            return append(path, row)
+
+        with mock.patch.object(lifecycle, "append", side_effect=fail_audit):
+            receipt = self.apply_dashboard(preview)
+        self.assertEqual(receipt["status"], "uncertain")
+        self.assertIn({"name": "host:tank"}, self.issue["labels"])
+        self.assertEqual(self.apply_dashboard(preview), receipt)
+        self.assertEqual(len(self.mutations), 2)
 
     def test_invalid_hosts_refused_before_proposal(self):
         for host in ("", "host:tank", "-tank", "tank\n", "a" * 46, None, 7):
