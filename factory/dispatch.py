@@ -847,11 +847,12 @@ def unclaim(
         or ("--add-label", LABEL_AGENT) not in zip(label_args[::2], label_args[1::2])
     ):
         raise ValueError("host requires a valid host name and a ready-for-agent requeue")
-    if host is not None:
-        # Close admission before releasing any ownership, including stale claims.
-        if run(["gh", "issue", "edit", str(n), "--repo", REPO,
-                "--remove-label", LABEL_AGENT], check=check).returncode:
-            return
+    # Close admission before releasing any ownership, including stale claims.
+    if host is not None and run(
+        ["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-label", LABEL_AGENT],
+        check=check,
+    ).returncode:
+        return
     claims = host_claims(n) if cfg.host_name else []
     owned = owned_host_claim(n, claims)
     if cfg.host_name and any(

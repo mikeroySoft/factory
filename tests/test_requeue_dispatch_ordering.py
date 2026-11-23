@@ -87,10 +87,12 @@ class RequeueDispatchOrderingTest(unittest.TestCase):
                 raise OSError("audit unavailable")
             return record(event, **kwargs)
 
-        with mock.patch.object(tank, "run", side_effect=fail_run), \
-                mock.patch.object(tank, "record", side_effect=fail_record):
-            with self.assertRaises((subprocess.CalledProcessError, OSError)):
-                tank.unclaim(7, "--add-label", "ready-for-agent", host="tank")
+        with (
+            mock.patch.object(tank, "run", side_effect=fail_run),
+            mock.patch.object(tank, "record", side_effect=fail_record),
+            self.assertRaises((subprocess.CalledProcessError, OSError)),
+        ):
+            tank.unclaim(7, "--add-label", "ready-for-agent", host="tank")
         self.assertNotIn({"name": "ready-for-agent"}, self.github.issue["labels"])
         foreign.process_ticket(copy.deepcopy(stale), 1, False)
         self.assertEqual(self.launched, [])
