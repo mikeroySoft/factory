@@ -2565,7 +2565,7 @@ def escalate(
     if pre_launch:
         try:
             _stop_worker_descendants(n)
-        except Exception as exc:
+        except (OSError, RuntimeError) as exc:
             error = f"{type(exc).__name__}: {exc}"
             record("worker-cleanup-failed", ticket=n, error=error)
             log(f"#{n}: worker cleanup failed; {error}")
