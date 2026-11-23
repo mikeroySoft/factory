@@ -106,12 +106,12 @@ class HostRequeueActionTest(unittest.TestCase):
         self.assertEqual(self.issue["labels"], [{"name": "ready-for-agent"}, {"name": "host:tank"}])
         self.assertEqual(self.issue["assignees"], [])
         self.assertEqual(self.mutations[-1][-2:], ["--add-label", "host:tank"])
-        self.assertNotIn("host:tank", self.mutations[-2])
+        self.assertNotIn("host:tank", self.mutations[0])
         events = lifecycle.read_events(self.cfg.factory / "events.jsonl")
         [pin] = [row for row in events if row.get("event") == "requeue-host-pinned"]
         self.assertEqual((pin["ticket"], pin["host"], pin["actor"], pin["caller"]), (7, "tank", "alice", "mcp"))
         self.assertEqual(self.apply_mcp(preview), receipt)
-        self.assertEqual(len(self.mutations), 2)
+        self.assertEqual(len(self.mutations), 3)
         self.issue["labels"] = [{"name": "ready-for-human"}, {"name": "host:tank"}]
         second = self.via_dashboard("requeue_agent", {"number": 7})
         self.assertEqual(self.apply_dashboard(second)["status"], "success")

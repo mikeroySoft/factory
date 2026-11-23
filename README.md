@@ -1711,13 +1711,7 @@ GitHub creation time and then numeric comment ID. A loser records `claim_lost`
 and removes its own comment and label without assigning or launching a worker.
 The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
 pipeline runs. Unclaim always applies escalation/requeue labels; only the owning
-host can remove an existing claim's `@me` and comment, even after expiry.
-Escalation and requeue preserve every existing `host:<name>` label, including
-manager RETRY/continue and named-action `requeue_agent` with `intent: resume`.
-The retained pin blocks other hosts even after a requeued claim expires.
-To move retained work to another host, explicitly remove the named pin (for
-example `gh issue edit <ticket> --remove-label host:tank`) after transferring
-its unpublished commits; escalation or continue never authorizes that removal.
+host can remove an existing claim's `@me`, host label and comment, even after expiry.
 An in-process claim must also match the elected nonce before cleanup. Tickets
 assigned before host claims were enabled retain the original `@me` release path.
 If the label/assignee edit fails, unclaim retains its comment and host label so
@@ -1758,20 +1752,18 @@ just because loser cleanup failed. A claim created at or after that lease expire
 starts a new election, so an old requeue cannot release newer completed work.
 Assigned stale claims stay intact until a replacement wins and assigns, so admission
 or claim failures cannot strand the shared `@me` assignment without recovery evidence.
-Dispatch then rechecks the heartbeat, removes stale comments and non-requeued
-claim labels without clearing the shared assignment, and records `claim-released`
-with the old host and last heartbeat. Requeued claims retain their host labels.
+Dispatch then rechecks the heartbeat, removes stale comments/labels without clearing
+the shared assignment, and records `claim-released` with the old host and last heartbeat.
 The elected owner revalidates its nonce before cleanup; a losing contender still
 deleting its live claim cannot block retirement of old stale ownership. Owner
-unclaim also retires older stale claims before deleting its own comment, preserving
-all host labels during escalation/requeue so retained local work stays pinned.
+unclaim also retires older stale claims before deleting its own comment, so
+leftover claims cannot strand a later refresh requeue or escalation/relabel.
 Unassigned stale claims can be released before election. A foreign host label without
 a claim comment remains a hold; inspect it before removing it.
-Outside escalation/requeue, cleanup of non-requeued claims removes the host label
-before deleting its last claim comment, so a failed label edit retains TTL recovery
-evidence for the next pass. Another same-host contender keeps its label. If comment
-deletion fails with the comment still present, cleanup restores any label it removed
-and surfaces the error.
+Cleanup removes the host label before deleting its last claim comment, so a
+failed label edit retains TTL recovery evidence for the next pass. Another
+same-host contender keeps its label. If comment deletion fails with the comment
+still present, cleanup restores the label and surfaces the error.
 Hosts need synchronized clocks and current GitHub reads. This comment-based
 lease is not a fencing token for a disconnected worker that outlives its TTL.
 With `host_name` unset and no repository host evidence, ticket assignment retains
@@ -3289,7 +3281,7 @@ two MCP tools call that same function. Nothing else composes these label edits.
 
 | Action | `args` | Preconditions | Effect |
 |---|---|---|---|
-| `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
+| `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `host?`, `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; optionally add `host:<host>` in a separate step after cleanup; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
 | `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
 | `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
 | `approve_pr` | PR `number`, `ruling_id?` (string) | PR open, not draft or `factory-held`, targets configured `main`, no changes-requested review; existing exact-head gate, independent review and required manager evidence | add only `factory-approved` through `decisions.apply` → `_approve` → `_approval_policy` |
@@ -3301,6 +3293,17 @@ structured `{ok: false, error: {code, message}}` with the same `code` on both pa
 `decisions` code. Every proposal records `caller` (`dashboard` or `mcp`) and
 `action` (`{name, args}`); the `human-decision` journal rows for `prepared`,
 `started` and the final status, and the receipt, carry both.
+
+To resume unpublished work on Tank, prepare `{"action": "requeue_agent",
+"args": {"number": 875, "host": "tank"}}`, then confirm that proposal with
+`factory_apply_action`. `host` uses the configured host-name syntax (1–45 ASCII
+letters/digits, `.`, `_`, `-`; first character alphanumeric). The explicit pin is
+visible in the proposal and records `requeue-host-pinned` with host, ticket,
+actor, caller and decision ID. It does not transfer commits or replace other
+host labels. Omit `host` for the existing unpinned requeue behavior. An existing
+pin with no claim survives another named requeue; dispatcher requeues that clean
+up a claim must explicitly supply `host` again to re-pin it. Later escalation
+still removes the owning claim's host label, and manager RETRY is unchanged.
 
 For agent re-approval, prepare `{"action": "approve_pr", "args": {"number": 257,
 "ruling_id": "r3-0740"}}` with `factory_prepare_action` and the registered

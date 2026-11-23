@@ -830,6 +830,18 @@ def prepare(
         steps.extend({**step, "request": index} for step in planned)
         effects.append({"request": index, **_effect(request, actor, target)})
 
+    if action and action["name"] == "requeue_agent" and (host := action["args"].get("host")) is not None:
+        number = normalized[0]["number"]
+        label = f"host:{host}"
+        steps.extend([
+            {**_command_step("requeue_host_label", [
+                "gh", "label", "create", label, "--repo", cfg.repo, "--color", "ededed", "--force",
+            ]), "request": 0},
+            {**_command_step("requeue_host_pin", [
+                "gh", "issue", "edit", str(number), "--repo", cfg.repo, "--add-label", label,
+            ]), "request": 0, "host": host, "number": number},
+        ])
+        effects[0]["changes"].append(f"explicitly add label {label} after requeue cleanup")
     if merge_lock:
         locks.add(("merge", None))
     proposal_id = secrets.token_hex(16)
@@ -1235,6 +1247,16 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                             step_results.append(_approve(cfg, step, deadline))
                         elif step.get("kind") == "command":
                             step_results.append(_mutation(cfg, step, deadline))
+                            if step["action"] == "requeue_host_pin":
+                                try:
+                                    lifecycle.append(cfg.factory / "events.jsonl", {
+                                        "at": _format_time(_now()), "event": "requeue-host-pinned",
+                                        "ticket": step["number"], "host": step["host"],
+                                        "actor": actor, "caller": preview.get("caller"),
+                                        "decision_id": proposal_id,
+                                    })
+                                except OSError as exc:
+                                    raise _AmbiguousCommand("host pin applied but its audit failed") from exc
                         else:
                             raise _FailedStep("stored action kind is invalid")
                     except _FailedStep as exc:
