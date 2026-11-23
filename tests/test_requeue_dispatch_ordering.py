@@ -106,5 +106,49 @@ class RequeueDispatchOrderingTest(unittest.TestCase):
     def test_audit_failure_stays_nonready(self):
         self.fail_transition("audit")
 
+    def assert_foreign_claim_refuses_pin(self, age, configured_host="ultron"):
+        self.github = TimelineGitHub()
+        dispatcher = self.dispatcher(configured_host)
+        self.github.add_claim("tank", datetime.now(UTC) - age)
+        self.github.issue["labels"].append({"name": "ready-for-human"})
+        before = copy.deepcopy((self.github.issue, self.github.comments, self.github.timeline))
+        with mock.patch.object(dispatcher, "run", wraps=dispatcher.run) as run, \
+                mock.patch.object(dispatcher, "record") as record:
+            with self.assertRaisesRegex(ValueError, "cannot pin requeue.*unresolved host claim"):
+                dispatcher.unclaim(
+                    7, "--remove-label", "ready-for-human", "--add-label", "ready-for-agent", host="tank",
+                )
+            run.assert_not_called()
+            record.assert_not_called()
+        self.assertEqual((self.github.issue, self.github.comments, self.github.timeline), before)
+
+    def test_expired_foreign_claim_refuses_explicit_pin_before_mutation(self):
+        self.assert_foreign_claim_refuses_pin(timedelta(hours=3))
+
+    def test_live_foreign_claim_refuses_explicit_pin_before_mutation(self):
+        self.assert_foreign_claim_refuses_pin(timedelta())
+
+    def test_unconfigured_host_refuses_explicit_pin_with_retained_claim(self):
+        self.assert_foreign_claim_refuses_pin(timedelta(hours=3), configured_host=None)
+
+    def test_hostless_foreign_requeue_keeps_claim_and_assignee(self):
+        for age in (timedelta(), timedelta(hours=3)):
+            with self.subTest(age=age):
+                self.github = TimelineGitHub()
+                dispatcher = self.dispatcher("ultron")
+                claim = self.github.add_claim("tank", datetime.now(UTC) - age)
+                self.github.issue["labels"] = [{"name": "ready-for-human"}, {"name": "host:tank"}]
+                with mock.patch.object(dispatcher, "record") as record:
+                    dispatcher.unclaim(
+                        7, "--remove-label", "ready-for-human", "--add-label", "ready-for-agent",
+                    )
+                    record.assert_not_called()
+                self.assertEqual(self.github.issue["labels"],
+                                 [{"name": "host:tank"}, {"name": "ready-for-agent"}])
+                self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+                self.assertIn(claim, self.github.comments)
+                self.assertEqual(len(self.github.comments), 2)
+                self.assertTrue(self.github.comments[-1]["body"].startswith("Factory requeue: nonce="))
+
 
 del Harness
