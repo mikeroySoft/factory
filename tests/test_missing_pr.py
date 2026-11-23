@@ -47,6 +47,10 @@ class MissingPrTest(unittest.TestCase):
                 self.observe(stderr, code)
                 self.assertIn(f"command failed (exit {code}); stderr tail:", self.logs.call_args.args[0])
 
+    def test_signal_exit_with_missing_pr_stderr_still_logs(self):
+        self.observe('no pull requests found for branch "agent/7"', code=-1)
+        self.assertIn("command failed (exit -1); stderr tail:", self.logs.call_args.args[0])
+
     def test_existing_pr_routes_files(self):
         result = self.observe(pr={"url": "https://github.com/acme/widgets/pull/9", "files": [{"path": "src/a.py"}]})
         self.assertEqual(result["pr_url"], "https://github.com/acme/widgets/pull/9")
@@ -90,6 +94,15 @@ class LookupScopeTest(unittest.TestCase):
             with dispatch.optional_pr_lookup("agent/7"), self.assertRaises(subprocess.CalledProcessError):
                 dispatch.run(cmd)
             self.assertIn("command failed (exit 1)", log.call_args.args[0])
+
+    def test_run_view_inside_scope_still_logs_and_raises(self):
+        cmd = ["gh", "run", "view", "agent/7"]
+        error = subprocess.CalledProcessError(1, cmd, stderr='no pull requests found for branch "agent/7"')
+        with mock.patch.object(dispatch, "_run", side_effect=error), mock.patch.object(dispatch, "log") as log:
+            with dispatch.optional_pr_lookup("agent/7"), self.assertRaises(subprocess.CalledProcessError) as raised:
+                dispatch.run(cmd)
+            self.assertIs(raised.exception, error)
+            self.assertIn("command failed (exit 1); stderr tail:", log.call_args.args[0])
 
 
 class ManagerLookupTest(unittest.TestCase):
