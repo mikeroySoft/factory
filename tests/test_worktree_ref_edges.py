@@ -271,3 +271,32 @@ class WorktreeRefEdgesTest(unittest.TestCase):
         self.assertEqual(notes.read_text(), "CURRENT WORKER HANDOFF\n")
         self.assert_heads(self.parent, self.parent)
         cleanup.assert_not_called()
+
+    def test_generic_postworker_error_retains_current_notes_without_prelaunch_cleanup(self):
+        self.prepare()
+        self.stale_notes()
+        self.worker.write_text(self.worker.read_text() + (
+            "notes = Path('.factory/handoff-7.md')\n"
+            "notes.parent.mkdir(exist_ok=True)\n"
+            "notes.write_text('CURRENT WORKER HANDOFF\\n')\n"
+        ))
+        real_run = dispatch.run
+
+        def fail_push(cmd, *args, **kwargs):
+            if cmd[:2] == ["git", "push"]:
+                raise RuntimeError("postworker generic failure")
+            return real_run(cmd, *args, **kwargs)
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch, "run", side_effect=fail_push), \
+                mock.patch.object(dispatch, "_stop_worker_descendants") as cleanup:
+            dispatch.configure(config.load(self.repo))
+            with self.assertRaisesRegex(RuntimeError, "postworker generic failure"):
+                dispatch.process_ticket({"number": 7, "title": "local change"}, 1, False, forced=True)
+        self.assertTrue(self.events_named("attempt"))
+        self.assertEqual(self.worker_head.read_text(), self.parent)
+        [escalation] = self.events_named("escalate")
+        self.assertEqual(escalation["code"], "dispatcher_error")
+        self.assertIn("CURRENT WORKER HANDOFF", (self.repo / ".factory/escalations/7.md").read_text())
+        self.assertIn("CURRENT WORKER HANDOFF", self.latest_comment())
+        cleanup.assert_not_called()

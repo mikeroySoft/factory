@@ -10,7 +10,6 @@ from unittest import mock
 
 from factory import darwin_observer, dispatch, lifecycle, platform_identity
 
-
 BOOT = "11111111-2222-3333-4444-555555555555"
 
 
