@@ -91,13 +91,13 @@ class WorktreeDivergenceTest(unittest.TestCase):
             f"subprocess.Popen([sys.executable, '-c', {child!r}], start_new_session=True, "
             "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
         )
-        with lifecycle.scope(self.events, "ticket", ticket=ticket):
-            with lifecycle.scope(self.events, "worker") as execution:
-                proc = subprocess.Popen([sys.executable, "-c", parent], cwd=self.wt,
-                                        env=execution.env(), start_new_session=True)
-                execution.child(proc.pid)
-                self.assertEqual(proc.wait(timeout=10), 0)
-                execution.child_done(proc.pid)
+        with lifecycle.scope(self.events, "ticket", ticket=ticket), \
+                lifecycle.scope(self.events, "worker") as execution:
+            proc = subprocess.Popen([sys.executable, "-c", parent], cwd=self.wt,
+                                    env=execution.env(), start_new_session=True)
+            execution.child(proc.pid)
+            self.assertEqual(proc.wait(timeout=10), 0)
+            execution.child_done(proc.pid)
         deadline = time.monotonic() + 10
         while not pidfile.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
