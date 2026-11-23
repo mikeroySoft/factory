@@ -542,6 +542,21 @@ class LandClaimTakeoverTest(unittest.TestCase):
         self.assertTrue(self.github.merged)
         self.assert_no_deletes()
 
+    def test_landing_does_not_revive_dashboard_released_own_claim(self):
+        tank = self.dispatcher("tank")
+        self.approve(tank)
+        self.claim("tank", age=3 * 3600)
+        original = self.comments[0].copy()
+        tank.release_expired_claim(9)
+        with mock.patch.object(tank, "pr_checks", return_value=[{"name": "ci", "bucket": "pending"}]):
+            tank.land_pass(False)
+        self.assertEqual(self.comments[0], original)
+        self.assertEqual(tank.live_host_claims(tank.host_claims(9)), [])
+        self.assertIsNone(tank.host_claim_hold(9, self.github.issue(), tank.host_claims(9)))
+        self.assertFalse(self.github.merged)
+        self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+        self.assert_no_deletes()
+
 
 class LandingClaimLifetimeTest(unittest.TestCase):
     setUp = claim_fixture.HostClaimRaceTest.setUp
