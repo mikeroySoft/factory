@@ -786,6 +786,7 @@ def prepare(
     if caller not in CALLERS:
         raise DecisionError(f"caller must be one of {sorted(CALLERS)}")
     normalized = _normalize_requests(requests)
+    host = action["args"].get("host") if action and action["name"] == "requeue_agent" else None
     deadline = time.monotonic() + PREPARE_SECONDS
     actor = _actor(cfg, deadline)
     targets: list[dict] = []
@@ -826,11 +827,21 @@ def prepare(
                 merge_lock = True
         if op == "issue":
             _sync_routing(request, raw)
-        planned = _plan_request(cfg, request, actor, target, raw)
+        planning_request = request
+        if index == 0 and host is not None:
+            steps.append({
+                **_command_step("requeue_withdraw_ready", [
+                    "gh", "issue", "edit", str(number), "--repo", cfg.repo, "--remove-label", LABEL_AGENT,
+                ]), "request": index,
+            })
+            planning_request = {**request, "add": [
+                label for label in request.get("add", []) if label != LABEL_AGENT
+            ]}
+        planned = _plan_request(cfg, planning_request, actor, target, raw)
         steps.extend({**step, "request": index} for step in planned)
         effects.append({"request": index, **_effect(request, actor, target)})
 
-    if action and action["name"] == "requeue_agent" and (host := action["args"].get("host")) is not None:
+    if host is not None:
         number = normalized[0]["number"]
         label = f"host:{host}"
         steps.extend([
@@ -840,8 +851,13 @@ def prepare(
             {**_command_step("requeue_host_pin", [
                 "gh", "issue", "edit", str(number), "--repo", cfg.repo, "--add-label", label,
             ]), "request": 0, "host": host, "number": number},
+            {**_command_step("requeue_publish_ready", [
+                "gh", "issue", "edit", str(number), "--repo", cfg.repo, "--add-label", LABEL_AGENT,
+            ]), "request": 0},
         ])
-        effects[0]["changes"].append(f"explicitly add label {label} after requeue cleanup")
+        effects[0]["changes"].append(
+            f"revoke agent readiness before cleanup; pin {label} and audit before publishing readiness"
+        )
     if merge_lock:
         locks.add(("merge", None))
     proposal_id = secrets.token_hex(16)

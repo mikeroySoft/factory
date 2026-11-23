@@ -119,15 +119,14 @@ class HostRequeueActionTest(unittest.TestCase):
         self.assertIn("host:tank", str(preview["effects"]))
         receipt = self.apply_mcp(preview)
         self.assertEqual(receipt["status"], "success")
-        self.assertEqual(self.issue["labels"], [{"name": "ready-for-agent"}, {"name": "host:tank"}])
+        self.assertEqual({row["name"] for row in self.issue["labels"]}, {"ready-for-agent", "host:tank"})
         self.assertEqual(self.issue["assignees"], [])
-        self.assertEqual(self.mutations[-1][-2:], ["--add-label", "host:tank"])
-        self.assertNotIn("host:tank", self.mutations[-2])
         events = lifecycle.read_events(self.cfg.factory / "events.jsonl")
         [pin] = [row for row in events if row.get("event") == "requeue-host-pinned"]
         self.assertEqual((pin["ticket"], pin["host"], pin["actor"], pin["caller"]), (7, "tank", "alice", "mcp"))
+        mutations = copy.deepcopy(self.mutations)
         self.assertEqual(self.apply_mcp(preview), receipt)
-        self.assertEqual(len(self.mutations), 2)
+        self.assertEqual(self.mutations, mutations)
         self.issue["labels"] = [{"name": "ready-for-human"}, {"name": "host:tank"}]
         second = self.via_dashboard("requeue_agent", {"number": 7})
         self.assertEqual(self.apply_dashboard(second)["status"], "success")
@@ -145,7 +144,7 @@ class HostRequeueActionTest(unittest.TestCase):
         with mock.patch.object(decisions, "_run", side_effect=fail_pin):
             receipt = self.apply_dashboard(preview)
         self.assertEqual(receipt["status"], "uncertain")
-        self.assertEqual(self.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertNotIn({"name": "ready-for-agent"}, self.issue["labels"])
         self.assertFalse(any(row.get("event") == "requeue-host-pinned"
                              for row in lifecycle.read_events(self.cfg.factory / "events.jsonl")))
         self.assertEqual(self.apply_dashboard(preview), receipt)
@@ -164,8 +163,10 @@ class HostRequeueActionTest(unittest.TestCase):
             receipt = self.apply_dashboard(preview)
         self.assertEqual(receipt["status"], "uncertain")
         self.assertIn({"name": "host:tank"}, self.issue["labels"])
+        self.assertNotIn({"name": "ready-for-agent"}, self.issue["labels"])
+        mutations = copy.deepcopy(self.mutations)
         self.assertEqual(self.apply_dashboard(preview), receipt)
-        self.assertEqual(len(self.mutations), 2)
+        self.assertEqual(self.mutations, mutations)
 
     def test_invalid_hosts_refused_before_proposal(self):
         for host in ("", "host:tank", "-tank", "tank\n", "a" * 46, None, 7):
