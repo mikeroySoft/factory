@@ -820,8 +820,12 @@ def _release_claim_command(cfg: Config, number: int, mode: str, nonce: str = "")
 
 def _release_claim_target(cfg: Config, number: int, deadline: float) -> tuple[dict, dict]:
     issue, raw = _issue_target(cfg, number, deadline)
-    if issue["state"] == "CLOSED":
+    if issue["state"] == "OPEN":
+        pass
+    elif issue["state"] == "CLOSED":
         raise DecisionError("issue is not open", "precondition_failed")
+    else:
+        raise ValueError(f"unknown issue state: {issue['state']!r}")
     result = _read_json(cfg, _release_claim_command(cfg, number, "preview"), deadline, cwd=cfg.root)
     if not isinstance(result, dict):
         raise DecisionError("dispatcher returned invalid claim state", "provider_unavailable")
@@ -843,7 +847,9 @@ def _prepare_target(cfg: Config, kind: str, number: int, deadline: float) -> tup
         return {**_local_cleanup_target(cfg, number, deadline), "issue": issue}, None
     if kind == "issue":
         return _issue_target(cfg, number, deadline)
-    return _release_claim_target(cfg, number, deadline)
+    if kind == "release_claim":
+        return _release_claim_target(cfg, number, deadline)
+    raise ValueError(f"unknown target kind: {kind!r}")
 
 
 def prepare(
