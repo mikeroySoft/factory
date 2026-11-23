@@ -977,7 +977,8 @@ def landing_host_claim(
         elif not dry_run and cfg.host_name and cfg.land_host == cfg.host_name:
             # Only a takeover leaves a durable landing claim for the next pass.
             if ((owned := owned_host_claim(n)) is not None
-                    and owned.get("preserve_history") and n not in _HOST_CLAIMS):
+                    and owned.get("preserve_history") and "requeue" not in owned
+                    and n not in _HOST_CLAIMS):
                 claim = HostClaim(n, owned)
                 claim.preserve_history = True
                 # Renew before admission can mistake a CI wait for an interrupted worker.
