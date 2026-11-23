@@ -25,6 +25,7 @@ class DispatchPreflightTest(unittest.TestCase):
         error=None, repo_error=False, comments_error=False, rates=None, argv=None,
     ):
         module = self.dispatcher(host)
+        self.enterContext(mock.patch.object(module, "reviewer_auth_missing", return_value=False))
         read = module.gh_json
 
         def github(args):

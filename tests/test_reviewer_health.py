@@ -94,9 +94,12 @@ class ReviewerHealthTest(unittest.TestCase):
 
     def test_timeout_and_launch_failure_leave_admission_open(self):
         for failure in (OSError('missing executable'), subprocess.TimeoutExpired('reviewer', 30)):
-            with self.subTest(failure=failure), mock.patch.object(dispatch, '_review_command', return_value=(['fake'], False)):
-                with mock.patch.object(dispatch, '_run_reviewer', side_effect=failure):
-                    self.assertFalse(dispatch.reviewer_auth_missing())
+            with (
+                self.subTest(failure=failure),
+                mock.patch.object(dispatch, '_review_command', return_value=(['fake'], False)),
+                mock.patch.object(dispatch, '_run_reviewer', side_effect=failure),
+            ):
+                self.assertFalse(dispatch.reviewer_auth_missing())
 
     def test_next_pass_recovers_without_changing_heads(self):
         calls, rounds, events, _ = self.run_pass(
