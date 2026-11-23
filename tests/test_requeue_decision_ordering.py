@@ -128,6 +128,37 @@ class RequeueDecisionOrderingTest(unittest.TestCase):
                     self.assertEqual(pins, [])
                     self.assertNotIn("host:tank", str(preview["effects"]))
 
+    def test_explicit_host_pin_and_effect_bind_first_of_two_requests(self):
+        issue_target = decisions._issue_target
+
+        def target(cfg, number, deadline):
+            resolved, raw = issue_target(cfg, 7, deadline)
+            return {**resolved, "number": number}, {**raw, "number": number}
+
+        requests = [
+            {"op": "issue", "number": number, "add": [config.LABEL_AGENT],
+             "remove": [config.LABEL_HUMAN], "unassign": True}
+            for number in (7, 8)
+        ]
+        with mock.patch.object(decisions, "_issue_target", side_effect=target):
+            preview = decisions.prepare(
+                self.cfg, requests, caller="mcp",
+                action={"name": "requeue_agent", "args": {"number": 7, "host": "tank"}},
+            )
+        document = self.proposal(preview)
+        [pin] = [step for step in document["steps"] if step["action"] == "requeue_host_pin"]
+        self.assertEqual((pin["request"], pin["number"], pin["host"]), (0, 7, "tank"))
+        self.assertEqual(pin["argv"], ["gh", "issue", "edit", "7", "--repo", self.cfg.repo,
+                                       "--add-label", "host:tank"])
+        first, second = preview["effects"]
+        self.assertEqual((first["request"], first["target"]["number"]), (0, 7))
+        self.assertEqual((second["request"], second["target"]["number"]), (1, 8))
+        self.assertIn(
+            "revoke agent readiness before cleanup; pin host:tank and audit before publishing readiness",
+            first["changes"],
+        )
+        self.assertNotIn("host:tank", str(second["changes"]))
+
     def test_exact_requeue_host_pin_action_controls_audit(self):
         for name in ("requeue_host_pin", "requeue_host_pin_extra", "prefix_requeue_host_pin", "requeue_host_pi"):
             with self.subTest(name=name):
