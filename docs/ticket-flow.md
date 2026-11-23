@@ -201,7 +201,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 |------|---------|------|------|
 | `decisions._approve` | — | `factory-approved` | Human approve step; withdrawn again if the PR changed while labelling |
 | `decisions._plan_request` | `*` | `*` | Human action; labels limited to `decisions.ACT_LABELS`, `factory-approved` routed to `decisions._approve` |
-| `decisions.prepare` | — | `*` | Explicit-host requeues revoke readiness, clean up, pin and audit, then publish readiness |
+| `decisions.prepare` | `ready-for-agent` | `ready-for-agent`, `*` | Explicit-host requeues revoke readiness, clean up, pin and audit, then publish readiness |
 | `decisions._withdraw_approval` | `factory-approved` | — | Human approve step found the PR changed |
 | `dispatch.acquire_host_claim` | — | `*` | Add this host's `host:<name>` label before the comment election |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
