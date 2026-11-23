@@ -88,6 +88,50 @@ class RetainedClaimActionTest(unittest.TestCase):
                     self.assertEqual((events[-1]["ticket"], events[-1]["host"], events[-1]["caller"]),
                                      (7, "tank", "mcp"))
 
+    def test_counterfeit_and_invalid_claims_do_not_block_explicit_requeue(self):
+        initial = copy.deepcopy(self.issue)
+        valid = {
+            "body": "Factory claim: host=tank nonce=kept at=2020-01-01T00:00:00Z",
+            "user": {"login": "alice"}, "created_at": "2020-01-01T00:00:00Z",
+        }
+        ignored = [
+            {**valid, "user": {"login": "outsider"}, "author_association": "COLLABORATOR"},
+            {**valid, "user": None},
+            {**valid, "body": "Factory claim: host=tank nonce=kept at=invalid"},
+            {**valid, "body": "Factory claim: host=tank nonce=kept at=2020-01-01T00:00:00"},
+            {**valid, "created_at": "invalid"},
+            {**valid, "created_at": "2020-01-01T00:00:00"},
+            {**valid, "created_at": None},
+            {**valid, "body": "quoted\n" + valid["body"]},
+        ]
+        for comment in ignored:
+            with self.subTest(comment=comment):
+                self.issue = copy.deepcopy(initial)
+                self.mutations.clear()
+                with self.claim_transport([[], [comment]]):
+                    preview = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
+                    self.assertNotIn("error", preview, preview)
+                    receipt = self.apply_mcp(preview)
+                self.assertEqual(receipt["status"], "success", receipt)
+                self.assertEqual({row["name"] for row in self.issue["labels"]},
+                                 {config.LABEL_AGENT, "host:tank"})
+
+    def test_authenticated_multiline_claim_refuses_at_prepare_and_apply(self):
+        comment = {
+            "body": "Factory claim: host=tank nonce=kept at=2020-01-01T00:00:00Z\nheartbeat detail",
+            "user": {"login": "ALIce"}, "created_at": "2020-01-01T00:00:00Z",
+        }
+        with self.claim_transport([[]]):
+            preview = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
+        before = copy.deepcopy(self.issue)
+        with self.claim_transport([[], [comment]]):
+            prepared = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
+            applied = self.apply_mcp(preview)
+        for result in (prepared, applied):
+            self.assertEqual(result.get("error", {}).get("code"), "target_busy", result)
+        self.assertEqual(self.issue, before)
+        self.assertEqual(self.mutations, [])
+
     def test_hostless_action_does_not_read_retained_claims(self):
         with self.claim_transport([[]], failed=True):
             preview = self.via_mcp("requeue_agent", {"number": 7})
