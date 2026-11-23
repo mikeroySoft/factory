@@ -1920,12 +1920,28 @@ def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadl
 
 def _stop(proc: subprocess.Popen) -> None:
     """SIGTERM the worker's process group; SIGKILL whatever is left after 10 s."""
-    with suppress(ProcessLookupError):
-        os.killpg(proc.pid, signal.SIGTERM)
+    def signal_group(sig: signal.Signals) -> None:
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # Darwin can return EPERM for a group containing only reparented
+            # zombies. Accept it only after a successful inventory proves there
+            # is no live member; real permission/inspection failures still fail.
+            inventory = subprocess.run(
+                ["ps", "-axo", "pgid=,stat="], capture_output=True, text=True, check=True, timeout=10,
+            )
+            if any(
+                int(pgid) == proc.pid and not state.startswith("Z")
+                for pgid, state in (line.split() for line in inventory.stdout.splitlines())
+            ):
+                raise
+
+    signal_group(signal.SIGTERM)
     with suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=10)
-    with suppress(ProcessLookupError):
-        os.killpg(proc.pid, signal.SIGKILL)
+    signal_group(signal.SIGKILL)
     proc.wait()
 
 
