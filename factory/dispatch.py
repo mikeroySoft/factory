@@ -2154,6 +2154,17 @@ class WorktreeDiverged(WorktreeRefused):
     """Preserved divergence: escalate once for this exact pair of heads."""
 
 
+def _backup_worktree(n: int, head: str, remote: str | None) -> str:
+    backup = f"refs/heads/backup/{n}-{head}"
+    existing = run(["git", "rev-parse", "--verify", "--quiet", backup], cwd=ROOT, check=False)
+    if existing.returncode == 1:
+        run(["git", "update-ref", backup, head, ""], cwd=ROOT)
+        record("worktree-backup", ticket=n, head=head, remote=remote, backup_ref=backup)
+    elif existing.returncode or existing.stdout.strip() != head:
+        raise WorktreeRefused(f"backup ref {backup} could not preserve {head}")
+    return backup
+
+
 def ensure_worktree(n: int, *, preserved: str | None = None) -> Path:
     wt, branch = FACTORY / f"wt-{n}", f"agent/{n}"
     with _REMOTE_REFS:
@@ -2162,6 +2173,21 @@ def ensure_worktree(n: int, *, preserved: str | None = None) -> Path:
         if remote:
             run(["git", "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=ROOT)
     if not wt.is_dir():
+        # A set-aside tree still owns agent/<n>; release it without changing its files.
+        trees = run(["git", "worktree", "list", "--porcelain", "-z"], cwd=ROOT).stdout
+        for entry in trees.strip("\0").split("\0\0"):
+            fields = dict(field.partition(" ")[::2] for field in entry.split("\0"))
+            if fields.get("branch") != f"refs/heads/{branch}":
+                continue
+            kept, head = Path(fields["worktree"]), fields["HEAD"]
+            if not remote:
+                raise WorktreeRefused(f"set-aside worktree {kept}; origin/{branch} is missing")
+            backup = _backup_worktree(n, head, remote)
+            run(["git", "checkout", "--detach", head], cwd=kept)
+            run(["git", "update-ref", f"refs/heads/{branch}", remote, head], cwd=ROOT)
+            record("worktree-recovered", ticket=n, worktree=str(kept), from_head=head,
+                   to_head=remote, backup_ref=backup)
+            log(f"#{n}: detached kept tree {kept}; backup ref {backup}; {branch} {head} -> {remote}")
         if run(["git", "rev-parse", "--verify", branch], cwd=ROOT, check=False).returncode == 0:
             run(["git", "worktree", "add", str(wt), branch], cwd=ROOT)
         else:
@@ -2191,13 +2217,7 @@ def ensure_worktree(n: int, *, preserved: str | None = None) -> Path:
         if ancestor.returncode not in (0, 1):
             raise WorktreeRefused(f"ancestry check failed; {context}")
         if ancestor.returncode == 1:
-            backup = f"refs/heads/backup/{n}-{head}"
-            existing = run(["git", "rev-parse", "--verify", "--quiet", backup], cwd=ROOT, check=False)
-            if existing.returncode == 1:
-                run(["git", "update-ref", backup, head, ""], cwd=ROOT)
-                record("worktree-backup", ticket=n, head=head, remote=remote, backup_ref=backup)
-            elif existing.returncode or existing.stdout.strip() != head:
-                raise WorktreeRefused(f"backup ref {backup} could not preserve {head}; {context}")
+            backup = _backup_worktree(n, head, remote)
             raise WorktreeDiverged(f"diverged history (neither-is-ancestor); backup ref {backup}; {context}")
     return wt
 
@@ -2537,12 +2557,19 @@ def escalate(
     refreshed_head: str | None = None,
     evidence_ref: str | None = None,
     once: bool = False,
+    pre_launch: bool = False,
 ) -> None:
     assert code in ESCALATION_CODES, code
     assert (refreshed_head is None) == (evidence_ref is None)
     wt = FACTORY / f"wt-{n}"
-    if log_path is None:
-        _stop_worker_descendants(n)
+    if pre_launch:
+        try:
+            _stop_worker_descendants(n)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            record("worker-cleanup-failed", ticket=n, error=error)
+            log(f"#{n}: worker cleanup failed; {error}")
+            extra += f"\n\n## Worker cleanup failure\n\n{error}\n"
     if once and any(
         row.get("event") == "escalate" and row.get("ticket") == n and row.get("reason") == reason
         for row in lifecycle.read_events(EVENTS)
@@ -2580,7 +2607,7 @@ def escalate(
             + f"- Evidence ref: `{evidence_ref}`\n"
         )
     packet, round_number = escalation_packet(
-        n, reason, log_path, wt, extra=extra, worker_notes=log_path is not None,
+        n, reason, log_path, wt, extra=extra, worker_notes=not pre_launch,
     )
     from factory import trace
 
@@ -2622,7 +2649,7 @@ def escalate(
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
     handoff = wt / ".factory" / f"handoff-{n}.md"
-    if log_path is not None and handoff.exists():
+    if not pre_launch and handoff.exists():
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
     for suffix in ("", "-pr"):
         gate = wt / ".factory" / f"gate-report-{n}{suffix}.md"
@@ -4520,7 +4547,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         wt = ensure_worktree(n)
     except WorktreeRefused as exc:
         run(["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED], check=False)
-        escalate(n, str(exc), None, code="refresh_head", once=isinstance(exc, WorktreeDiverged))
+        escalate(n, str(exc), None, code="refresh_head", once=isinstance(exc, WorktreeDiverged),
+                 pre_launch=True)
         return False
 
     def restore_pr_head(refreshed_head: str) -> str:
@@ -5611,6 +5639,7 @@ def process_ticket(
         claimed = False  # once True, nothing may leave this block without releasing the ticket
         host_claim = None
         logfile = None
+        pre_launch = True
         try:
             execution.resource("acquired", lock_path, scope="repository")
             # Strong re-read before claiming: `issue list` is search-backed and lags
@@ -5776,6 +5805,7 @@ def process_ticket(
             )
             extra, logfile, report = resolve, None, ""
             staged = None if resolve else sync_staged(n, wt)
+            pre_launch = False
             if staged is not None:
                 report, gate_head = staged
             for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
@@ -5974,7 +6004,8 @@ def process_ticket(
             execution.outcome, execution.reason = "not_admitted", "host_setup"
             return False
         except (LeaseRefused, WorktreeRefused) as exc:
-            escalate(n, str(exc), logfile, code="lease_refused", once=isinstance(exc, WorktreeDiverged))
+            escalate(n, str(exc), logfile, code="lease_refused", once=isinstance(exc, WorktreeDiverged),
+                     pre_launch=pre_launch)
         except WorkerUnavailable as exc:
             # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.
             execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"

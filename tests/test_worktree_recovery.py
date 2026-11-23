@@ -35,7 +35,9 @@ class WorktreeRecoveryTest(unittest.TestCase):
         self.assertEqual(self.gate_head.read_text(), remote)
         self.assertEqual(self.git("rev-parse", "agent/7").stdout.strip(), remote)
         self.assertEqual(self.git("-C", str(kept), "rev-parse", "HEAD").stdout.strip(), local)
-        detached = self.git("-C", str(kept), "symbolic-ref", "-q", "HEAD", check=False)
+        detached = subprocess.run(
+            ["git", "symbolic-ref", "-q", "HEAD"], cwd=kept, env=self.env, capture_output=True, check=False,
+        )
         self.assertEqual(detached.returncode, 1)
         backup = f"refs/heads/backup/7-{local}"
         self.assertEqual(self.git("rev-parse", backup).stdout.strip(), local)
