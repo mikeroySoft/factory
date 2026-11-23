@@ -619,7 +619,7 @@ def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[lis
                 continue
             claims.append({**comment, "host": host, "nonce": nonce, "at": at,
                            "heartbeat": heartbeat, "created": created,
-                           "preserve_history": "Factory claim history: retained" in comment["body"].splitlines()[1:]})
+                           "preserve_history": "Factory claim history: retained" in comment["body"].splitlines()})
     for claim in claims:
         if claim["nonce"] in requeues:
             claim["requeue"] = requeues[claim["nonce"]]
@@ -722,11 +722,9 @@ def delete_host_claim(n: int, claim: dict) -> None:
 
 
 def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement: int | None = None) -> dict:
-    if (any(row.get("preserve_history") for row in claims)
-            or (replacement is None and interrupted_host_claim(n, claims) is not None)):
-        # Retain takeover history and interrupted-owner recovery evidence.
+    if replacement is None and interrupted_host_claim(n, claims) is not None:
         return issue
-    claims = [row for row in claims if row["id"] != replacement]
+    claims = [row for row in claims if row["id"] != replacement and not row.get("preserve_history")]
     live_ids = {row["id"] for row in live_host_claims(claims)}
     stale = [row for row in claims if row["id"] not in live_ids]
     if not stale or (replacement is None and host_claim_hold(n, issue, claims)):
@@ -742,7 +740,7 @@ def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement
         owned = owned_host_claim(n, current)
         if owned is None or owned["id"] != replacement:
             return issue
-    current = [row for row in current if row["id"] != replacement]
+    current = [row for row in current if row["id"] != replacement and not row.get("preserve_history")]
     if issue.get("assignees") and replacement is None:
         # Keep durable recovery evidence until the elected replacement has assigned.
         # Admission/claim failures must not leave @me with no claim on any host.
@@ -813,7 +811,11 @@ def acquire_host_claim(
     run(["gh", "label", "create", label, "--repo", REPO, "--color", "ededed", "--force"])
     run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-label", label])
     claim = HostClaim(n, {"nonce": str(uuid.uuid4())})
-    claim.preserve_history = preserve_history or any(row.get("preserve_history") for row in claims)
+    elected = elected_host_claim(claims)
+    # A release marker preserves old evidence, not future ordinary workers.
+    claim.preserve_history = preserve_history or bool(
+        elected and "Factory claim history: retained" in elected["body"].splitlines()
+    )
     try:
         comment = gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                            "-f", f"body={claim.body()}"])
@@ -861,8 +863,7 @@ def unclaim(
     claims = host_claims(n) if cfg.host_name else []
     owned = owned_host_claim(n, claims)
     local = _HOST_CLAIMS.get(n)
-    preserve_claims = (bool(local and local.preserve_history)
-                       or any(row.get("preserve_history") for row in claims))
+    preserve_claims = bool(local and local.preserve_history) or bool(owned and owned.get("preserve_history"))
     if cfg.host_name and any(
         flag == "--add-label" and label == LABEL_AGENT
         for flag, label in zip(label_args[::2], label_args[1::2])
@@ -5752,6 +5753,23 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "state_changed"
                 return
+            # An earlier PR may end landing before this pending takeover is visited.
+            if (cfg.host_name and cfg.land_host == cfg.host_name
+                    and (owner := owned_host_claim(n, claims)) is not None
+                    and owner.get("preserve_history") and "requeue" not in owner
+                    and not live_host_claims(claims)):
+                takeover = next((
+                    row for row in reversed(lifecycle.read_events(EVENTS))
+                    if row.get("event") == "claim-takeover" and row.get("ticket") == n
+                    and row.get("host") == cfg.host_name and row.get("nonce") == owner["nonce"]
+                ), None)
+                if takeover is not None and gh_json([
+                    "pr", "list", "--repo", REPO, "--state", "open",
+                    "--head", f"agent/{n}", "--json", "number",
+                ]):
+                    with landing_host_claim(n, None, dry_run=False, pr=takeover["pr"], head=takeover["head"]):
+                        execution.outcome, execution.reason = "not_admitted", "landing_pending"
+                        return
             if cfg.host_name and (interrupted := interrupted_host_claim(n, claims)):
                 # Admission reads can race a heartbeat or another host's replacement.
                 current = host_claims(n)

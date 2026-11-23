@@ -212,10 +212,12 @@ heartbeating; worker admission waits for that claim's normal TTL to expire.
 An unchanged head with only the other host's journal evidence also goes through
 the normal gate and review path to establish local exact-head approval evidence.
 Recovery remains pending across CI waits; an expired retained takeover claim is
-renewed before worker admission, and a later green pass establishes fresh local
-evidence rather than treating the takeover claim as an ordinary approval. Ordinary
-owned claims are not marked for retention by landing and still release normally.
-Takeover claim history remains intact through conflict requeue, expiry and worker recovery.
+renewed before worker admission, including when an earlier PR ends the merge pass
+before visiting it. A later green pass establishes fresh local evidence rather than
+treating the takeover claim as an ordinary approval. Ordinary owned claims release
+normally even after a dashboard release: retaining an old claim record does not
+propagate retention to an unrelated worker. Takeover claim history remains intact
+through conflict requeue, expiry and worker recovery.
 
 The guarded `release_claim` named action posts the matching dispatcher requeue
 marker and removes only the elected host label after confirmation and a fresh

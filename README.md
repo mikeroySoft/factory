@@ -1679,9 +1679,11 @@ Takeover does not waive exact-head gate, review, approval or green-CI checks.
 Behind or conflicting branches follow the normal refresh and fresh-head review
 path; they are never merged at the stale approved head.
 Takeover recovery persists across pending-CI passes: an expired retained takeover
-claim is renewed before worker admission; once CI is green, foreign-only approval
-evidence still requires a fresh local gate and independent review. Ordinary owned
-claims keep their normal release behavior. Retained claim history survives conflict
+claim is renewed before worker admission, even when another PR ends the landing pass
+first; once CI is green, foreign-only approval evidence still requires a fresh local
+gate and independent review. Ordinary owned claims keep their normal release behavior,
+including workers admitted after a dashboard claim release. Retaining an old release
+record does not retain later ordinary claims. Takeover history survives conflict
 requeue and subsequent worker recovery.
 
 Before any GitHub mutation, dispatch reads `gh api rate_limit` and requires at

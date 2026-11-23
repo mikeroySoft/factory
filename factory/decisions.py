@@ -466,14 +466,10 @@ def _normalize_request(raw: object) -> dict:
         raise DecisionError(f"unsupported decision operation {op!r}")
     if not set(raw) <= allowed:
         raise DecisionError(f"{op} request fields are closed")
-    if op in {"triage", "cleanup"}:
-        if set(raw) != allowed:
-            raise DecisionError(f"{op} requires exactly op and number")
-        return {"op": op, "number": number}
     request = {"op": op, "number": number}
     if "comment" in raw:
         request["comment"] = _comment(raw["comment"])
-    if op == "release_claim":
+    if op in {"triage", "cleanup", "release_claim"}:
         return request
     add = _labels(raw.get("add", []), "add")
     remove = _labels(raw.get("remove", []), "remove")
