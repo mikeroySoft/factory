@@ -662,6 +662,49 @@ class LandingClaimLifetimeTest(unittest.TestCase):
             tank._HOST_CLAIMS.pop(7, None)
         self.assertIn(original, self.github.comments)
 
+    def test_dashboard_release_never_publishes_takeover_retention_marker(self):
+        tank = self.dispatcher("tank")
+        original = self.github.add_claim(
+            "ultron", datetime.now(UTC) - timedelta(hours=3),
+        ).copy()
+        nonce = original["body"].split("nonce=", 1)[1].split()[0]
+
+        tank.release_expired_claim(n=7, reason="dashboard release_claim")
+
+        self.assertIn(original, self.github.comments)
+        [marker] = [row["body"] for row in self.github.comments
+                    if row["body"].startswith("Factory requeue:")]
+        self.assertEqual(marker, f"Factory requeue: nonce={nonce}\n")
+        self.assertFalse(any("DELETE" in cmd for _, cmd in self.github.calls))
+
+    def test_takeover_publishes_exact_retention_marker_and_retained_claim_body(self):
+        tank = self.dispatcher("tank")
+        tank.cfg.land_host = "tank"
+        original = self.github.add_claim(
+            "ultron", datetime.now(UTC) - timedelta(hours=3),
+        ).copy()
+        foreign = tank.elected_host_claim(tank.host_claims(7))
+
+        with tank.landing_host_claim(
+            n=7, foreign=foreign, dry_run=False, pr=8, head="a" * 40,
+        ) as owned:
+            self.assertTrue(owned)
+            local = tank.owned_host_claim(7)
+            self.assertTrue(local["preserve_history"])
+            self.assertEqual(
+                local["body"].splitlines()[1:],
+                ["Factory claim history: retained"],
+            )
+
+        self.assertIn(original, self.github.comments)
+        [marker] = [row["body"] for row in self.github.comments
+                    if row["body"].startswith("Factory requeue:")]
+        self.assertEqual(
+            marker,
+            f"Factory requeue: nonce={foreign['nonce']}\nFactory claim history: retained\n",
+        )
+        self.assertFalse(any("DELETE" in cmd for _, cmd in self.github.calls))
+
 
 if __name__ == "__main__":
     unittest.main()
