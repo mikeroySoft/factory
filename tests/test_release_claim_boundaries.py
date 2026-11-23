@@ -226,3 +226,44 @@ class ReleaseClaimBoundaryTest(unittest.TestCase):
         evidence = " ".join(postcondition["evidence"])
         self.assertIn("triage", evidence)
         self.assertNotIn("claim", evidence)
+
+    def test_release_rejects_states_on_both_sides_of_open(self):
+        for state in ("CLOSED", "PENDING"):
+            with self.subTest(state=state):
+                self.github.issue["state"] = state
+                with self.assertRaises(decisions.DecisionError) as refused:
+                    decisions.prepare(self.module.cfg, [self.json_request()])
+                self.assertEqual(
+                    refused.exception.code,
+                    "precondition_failed" if state == "CLOSED" else "provider_unavailable",
+                )
+                self.assertEqual(self.mutation_calls(), [])
+
+    def test_neighboring_operation_names_cannot_release_a_claim(self):
+        for op in ("release_claik", "release_claims"):
+            with self.subTest(op=op), self.assertRaisesRegex(
+                decisions.DecisionError, "unsupported decision operation",
+            ):
+                decisions.prepare(self.module.cfg, [self.json_request(op)])
+        self.assertEqual(self.github.comments, [self.claim])
+        self.assertEqual(self.mutation_calls(), [])
+
+    def test_release_accepts_ticket_by_keyword_and_options_only_by_keyword(self):
+        for args in ((7, True), (7, True, "reason"), (7, True, "reason", self.nonce)):
+            with self.subTest(args=args), self.assertRaises(TypeError):
+                self.module.release_expired_claim(*args)
+        claim = self.module.release_expired_claim(
+            n=7, dry_run=True, reason="preview", expected_nonce=self.nonce,
+        )
+        self.assertEqual(claim["nonce"], self.nonce)
+        self.assertEqual(self.mutation_calls(), [])
+
+    def test_release_refuses_assignees_sorting_before_and_after_shared_login(self):
+        login = self.module.host_claim_login()
+        for human in ("!human", "zzhuman"):
+            with self.subTest(human=human):
+                self.assertNotEqual(human, login)
+                self.github.issue["assignees"] = [{"login": human}]
+                with self.assertRaisesRegex(ValueError, "human assignee"):
+                    self.module.release_expired_claim(n=7, dry_run=True)
+                self.assertEqual(self.mutation_calls(), [])

@@ -463,6 +463,39 @@ class LandClaimTakeoverTest(unittest.TestCase):
         self.assertEqual([(row["outcome"], row["reason"]) for row in exits],
                          [("not_eligible", "claim_lost")])
 
+    def test_pending_takeover_recovers_with_equal_nonidentical_configured_hosts(self):
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        tank.cfg.host_name = "".join(("ta", "nk"))
+        tank.cfg.land_host = "".join(("tan", "k"))
+        self.assertEqual(tank.cfg.host_name, tank.cfg.land_host)
+        self.assertIsNot(tank.cfg.host_name, tank.cfg.land_host)
+        head = self.approve(ultron)
+        self.claim("ultron", age=3 * 3600)
+        with mock.patch.object(tank, "pr_checks", return_value=[{"name": "ci", "bucket": "pending"}]):
+            tank.land_pass(False)
+        self.assertEqual(len(self.events(tank, "claim-takeover")), 1)
+        with mock.patch.object(tank, "run_gate", return_value=(True, "fresh local gate")) as gate:
+            tank.land_pass(False)
+        gate.assert_called_once()
+        self.assertEqual([row["head"] for row in self.events(tank, "approved")], [head])
+        self.assertFalse(self.github.merged)
+        tank.land_pass(False)
+        self.assertTrue(self.github.merged)
+        self.assert_no_deletes()
+
+    def test_unnamed_host_does_not_resume_takeover_approval_recovery(self):
+        tank = self.dispatcher("tank")
+        for host in ("", None):
+            with self.subTest(host=host):
+                tank.cfg.host_name = tank.cfg.land_host = host
+                with mock.patch.object(tank, "owned_host_claim", side_effect=AssertionError(
+                    "unnamed host must not read takeover ownership",
+                )), mock.patch.object(tank, "escalate") as escalate:
+                    tank.merge_pass_locked(False)
+                self.assertEqual(escalate.call_args.kwargs["code"], "approval_missing")
+                self.assertFalse(self.github.merged)
+                self.github.pr_labels.add(config.LABEL_APPROVED)
+
 
 class LandingClaimLifetimeTest(unittest.TestCase):
     setUp = claim_fixture.HostClaimRaceTest.setUp
@@ -482,6 +515,64 @@ class LandingClaimLifetimeTest(unittest.TestCase):
             self.assertFalse(claim.preserve_history)
         finally:
             claim.release()
+            tank._HOST_CLAIMS.pop(7, None)
+
+    def test_unclaim_retains_history_from_either_local_or_published_claim(self):
+        tank = self.dispatcher("tank")
+        for local_retained, published_retained in ((True, False), (False, True)):
+            with self.subTest(local=local_retained, published=published_retained):
+                self.github = claim_fixture.FakeGitHub()
+                original = self.github.add_claim("tank", datetime.now(UTC))
+                if published_retained:
+                    original["body"] += "\nFactory claim history: retained"
+                claim = tank.HostClaim(7, tank.host_claims(7)[-1])
+                claim.preserve_history = local_retained
+                tank._HOST_CLAIMS[7] = claim
+                try:
+                    tank.unclaim(7, "--add-label", config.LABEL_AGENT)
+                    self.assertIn(original, self.github.comments)
+                    markers = [row["body"] for row in self.github.comments
+                               if row["body"].startswith("Factory requeue:")]
+                    self.assertIn("Factory claim history: retained", markers[-1])
+                    self.assertFalse(any("DELETE" in cmd for _, cmd in self.github.calls))
+                finally:
+                    claim.stop()
+                    tank._HOST_CLAIMS.pop(7, None)
+
+    def test_resumed_heartbeat_uses_host_value_not_string_identity(self):
+        tank = self.dispatcher("tank")
+        tank.cfg.host_name = "".join(("ta", "nk"))
+        tank.cfg.land_host = "".join(("tan", "k"))
+        self.assertIsNot(tank.cfg.host_name, tank.cfg.land_host)
+        original = self.github.add_claim("tank", datetime.now(UTC))
+        original["body"] += "\nFactory claim history: retained"
+        with tank.landing_host_claim(7, None, dry_run=False, pr=8, head="a" * 40) as owned:
+            self.assertTrue(owned)
+            self.assertIn(7, tank._HOST_CLAIMS)
+            self.assertTrue(tank._HOST_CLAIMS[7].thread.is_alive())
+        self.assertNotIn(7, tank._HOST_CLAIMS)
+        self.assertIn(original, self.github.comments)
+
+    def test_landing_cleanup_does_not_remove_equal_replacement_claim(self):
+        tank = self.dispatcher("tank")
+        tank.cfg.land_host = "tank"
+        original = self.github.add_claim("tank", datetime.now(UTC))
+        original["body"] += "\nFactory claim history: retained"
+
+        class EqualClaim(tank.HostClaim):
+            def __eq__(self, other):
+                return isinstance(other, tank.HostClaim) and self.comment == other.comment
+
+        with tank.landing_host_claim(7, None, dry_run=False, pr=8, head="a" * 40):
+            current = tank._HOST_CLAIMS[7]
+            replacement = EqualClaim(7, current.comment.copy())
+            self.assertEqual(replacement, current)
+            self.assertIsNot(replacement, current)
+            tank._HOST_CLAIMS[7] = replacement
+        try:
+            self.assertIs(tank._HOST_CLAIMS.get(7), replacement)
+        finally:
+            replacement.stop()
             tank._HOST_CLAIMS.pop(7, None)
 
 
