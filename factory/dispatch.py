@@ -1945,7 +1945,14 @@ def _stop_worker_descendants(n: int) -> None:
         for evidence in descendants.values() for process in evidence["processes"]
         if process["pid"] != os.getpid()
     }
-    if not processes:
+    # The ancestry scan excludes its root unless tagged; the registered launcher
+    # itself is still ours, provided its recorded process identity is alive.
+    for root in roots:
+        identity = root["process"]
+        if identity["pid"] != os.getpid() and lifecycle._process_state(identity) == "alive":
+            processes.setdefault(identity["pid"], identity)
+    incomplete = any(not evidence["complete"] for evidence in descendants.values())
+    if not processes and not incomplete:
         return
     for sig in (signal.SIGTERM, signal.SIGKILL):
         for pid, identity in processes.items():
@@ -1959,6 +1966,8 @@ def _stop_worker_descendants(n: int) -> None:
                     raise RuntimeError(f"worker descendants still alive for #{n}: {sorted(processes)}")
                 break
             time.sleep(0.05)
+    if incomplete:
+        raise RuntimeError(f"worker descendant scan incomplete for #{n}")
     record("worker-cleanup", ticket=n, pids=sorted(processes))
 
 
@@ -6025,7 +6034,8 @@ def process_ticket(
             # later pass skips forever; hand it back to a human first, worktree intact, then
             # still surface the crash.
             if claimed:
-                escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error")
+                escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error",
+                         pre_launch=pre_launch)
                 execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
             raise
         finally:
