@@ -496,6 +496,52 @@ class LandClaimTakeoverTest(unittest.TestCase):
                 self.assertFalse(self.github.merged)
                 self.github.pr_labels.add(config.LABEL_APPROVED)
 
+    def test_pending_takeover_renews_at_admission_when_earlier_pr_refreshes(self):
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        fixture.git(self.origin, "branch", "agent/8", "agent/9")
+        head = self.approve(ultron)
+        self.claim("ultron", age=3 * 3600)
+        with mock.patch.object(tank, "pr_checks", return_value=[{"name": "ci", "bucket": "pending"}]):
+            tank.land_pass(False)
+        owner = tank.owned_host_claim(9)
+        edge = owner["heartbeat"] + timedelta(seconds=tank.cfg.claim_ttl_seconds)
+        original_json = tank.gh_json.side_effect
+
+        def earlier_pr(args):
+            if args[:3] == ["api", "--paginate", "--slurp"] and "/issues/8/" in args[3]:
+                return [[]]
+            if args[:2] == ["api", f"repos/{tank.REPO}/compare/main...{head}"]:
+                return {"behind_by": 1}
+            row = original_json(args)
+            if args[:2] == ["pr", "list"] and "--head" not in args:
+                return [{**self.github.pr(), "number": 101, "headRefName": "agent/8"}, *row]
+            if args[:3] == ["pr", "view", "101"]:
+                return {**row, "number": 101, "headRefName": "agent/8"}
+            return row
+
+        with mock.patch.object(tank, "datetime", wraps=datetime) as clock, \
+                mock.patch.object(tank, "gh_json", side_effect=earlier_pr), \
+                mock.patch.object(tank, "refresh_pr_branch", return_value=True) as refresh, \
+                mock.patch.object(tank, "pr_checks", return_value=[{"name": "ci", "bucket": "pass"}]):
+            clock.now.return_value = edge + timedelta(microseconds=1)
+            tank.land_pass(False)
+            refresh.assert_called_once_with(8, 101, False)
+            tank.process_ticket(self.github.issue(), 30, False)
+            self.assertEqual(self.events(tank, "escalate"), [])
+            self.assertEqual(
+                [row["nonce"] for row in tank.live_host_claims(tank.host_claims(9))],
+                [owner["nonce"]],
+            )
+        self.assertFalse(self.github.merged)
+        self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+        with mock.patch.object(tank, "run_gate", return_value=(True, "fresh local gate")) as gate:
+            tank.land_pass(False)
+        gate.assert_called_once()
+        self.assertEqual([row["head"] for row in self.events(tank, "approved")], [head])
+        tank.land_pass(False)
+        self.assertTrue(self.github.merged)
+        self.assert_no_deletes()
+
 
 class LandingClaimLifetimeTest(unittest.TestCase):
     setUp = claim_fixture.HostClaimRaceTest.setUp
@@ -574,6 +620,32 @@ class LandingClaimLifetimeTest(unittest.TestCase):
         finally:
             replacement.stop()
             tank._HOST_CLAIMS.pop(7, None)
+
+    def test_dashboard_release_does_not_retain_later_ordinary_worker_claims(self):
+        tank = self.dispatcher("tank")
+        original = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3)).copy()
+        tank.release_expired_claim(7)
+        claim = tank.acquire_host_claim(7, self.github.issue, tank.host_claims(7))
+        self.assertIsNotNone(claim)
+        try:
+            tank.unclaim(7, "--add-label", config.LABEL_AGENT)
+        finally:
+            claim.stop()
+            tank._HOST_CLAIMS.pop(7, None)
+        self.assertIn(original, self.github.comments)
+        self.assertFalse(any(
+            row["body"].startswith("Factory claim: host=tank ")
+            for row in self.github.comments
+        ))
+        self.assertIsNone(tank.host_claim_hold(7, self.github.issue, tank.host_claims(7)))
+        replacement = tank.acquire_host_claim(7, self.github.issue, tank.host_claims(7))
+        self.assertIsNotNone(replacement)
+        try:
+            self.assertFalse(replacement.preserve_history)
+        finally:
+            replacement.release()
+            tank._HOST_CLAIMS.pop(7, None)
+        self.assertIn(original, self.github.comments)
 
 
 if __name__ == "__main__":
