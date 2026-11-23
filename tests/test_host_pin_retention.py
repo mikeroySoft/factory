@@ -24,6 +24,7 @@ class HostRequeueTest(unittest.TestCase):
 
     def test_explicit_requeue_blocks_foreign_dispatch(self):
         tank = self.set_up_owner()
+        tank.unclaim(7)  # Retire the old claim before explicitly re-pinning its host.
         tank.unclaim(7, "--remove-label", "ready-for-human", "--add-label", "ready-for-agent", host="tank")
         self.assertEqual(self.github.issue["assignees"], [])
         self.assertIn({"name": "host:tank"}, self.github.issue["labels"])
@@ -49,6 +50,7 @@ class HostRequeueTest(unittest.TestCase):
     def test_second_explicit_requeue_repins_but_escalation_cleans_up(self):
         tank = self.set_up_owner()
         for _ in range(2):
+            tank.unclaim(7)
             tank.unclaim(7, "--remove-label", "ready-for-human", "--add-label", "ready-for-agent", host="tank")
             self.assertIn({"name": "host:tank"}, self.github.issue["labels"])
             self.github.add_claim("tank", datetime.now(UTC))
@@ -99,6 +101,8 @@ class HostRequeueActionTest(unittest.TestCase):
     journal = ActionHarness.journal
 
     def transport(self, argv, **kwargs):
+        if argv[:2] == ["gh", "api"] and any("/comments" in arg for arg in argv):
+            return subprocess.CompletedProcess(argv, 0, "[]", "")
         if argv[:3] == ["gh", "label", "create"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         result = self.base_transport(argv, **kwargs)

@@ -3303,10 +3303,14 @@ actor, caller and decision ID. It does not transfer commits or replace other
 host labels. Omit `host` for the existing unpinned requeue behavior. An existing
 pin with no claim survives another named requeue. The dispatcher's `unclaim(...,
 host=...)` API likewise re-pins after claim cleanup; automated callers do not
-select a replacement host. Explicit-host requeues revoke readiness before cleanup
-and publish `ready-for-agent` only after pinning and its audit succeed. Pin or
-audit failure leaves the issue non-ready. Later escalation still removes the
-owning claim's host label, and manager RETRY is unchanged.
+select a replacement host. Both explicit-host paths refuse an unretired target-host
+claim, expired or live, before any GitHub mutation and record `requeue-host-refused`.
+Named actions check all retained claims during prepare and again during apply;
+claim-read failure also refuses the action. Requeue does not retire these claims.
+Explicit-host requeues revoke readiness before cleanup and publish
+`ready-for-agent` only after pinning and its audit succeed. Pin or audit failure
+leaves the issue non-ready. Later escalation still removes the owning claim's
+host label, and manager RETRY is unchanged.
 
 For agent re-approval, prepare `{"action": "approve_pr", "args": {"number": 257,
 "ruling_id": "r3-0740"}}` with `factory_prepare_action` and the registered

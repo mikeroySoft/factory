@@ -16,11 +16,11 @@ class RequeueDispatchOrderingTest(unittest.TestCase):
 
     def owner(self):
         self.github = TimelineGitHub()
-        tank, foreign = self.dispatcher("tank"), self.dispatcher("ultron")
+        tank, foreign = self.dispatcher("cleanup"), self.dispatcher("ultron")
         # A frontier snapshot obtained before ownership must not bypass fresh readiness.
         stale = copy.deepcopy(self.github.issue)
         self.github.add_claim("old", datetime.now(UTC) - timedelta(hours=3))
-        self.github.add_claim("tank", datetime.now(UTC))
+        self.github.add_claim("cleanup", datetime.now(UTC))
         return tank, foreign, stale
 
     def test_foreign_admission_is_closed_at_every_transition(self):
@@ -65,6 +65,7 @@ class RequeueDispatchOrderingTest(unittest.TestCase):
         self.assertIn({"name": "ready-for-agent"}, self.github.issue["labels"])
         foreign.process_ticket(copy.deepcopy(stale), 1, False)
         self.assertEqual(self.launched, [])
+        tank = self.dispatcher("tank")
         tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
         self.assertEqual(self.launched, ["tank"])
 
@@ -132,10 +133,10 @@ class RequeueDispatchOrderingTest(unittest.TestCase):
         self.assert_foreign_claim_refuses_pin(timedelta(hours=3), configured_host=None)
 
     def test_hostless_foreign_requeue_keeps_claim_and_assignee(self):
+        dispatcher = self.dispatcher("ultron")
         for age in (timedelta(), timedelta(hours=3)):
             with self.subTest(age=age):
                 self.github = TimelineGitHub()
-                dispatcher = self.dispatcher("ultron")
                 claim = self.github.add_claim("tank", datetime.now(UTC) - age)
                 self.github.issue["labels"] = [{"name": "ready-for-human"}, {"name": "host:tank"}]
                 with mock.patch.object(dispatcher, "record") as record:

@@ -847,14 +847,21 @@ def unclaim(
         or ("--add-label", LABEL_AGENT) not in zip(label_args[::2], label_args[1::2])
     ):
         raise ValueError("host requires a valid host name and a ready-for-agent requeue")
+    claims = host_claims(n) if cfg.host_name or host is not None else []
+    owned = owned_host_claim(n, claims)
+    if host is not None and any(claim["host"] == host or owned is None for claim in claims):
+        reason = "cannot pin requeue with an unresolved host claim"
+        lifecycle.append(EVENTS, {
+            "at": datetime.now(UTC).isoformat(), "event": "requeue-host-refused",
+            "ticket": n, "host": host, "reason": reason,
+        })
+        raise ValueError(reason)
     # Close admission before releasing any ownership, including stale claims.
     if host is not None and run(
         ["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-label", LABEL_AGENT],
         check=check,
     ).returncode:
         return
-    claims = host_claims(n) if cfg.host_name else []
-    owned = owned_host_claim(n, claims)
     if cfg.host_name and any(
         flag == "--add-label" and label == LABEL_AGENT
         for flag, label in zip(label_args[::2], label_args[1::2])

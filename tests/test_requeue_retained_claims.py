@@ -4,7 +4,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from unittest import mock
 
-from factory import config, decisions, lifecycle
+from factory import config, lifecycle
 from tests.test_host_claim_transitions import TimelineGitHub
 from tests.test_host_claims import HostClaimRaceTest as ClaimHarness
 from tests.test_requeue_decision_ordering import RequeueDecisionOrderingTest as ActionHarness

@@ -774,6 +774,22 @@ def _plan_request(
     return steps
 
 
+def _check_requeue_host(cfg: Config, number: int, host: str, deadline: float, caller: str) -> None:
+    pages = _read_json(cfg, [
+        "gh", "api", "--paginate", "--slurp", f"repos/{cfg.repo}/issues/{number}/comments",
+    ], deadline)
+    for page in pages:
+        for comment in page:
+            first = (comment.get("body") or "").split("\n", 1)[0]
+            if re.fullmatch(r"Factory claim: host=\S+ nonce=\S+ at=\S+", first):
+                reason = "cannot pin requeue with an unresolved host claim"
+                lifecycle.append(cfg.factory / "events.jsonl", {
+                    "at": _format_time(_now()), "event": "requeue-host-refused",
+                    "ticket": number, "host": host, "caller": caller, "reason": reason,
+                })
+                raise DecisionError(reason, "target_busy")
+
+
 def prepare(
     cfg: Config, requests: object, *, caller: str = "dashboard", action: dict | None = None, guard=None,
 ) -> dict:
@@ -829,6 +845,7 @@ def prepare(
             _sync_routing(request, raw)
         planning_request = request
         if index == 0 and host is not None:
+            _check_requeue_host(cfg, number, host, deadline, caller)
             steps.append({
                 **_command_step("requeue_withdraw_ready", [
                     "gh", "issue", "edit", str(number), "--repo", cfg.repo, "--remove-label", LABEL_AGENT,
@@ -1232,6 +1249,8 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                 for step in document["steps"]:
                     if step.get("kind") == "approve":
                         _approval_policy(cfg, step["target"])
+                    elif step["action"] == "requeue_host_pin":
+                        _check_requeue_host(cfg, step["number"], step["host"], deadline, preview["caller"])
                 started_at = _format_time(_now())
                 intent = {
                     "schema_version": 1,
