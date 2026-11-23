@@ -151,5 +151,19 @@ class RequeueDispatchOrderingTest(unittest.TestCase):
                 self.assertEqual(len(self.github.comments), 2)
                 self.assertTrue(self.github.comments[-1]["body"].startswith("Factory requeue: nonce="))
 
+    def test_cleanup_owner_above_target_keeps_all_nonready_label_operations(self):
+        self.github = TimelineGitHub()
+        dispatcher = self.dispatcher("zulu")
+        self.github.add_claim("zulu", datetime.now(UTC))
+        self.github.issue["labels"].append({"name": "ready-for-human"})
+        dispatcher.unclaim(
+            7, "--remove-label", "ready-for-human", "--add-label", "a-extra",
+            "--add-label", "ready-for-agent", host="tank",
+        )
+        self.assertEqual({row["name"] for row in self.github.issue["labels"]},
+                         {"a-extra", "host:tank", "ready-for-agent"})
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertFalse(any(row["body"].startswith("Factory claim:") for row in self.github.comments))
+
 
 del Harness

@@ -203,7 +203,10 @@ class RequeueDecisionOrderingTest(unittest.TestCase):
         return mock.patch.object(decisions, "_run", side_effect=read)
 
     def test_retained_expired_claim_refuses_explicit_host_before_mutation(self):
-        pages = [[], [{"body": "Factory claim: host=ultron nonce=old at=2020-01-01T00:00:00Z"}]]
+        pages = [[], [{
+            "body": "Factory claim: host=ultron nonce=old at=2020-01-01T00:00:00Z",
+            "user": {"login": "alice"}, "created_at": "2020-01-01T00:00:00Z",
+        }]]
         before = copy.deepcopy(self.issue)
         with self.claim_transport(pages):
             result = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
@@ -216,7 +219,10 @@ class RequeueDecisionOrderingTest(unittest.TestCase):
             preview = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
         self.assertNotIn("error", preview)
         before = copy.deepcopy(self.issue)
-        with self.claim_transport([[{"body": "Factory claim: host=ultron nonce=old at=2020-01-01T00:00:00Z"}]]):
+        with self.claim_transport([[{
+            "body": "Factory claim: host=ultron nonce=old at=2020-01-01T00:00:00Z",
+            "user": {"login": "alice"}, "created_at": "2020-01-01T00:00:00Z",
+        }]]):
             result = self.apply_mcp(preview)
         self.assertEqual(result.get("error", {}).get("code"), "target_busy")
         self.assertEqual(self.issue, before)
@@ -238,6 +244,27 @@ class RequeueDecisionOrderingTest(unittest.TestCase):
             preview = self.via_mcp("requeue_agent", {"number": 7})
             result = self.apply_mcp(preview)
         self.assertEqual(result["status"], "success")
+
+    def test_first_request_defers_only_ready_label_and_keeps_other_labels(self):
+        # JSON decoding does not intern action names or label values.
+        action = json.loads('{"name":"requeue_agent","args":{"number":7,"host":"tank"}}')
+        requests = json.loads(
+            '[{"op":"issue","number":7,"add":["ready-for-agent","needs-info","ready-for-human"],'
+            '"unassign":true},{"op":"issue","number":7,"comment":"second request"}]'
+        )
+        preview = decisions.prepare(self.cfg, requests, caller="mcp", action=action)
+        document = self.proposal(preview)
+        edits = [step for step in document["steps"] if step["action"] == "issue_edit"]
+        [cleanup] = edits
+        self.assertNotIn(config.LABEL_AGENT, cleanup["argv"])
+        self.assertIn(config.LABEL_INFO, cleanup["argv"])
+        self.assertIn(config.LABEL_HUMAN, cleanup["argv"])
+        withdrawals = [step for step in document["steps"] if step["action"] == "requeue_withdraw_ready"]
+        self.assertEqual([step["request"] for step in withdrawals], [0])
+        receipt = self.apply_mcp(preview)
+        self.assertEqual(receipt["status"], "success", receipt)
+        self.assertEqual({row["name"] for row in self.issue["labels"]},
+                         {config.LABEL_AGENT, config.LABEL_INFO, config.LABEL_HUMAN, "host:tank"})
 
 
 del ActionHarness, ClaimHarness

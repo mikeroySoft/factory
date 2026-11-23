@@ -76,7 +76,10 @@ class RetainedClaimActionTest(unittest.TestCase):
                         preview = self.via_mcp("requeue_agent", {"number": 7, "host": "tank", "comment": "resume"})
                     self.assertNotIn("error", preview)
                     before = copy.deepcopy(self.issue)
-                    pages = [[], [{"body": f"Factory claim: host=tank nonce=kept at={at}"}]]
+                    pages = [[], [{
+                        "body": f"Factory claim: host=tank nonce=kept at={at}",
+                        "user": {"login": "alice"}, "created_at": "2020-01-01T00:00:00Z",
+                    }]]
                     with self.claim_transport(pages):
                         result = (self.apply_mcp(preview) if stage == "apply" else
                                   self.via_mcp("requeue_agent", {"number": 7, "host": "tank"}))

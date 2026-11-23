@@ -774,14 +774,20 @@ def _plan_request(
     return steps
 
 
-def _check_requeue_host(cfg: Config, number: int, host: str, deadline: float, caller: str) -> None:
+def _check_requeue_host(
+    cfg: Config, number: int, host: str, deadline: float, caller: str, actor: str,
+) -> None:
     pages = _read_json(cfg, [
         "gh", "api", "--paginate", "--slurp", f"repos/{cfg.repo}/issues/{number}/comments",
     ], deadline)
     for page in pages:
         for comment in page:
-            first = (comment.get("body") or "").split("\n", 1)[0]
-            if re.fullmatch(r"Factory claim: host=\S+ nonce=\S+ at=\S+", first):
+            if (comment.get("user") or {}).get("login", "").casefold() != actor.casefold():
+                continue
+            first = (comment.get("body") or "").partition("\n")[0]
+            match = re.fullmatch(r"Factory claim: host=\S+ nonce=\S+ at=(\S+)", first)
+            if (match is not None and _parse_time(match[1]) is not None
+                    and _parse_time(comment.get("created_at")) is not None):
                 reason = "cannot pin requeue with an unresolved host claim"
                 lifecycle.append(cfg.factory / "events.jsonl", {
                     "at": _format_time(_now()), "event": "requeue-host-refused",
@@ -844,8 +850,8 @@ def prepare(
         if op == "issue":
             _sync_routing(request, raw)
         planning_request = request
-        if index == 0 and host is not None:
-            _check_requeue_host(cfg, number, host, deadline, caller)
+        if host is not None and request is normalized[0]:
+            _check_requeue_host(cfg, number, host, deadline, caller, actor)
             steps.append({
                 **_command_step("requeue_withdraw_ready", [
                     "gh", "issue", "edit", str(number), "--repo", cfg.repo, "--remove-label", LABEL_AGENT,
@@ -1250,7 +1256,9 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                     if step.get("kind") == "approve":
                         _approval_policy(cfg, step["target"])
                     elif step["action"] == "requeue_host_pin":
-                        _check_requeue_host(cfg, step["number"], step["host"], deadline, preview["caller"])
+                        _check_requeue_host(
+                            cfg, step["number"], step["host"], deadline, preview["caller"], actor,
+                        )
                 started_at = _format_time(_now())
                 intent = {
                     "schema_version": 1,

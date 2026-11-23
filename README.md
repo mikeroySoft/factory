@@ -3306,7 +3306,10 @@ host=...)` API likewise re-pins after claim cleanup; automated callers do not
 select a replacement host. Both explicit-host paths refuse an unretired target-host
 claim, expired or live, before any GitHub mutation and record `requeue-host-refused`.
 Named actions check all retained claims during prepare and again during apply;
-claim-read failure also refuses the action. Requeue does not retire these claims.
+only comments by the authenticated actor with valid timezone-aware claim and
+creation timestamps count, matching dispatcher claim authentication. Outsider
+or malformed claim text cannot block requeues. Claim-read failure also refuses
+the action. Requeue does not retire these claims.
 Explicit-host requeues revoke readiness before cleanup and publish
 `ready-for-agent` only after pinning and its audit succeed. Pin or audit failure
 leaves the issue non-ready. Later escalation still removes the owning claim's
