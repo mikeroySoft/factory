@@ -134,6 +134,18 @@ class LocalCLI(unittest.TestCase):
         return subprocess.run(["git", *args], cwd=self.repo, env=self.env, check=True, capture_output=True, text=True)
 
     def write_config(self, check=None, worker=None, reviewer=None, extra=""):
+        import shutil
+
+        route = reviewer or [sys.executable, str(self.reviewer)]
+        if shutil.which(route[0]):
+            health_route = self.base / "reviewer-route.py"
+            health_route.write_text(
+                "import os, sys\n"
+                "if sys.argv[-1] == 'Reviewer health probe: reply OK.':\n"
+                "    raise SystemExit(0)\n"
+                "os.execvp(sys.argv[1], sys.argv[1:-1])\n"
+            )
+            reviewer = [sys.executable, str(health_route), *route, "{prompt}"]
         argv = check or [sys.executable, "-c", "raise SystemExit(0)"]
         (self.repo / ".factory.toml").write_text(
             '[repo]\nslug = "local/smoke"\n'

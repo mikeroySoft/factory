@@ -61,6 +61,7 @@ class HostGatedLoopsTest(unittest.TestCase):
         self.cfg.manager = ["true"]
         dispatch.configure(self.cfg)
         self.enterContext(mock.patch.object(dispatch, "github_preflight", return_value=None))
+        self.enterContext(mock.patch.object(dispatch, "reviewer_auth_missing", return_value=False))
         self.logs: list[str] = []
         self.enterContext(
             mock.patch.object(dispatch, "log", side_effect=lambda msg: self.logs.append(msg))

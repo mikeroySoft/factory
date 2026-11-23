@@ -39,6 +39,14 @@ npx skills add mikeroysoft/factory
 - optionally, an OpenAI-compatible local model for triage (Ollama, vLLM,
   llama.cpp, LM Studio)
 
+Each real dispatch pass probes the configured reviewer once with a trivial prompt
+and a 30-second timeout, including `--ticket`. A definite credential failure
+defers the pass before ticket mutations: one host-level `reviewer_auth_missing`
+gate in the dispatcher journal/log names the host and reviewer model. Restore
+the reviewer's login/API credentials on that host; the next pass probes again.
+Ticket state, attempts and strikes are unchanged. Unknown failures and timeouts
+preserve normal review retries; dry runs do not probe.
+
 ```sh
 uv tool install git+https://github.com/mikeroySoft/factory@stable   # stable: released channel
 uv tool install git+https://github.com/mikeroySoft/factory@main     # latest: tip of main
