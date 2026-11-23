@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 from factory import config, manage
+from tests import test_host_claims as claim_fixture
 from tests import test_land_host as fixture
 from tests import test_refresh_conflict as refresh_fixture
 
@@ -420,6 +421,68 @@ class LandClaimTakeoverTest(unittest.TestCase):
         self.assertTrue(any(row["body"].startswith("Factory requeue: nonce=ultron-nonce")
                             for row in self.comments))
         self.assert_no_deletes()
+
+    def test_pending_takeover_past_ttl_renews_before_worker_admission(self):
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        head = self.approve(ultron)
+        self.claim("ultron", age=3 * 3600)
+        with mock.patch.object(tank, "pr_checks", return_value=[{"name": "ci", "bucket": "pending"}]):
+            tank.land_pass(False)
+            owner = tank.owned_host_claim(9)
+            edge = owner["heartbeat"] + timedelta(seconds=tank.cfg.claim_ttl_seconds)
+            with mock.patch.object(tank, "datetime", wraps=datetime) as clock:
+                clock.now.return_value = edge + timedelta(microseconds=1)
+                tank.land_pass(False)
+                tank.process_ticket(self.github.issue(), 30, False)
+                self.assertEqual(self.events(tank, "escalate"), [])
+                self.assertEqual([row["nonce"] for row in tank.live_host_claims(tank.host_claims(9))],
+                                 [owner["nonce"]])
+        self.assertFalse(self.github.merged)
+        self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+        with mock.patch.object(tank, "run_gate", return_value=(True, "fresh local gate")) as gate, \
+                mock.patch.object(tank, "review", wraps=tank.review) as review:
+            tank.land_pass(False)
+        gate.assert_called_once()
+        self.assertEqual(review.call_args.args[-1], head)
+        self.assertEqual([row["head"] for row in self.events(tank, "approved")], [head])
+        self.assertFalse(self.github.merged)
+        tank.land_pass(False)
+        self.assertTrue(self.github.merged)
+        self.assertEqual([row["head"] for row in self.events(tank, "merged")], [head])
+        self.assert_no_deletes()
+
+    def test_refused_takeover_is_not_journaled_as_completed_eligibility(self):
+        tank = self.dispatcher("tank")
+        self.approve(tank)
+        self.claim("ultron", age=3 * 3600)
+        self.github.assignees = ["human"]
+        tank.land_pass(False)
+        self.assertFalse(self.github.merged)
+        exits = [row for row in self.events(tank, "lifecycle")
+                 if row.get("stage") == "merge-eligibility" and row.get("kind") == "exit"]
+        self.assertEqual([(row["outcome"], row["reason"]) for row in exits],
+                         [("not_eligible", "claim_lost")])
+
+
+class LandingClaimLifetimeTest(unittest.TestCase):
+    setUp = claim_fixture.HostClaimRaceTest.setUp
+    dispatcher = claim_fixture.HostClaimRaceTest.dispatcher
+
+    def test_normal_owned_claim_is_released_and_does_not_block_admission(self):
+        tank = self.dispatcher("tank")
+        tank.cfg.land_host = "tank"
+        original = self.github.add_claim("tank", datetime.now(UTC))
+        with tank.landing_host_claim(7, None, dry_run=False, pr=8, head="a" * 40) as owned:
+            self.assertTrue(owned)
+            tank.unclaim(7, "--add-label", config.LABEL_AGENT)
+        self.assertNotIn(original, self.github.comments)
+        claim = tank.acquire_host_claim(7, self.github.issue, tank.host_claims(7))
+        self.assertIsNotNone(claim)
+        try:
+            self.assertFalse(claim.preserve_history)
+        finally:
+            claim.release()
+            tank._HOST_CLAIMS.pop(7, None)
 
 
 if __name__ == "__main__":

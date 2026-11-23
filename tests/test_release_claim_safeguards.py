@@ -104,3 +104,23 @@ class ReleaseClaimSafeguardsTest(unittest.TestCase):
         self.apply_release(preview)
         self.assert_release_only()
         self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+
+    def test_releasing_already_released_nonce_does_not_duplicate_requeue_marker(self):
+        preview = self.prepare_release(labels=(config.LABEL_AGENT,))
+        self.apply_release(preview)
+        self.module.release_expired_claim(7)
+        markers = [row for row in self.github.comments if row["body"].startswith("Factory requeue:")]
+        self.assertEqual(len(markers), 1)
+        self.assertIn(self.claim, self.github.comments)
+        self.assertFalse(any("DELETE" in cmd for _, cmd in self.github.calls))
+
+    def test_release_receipt_observation_reports_unknown_marker_identity(self):
+        preview = self.prepare_release(labels=(config.LABEL_AGENT,))
+        self.apply_release(preview)
+        receipt = decisions.receipt(self.module.cfg, preview["proposal_id"], observe=True)
+        observation = receipt["observation"]
+        self.assertEqual(observation["errors"], [])
+        self.assertEqual(observation["postconditions"], [{
+            "request": 0, "status": "unknown",
+            "evidence": ["claim comments are retained; release marker identity was not collected and is unknown"],
+        }])
