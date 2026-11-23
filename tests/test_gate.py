@@ -1147,6 +1147,83 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 ["test_b_skip (test_bare_status.BareStatusTest.test_b_skip) ... skipped 'needs hardware'"],
             )
 
+    def test_report_fails_closed_when_unittest_exits_without_a_result_record(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        for action in ("path.write_text('invalid JSON')", "path.unlink()"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
+                repo = repo_with_test(Path(directory), toml)
+                (repo / "tests" / "test_aborted.py").write_text(
+                    "import os, unittest\nfrom pathlib import Path\n"
+                    "class Aborted(unittest.TestCase):\n"
+                    "    def test_abort(self):\n"
+                    "        path = Path(os.environ['FACTORY_UNITTEST_RESULT'])\n"
+                    f"        {action}\n"
+                    "        print('process exited before result delivery', flush=True)\n"
+                    "        os._exit(0)\n"
+                )
+                commit(repo, "unittest exited before recording results")
+
+                code, out, report = gate(repo)
+
+                self.assertEqual(code, 1, out + report)
+                self.assertIn("- test: FAIL", report)
+                self.assertIn("process exited before result delivery", report)
+                self.assertIn("unittest result record unavailable:", report)
+                self.assertNotIn("## test test evidence", report)
+
+    def test_report_includes_evidence_only_for_passing_status_values(self) -> None:
+        import json
+        from unittest import mock
+
+        # Cross the status producer/renderer boundary with equal, distinct strings.
+        # A report must depend on the status value, not Python's string interning.
+        driver = (
+            "import sys\nfrom factory import gate\n"
+            "original = gate._check_status\n"
+            "gate._check_status = lambda name, passed, output, blocking: "
+            "original(name, passed, output, True).encode().decode()\n"
+            "raise SystemExit(gate.main(sys.argv[1:]))\n"
+        )
+        original_run = subprocess.run
+        for name, assertion, status, exit_code in (
+            ("test", "self.assertTrue(True)", "PASS", 0),
+            ("test", "self.fail('broken check')", "FAIL", 1),
+            ("mutation", "print('no mutable files')", "SKIP (no changed factory code)", 0),
+        ):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                toml = TOML + (
+                    f'\n[[gate.check]]\nname = "{name}"\n'
+                    f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+                )
+                repo = repo_with_test(Path(directory), toml)
+                (repo / "tests" / "test_status.py").write_text(
+                    "import unittest\nclass Status(unittest.TestCase):\n"
+                    f"    def test_check(self):\n        {assertion}\n"
+                )
+                commit(repo, "unittest status evidence")
+
+                def run(command, *args, **kwargs):
+                    if command[:4] == [sys.executable, "-m", "factory", "gate"]:
+                        command = [sys.executable, "-c", driver, *command[4:]]
+                    return original_run(command, *args, **kwargs)
+
+                with mock.patch.object(subprocess, "run", side_effect=run):
+                    code, out, report = gate(repo)
+
+                self.assertEqual(code, exit_code, out + report)
+                self.assertIn(f"- {name}: {status}", report)
+                if status == "PASS":
+                    self.assertIn(f"## {name} test evidence\n```\nRan 1 tests\n```", report)
+                else:
+                    self.assertNotIn(f"## {name} test evidence", report)
+                if status == "FAIL":
+                    self.assertIn("broken check", report)
+
 
 if __name__ == "__main__":
     unittest.main()
