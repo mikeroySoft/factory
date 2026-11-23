@@ -1929,6 +1929,39 @@ def _stop(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
+def _stop_worker_descendants(n: int) -> None:
+    """Reap this ticket's abandoned workers, including session-detached daemons."""
+    roots = [
+        {**row, "process": row["child_process"]}
+        for row in lifecycle.read_events(EVENTS)
+        if row.get("event") == "lifecycle" and row.get("kind") == "child_start"
+        and row.get("stage") == "worker" and row.get("ticket") == n
+    ]
+    # The scope owner is the dispatcher: use its launched child as the ancestry root,
+    # otherwise an old scope could attribute unrelated concurrent tickets to itself.
+    descendants = lifecycle._descendants(roots)
+    processes = {
+        process["pid"]: process
+        for evidence in descendants.values() for process in evidence["processes"]
+        if process["pid"] != os.getpid()
+    }
+    if not processes:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid, identity in processes.items():
+            if lifecycle._process_state(identity) == "alive":
+                with suppress(ProcessLookupError):
+                    os.kill(pid, sig)
+        deadline = time.monotonic() + 10
+        while any(lifecycle._process_state(p) == "alive" for p in processes.values()):
+            if time.monotonic() >= deadline:
+                if sig == signal.SIGKILL:
+                    raise RuntimeError(f"worker descendants still alive for #{n}: {sorted(processes)}")
+                break
+            time.sleep(0.05)
+    record("worker-cleanup", ticket=n, pids=sorted(processes))
+
+
 def run_worker(
     cmd: list[str],
     wt: Path,
@@ -1970,8 +2003,7 @@ def run_worker(
                     execution.child(proc.pid)
                 fired = _watch(proc, wt, logfile, handoff, deadline, start)
             finally:
-                if proc.poll() is None:
-                    _stop(proc)
+                _stop(proc)  # A successful launcher exit can still leave its process group alive.
                 if execution is not None:
                     execution.child_done(proc.pid)
         code = proc.returncode
@@ -2118,6 +2150,10 @@ class WorktreeRefused(RuntimeError):
     """A reused ticket worktree cannot safely continue from the fetched branch."""
 
 
+class WorktreeDiverged(WorktreeRefused):
+    """Preserved divergence: escalate once for this exact pair of heads."""
+
+
 def ensure_worktree(n: int, *, preserved: str | None = None) -> Path:
     wt, branch = FACTORY / f"wt-{n}", f"agent/{n}"
     with _REMOTE_REFS:
@@ -2144,11 +2180,25 @@ def ensure_worktree(n: int, *, preserved: str | None = None) -> Path:
     # A fresh generation may replace exactly the head its restart preserved, not adopt it.
     if not remote or head == remote or remote == preserved:
         return wt
-    if run(["git", "merge-base", "--is-ancestor", head, remote], cwd=wt, check=False).returncode == 0:
+    ancestor = run(["git", "merge-base", "--is-ancestor", head, remote], cwd=wt, check=False)
+    if ancestor.returncode not in (0, 1):
+        raise WorktreeRefused(f"ancestry check failed; {context}")
+    if ancestor.returncode == 0:
         run(["git", "merge", "--ff-only", remote], cwd=wt)
         record("worktree-fast-forward", ticket=n, from_head=head, to_head=remote)
-    elif run(["git", "merge-base", "--is-ancestor", remote, head], cwd=wt, check=False).returncode:
-        raise WorktreeRefused(f"diverged history; {context}")
+    else:
+        ancestor = run(["git", "merge-base", "--is-ancestor", remote, head], cwd=wt, check=False)
+        if ancestor.returncode not in (0, 1):
+            raise WorktreeRefused(f"ancestry check failed; {context}")
+        if ancestor.returncode == 1:
+            backup = f"refs/heads/backup/{n}-{head}"
+            existing = run(["git", "rev-parse", "--verify", "--quiet", backup], cwd=ROOT, check=False)
+            if existing.returncode == 1:
+                run(["git", "update-ref", backup, head, ""], cwd=ROOT)
+                record("worktree-backup", ticket=n, head=head, remote=remote, backup_ref=backup)
+            elif existing.returncode or existing.stdout.strip() != head:
+                raise WorktreeRefused(f"backup ref {backup} could not preserve {head}; {context}")
+            raise WorktreeDiverged(f"diverged history (neither-is-ancestor); backup ref {backup}; {context}")
     return wt
 
 
@@ -2417,6 +2467,8 @@ def escalation_packet(
     log_path: Path | None,
     wt: Path,
     extra: str = "",
+    *,
+    worker_notes: bool = True,
 ) -> tuple[Path, int]:
     events = lifecycle.read_events(EVENTS)
     ticket_events = [event for event in events if event.get("ticket") == n]
@@ -2449,7 +2501,8 @@ def escalation_packet(
         + "\n\n## Latest review findings\n\n"
         + (review.read_text().strip()[-6000:] if review.exists() else "(none recorded)")
         + "\n\n## Handoff\n\n"
-        + (handoff.read_text().strip()[-4000:] if handoff.exists() else "(none recorded)")
+        + (handoff.read_text().strip()[-4000:] if worker_notes and handoff.exists()
+           else "(no current worker handoff; prior notes retained on disk)")
         + "\n\n## Log paths\n\n"
         + ("\n".join(f"- `{path}`" for path in logs) or "- none recorded")
         + f"\n\n## Worktree path\n\n`{wt}`\n"
@@ -2483,10 +2536,21 @@ def escalate(
     code: str,
     refreshed_head: str | None = None,
     evidence_ref: str | None = None,
+    once: bool = False,
 ) -> None:
     assert code in ESCALATION_CODES, code
     assert (refreshed_head is None) == (evidence_ref is None)
     wt = FACTORY / f"wt-{n}"
+    if log_path is None:
+        _stop_worker_descendants(n)
+    if once and any(
+        row.get("event") == "escalate" and row.get("ticket") == n and row.get("reason") == reason
+        for row in lifecycle.read_events(EVENTS)
+    ):
+        log(f"#{n}: divergence already escalated; {reason}")
+        _ESCALATED.add(n)
+        unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
+        return
     if code == "gate_failed" and log_path is not None:
         # A budget cut skips the gate; do not turn a passing ticket into a code failure.
         rows = generation.current(lifecycle.read_events(EVENTS), n).rows
@@ -2515,7 +2579,9 @@ def escalate(
             + f"- Refreshed head: `{refreshed_head}`\n"
             + f"- Evidence ref: `{evidence_ref}`\n"
         )
-    packet, round_number = escalation_packet(n, reason, log_path, wt, extra=extra)
+    packet, round_number = escalation_packet(
+        n, reason, log_path, wt, extra=extra, worker_notes=log_path is not None,
+    )
     from factory import trace
 
     cause = _latest_decision_id(n, {"gate", "review", "manager", "claim"})
@@ -2556,7 +2622,7 @@ def escalate(
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
     handoff = wt / ".factory" / f"handoff-{n}.md"
-    if handoff.exists():
+    if log_path is not None and handoff.exists():
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
     for suffix in ("", "-pr"):
         gate = wt / ".factory" / f"gate-report-{n}{suffix}.md"
@@ -4454,7 +4520,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         wt = ensure_worktree(n)
     except WorktreeRefused as exc:
         run(["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED], check=False)
-        escalate(n, str(exc), None, code="refresh_head")
+        escalate(n, str(exc), None, code="refresh_head", once=isinstance(exc, WorktreeDiverged))
         return False
 
     def restore_pr_head(refreshed_head: str) -> str:
@@ -5544,6 +5610,7 @@ def process_ticket(
 
         claimed = False  # once True, nothing may leave this block without releasing the ticket
         host_claim = None
+        logfile = None
         try:
             execution.resource("acquired", lock_path, scope="repository")
             # Strong re-read before claiming: `issue list` is search-backed and lags
@@ -5907,7 +5974,7 @@ def process_ticket(
             execution.outcome, execution.reason = "not_admitted", "host_setup"
             return False
         except (LeaseRefused, WorktreeRefused) as exc:
-            escalate(n, str(exc), None, code="lease_refused")
+            escalate(n, str(exc), logfile, code="lease_refused", once=isinstance(exc, WorktreeDiverged))
         except WorkerUnavailable as exc:
             # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.
             execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"

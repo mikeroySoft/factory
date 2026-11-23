@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Diverged kept worktrees preserve HEAD under a create-only local backup ref and escalate once per SHA pair with both heads and ancestry evidence. Pre-launch packets/comments omit stale handoffs and reap lifecycle-attributed worker daemons without touching unrelated processes; normal worker exits also reap background process-group children. Fast-forward resumes remain unchanged (#890).
 - Expired own-host claims interrupted during an open PR attempt now escalate to `ready-for-human` with a nonce-bearing `Factory requeue` comment rather than holding as `open PR` forever, including kills before the local `claimed` receipt. New receipts bind to the claim nonce instead of comparing GitHub and host clocks. Recovery rechecks heartbeat/ownership, preserves the PR and worktree, and reports retained local HEAD and unpushed commit SHAs; live, foreign, completed and already-escalated claims retain their existing behavior (#886).
 - Host-only `gate.mutation_slots` caps concurrent PR-tier mutation checks using independent host-wide slot flocks inherited by mutation children, retaining admission after gate interruption. Gate reports record slot waits outside check timeouts and mutation durations; unset settings preserve uncapped execution (#884).
 - Reviewer approval skips `factory-held` PRs whether draft or not, rechecks holds after labeling, and withdraws racing approval without recording it. Failed withdrawal reports failure instead of successful approval. Releasing a hold preserves exact reviewed-SHA requirements (#877).
