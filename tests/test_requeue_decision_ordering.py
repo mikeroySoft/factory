@@ -190,5 +190,54 @@ class RequeueDecisionOrderingTest(unittest.TestCase):
         self.assertFalse(any(row.get("event") == "requeue-host-pinned"
                              for row in lifecycle.read_events(self.cfg.factory / "events.jsonl")))
 
+    def claim_transport(self, pages, *, failed=False):
+        transport = self.transport
+
+        def read(argv, **kwargs):
+            if argv[:2] == ["gh", "api"] and any("/comments" in arg for arg in argv):
+                self.assertIn("--paginate", argv)
+                self.assertIn("--slurp", argv)
+                return subprocess.CompletedProcess(argv, int(failed), json.dumps(pages), "")
+            return transport(argv, **kwargs)
+
+        return mock.patch.object(decisions, "_run", side_effect=read)
+
+    def test_retained_expired_claim_refuses_explicit_host_before_mutation(self):
+        pages = [[], [{"body": "Factory claim: host=ultron nonce=old at=2020-01-01T00:00:00Z"}]]
+        before = copy.deepcopy(self.issue)
+        with self.claim_transport(pages):
+            result = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
+        self.assertEqual(result.get("error", {}).get("code"), "target_busy")
+        self.assertEqual(self.issue, before)
+        self.assertEqual(self.mutations, [])
+
+    def test_claim_appearing_after_prepare_refuses_before_any_mutation(self):
+        with self.claim_transport([[]]):
+            preview = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
+        self.assertNotIn("error", preview)
+        before = copy.deepcopy(self.issue)
+        with self.claim_transport([[{"body": "Factory claim: host=ultron nonce=old at=2020-01-01T00:00:00Z"}]]):
+            result = self.apply_mcp(preview)
+        self.assertEqual(result.get("error", {}).get("code"), "target_busy")
+        self.assertEqual(self.issue, before)
+        self.assertEqual(self.mutations, [])
+
+    def test_claim_read_failure_refuses_explicit_host_at_prepare_and_apply(self):
+        with self.claim_transport([[]], failed=True):
+            result = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
+        self.assertEqual(result.get("error", {}).get("code"), "provider_unavailable")
+        with self.claim_transport([[]]):
+            preview = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
+        with self.claim_transport([[]], failed=True):
+            result = self.apply_mcp(preview)
+        self.assertEqual(result.get("error", {}).get("code"), "provider_unavailable")
+        self.assertEqual(self.mutations, [])
+
+    def test_hostless_requeue_does_not_read_or_refuse_retained_claims(self):
+        with self.claim_transport([[]], failed=True):
+            preview = self.via_mcp("requeue_agent", {"number": 7})
+            result = self.apply_mcp(preview)
+        self.assertEqual(result["status"], "success")
+
 
 del ActionHarness, ClaimHarness
