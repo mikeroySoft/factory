@@ -833,6 +833,19 @@ def _release_claim_target(cfg: Config, number: int, deadline: float) -> tuple[di
     return {"kind": "release_claim", "number": number, "issue": issue, "claim": claim}, raw
 
 
+def _prepare_target(cfg: Config, kind: str, number: int, deadline: float) -> tuple[dict, dict | None]:
+    if kind == "pr":
+        return _pr_target(cfg, number, deadline)
+    if kind == "cleanup":
+        issue, _ = _issue_target(cfg, number, deadline)
+        if issue["assignees"] or (issue["state"] == "OPEN" and LABEL_AGENT in issue["labels"]):
+            raise DecisionError("cleanup target has live ownership or routing", "target_busy")
+        return {**_local_cleanup_target(cfg, number, deadline), "issue": issue}, None
+    if kind == "issue":
+        return _issue_target(cfg, number, deadline)
+    return _release_claim_target(cfg, number, deadline)
+
+
 def prepare(
     cfg: Config, requests: object, *, caller: str = "dashboard", action: dict | None = None, guard=None,
 ) -> dict:
@@ -859,18 +872,7 @@ def prepare(
         kind = "pr" if op == "pr" else op if op in {"cleanup", "release_claim"} else "issue"
         key = (kind, number)
         if key not in target_by_key:
-            if kind == "pr":
-                target, raw = _pr_target(cfg, number, deadline)
-            elif kind == "cleanup":
-                issue, _ = _issue_target(cfg, number, deadline)
-                if issue["assignees"] or (issue["state"] == "OPEN" and LABEL_AGENT in issue["labels"]):
-                    raise DecisionError("cleanup target has live ownership or routing", "target_busy")
-                target = {**_local_cleanup_target(cfg, number, deadline), "issue": issue}
-                raw = None
-            elif kind == "issue":
-                target, raw = _issue_target(cfg, number, deadline)
-            else:
-                target, raw = _release_claim_target(cfg, number, deadline)
+            target, raw = _prepare_target(cfg, kind, number, deadline)
             target_by_key[key] = target, raw
             targets.append(target)
         target, raw = target_by_key[key]
