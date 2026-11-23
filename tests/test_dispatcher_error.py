@@ -8,6 +8,7 @@ import unittest
 
 from factory import lifecycle
 from tests import test_dispatch_lifecycle as fixture
+from tests.test_dispatch_lifecycle import GH
 
 
 class DispatcherErrorTest(unittest.TestCase):
@@ -53,7 +54,7 @@ if a[:3] == ["issue", "comment", "6"]:
     p.write_text(json.dumps(s))
     print("https://example.invalid/issues/6#issuecomment-60")
     sys.exit(0)
-''' + fixture.GH)
+''' + GH)
 
         # The real CLI must return 0, not merely finish #7 before re-raising #6.
         result = subprocess.run(
