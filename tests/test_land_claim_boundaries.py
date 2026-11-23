@@ -149,6 +149,24 @@ class LandClaimBoundaryTest(unittest.TestCase):
             for command in self.commands["tank"]
         ))
 
+    def test_unretained_foreign_takeover_requires_explicit_history_retention(self):
+        tank = self.dispatcher("tank")
+        self.claim("ultron", age=3 * 3600)
+        foreign = tank.elected_host_claim(tank.host_claims(9))
+        with tank.landing_host_claim(
+            n=9, foreign=foreign, dry_run=False, pr=102, head=self.github.head(),
+        ) as owned:
+            self.assertTrue(owned)
+            local = tank.owned_host_claim(9)
+            self.assertTrue(local["preserve_history"])
+            self.assertIn("Factory claim history: retained", local["body"].splitlines())
+        self.assertTrue(tank.owned_host_claim(9)["preserve_history"])
+
+    def test_landing_options_are_keyword_only(self):
+        tank = self.dispatcher("tank")
+        with self.assertRaises(TypeError), tank.landing_host_claim(9, None, False, 102, self.github.head()):
+            self.fail("positional landing options must be refused")
+
 
 if __name__ == "__main__":
     unittest.main()
