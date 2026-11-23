@@ -1056,9 +1056,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    worktree and lock, so up to `max_active` tickets (counting ones already in
    flight when the pass started) work at once. The pass waits for all of them;
    a failing ticket does not stop the others, and a ranking error for the next
-   pick does not stop tickets already claimed. Every ticket failure is logged at
-   the end; the pass then raises its own ranking error, else the first failed
-   pick's. On Ctrl-C each in-flight ticket runs nothing further: within one
+   pick does not stop tickets already claimed. Claimed ticket errors handed to a
+   human with `dispatcher_error` do not fail an ordinary pass (`--ticket` still
+   fails loudly). Unhandled ticket errors are logged at the end; the pass raises
+   its own ranking error, else the first
+   unhandled pick's. On Ctrl-C each in-flight ticket runs nothing further: within one
    worker poll (5 s) its worker process group gets SIGTERM (SIGKILL after 10 s),
    its lock is released, then the pass exits. Ticket `git fetch` and `git push`
    commands run one at a time, and every dispatcher log line from a ticket is

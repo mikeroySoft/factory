@@ -7,14 +7,14 @@ import sys
 import unittest
 
 from factory import lifecycle
-from tests.test_dispatch_lifecycle import GH, LocalCLI
+from tests import test_dispatch_lifecycle as fixture
 
 
 class DispatcherErrorTest(unittest.TestCase):
-    setUp = LocalCLI.setUp
-    git = LocalCLI.git
-    write_config = LocalCLI.write_config
-    commit_config = LocalCLI.commit_config
+    setUp = fixture.LocalCLI.setUp
+    git = fixture.LocalCLI.git
+    write_config = fixture.LocalCLI.write_config
+    commit_config = fixture.LocalCLI.commit_config
 
     def test_escalated_worktree_error_does_not_fail_two_ticket_pass(self):
         self.state.write_text(json.dumps({"reviews": 1}))  # healthy ticket is approved first time
@@ -53,7 +53,7 @@ if a[:3] == ["issue", "comment", "6"]:
     p.write_text(json.dumps(s))
     print("https://example.invalid/issues/6#issuecomment-60")
     sys.exit(0)
-''' + GH)
+''' + fixture.GH)
 
         # The real CLI must return 0, not merely finish #7 before re-raising #6.
         result = subprocess.run(

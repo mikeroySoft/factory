@@ -5924,11 +5924,13 @@ def process_ticket(
             return False
         except Exception as exc:
             # A crash after the claim strands the ticket assigned + ready-for-agent, which every
-            # later pass skips forever; hand it back to a human first, worktree intact, then
-            # still surface the crash.
+            # later pass skips forever; hand it back to a human, worktree intact.
+            # Only an explicit --ticket invocation also surfaces the handled crash.
             if claimed:
                 escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error")
                 execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
+                if not forced:
+                    return
             raise
         finally:
             if host_claim is not None:
@@ -5966,7 +5968,7 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
     baseline it was ranked against. The fairness streak comes from this timer/engine session's
     journal, the experiment slot from all claims; both advance by this pass's own picks.
     Picks are ranked and claimed one at a time, in order; each pipeline runs in its own thread.
-    Once all finish, every pipeline exception is logged and the pass raises its own, else the first pick's.
+    Once all finish, unhandled pipeline exceptions are logged and the pass raises its own, else the first pick's.
     An interrupt (Ctrl-C) stops every in-flight pipeline first, as it stopped the one before #579.
     """
     from factory import schedule
