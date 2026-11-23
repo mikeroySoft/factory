@@ -75,6 +75,9 @@ class ReviewerHealthTest(unittest.TestCase):
         self.assertIn('tank', str(gates))
         self.assertIn('provider/model', str(gates))
         self.assertFalse(any(e.get('event') in ('review', 'escalate', 'attempt') for e in events))
+
+    def test_auth_missing_records_one_wait_before_review_intake(self):
+        _, _, events, _ = self.run_pass('import sys\nprint("No API key found for anthropic.", file=sys.stderr)\nsys.exit(1)\n')
         self.assertEqual(sum(e.get('wait', {}).get('reason') == 'reviewer_auth_missing' for e in events), 1)
         self.assertFalse(any(e.get('event') == 'review-intake' for e in events))
 
