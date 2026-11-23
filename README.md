@@ -3301,9 +3301,12 @@ letters/digits, `.`, `_`, `-`; first character alphanumeric). The explicit pin i
 visible in the proposal and records `requeue-host-pinned` with host, ticket,
 actor, caller and decision ID. It does not transfer commits or replace other
 host labels. Omit `host` for the existing unpinned requeue behavior. An existing
-pin with no claim survives another named requeue; dispatcher requeues that clean
-up a claim must explicitly supply `host` again to re-pin it. Later escalation
-still removes the owning claim's host label, and manager RETRY is unchanged.
+pin with no claim survives another named requeue. The dispatcher's `unclaim(...,
+host=...)` API likewise re-pins after claim cleanup; automated callers do not
+select a replacement host. Explicit-host requeues revoke readiness before cleanup
+and publish `ready-for-agent` only after pinning and its audit succeed. Pin or
+audit failure leaves the issue non-ready. Later escalation still removes the
+owning claim's host label, and manager RETRY is unchanged.
 
 For agent re-approval, prepare `{"action": "approve_pr", "args": {"number": 257,
 "ruling_id": "r3-0740"}}` with `factory_prepare_action` and the registered
