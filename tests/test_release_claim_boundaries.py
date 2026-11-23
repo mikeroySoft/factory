@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import subprocess
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from unittest import mock
@@ -267,3 +268,25 @@ class ReleaseClaimBoundaryTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "human assignee"):
                     self.module.release_expired_claim(n=7, dry_run=True)
                 self.assertEqual(self.mutation_calls(), [])
+
+    def test_release_target_rejects_unknown_issue_state(self):
+        for state in ("OPEM", "PENDING", None):
+            with self.subTest(state=state), mock.patch.object(
+                decisions, "_issue_target", return_value=({"state": state}, {}),
+            ), mock.patch.object(decisions, "_read_json", wraps=decisions._read_json) as preview:
+                with self.assertRaisesRegex(ValueError, "unknown issue state"):
+                    decisions._release_claim_target(self.module.cfg, 7, time.monotonic() + 10)
+                preview.assert_not_called()
+        self.assertEqual(self.github.comments, [self.claim])
+        self.assertEqual(self.mutation_calls(), [])
+
+    def test_prepare_target_rejects_unknown_kind(self):
+        for kind in ("release_claik", "release_claims", None):
+            with self.subTest(kind=kind), mock.patch.object(
+                decisions, "_release_claim_target", wraps=decisions._release_claim_target,
+            ) as release:
+                with self.assertRaisesRegex(ValueError, "unknown target kind"):
+                    decisions._prepare_target(self.module.cfg, kind, 7, time.monotonic() + 10)
+                release.assert_not_called()
+        self.assertEqual(self.github.comments, [self.claim])
+        self.assertEqual(self.mutation_calls(), [])
