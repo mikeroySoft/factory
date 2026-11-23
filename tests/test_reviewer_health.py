@@ -13,7 +13,7 @@ from factory.config import Config
 
 
 class ReviewerHealthTest(unittest.TestCase):
-    def run_pass(self, code, dry_run=False):
+    def run_pass(self, code, dry_run=False, recover=False):
         with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
             root = Path(tmp)
             calls = root / 'calls'
@@ -35,21 +35,34 @@ class ReviewerHealthTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(dispatch, 'github_preflight', return_value=None))
             stack.enter_context(mock.patch.object(dispatch, '_sweep_stale_factory_tempdirs'))
             stack.enter_context(mock.patch('factory.results.prune', return_value={'status': 'complete'}))
-            tickets = [{'number': n, 'state': 'review', 'attempts': 2, 'strikes': 1} for n in (7, 8)]
+            tickets = [
+                {'number': n, 'state': 'OPEN', 'isDraft': False, 'labels': [{'name': 'needs-review'}],
+                 'reviewRequests': [], 'headRefOid': str(n) * 40, 'baseRefOid': 'a' * 40,
+                 'headRefName': f'agent/{n}'}
+                for n in (7, 8)
+            ]
             before = copy.deepcopy(tickets)
+            journal = root / '.factory' / 'events.jsonl'
+            journal.parent.mkdir(parents=True, exist_ok=True)
+            for n in (7, 8):
+                lifecycle.append(journal, {'event': 'attempt', 'ticket': n, 'attempt': 2})
+                lifecycle.append(journal, {'event': 'review', 'ticket': n, 'round': 1, 'verdict': 'REVISE'})
+            prior_history = journal.read_bytes()
+            stack.enter_context(mock.patch.object(dispatch, 'gh_json', return_value=tickets))
+            stack.enter_context(mock.patch.object(dispatch, 'review_readiness'))
             rounds = []
-
-            def review(_):
-                for ticket in tickets:
-                    rounds.append(ticket['number'])
-
-            intake = stack.enter_context(mock.patch.object(dispatch, 'review_intake_pass', side_effect=review))
+            intake = stack.enter_context(mock.patch.object(
+                dispatch, 'review_external_pr', side_effect=lambda n, *a, **kw: rounds.append(n),
+            ))
             for name in ('worker_health_pass', 'land_pass', 'ticket_pass'):
                 stack.enter_context(mock.patch.object(dispatch, name))
             stack.enter_context(mock.patch('factory.manage.manage_pass'))
             stack.enter_context(mock.patch('factory.learn.learn_pass'))
             dispatch.main(['--dry-run'] if dry_run else [])
-            events = lifecycle.read_events(root / '.factory' / 'events.jsonl')
+            if recover:
+                dispatch.main([])
+            self.assertTrue(journal.read_bytes().startswith(prior_history))
+            events = lifecycle.read_events(journal)[4:]
             self.assertEqual(tickets, before)
             return calls.read_text().splitlines() if calls.exists() else [], rounds, events, intake.call_count
 
@@ -62,6 +75,8 @@ class ReviewerHealthTest(unittest.TestCase):
         self.assertIn('tank', str(gates))
         self.assertIn('provider/model', str(gates))
         self.assertFalse(any(e.get('event') in ('review', 'escalate', 'attempt') for e in events))
+        self.assertEqual(sum(e.get('wait', {}).get('reason') == 'reviewer_auth_missing' for e in events), 1)
+        self.assertFalse(any(e.get('event') == 'review-intake' for e in events))
 
     def test_success_preserves_review_path(self):
         calls, rounds, _, _ = self.run_pass('print("OK")\n')
@@ -76,3 +91,22 @@ class ReviewerHealthTest(unittest.TestCase):
     def test_dry_run_does_not_probe(self):
         calls, _, _, _ = self.run_pass('raise RuntimeError()\n', dry_run=True)
         self.assertEqual(calls, [])
+
+    def test_timeout_and_launch_failure_leave_admission_open(self):
+        for failure in (OSError('missing executable'), subprocess.TimeoutExpired('reviewer', 30)):
+            with self.subTest(failure=failure), mock.patch.object(dispatch, '_review_command', return_value=(['fake'], False)):
+                with mock.patch.object(dispatch, '_run_reviewer', side_effect=failure):
+                    self.assertFalse(dispatch.reviewer_auth_missing())
+
+    def test_next_pass_recovers_without_changing_heads(self):
+        calls, rounds, events, _ = self.run_pass(
+            'import sys\n'
+            'if len(p.read_text().splitlines()) == 1:\n'
+            '    print("No API key found for anthropic.", file=sys.stderr)\n'
+            '    sys.exit(1)\n'
+            'print("OK")\n',
+            recover=True,
+        )
+        self.assertEqual(calls, ['call', 'call'])
+        self.assertEqual(rounds, [7, 8])
+        self.assertEqual(sum(e.get('reason') == 'reviewer_auth_missing' for e in events), 1)

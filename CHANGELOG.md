@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Dispatch probes reviewer credentials once per real pass with a 30-second timeout. Definite auth failures report one host/model-level `reviewer_auth_missing` gate before ticket mutations, preserving state and budgets; later passes retry admission. Unknown probe failures preserve existing review retries (#898).
 - Expired own-host claims interrupted during an open PR attempt now escalate to `ready-for-human` with a nonce-bearing `Factory requeue` comment rather than holding as `open PR` forever, including kills before the local `claimed` receipt. New receipts bind to the claim nonce instead of comparing GitHub and host clocks. Recovery rechecks heartbeat/ownership, preserves the PR and worktree, and reports retained local HEAD and unpushed commit SHAs; live, foreign, completed and already-escalated claims retain their existing behavior (#886).
 - Host-only `gate.mutation_slots` caps concurrent PR-tier mutation checks using independent host-wide slot flocks inherited by mutation children, retaining admission after gate interruption. Gate reports record slot waits outside check timeouts and mutation durations; unset settings preserve uncapped execution (#884).
 - Reviewer approval skips `factory-held` PRs whether draft or not, rechecks holds after labeling, and withdraws racing approval without recording it. Failed withdrawal reports failure instead of successful approval. Releasing a hold preserves exact reviewed-SHA requirements (#877).

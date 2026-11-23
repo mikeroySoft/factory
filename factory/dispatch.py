@@ -6070,6 +6070,38 @@ def pin_root() -> list[str]:
     return paths
 
 
+def reviewer_auth_missing() -> bool:
+    """Only definite credential failures close admission; all other failures retry normally."""
+    command, _ = _review_command("Reviewer health probe: reply OK.")
+    try:
+        result = _run_reviewer(command, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode == 0:
+        return False
+    output = (result.stdout + "\n" + result.stderr).lower()
+    signatures = (
+        "no api key found", "missing api key", "api key is required",
+        "invalid api key", "invalid_api_key", "authentication_error",
+        "not logged in", "login required", "credentials not found",
+        "no credentials", "expired credentials",
+    )
+    if not any(signature in output for signature in signatures):
+        return False
+    host = cfg.host_name or os.uname().nodename
+    model = config.command_model(cfg.reviewer) or cfg.reviewer[0]
+    detail = (
+        f"host={host} reviewer={model}: reviewer credentials missing or invalid; "
+        "human action: restore reviewer login/API credentials on this host; next pass retries"
+    )
+    log(f"dispatch: reviewer_auth_missing: {detail}")
+    record("pass-skipped", reason="reviewer_auth_missing", host=host, model=model, detail=detail)
+    if (execution := lifecycle.current()) is not None:
+        execution.wait("reviewer_auth_missing", mode="retry_next_pass", host=host, model=model,
+                       human_action="Restore reviewer login/API credentials on this host")
+    return True
+
+
 def github_preflight(dry_run: bool) -> int | None:
     """No GitHub mutations until both API budgets and repository host setup are safe."""
     detail = ""
@@ -6143,6 +6175,8 @@ def main(argv: list[str]) -> int:
     ):
         if (preflight := github_preflight(args.dry_run)) is not None:
             return preflight
+        if not args.dry_run and reviewer_auth_missing():
+            return 0
         if stale:
             log(f"engine-stale: installed {installed}, District target {target}")
             if not args.dry_run:
