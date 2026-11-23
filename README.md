@@ -3298,7 +3298,9 @@ two MCP tools call that same function. Nothing else composes these label edits.
 
 Releasing a claim is not a ticket requeue: upstream-sync routing and human
 escalation holds remain intact. A held ticket still needs the separate authorized
-`requeue_agent` action to open a new generation.
+`requeue_agent` action to open a new generation. Before publishing a release
+marker, the dispatcher rechecks the elected nonce, heartbeat, and ticket's
+open state and shared assignment.
 
 Preconditions run against the exact target the proposal binds to, so `apply`'s
 stale-target check guarantees they still held when the effect ran. Refusals are

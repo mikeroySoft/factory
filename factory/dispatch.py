@@ -921,6 +921,12 @@ def release_expired_claim(
             raise ValueError(f"host claim ({fresh['host']}) is still live")
         elected = fresh
         context = context or shared_context
+        # Recovery reads can race ticket closure or a human taking ownership.
+        issue = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "state,labels,assignees"])
+        if issue.get("state") != "OPEN":
+            raise ValueError("ticket is not open")
+        if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
+            raise ValueError("ticket has a human assignee")
         if "requeue" not in elected or not elected.get("preserve_history"):
             gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                      "-f", (f"body=Factory requeue: nonce={elected['nonce']}\n"

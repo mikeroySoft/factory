@@ -8,7 +8,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from unittest import mock
 
-from factory import config, decisions
+from factory import decisions
 from tests import test_host_claims as fixture
 
 
@@ -141,9 +141,8 @@ class ReleaseClaimBoundaryTest(unittest.TestCase):
 
         with mock.patch.object(
             self.module, "refresh_requeue_context", side_effect=change_provider_identity,
-        ):
-            with self.assertRaisesRegex(ValueError, "does not match dispatcher login"):
-                self.module.release_expired_claim(7)
+        ), self.assertRaisesRegex(ValueError, "does not match dispatcher login"):
+            self.module.release_expired_claim(7)
 
         self.assertEqual(self.mutation_calls(), [])
         self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
@@ -163,15 +162,14 @@ class ReleaseClaimBoundaryTest(unittest.TestCase):
                 self.github.next_id = next_id
                 self.github.calls.clear()
 
-                def change_ticket(_number):
+                def change_ticket(_number, field=field, value=value):
                     self.github.issue[field] = value
                     return ""
 
                 with mock.patch.object(
                     self.module, "refresh_requeue_context", side_effect=change_ticket,
-                ):
-                    with self.assertRaisesRegex(ValueError, message):
-                        self.module.release_expired_claim(7)
+                ), self.assertRaisesRegex(ValueError, message):
+                    self.module.release_expired_claim(7)
 
                 self.assertEqual(self.mutation_calls(), [])
                 self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
@@ -187,9 +185,8 @@ class ReleaseClaimBoundaryTest(unittest.TestCase):
 
         with mock.patch.object(
             self.module, "refresh_requeue_context", side_effect=change_election,
-        ):
-            with self.assertRaisesRegex(ValueError, "elected host claim changed"):
-                self.module.release_expired_claim(7, expected_nonce=self.nonce)
+        ), self.assertRaisesRegex(ValueError, "elected host claim changed"):
+            self.module.release_expired_claim(7, expected_nonce=self.nonce)
 
         self.assertEqual(self.mutation_calls(), [])
         self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
