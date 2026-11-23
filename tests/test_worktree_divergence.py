@@ -9,7 +9,6 @@ import sys
 import time
 import unittest
 from contextlib import chdir
-from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle
