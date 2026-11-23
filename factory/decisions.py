@@ -820,7 +820,7 @@ def _release_claim_command(cfg: Config, number: int, mode: str, nonce: str = "")
 
 def _release_claim_target(cfg: Config, number: int, deadline: float) -> tuple[dict, dict]:
     issue, raw = _issue_target(cfg, number, deadline)
-    if issue["state"] != "OPEN":
+    if issue["state"] == "CLOSED":
         raise DecisionError("issue is not open", "precondition_failed")
     result = _read_json(cfg, _release_claim_command(cfg, number, "preview"), deadline, cwd=cfg.root)
     if not isinstance(result, dict):
@@ -867,10 +867,10 @@ def prepare(
                     raise DecisionError("cleanup target has live ownership or routing", "target_busy")
                 target = {**_local_cleanup_target(cfg, number, deadline), "issue": issue}
                 raw = None
-            elif kind == "release_claim":
-                target, raw = _release_claim_target(cfg, number, deadline)
-            else:
+            elif kind == "issue":
                 target, raw = _issue_target(cfg, number, deadline)
+            else:
+                target, raw = _release_claim_target(cfg, number, deadline)
             target_by_key[key] = target, raw
             targets.append(target)
         target, raw = target_by_key[key]

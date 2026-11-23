@@ -465,8 +465,8 @@ class LandClaimTakeoverTest(unittest.TestCase):
 
     def test_pending_takeover_recovers_with_equal_nonidentical_configured_hosts(self):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
-        tank.cfg.host_name = "".join(("ta", "nk"))
-        tank.cfg.land_host = "".join(("tan", "k"))
+        tank.cfg.host_name = "".join(tank.cfg.host_name)
+        tank.cfg.land_host = "".join(tank.cfg.land_host)
         self.assertEqual(tank.cfg.host_name, tank.cfg.land_host)
         self.assertIsNot(tank.cfg.host_name, tank.cfg.land_host)
         head = self.approve(ultron)
@@ -541,8 +541,8 @@ class LandingClaimLifetimeTest(unittest.TestCase):
 
     def test_resumed_heartbeat_uses_host_value_not_string_identity(self):
         tank = self.dispatcher("tank")
-        tank.cfg.host_name = "".join(("ta", "nk"))
-        tank.cfg.land_host = "".join(("tan", "k"))
+        tank.cfg.host_name = "".join(tank.cfg.host_name)
+        tank.cfg.land_host = "".join(tank.cfg.host_name)
         self.assertIsNot(tank.cfg.host_name, tank.cfg.land_host)
         original = self.github.add_claim("tank", datetime.now(UTC))
         original["body"] += "\nFactory claim history: retained"
