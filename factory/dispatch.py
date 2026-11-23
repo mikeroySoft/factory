@@ -847,6 +847,11 @@ def unclaim(
         or ("--add-label", LABEL_AGENT) not in zip(label_args[::2], label_args[1::2])
     ):
         raise ValueError("host requires a valid host name and a ready-for-agent requeue")
+    if host is not None:
+        # Close admission before releasing any ownership, including stale claims.
+        if run(["gh", "issue", "edit", str(n), "--repo", REPO,
+                "--remove-label", LABEL_AGENT], check=check).returncode:
+            return
     claims = host_claims(n) if cfg.host_name else []
     owned = owned_host_claim(n, claims)
     if cfg.host_name and any(
@@ -856,6 +861,13 @@ def unclaim(
         context = refresh_requeue_context(n)
         gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                  "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
+    if host is not None:
+        label_args = tuple(
+            arg
+            for flag, label in zip(label_args[::2], label_args[1::2])
+            if (flag, label) != ("--add-label", LABEL_AGENT)
+            for arg in (flag, label)
+        )
     if owned is not None:
         fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,assignees"])
         release_stale_claims(n, fresh, claims, replacement=owned["id"])
@@ -869,9 +881,12 @@ def unclaim(
         delete_host_claim(n, owned)
     if host is not None:
         label = f"host:{host}"
-        run(["gh", "label", "create", label, "--repo", REPO, "--color", "ededed", "--force"])
-        run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-label", label])
+        run(["gh", "label", "create", label, "--repo", REPO, "--color", "ededed", "--force"],
+            check=True)
+        run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-label", label], check=True)
         record("requeue-host-pinned", ticket=n, host=host)
+        run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-label", LABEL_AGENT],
+            check=check)
 
 
 def frontier() -> list[dict]:
