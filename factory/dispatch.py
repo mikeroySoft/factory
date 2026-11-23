@@ -921,9 +921,10 @@ def release_expired_claim(
             raise ValueError(f"host claim ({fresh['host']}) is still live")
         elected = fresh
         context = context or shared_context
-        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                 "-f", (f"body=Factory requeue: nonce={elected['nonce']}\n"
-                        f"Factory claim history: retained\n{context}")])
+        if "requeue" not in elected or not elected.get("preserve_history"):
+            gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
+                     "-f", (f"body=Factory requeue: nonce={elected['nonce']}\n"
+                            f"Factory claim history: retained\n{context}")])
         run(["gh", "issue", "edit", str(n), "--repo", REPO,
              "--remove-label", f"host:{elected['host']}"])
         record("claim-released", ticket=n, host=elected["host"], nonce=elected["nonce"],
@@ -967,10 +968,15 @@ def landing_host_claim(
                        foreign_host=foreign["host"], foreign_nonce=foreign["nonce"])
                 log(f"#{n}: land-host takeover from host={foreign['host']} nonce={foreign['nonce']}")
         elif not dry_run and cfg.host_name and cfg.land_host == cfg.host_name:
-            # A previous refresh left its durable landing claim for the next pass.
-            if (owned := owned_host_claim(n)) is not None and n not in _HOST_CLAIMS:
+            # Only a takeover leaves a durable landing claim for the next pass.
+            if ((owned := owned_host_claim(n)) is not None
+                    and owned.get("preserve_history") and n not in _HOST_CLAIMS):
                 claim = HostClaim(n, owned)
                 claim.preserve_history = True
+                # Renew before admission can mistake a CI wait for an interrupted worker.
+                if not live_host_claims([owned]):
+                    gh_json(["api", f"repos/{REPO}/issues/comments/{owned['id']}",
+                             "--method", "PATCH", "-f", f"body={claim.body()}"])
                 _HOST_CLAIMS[n] = claim
                 claim.thread.start()
         yield True
@@ -4997,6 +5003,8 @@ def merge_pass_locked(dry_run: bool) -> None:
             )) as execution,
         ):
             if not owned:
+                if execution:
+                    execution.outcome, execution.reason = "not_eligible", "claim_lost"
                 continue
             recovery_claim = owned_host_claim(n) if cfg.host_name and cfg.land_host == cfg.host_name else None
             recovering = bool(recovery_claim) and any(

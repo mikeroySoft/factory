@@ -201,7 +201,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 
 The configured land host may take over an approved ticket PR whose elected
 foreign claim has expired. It releases that nonce through the dispatcher's
-`unclaim` requeue transition, then claims the ticket and follows normal merge
+authenticated requeue transition, then claims the ticket and follows normal merge
 eligibility or refresh. The old claim comments remain evidence; the takeover
 journal records the foreign host and nonce. A live foreign claim still blocks,
 and a non-land host never enters landing.
@@ -211,9 +211,11 @@ If a takeover refresh requeues a conflict, its retained local claim stops
 heartbeating; worker admission waits for that claim's normal TTL to expire.
 An unchanged head with only the other host's journal evidence also goes through
 the normal gate and review path to establish local exact-head approval evidence.
-Recovery remains pending across CI waits; a later green pass establishes fresh
-local evidence rather than treating the takeover claim as an ordinary approval.
-Claim history remains intact through conflict requeue, expiry and worker recovery.
+Recovery remains pending across CI waits; an expired retained takeover claim is
+renewed before worker admission, and a later green pass establishes fresh local
+evidence rather than treating the takeover claim as an ordinary approval. Ordinary
+owned claims are not marked for retention by landing and still release normally.
+Takeover claim history remains intact through conflict requeue, expiry and worker recovery.
 
 The guarded `release_claim` named action posts the matching dispatcher requeue
 marker and removes only the elected host label after confirmation and a fresh

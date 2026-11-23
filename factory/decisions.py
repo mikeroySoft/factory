@@ -1431,7 +1431,7 @@ def _observe(cfg: Config, document: dict) -> dict:
             errors.append({"target": {"kind": key[0], "number": key[1]}, "code": exc.code})
     postconditions = []
     for index, request in enumerate(document["preview"]["requests"]):
-        kind = "pr" if request["op"] == "pr" else "cleanup" if request["op"] == "cleanup" else "issue"
+        kind = request["op"] if request["op"] in {"pr", "cleanup", "release_claim"} else "issue"
         postconditions.append({
             "request": index,
             **_postcondition(request, document["preview"]["actor"], actual.get((kind, request["number"]))),
