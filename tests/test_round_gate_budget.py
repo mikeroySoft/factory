@@ -676,6 +676,17 @@ class RoundGateBudgetTest(unittest.TestCase):
     def test_manager_fix_runner_failure_precedes_fixup_budget(self):
         self.assert_runner_failure_precedes_fixup_budget("manager")
 
+    def test_pr_gate_refusal_does_not_consume_additional_bounces(self):
+        original_load = config.load
+
+        def load(*args, **kwargs):
+            configured = original_load(*args, **kwargs)
+            configured.review_rounds = 3
+            return configured
+
+        with mock.patch.object(config, "load", side_effect=load):
+            self.assert_pr_failure_survives_bounce_budget(50)
+
     def test_active_worker_gate_ignores_foreign_and_non_gate_events(self):
         with chdir(self.repo), mock.patch.dict(os.environ, self.env):
             wt = self.configure_round()
