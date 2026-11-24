@@ -62,9 +62,9 @@ LABELS = {
 # Word-bounded strong signals only: bare words like "internal"/"private" are ordinary English.
 DEFAULT_LEAK_PATTERN = (r"\.(?:corp|internal|intranet|lan)\b|\bconfidential\b|\bproprietary\b"
                         r"|\bjira\b|\bconfluence\b|\.atlassian\.net\b")
-DEFAULT_WORKER = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
-DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.6-sol"
-DEFAULT_CHORE_WORKER = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+DEFAULT_WORKER_MODEL = "openai-codex/gpt-6.1-sol"
+DEFAULT_WORKER = ["omp", "-p", "--model", DEFAULT_WORKER_MODEL, "--cwd", "{cwd}", "@{prompt}"]
+DEFAULT_CHORE_WORKER = ["droid", "exec", "--model", "gpt-6-sol", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 DEFAULT_REVIEWER = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 DEFAULT_SECOND_REVIEWER = ["omp", "-p", "--no-session", "--model", "openai-codex/gpt-6-astra", "{prompt}"]
 DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
@@ -326,21 +326,13 @@ class Config:
         return expand([*self.worker_wrap, *self.workers[worker]], prompt=str(prompt), cwd=str(cwd),
                       root=str(self.root), repo=self.repo, home=str(Path.home()))
 
-    def launch_command(self, worker: str) -> list[str]:
-        """The profile's command as launched: the built-in OMP default carries its pinned model."""
-        command = self.workers[worker]
-        if command == DEFAULT_WORKER:
-            return [*command[:2], "--model", DEFAULT_WORKER_MODEL, *command[2:]]
-        return list(command)
-
     def worker_model(self, worker: str) -> str | None:
         """Explicit model of the launched command, or None when the command leaves it implicit."""
         return self.worker_spec(worker, Path("{prompt}"), Path("{cwd}")).model
 
     def worker_spec(self, worker: str, prompt: Path, cwd: Path) -> WorkerSpec:
         """Everything one launch of `worker` uses; selection, audit and launch read this value."""
-        argv = expand([*self.worker_wrap, *self.launch_command(worker)], prompt=str(prompt), cwd=str(cwd),
-                      root=str(self.root), repo=self.repo, home=str(Path.home()))
+        argv = self.worker_command(worker, prompt, cwd)
         return WorkerSpec(
             profile=worker,
             argv=argv,
@@ -386,9 +378,10 @@ def command_model(command: list[str]) -> str | None:
     """Explicit ``--model`` value, or None when the command leaves it implicit."""
     for index, value in enumerate(command):
         if value == "--model" and index + 1 < len(command):
-            return command[index + 1]
+            model = command[index + 1]
+            return model if model and not model.startswith("-") else None
         if value.startswith("--model="):
-            return value.split("=", 1)[1]
+            return value.split("=", 1)[1] or None
     return None
 
 
