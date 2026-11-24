@@ -380,10 +380,12 @@ def _timeout(deadline: float) -> float:
 
 def _checked(
     cfg: Config, argv: list[str], deadline: float, *, cwd: Path | None = None, cap: int = READ_CAP,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = _run(
-            argv, env=_environment(cfg), cwd=cwd, timeout=_timeout(deadline), cap=cap,
+            argv, env=_environment(cfg) if env is None else env,
+            cwd=cwd, timeout=_timeout(deadline), cap=cap,
         )
     except _AmbiguousCommand as exc:
         raise DecisionError("provider read did not complete", "provider_unavailable") from exc
@@ -402,12 +404,13 @@ def _read_json(
         raise DecisionError("provider returned invalid JSON", "provider_unavailable") from exc
 
 
-def _actor(cfg: Config, deadline: float) -> str:
+def _actor(cfg: Config, deadline: float, *, env: dict[str, str] | None = None) -> str:
     result = _checked(
         cfg,
         ["gh", "api", "--hostname", "github.com", "--method", "GET", "user", "--jq", ".login"],
         deadline,
         cap=1_024,
+        env=env,
     )
     actor = result.stdout.strip()
     if not actor or len(actor) > 39 or _LOGIN.fullmatch(actor) is None:
@@ -775,8 +778,11 @@ def _plan_request(
 
 
 def _check_requeue_host(
-    cfg: Config, number: int, host: str, deadline: float, caller: str, actor: str,
+    cfg: Config, number: int, host: str, deadline: float, caller: str,
 ) -> None:
+    actor = _actor(cfg, deadline, env={
+        **_environment(cfg), **cfg.install.get("dispatch_env", {}),
+    })
     pages = _read_json(cfg, [
         "gh", "api", "--paginate", "--slurp", f"repos/{cfg.repo}/issues/{number}/comments",
     ], deadline)
@@ -851,7 +857,7 @@ def prepare(
             _sync_routing(request, raw)
         planning_request = request
         if host is not None and request is normalized[0]:
-            _check_requeue_host(cfg, number, host, deadline, caller, actor)
+            _check_requeue_host(cfg, number, host, deadline, caller)
             steps.append({
                 **_command_step("requeue_withdraw_ready", [
                     "gh", "issue", "edit", str(number), "--repo", cfg.repo, "--remove-label", LABEL_AGENT,
@@ -1257,7 +1263,7 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                         _approval_policy(cfg, step["target"])
                     elif step["action"] == "requeue_host_pin":
                         _check_requeue_host(
-                            cfg, step["number"], step["host"], deadline, preview["caller"], actor,
+                            cfg, step["number"], step["host"], deadline, preview["caller"],
                         )
                 started_at = _format_time(_now())
                 intent = {

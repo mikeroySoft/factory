@@ -802,11 +802,14 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
         comment = gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                            "-f", f"body={claim.body()}"])
         claim.comment.update(comment)
+        claims = host_claim_state(n, require_shared_login=True)[0]
         current = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
-        elected = live_host_claims(host_claim_state(n, require_shared_login=True)[0])
-        # Labels are advisory during a race, but escalation must still stop admission.
+        elected = live_host_claims(claims)
+        # Recheck explicit pins at final admission; expired claim labels remain recoverable.
+        foreign = {row["name"][5:] for row in current["labels"] if row["name"].startswith("host:")}
+        foreign -= {row["host"] for row in claims} | {cfg.host_name}
         ready = forced or any(label["name"] == LABEL_AGENT for label in current["labels"])
-        if not ready or not elected or elected[0]["id"] != claim.comment["id"]:
+        if foreign or not ready or not elected or elected[0]["id"] != claim.comment["id"]:
             claim.release()
             record("claim_lost", ticket=n, host=cfg.host_name,
                    winner=elected[0]["host"] if elected else None)

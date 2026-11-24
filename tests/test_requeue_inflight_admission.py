@@ -25,6 +25,7 @@ class RequeueInflightAdmissionTest(unittest.TestCase):
         self.github = FakeGitHub()
         self.github.issue = self.issue
         self.launched = []
+        self.tank = self.dispatcher("tank")
 
     def assert_requeue_beats_inflight_admission(self, requeue):
         ultron = self.dispatcher("ultron")
@@ -56,13 +57,13 @@ class RequeueInflightAdmissionTest(unittest.TestCase):
         )
         self.assertFalse(any("Factory claim: host=ultron " in row["body"] for row in self.github.comments))
 
-        tank = self.dispatcher("tank")
+        tank = self.tank
         tank.process_ticket(copy.deepcopy(self.issue), 1, False)
         self.assertEqual(self.launched, ["tank"])
         self.assertTrue(any("Factory claim: host=tank " in row["body"] for row in self.github.comments))
 
     def test_dispatcher_explicit_requeue_blocks_inflight_foreign_acquire(self):
-        tank = self.dispatcher("tank")
+        tank = self.tank
 
         def requeue():
             tank.unclaim(

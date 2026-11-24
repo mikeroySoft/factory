@@ -3306,14 +3306,18 @@ host=...)` API likewise re-pins after claim cleanup; automated callers do not
 select a replacement host. Both explicit-host paths refuse an unretired target-host
 claim, expired or live, before any GitHub mutation and record `requeue-host-refused`.
 Named actions check all retained claims during prepare and again during apply;
-only comments by the authenticated actor with valid timezone-aware claim and
-creation timestamps count, matching dispatcher claim authentication. Outsider
-or malformed claim text cannot block requeues. Claim-read failure also refuses
-the action. Requeue does not retire these claims.
+only comments by the authenticated dispatcher identity, resolved with
+`install.dispatch_env`, and valid timezone-aware claim and creation timestamps
+count. The human action identity is separate. Human or outsider claim text cannot
+block requeues or hide a genuine dispatcher claim. Claim or dispatcher-identity
+read failure refuses the action. Requeue does not retire these claims.
 Explicit-host requeues revoke readiness before cleanup and publish
 `ready-for-agent` only after pinning and its audit succeed. Pin or audit failure
 leaves the issue non-ready. Later escalation still removes the owning claim's
 host label, and manager RETRY is unchanged.
+Final host admission rechecks fresh foreign pins after reading claims, so a
+foreign admission already in flight cannot cross a completed explicit re-pin.
+Pins backed by retained expired claims remain recoverable under the existing election.
 
 For agent re-approval, prepare `{"action": "approve_pr", "args": {"number": 257,
 "ruling_id": "r3-0740"}}` with `factory_prepare_action` and the registered
