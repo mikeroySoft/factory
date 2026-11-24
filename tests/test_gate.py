@@ -1289,6 +1289,36 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
             self.assertIn("- test: PASS", report)
             self.assertIn("## test test evidence\n```\nRan 0 tests\n```", report)
 
+    def test_attempt_preserves_inline_uv_options_in_module_mode(self) -> None:
+        import json
+
+        for prefix in (
+            ("--python=/usr/bin/python3.12",),
+            ("--offline", f"--python={sys.executable}"),
+            ("--project=/tmp/python",),
+        ):
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as directory:
+                repo = Path(directory) / "repo"
+                arguments = ["run", *prefix, "-m", "unittest", "discover", "-s", "tests"]
+                toml = TOML + (
+                    '\n[[gate.check]]\nname = "test"\n'
+                    f'run = {json.dumps([str(repo / "uv"), *arguments])}\n'
+                )
+                repo = repo_with_test(Path(directory), toml)
+                program = repo / "uv"
+                program.write_text(
+                    f"#!{sys.executable}\n"
+                    "import sys\n"
+                    f"assert sys.argv[1:] == {arguments!r}, sys.argv\n"
+                )
+                program.chmod(0o755)
+                commit(repo, "inline uv options in module mode")
+
+                code, out, report = gate(repo)
+
+                self.assertEqual(code, 0, out + report)
+                self.assertIn("- test: PASS", report)
+
 
 if __name__ == "__main__":
     unittest.main()
