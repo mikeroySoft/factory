@@ -96,7 +96,7 @@ class ReleaseClaimBoundaryTest(unittest.TestCase):
         self.assertEqual(self.github.comments[0], self.claim)
         self.assertEqual(
             self.github.comments[1]["body"],
-            f"Factory requeue: nonce={self.nonce}\nFactory claim history: retained\n",
+            f"Factory requeue: nonce={self.nonce}\n",
         )
         self.assertFalse(any("DELETE" in command for _, command in self.github.calls))
 
@@ -210,9 +210,24 @@ class ReleaseClaimBoundaryTest(unittest.TestCase):
         self.assertIn(old_marker, self.github.comments)
         self.assertEqual(
             self.github.comments[-1]["body"],
-            f"Factory requeue: nonce={self.nonce}\n"
-            f"Factory claim history: retained\n{context}",
+            f"Factory requeue: nonce={self.nonce}\n{context}",
         )
+
+    def test_takeover_release_retains_history_and_recovery_context(self):
+        context = "## Recovery context from the foreign dispatcher\n\nkeep this evidence\n"
+        with mock.patch.object(
+            self.module, "refresh_requeue_context", return_value=context,
+        ):
+            self.module.release_expired_claim(
+                n=7, reason="land-host takeover", expected_nonce=self.nonce,
+            )
+
+        self.assertIn(self.claim, self.github.comments)
+        self.assertEqual(
+            self.github.comments[-1]["body"],
+            f"Factory requeue: nonce={self.nonce}\nFactory claim history: retained\n{context}",
+        )
+        self.assertFalse(any("DELETE" in command for _, command in self.github.calls))
 
     def test_triage_observation_is_not_reported_as_claim_release(self):
         preview = decisions.prepare(
