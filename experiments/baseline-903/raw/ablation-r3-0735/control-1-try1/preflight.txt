@@ -1,0 +1,17 @@
+2026-11-24T07:35:14-0800
+vm.loadavg: { 2.26 2.61 2.46 }
+ 7:35  up 5 days, 22:26, 5 users, load averages: 2.26 2.61 2.46
+--- benito/factory processes
+  533     1 05-22:25:14   0.0 /Users/mike/dev/mikeroysoft/benito-app/.derivedData/BenitoServer/Build/Products/Debug/Benito Server.app/Contents/MacOS/Benito Server
+ 1096     1 05-22:24:58   0.0 /Users/mike/Library/Application Support/Benito/bin/benito-server
+ 1108     1 05-22:24:58   0.0 /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m http.server 8091 --bind 0.0.0.0 --directory /Users/mike/dev/mi
+ 1674  1096 05-22:24:42   0.0 /usr/bin/dns-sd -R Benito _benito._tcp local 8082 version=0.1.0
+--- top cpu
+  PID  %CPU COMMAND
+42612  27.1 /Applications/VMware Fusion.app/Contents/Library/vmware-vmx -E en -s vmx.stdio.keep=TRUE -# product=64;name=VMware Fusion;version=13.6.3;buildnumber
+ 1120   5.4 /Library/Application Support/Universal Audio/Apollo/UA Mixer Engine.app/Contents/MacOS/UA Mixer Engine -silent
+  376   5.2 /usr/libexec/sysmond
+ 1263   5.1 /Users/mike/.t3/runtime/versions/0.0.45/resource-monitor/darwin-arm64/t3-resource-monitor
+20614   2.5 /bin/zsh -c IFS= builtin read -r -d '' __cursor_command <&5 2>/dev/null || { builtin printf '%s\n' 'The command did not run: a shell startup file ($
+  247   1.9 /usr/libexec/airportd
+  151   1.7 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mds
