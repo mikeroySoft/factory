@@ -676,6 +676,178 @@ class RoundGateBudgetTest(unittest.TestCase):
     def test_manager_fix_runner_failure_precedes_fixup_budget(self):
         self.assert_runner_failure_precedes_fixup_budget("manager")
 
+    def test_positive_subsecond_floor_is_accepted(self):
+        path = self.repo / ".factory.toml"
+        path.write_text(path.read_text().replace("[dispatch]\n", "[dispatch]\ngate_reserve_seconds = 0.25\n"))
+        with mock.patch.dict(os.environ, self.env):
+            self.assertEqual(config.load(self.repo).gate_reserve_seconds, 0.25)
+
+    def test_history_uses_latest_matching_gate_including_zero_duration(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            ticket = 100_007  # JSON decoding must not rely on integer identity caches.
+            report = str(wt / ".factory" / f"gate-report-{ticket}.md")
+
+            def timing(seconds, **overrides):
+                row = dict(event="decision", stage="gate", ticket=ticket, cost={"seconds": seconds},
+                           inputs=[{"kind": "gate_log", "ref": report}])
+                row.update(overrides)
+                lifecycle.append(self.events, row)
+
+            for seconds in (0, 0.25):
+                with self.subTest(seconds=seconds):
+                    timing(99)
+                    timing(seconds)
+                    timing(100, ticket=ticket - 1)
+                    timing(100, ticket=ticket + 1)
+                    timing(100, event="attempt")
+                    timing(100, stage="claim")
+                    timing(100, stage="worker")
+                    timing(100, stage="review")
+                    timing(100, inputs=[{"kind": "gate_log", "ref": report + "-pr"}])
+                    timing(100, inputs=[{"kind": "worker_log", "ref": report}])
+                    for invalid in (-0.5, True, "20", None):
+                        timing(invalid)
+                    self.assertEqual(dispatch.round_gate_reserve(wt, ticket), (seconds, "last_gate"))
+            # No matching decision means the configured floor, not another ticket's gate.
+            self.assertEqual(dispatch.round_gate_reserve(wt, ticket + 2),
+                             (dispatch.cfg.gate_reserve_seconds, "floor"))
+
+    def test_expired_round_journals_zero_remaining_time(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            with mock.patch.object(dispatch.time, "monotonic", return_value=61), \
+                    mock.patch.object(dispatch, "run_worker") as worker, \
+                    mock.patch.object(dispatch, "run_gate") as gate:
+                ok, report, _, _ = dispatch.worker_round(7, wt, set(), "fix", "", 1, 60)
+            self.assertFalse(ok)
+            self.assertTrue(report.startswith("budget exceeded before work"))
+            worker.assert_not_called()
+            gate.assert_not_called()
+        row, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "round-budget"]
+        self.assertEqual(row["remaining_seconds"], 0)
+        self.assertEqual(row["work_seconds"], 0)
+
+    def assert_budget_without_gate_keeps_comment_bounded(self, mode):
+        from factory import manage
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+            logfile = dispatch.LOGS / "7-attempt-1.log"
+            report = "budget exceeded before work: reserved for gate\n\n" + "private detail\n" * 6000
+            failure = (False, report, logfile, head)
+            rounds = [(True, "PASS", logfile, head), failure] if mode == "bounce" else [failure]
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            packet = self.repo / ".factory/manager-packet.md"
+            packet.write_text("fix")
+            with mock.patch.object(dispatch, "worker_round", side_effect=rounds), \
+                    mock.patch.object(dispatch.time, "monotonic", return_value=0), \
+                    mock.patch.object(dispatch, "push_and_pr", return_value=True) as publish, \
+                    mock.patch.object(dispatch, "push_agent") as push, \
+                    mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])), \
+                    mock.patch.object(dispatch, "pr_gate_and_review", return_value=("REVISE", "fix", False)), \
+                    mock.patch.object(dispatch, "run", wraps=dispatch.run) as run:
+                if mode == "manager":
+                    manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
+                else:
+                    dispatch.process_ticket(issue, 1, False, forced=True)
+            push.assert_not_called()
+            self.assertEqual(publish.call_count, int(mode == "bounce"))
+            comments = [call.args[0][-1] for call in run.call_args_list
+                        if call.args[0][:3] == ["gh", "issue", "comment"]]
+            comment, = comments
+            self.assertLess(len(comment), 65536)
+            self.assertIn("budget exceeded before work: reserved for gate; budget_min / budget_exceeded", comment)
+            self.assertNotIn("private detail", comment)
+            escalation, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "escalate"]
+            self.assertEqual(escalation["code"], "budget")
+
+    def test_attempt_budget_without_gate_keeps_comment_bounded(self):
+        self.assert_budget_without_gate_keeps_comment_bounded("attempt")
+
+    def test_bounce_budget_without_gate_keeps_comment_bounded(self):
+        self.assert_budget_without_gate_keeps_comment_bounded("bounce")
+
+    def test_manager_budget_without_gate_keeps_comment_bounded(self):
+        self.assert_budget_without_gate_keeps_comment_bounded("manager")
+
+    def test_manager_already_human_logs_protected_clearing_guidance(self):
+        from factory import manage
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            issue["labels"] = [{"name": dispatch.LABEL_HUMAN}]
+            packet = self.repo / ".factory/manager-packet.md"
+            packet.write_text("fix")
+            with mock.patch.object(dispatch, "worker_round", return_value=(
+                    False, "- protected-paths: FAIL\n", dispatch.LOGS / "worker.log", head)), \
+                    mock.patch.object(dispatch, "log") as log, \
+                    mock.patch.object(dispatch, "escalate") as escalate, \
+                    mock.patch.object(dispatch, "push_agent") as push:
+                manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
+            escalate.assert_not_called()
+            push.assert_not_called()
+            message = "\n".join(call.args[0] for call in log.call_args_list)
+            self.assertIn("protected_paths", message)
+            self.assertIn("Human-only authority", message)
+            self.assertIn(dispatch.LABEL_PROTECTED_OVERRIDE, message)
+
+    def test_escalation_only_publishes_protected_clearing_guidance(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            self.configure_round()
+            for code, extra, visible in (
+                ("".join(["protected", "_paths"]), "Human-only clearing guidance\n\ndiff detail", True),
+                ("gate_failed", "packet detail\n\nprivate diff", False),
+            ):
+                with self.subTest(code=code), mock.patch.object(dispatch, "run", wraps=dispatch.run) as run:
+                    dispatch.escalate(7, "failed", None, extra=extra, code=code)
+                comment, = [call.args[0][-1] for call in run.call_args_list
+                            if call.args[0][:3] == ["gh", "issue", "comment"]]
+                self.assertEqual("Human-only clearing guidance" in comment, visible)
+                self.assertNotIn("diff detail", comment)
+                self.assertNotIn("packet detail", comment)
+                self.assertNotIn("private diff", comment)
+                self.assertIn(extra, (dispatch.FACTORY / "escalations/7.md").read_text())
+
+    def test_bounce_protected_failure_bounds_offending_diff(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+            logfile = dispatch.LOGS / "worker.log"
+            report = "- protected-paths: FAIL\n".ljust(6000, "x") + "SENSITIVE-TAIL"
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            with mock.patch.object(dispatch, "worker_round", side_effect=[
+                    (True, "PASS", logfile, head), (False, report, logfile, head)]), \
+                    mock.patch.object(dispatch.time, "monotonic", return_value=0), \
+                    mock.patch.object(dispatch, "push_and_pr", return_value=True), \
+                    mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])), \
+                    mock.patch.object(dispatch, "pr_gate_and_review", return_value=("REVISE", "fix", False)), \
+                    mock.patch.object(dispatch, "escalate") as escalate, \
+                    mock.patch.object(dispatch, "push_agent") as push:
+                dispatch.process_ticket(issue, 1, False, forced=True)
+            push.assert_not_called()
+            self.assertEqual(escalate.call_args.kwargs["code"], "protected_paths")
+            extra = escalate.call_args.kwargs["extra"]
+            self.assertIn("Human-only authority", extra)
+            self.assertEqual(extra.split("## Offending diff\n\n", 1)[1], report[:6000])
+
+    def test_worker_gate_hard_cap_is_not_reported_as_idle_timeout(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            with mock.patch.object(dispatch.time, "monotonic", return_value=0), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(143, "gate_timeout")), \
+                    mock.patch.object(dispatch, "run_gate") as gate:
+                ok, report, _, _ = dispatch.worker_round(7, wt, set(), "fix", "", 1, 100)
+            self.assertFalse(ok)
+            self.assertEqual(report, "worker gate exceeded its hard cap")
+            gate.assert_not_called()
+        attempt, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "attempt"]
+        self.assertEqual(attempt["reason"], "gate_hard_cap")
+        self.assertIsNone(attempt["gate"])
+
     def test_floor_rejects_invalid_config_values(self):
         path = self.repo / ".factory.toml"
         original = path.read_text()
