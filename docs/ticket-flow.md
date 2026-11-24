@@ -197,12 +197,52 @@ CLOSE do not add an error to the exit.
 One row per function that edits labels (`--add-label`, `--remove-label`, or
 `--label` on `gh ... create`). `*` is a label chosen at runtime.
 
+### Expired host-claim transitions
+
+The configured land host may take over an approved ticket PR whose elected
+foreign claim has expired. It releases that nonce through the dispatcher's
+authenticated requeue transition, then claims the ticket and follows normal merge
+eligibility or refresh. The old claim comments remain evidence; the takeover
+journal records the foreign host and nonce. A live foreign claim still blocks,
+and a non-land host never enters landing.
+The claim is expired exactly when heartbeat age reaches its configured TTL;
+even one microsecond before that edge, the foreign owner still blocks takeover.
+If a takeover refresh requeues a conflict, its retained local claim stops
+heartbeating; worker admission waits for that claim's normal TTL to expire.
+An unchanged head with only the other host's journal evidence also goes through
+the normal gate and review path to establish local exact-head approval evidence.
+Recovery remains pending across CI waits; an expired retained takeover claim is
+renewed before worker admission, including when an earlier PR ends the merge pass
+before visiting it. A later green pass establishes fresh local evidence rather than
+treating the takeover claim as an ordinary approval. Ordinary owned claims release
+normally even after a dashboard release: retaining an old claim record does not
+propagate retention to an unrelated worker. Takeover claim history remains intact
+through conflict requeue, expiry and worker recovery.
+
+The guarded `release_claim` named action posts the matching dispatcher requeue
+marker and removes only the elected host label after confirmation and a fresh
+claim check at apply. It preserves routing labels, assignees, escalation holds
+and generation budgets, including upstream-sync routing. It refuses live claims
+and does not delete comments or grant approval. Releasing a held ticket does not
+authorize its requeue. Refresh still requires re-gating and re-review at the new
+head before re-approval and landing.
+Explicit releases also publish an authenticated `Factory claim released: nonce=…`
+receipt. The shared release publisher writes it before any requeue comment or
+label edit that enables another host's admission. Retained takeover requeues use
+the same ordering, including conflicting refresh and worker recovery. Receipt
+failure leaves the open-PR hold intact. Cleanup on any host preserves that nonce's
+comment; ordinary ephemeral worker claims still clean up normally. Dashboard
+release of a retained takeover never renews it or publishes a new retained marker.
+
+### Label transition index
+
 | Code | Removes | Adds | Path |
 |------|---------|------|------|
 | `decisions._approve` | — | `factory-approved` | Human approve step; withdrawn again if the PR changed while labelling |
 | `decisions._plan_request` | `*` | `*` | Human action; labels limited to `decisions.ACT_LABELS`, `factory-approved` routed to `decisions._approve` |
 | `decisions._withdraw_approval` | `factory-approved` | — | Human approve step found the PR changed |
 | `dispatch.acquire_host_claim` | — | `*` | Add this host's `host:<name>` label before the comment election |
+| `dispatch.release_expired_claim` | `*` | — | Remove only the expired owner's host label and post a nonce-bound dispatcher release marker; preserve routing, assignments, generations and claim comments |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
 | `dispatch.delete_host_claim` | `*` | `*` | Remove the host label before deleting its last claim; restore it if comment deletion fails and the claim remains |
 | `dispatch._record_rework` | `ready-for-human` | `ready-for-agent` | Deferred actionable findings: durable round charged, packet retained, owner queue cleared and assignee removed for the next pass |

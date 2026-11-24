@@ -83,6 +83,16 @@ def _request(args: dict, **effect: object) -> list[dict]:
 
 # Sync refusal for requeue_agent comes from decisions._sync_routing on the add of ready-for-agent.
 ACTIONS = {
+    "release_claim": {
+        "description": (
+            "Release an expired elected host claim: remove its host label and post a nonce-bound release marker. "
+            "Preserve pipeline labels, assignees, generation budgets and claim comments; refuse live claims. "
+            "Held tickets require a separate authorized requeue_agent action."
+        ),
+        "schema": _schema(),
+        "check": None,
+        "compile": lambda args: [{"op": "release_claim", **args}],
+    },
     "requeue_agent": {
         "description": (
             f"Move an open {LABEL_HUMAN} issue back to {LABEL_AGENT} and unassign the actor; refuses upstream-sync "

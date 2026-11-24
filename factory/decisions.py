@@ -460,18 +460,17 @@ def _normalize_request(raw: object) -> dict:
         "pr": {"op", "number", "comment", "add", "remove"},
         "triage": {"op", "number"},
         "cleanup": {"op", "number"},
+        "release_claim": {"op", "number", "comment"},
     }.get(op)
     if allowed is None:
         raise DecisionError(f"unsupported decision operation {op!r}")
     if not set(raw) <= allowed:
         raise DecisionError(f"{op} request fields are closed")
-    if op in {"triage", "cleanup"}:
-        if set(raw) != allowed:
-            raise DecisionError(f"{op} requires exactly op and number")
-        return {"op": op, "number": number}
     request = {"op": op, "number": number}
     if "comment" in raw:
         request["comment"] = _comment(raw["comment"])
+    if op in {"triage", "cleanup", "release_claim"}:
+        return request
     add = _labels(raw.get("add", []), "add")
     remove = _labels(raw.get("remove", []), "remove")
     if set(add) & set(remove):
@@ -692,6 +691,13 @@ def _effect(request: dict, actor: str, target: dict) -> dict:
         changes.append("remove the fixed local worktree and agent branch; retain lock evidence")
     if request["op"] == "outcome":
         changes.append("post one canonical owner attestation; no release or install is run")
+    if request["op"] == "release_claim":
+        changes.extend([
+            f"remove label host:{target['claim']['host']}",
+            "post a nonce-bound dispatcher release marker carrying recovery context; retain claim comments",
+            "post an authenticated nonce-bound release receipt for cross-host comment preservation",
+            "preserve pipeline labels, assignees and generation budgets; held tickets require a separate authorized requeue_agent",
+        ])
     if LABEL_APPROVED in request.get("add", []):
         changes.append("require exact-head gate and independent review evidence before approval")
     return {
@@ -738,6 +744,16 @@ def _plan_request(
                 "issue_close",
                 ["gh", "issue", "close", str(number), "--repo", cfg.repo, "--reason", request["close"]],
             ))
+    elif op == "release_claim":
+        steps.append(_command_step(
+            "release_claim", _release_claim_command(cfg, number, "apply", target["claim"]["nonce"]),
+            cwd=cfg.root,
+        ))
+        if request.get("comment", "").strip():
+            steps.append(_command_step(
+                "issue_comment",
+                ["gh", "issue", "comment", str(number), "--repo", cfg.repo, "--body", request["comment"]],
+            ))
     elif op == "triage":
         if raw is not None and raw.get("title", "").startswith(dispatch.SYNC_TITLE):
             raise DecisionError("upstream-sync issues cannot enter ordinary triage routing", "routing_refused")
@@ -774,6 +790,65 @@ def _plan_request(
     return steps
 
 
+_RELEASE_CLAIM_SCRIPT = """
+import json, os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[5])
+from factory import config, dispatch
+cfg = config.load(Path(sys.argv[1]))
+os.environ.update(cfg.install.get("dispatch_env", {}))
+dispatch.configure(cfg)
+try:
+    claim = dispatch.release_expired_claim(
+        int(sys.argv[2]), dry_run=sys.argv[3] == "preview",
+        expected_nonce=sys.argv[4] or None, reason="dashboard release_claim",
+    )
+except ValueError as exc:
+    print(json.dumps({"error": str(exc)}))
+    sys.exit(1 if sys.argv[3] == "apply" else 0)
+print(json.dumps({"claim": {key: claim[key] for key in ("id", "host", "nonce", "at")}}))
+"""
+
+
+def _release_claim_command(cfg: Config, number: int, mode: str, nonce: str = "") -> list[str]:
+    # A child process isolates dispatch's repository globals across dashboard repositories.
+    return [sys.executable, "-P", "-B", "-c", _RELEASE_CLAIM_SCRIPT, str(cfg.root), str(number), mode, nonce, str(_PACKAGE_ROOT)]
+
+
+def _release_claim_target(cfg: Config, number: int, deadline: float) -> tuple[dict, dict]:
+    issue, raw = _issue_target(cfg, number, deadline)
+    if issue["state"] == "OPEN":
+        pass
+    elif issue["state"] == "CLOSED":
+        raise DecisionError("issue is not open", "precondition_failed")
+    else:
+        raise ValueError(f"unknown issue state: {issue['state']!r}")
+    result = _read_json(cfg, _release_claim_command(cfg, number, "preview"), deadline, cwd=cfg.root)
+    if not isinstance(result, dict):
+        raise DecisionError("dispatcher returned invalid claim state", "provider_unavailable")
+    if result.get("error"):
+        raise DecisionError(str(result["error"]), "precondition_failed")
+    claim = result.get("claim")
+    if not isinstance(claim, dict) or set(claim) != {"id", "host", "nonce", "at"}:
+        raise DecisionError("dispatcher returned incomplete claim state", "provider_unavailable")
+    return {"kind": "release_claim", "number": number, "issue": issue, "claim": claim}, raw
+
+
+def _prepare_target(cfg: Config, kind: str, number: int, deadline: float) -> tuple[dict, dict | None]:
+    if kind == "pr":
+        return _pr_target(cfg, number, deadline)
+    if kind == "cleanup":
+        issue, _ = _issue_target(cfg, number, deadline)
+        if issue["assignees"] or (issue["state"] == "OPEN" and LABEL_AGENT in issue["labels"]):
+            raise DecisionError("cleanup target has live ownership or routing", "target_busy")
+        return {**_local_cleanup_target(cfg, number, deadline), "issue": issue}, None
+    if kind == "issue":
+        return _issue_target(cfg, number, deadline)
+    if kind == "release_claim":
+        return _release_claim_target(cfg, number, deadline)
+    raise ValueError(f"unknown target kind: {kind!r}")
+
+
 def prepare(
     cfg: Config, requests: object, *, caller: str = "dashboard", action: dict | None = None, guard=None,
 ) -> dict:
@@ -797,19 +872,10 @@ def prepare(
 
     for index, request in enumerate(normalized):
         op, number = request["op"], request["number"]
-        kind = "pr" if op == "pr" else "cleanup" if op == "cleanup" else "issue"
+        kind = "pr" if op == "pr" else op if op in {"cleanup", "release_claim"} else "issue"
         key = (kind, number)
         if key not in target_by_key:
-            if kind == "pr":
-                target, raw = _pr_target(cfg, number, deadline)
-            elif kind == "cleanup":
-                issue, _ = _issue_target(cfg, number, deadline)
-                if issue["assignees"] or (issue["state"] == "OPEN" and LABEL_AGENT in issue["labels"]):
-                    raise DecisionError("cleanup target has live ownership or routing", "target_busy")
-                target = {**_local_cleanup_target(cfg, number, deadline), "issue": issue}
-                raw = None
-            else:
-                target, raw = _issue_target(cfg, number, deadline)
+            target, raw = _prepare_target(cfg, kind, number, deadline)
             target_by_key[key] = target, raw
             targets.append(target)
         target, raw = target_by_key[key]
@@ -974,6 +1040,8 @@ def _coordination_locks(cfg: Config, locks: list[dict]):
 
 def _live_target(cfg: Config, target: dict, deadline: float) -> dict:
     kind, number = target.get("kind"), target.get("number")
+    if kind == "release_claim":
+        return _release_claim_target(cfg, number, deadline)[0]
     if kind == "issue":
         return _issue_target(cfg, number, deadline)[0]
     if kind == "pr":
@@ -1342,6 +1410,8 @@ def _postcondition(request: dict, actor: str, actual: dict | None) -> dict:
         evidence.append("fixed worktree and branch are absent" if checks[-1] else "fixed worktree or branch remains")
     elif op == "outcome":
         evidence.append("canonical comment identity was not collected; attestation postcondition is unknown")
+    elif op == "release_claim":
+        evidence.append("claim comments are retained; release marker identity was not collected and is unknown")
     else:
         evidence.append("triage target state is observed, but its model-selected postcondition is not inferred")
     status = "unknown" if not checks else "satisfied" if all(checks) else "not_satisfied"
@@ -1366,7 +1436,7 @@ def _observe(cfg: Config, document: dict) -> dict:
             errors.append({"target": {"kind": key[0], "number": key[1]}, "code": exc.code})
     postconditions = []
     for index, request in enumerate(document["preview"]["requests"]):
-        kind = "pr" if request["op"] == "pr" else "cleanup" if request["op"] == "cleanup" else "issue"
+        kind = request["op"] if request["op"] in {"pr", "cleanup", "release_claim"} else "issue"
         postconditions.append({
             "request": index,
             **_postcondition(request, document["preview"]["actor"], actual.get((kind, request["number"]))),

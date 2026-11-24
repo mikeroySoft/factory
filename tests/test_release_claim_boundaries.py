@@ -1,0 +1,432 @@
+"""Consumer-visible boundaries of the confirmed expired-claim release."""
+from __future__ import annotations
+
+import copy
+import json
+import subprocess
+import time
+import unittest
+from datetime import UTC, datetime, timedelta
+from unittest import mock
+
+from factory import decisions
+from tests import test_host_claims as fixture
+
+
+class ReleaseClaimBoundaryTest(unittest.TestCase):
+    dispatcher = fixture.HostClaimRaceTest.dispatcher
+    launch = fixture.HostClaimRaceTest.launch
+
+    def setUp(self):
+        fixture.HostClaimRaceTest.setUp(self)
+        self.module = self.dispatcher("tank")
+        self.github.issue.update(
+            updatedAt="2026-11-20T00:00:00Z",
+            url="https://github.com/local/claims/issues/7",
+        )
+        self.claim = copy.deepcopy(
+            self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3)),
+        )
+        self.provider_result = None
+        self.enterContext(mock.patch.object(decisions, "_run", side_effect=self.transport))
+
+    @property
+    def nonce(self):
+        return self.claim["body"].split("nonce=", 1)[1].split()[0]
+
+    def transport(self, argv, **_kwargs):
+        if argv[:2] == ["gh", "api"]:
+            value = "alice\n"
+        elif argv[:3] == ["gh", "issue", "view"]:
+            value = json.dumps(self.github.issue)
+        elif "-c" in argv:
+            mode, nonce = argv[-3:-1]
+            if mode == "preview" and self.provider_result is not None:
+                value = json.dumps(self.provider_result)
+            else:
+                try:
+                    claim = self.module.release_expired_claim(
+                        7, dry_run=mode == "preview", expected_nonce=nonce or None,
+                        reason="dashboard release_claim",
+                    )
+                except ValueError as exc:
+                    return subprocess.CompletedProcess(
+                        argv, int(mode == "apply"), json.dumps({"error": str(exc)}), "",
+                    )
+                value = json.dumps({
+                    "claim": {key: claim[key] for key in ("id", "host", "nonce", "at")},
+                })
+        else:
+            return self.github.run("tank", argv)
+        return subprocess.CompletedProcess(argv, 0, value, "")
+
+    def json_request(self, op="release_claim"):
+        return json.loads(f'{{"op":"{op}","number":7}}')
+
+    def mutation_calls(self):
+        return [
+            command for _, command in self.github.calls
+            if command[:3] == ["gh", "issue", "edit"]
+            or ("--method" in command and command[command.index("--method") + 1] == "POST")
+        ]
+
+    def test_json_release_preview_and_apply_have_exact_effects(self):
+        before = copy.deepcopy(self.github.issue)
+        preview = decisions.prepare(
+            self.module.cfg, [self.json_request()], caller="dashboard",
+        )
+
+        self.assertEqual(preview["requests"], [{"op": "release_claim", "number": 7}])
+        effect = preview["effects"][0]
+        self.assertEqual(effect["target"], {"kind": "release_claim", "number": 7})
+        self.assertIn("remove label host:ultron", effect["changes"])
+        self.assertEqual(self.github.issue, before)
+        self.assertEqual(self.github.comments, [self.claim])
+
+        result = decisions.apply(
+            self.module.cfg, preview["proposal_id"], preview["confirmation"],
+        )
+
+        self.assertEqual(result["status"], "success")
+        expected = copy.deepcopy(before)
+        expected["labels"] = [
+            row for row in expected["labels"] if row["name"] != "host:ultron"
+        ]
+        self.assertEqual(self.github.issue, expected)
+        self.assertEqual(self.github.comments[0], self.claim)
+        self.assertEqual(
+            next(row["body"] for row in self.github.comments
+                 if row["body"].startswith("Factory requeue:")),
+            f"Factory requeue: nonce={self.nonce}\n",
+        )
+        self.assertFalse(any("DELETE" in command for _, command in self.github.calls))
+
+    def test_closed_and_invalid_provider_states_fail_closed(self):
+        self.github.issue["state"] = "CLOSED"
+        with self.assertRaises(decisions.DecisionError) as closed:
+            decisions.prepare(self.module.cfg, [self.json_request()], caller="dashboard")
+        self.assertEqual(closed.exception.code, "precondition_failed")
+
+        self.github.issue["state"] = None
+        with self.assertRaises(decisions.DecisionError) as invalid:
+            decisions.prepare(self.module.cfg, [self.json_request()], caller="dashboard")
+        self.assertEqual(invalid.exception.code, "provider_unavailable")
+        with self.assertRaisesRegex(ValueError, "ticket is not open"):
+            self.module.release_expired_claim(7, dry_run=True)
+
+        self.github.issue["state"] = json.loads('"OPEN"')
+        claim = self.module.release_expired_claim(7, dry_run=True)
+        self.assertEqual(claim["nonce"], self.nonce)
+        self.assertEqual(self.mutation_calls(), [])
+
+    def test_malformed_claim_provider_responses_fail_closed(self):
+        malformed = [
+            None,
+            {"id": 1, "host": "ultron", "nonce": self.nonce,
+             "at": "2026-01-01T00:00:00+00:00", "unexpected": True},
+        ]
+        for claim in malformed:
+            with self.subTest(claim=claim):
+                self.provider_result = {"claim": claim}
+                with self.assertRaises(decisions.DecisionError) as refused:
+                    decisions.prepare(
+                        self.module.cfg, [self.json_request()], caller="dashboard",
+                    )
+                self.assertEqual(refused.exception.code, "provider_unavailable")
+        self.assertEqual(self.mutation_calls(), [])
+
+    def test_second_authenticated_read_failure_is_a_closed_refusal(self):
+        def change_provider_identity(_number):
+            self.github.comments[0]["user"] = {"login": "other-bot"}
+            self.github.comments[0]["author_association"] = "MEMBER"
+            return ""
+
+        with mock.patch.object(
+            self.module, "refresh_requeue_context", side_effect=change_provider_identity,
+        ), self.assertRaisesRegex(ValueError, "does not match dispatcher login"):
+            self.module.release_expired_claim(7)
+
+        self.assertEqual(self.mutation_calls(), [])
+        self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
+
+    def test_ticket_state_or_owner_change_during_release_is_refused(self):
+        issue = copy.deepcopy(self.github.issue)
+        comments = copy.deepcopy(self.github.comments)
+        next_id = self.github.next_id
+        cases = [
+            ("state", "CLOSED", "ticket is not open"),
+            ("assignees", [{"login": "human"}], "ticket has a human assignee"),
+        ]
+        for field, value, message in cases:
+            with self.subTest(field=field):
+                self.github.issue = copy.deepcopy(issue)
+                self.github.comments = copy.deepcopy(comments)
+                self.github.next_id = next_id
+                self.github.calls.clear()
+
+                def change_ticket(_number, field=field, value=value):
+                    self.github.issue[field] = value
+                    return ""
+
+                with mock.patch.object(
+                    self.module, "refresh_requeue_context", side_effect=change_ticket,
+                ), self.assertRaisesRegex(ValueError, message):
+                    self.module.release_expired_claim(7)
+
+                self.assertEqual(self.mutation_calls(), [])
+                self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
+
+    def test_changed_election_during_release_is_refused_atomically(self):
+        replacement = "00000000-0000-4000-8000-000000000000"
+
+        def change_election(_number):
+            self.github.comments[0]["body"] = self.github.comments[0]["body"].replace(
+                self.nonce, replacement,
+            )
+            return ""
+
+        with mock.patch.object(
+            self.module, "refresh_requeue_context", side_effect=change_election,
+        ), self.assertRaisesRegex(ValueError, "elected host claim changed"):
+            self.module.release_expired_claim(7, expected_nonce=self.nonce)
+
+        self.assertEqual(self.mutation_calls(), [])
+        self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
+
+    def test_existing_dispatcher_context_is_retained_in_replacement_marker(self):
+        context = "## Recovery context from the foreign dispatcher\n\nkeep this evidence\n"
+        old_marker = {
+            "id": self.github.next_id,
+            "body": f"Factory requeue: nonce={self.nonce}\n{context}",
+            "created_at": datetime.now(UTC).isoformat(),
+            "user": {"login": "@me"},
+        }
+        self.github.next_id += 1
+        self.github.comments.append(old_marker)
+
+        released = self.module.release_expired_claim(7)
+
+        self.assertEqual(released["nonce"], self.nonce)
+        self.assertIn(self.claim, self.github.comments)
+        self.assertIn(old_marker, self.github.comments)
+        self.assertEqual(
+            [row["body"] for row in self.github.comments
+             if row["body"].startswith("Factory requeue:")][-1],
+            f"Factory requeue: nonce={self.nonce}\n{context}",
+        )
+
+    def test_takeover_release_retains_history_and_recovery_context(self):
+        context = "## Recovery context from the foreign dispatcher\n\nkeep this evidence\n"
+        with mock.patch.object(
+            self.module, "refresh_requeue_context", return_value=context,
+        ):
+            self.module.release_expired_claim(
+                n=7, reason="land-host takeover", expected_nonce=self.nonce,
+            )
+
+        self.assertIn(self.claim, self.github.comments)
+        self.assertEqual(
+            self.github.comments[-1]["body"],
+            f"Factory requeue: nonce={self.nonce}\nFactory claim history: retained\n{context}",
+        )
+        self.assertFalse(any("DELETE" in command for _, command in self.github.calls))
+
+    def test_triage_observation_is_not_reported_as_claim_release(self):
+        preview = decisions.prepare(
+            self.module.cfg, [self.json_request("triage")], caller="dashboard",
+        )
+
+        receipt = decisions.receipt(self.module.cfg, preview["proposal_id"], observe=True)
+
+        self.assertEqual(receipt["status"], "prepared")
+        [postcondition] = receipt["observation"]["postconditions"]
+        self.assertEqual(postcondition["status"], "unknown")
+        evidence = " ".join(postcondition["evidence"])
+        self.assertIn("triage", evidence)
+        self.assertNotIn("claim", evidence)
+
+    def test_release_rejects_states_on_both_sides_of_open(self):
+        for state in ("CLOSED", "PENDING"):
+            with self.subTest(state=state):
+                self.github.issue["state"] = state
+                with self.assertRaises(decisions.DecisionError) as refused:
+                    decisions.prepare(self.module.cfg, [self.json_request()])
+                self.assertEqual(
+                    refused.exception.code,
+                    "precondition_failed" if state == "CLOSED" else "provider_unavailable",
+                )
+                self.assertEqual(self.mutation_calls(), [])
+
+    def test_neighboring_operation_names_cannot_release_a_claim(self):
+        for op in ("release_claik", "release_claims"):
+            with self.subTest(op=op), self.assertRaisesRegex(
+                decisions.DecisionError, "unsupported decision operation",
+            ):
+                decisions.prepare(self.module.cfg, [self.json_request(op)])
+        self.assertEqual(self.github.comments, [self.claim])
+        self.assertEqual(self.mutation_calls(), [])
+
+    def test_release_accepts_ticket_by_keyword_and_options_only_by_keyword(self):
+        for args in ((7, True), (7, True, "reason"), (7, True, "reason", self.nonce)):
+            with self.subTest(args=args), self.assertRaises(TypeError):
+                self.module.release_expired_claim(*args)
+        claim = self.module.release_expired_claim(
+            n=7, dry_run=True, reason="preview", expected_nonce=self.nonce,
+        )
+        self.assertEqual(claim["nonce"], self.nonce)
+        self.assertEqual(self.mutation_calls(), [])
+
+    def test_release_refuses_assignees_sorting_before_and_after_shared_login(self):
+        login = self.module.host_claim_login()
+        for human in ("!human", "zzhuman"):
+            with self.subTest(human=human):
+                self.assertNotEqual(human, login)
+                self.github.issue["assignees"] = [{"login": human}]
+                with self.assertRaisesRegex(ValueError, "human assignee"):
+                    self.module.release_expired_claim(n=7, dry_run=True)
+                self.assertEqual(self.mutation_calls(), [])
+
+    def test_release_target_rejects_unknown_issue_state(self):
+        for state in ("OPEM", "PENDING", None):
+            with self.subTest(state=state), mock.patch.object(
+                decisions, "_issue_target", return_value=({"state": state}, {}),
+            ), mock.patch.object(decisions, "_read_json", wraps=decisions._read_json) as preview:
+                with self.assertRaisesRegex(ValueError, "unknown issue state"):
+                    decisions._release_claim_target(self.module.cfg, 7, time.monotonic() + 10)
+                preview.assert_not_called()
+        self.assertEqual(self.github.comments, [self.claim])
+        self.assertEqual(self.mutation_calls(), [])
+
+    def test_prepare_target_rejects_unknown_kind(self):
+        for kind in ("release_claik", "release_claims", None):
+            with self.subTest(kind=kind), mock.patch.object(
+                decisions, "_release_claim_target", wraps=decisions._release_claim_target,
+            ) as release:
+                with self.assertRaisesRegex(ValueError, "unknown target kind"):
+                    decisions._prepare_target(self.module.cfg, kind, 7, time.monotonic() + 10)
+                release.assert_not_called()
+        self.assertEqual(self.github.comments, [self.claim])
+        self.assertEqual(self.mutation_calls(), [])
+
+    def test_prepare_target_routes_runtime_decoded_pr_and_issue_kinds(self):
+        for kind in json.loads('["pr", "issue"]'):
+            with self.subTest(kind=kind):
+                literal = "pr" if kind == "pr" else "issue"
+                self.assertIsNot(kind, literal)
+                target = {"kind": literal, "number": 7}
+                raw = {"number": 7, "source": literal}
+                helper = "_pr_target" if kind == "pr" else "_issue_target"
+                with mock.patch.object(
+                    decisions, helper, return_value=(target, raw),
+                ):
+                    prepared = decisions._prepare_target(
+                        self.module.cfg, kind, 7, time.monotonic() + 10,
+                    )
+                self.assertEqual(prepared, (target, raw))
+
+    def test_cleanup_busy_guard_uses_exact_open_state(self):
+        local = {"kind": "cleanup", "number": 7, "worktree": None, "branch": "a" * 40}
+
+        def prepare(state):
+            issue = {
+                "kind": "issue", "number": 7, "state": state,
+                "labels": [decisions.LABEL_AGENT], "assignees": [],
+            }
+            with mock.patch.object(
+                decisions, "_issue_target", return_value=(issue, {}),
+            ), mock.patch.object(
+                decisions, "_local_cleanup_target", return_value=local,
+            ):
+                return decisions._prepare_target(
+                    self.module.cfg, "cleanup", 7, time.monotonic() + 10,
+                )
+
+        with self.assertRaises(decisions.DecisionError) as busy:
+            prepare(json.loads('"OPEN"'))
+        self.assertEqual(busy.exception.code, "target_busy")
+
+        for state in json.loads('["CLOSED", "PENDING"]'):
+            with self.subTest(state=state):
+                target, raw = prepare(state)
+                self.assertIsNone(raw)
+                self.assertEqual(target["kind"], "cleanup")
+                self.assertEqual(target["issue"]["state"], state)
+
+    def test_live_target_rejects_neighboring_stored_release_kind(self):
+        kind = json.loads('"release_claims"')
+        self.assertGreater(kind, "release_claim")
+
+        with self.assertRaises(decisions.DecisionError) as refused:
+            decisions._live_target(
+                self.module.cfg, {"kind": kind, "number": 7}, time.monotonic() + 10,
+            )
+
+        self.assertEqual(refused.exception.code, "unsafe_storage")
+        self.assertEqual(self.github.comments, [self.claim])
+        self.assertEqual(self.mutation_calls(), [])
+
+    def test_unknown_neighboring_postcondition_never_reports_claim_release(self):
+        op = json.loads('"release_claik"')
+        self.assertLess(op, "release_claim")
+
+        outcome = decisions._postcondition({"op": op}, "alice", {})
+
+        self.assertEqual(outcome["status"], "unknown")
+        self.assertEqual(
+            outcome["evidence"],
+            ["triage target state is observed, but its model-selected postcondition is not inferred"],
+        )
+        self.assertNotIn("claim", " ".join(outcome["evidence"]))
+
+    def test_release_final_read_rejects_states_on_both_sides_of_open(self):
+        original_issue = copy.deepcopy(self.github.issue)
+        original_comments = copy.deepcopy(self.github.comments)
+        states = ("CLOSED", "PENDING")
+        self.assertLess(states[0], "OPEN")
+        self.assertGreater(states[1], "OPEN")
+
+        for state in states:
+            with self.subTest(state=state):
+                self.github.issue = copy.deepcopy(original_issue)
+                self.github.comments = copy.deepcopy(original_comments)
+                self.github.calls.clear()
+
+                def change_ticket(_number, state=state):
+                    self.github.issue["state"] = state
+                    return ""
+
+                with mock.patch.object(
+                    self.module, "refresh_requeue_context", side_effect=change_ticket,
+                ), self.assertRaisesRegex(ValueError, "ticket is not open"):
+                    self.module.release_expired_claim(7)
+
+                self.assertEqual(self.github.comments, original_comments)
+                self.assertEqual(self.mutation_calls(), [])
+                self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
+
+    def test_release_final_read_rejects_humans_on_both_sides_of_shared_login(self):
+        original_issue = copy.deepcopy(self.github.issue)
+        original_comments = copy.deepcopy(self.github.comments)
+        shared = self.module.host_claim_login()
+        humans = ("!human", "zzhuman")
+        self.assertLess(humans[0].casefold(), shared.casefold())
+        self.assertGreater(humans[1].casefold(), shared.casefold())
+
+        for human in humans:
+            with self.subTest(human=human):
+                self.github.issue = copy.deepcopy(original_issue)
+                self.github.comments = copy.deepcopy(original_comments)
+                self.github.calls.clear()
+
+                def change_ticket(_number, human=human):
+                    self.github.issue["assignees"] = [{"login": human}]
+                    return ""
+
+                with mock.patch.object(
+                    self.module, "refresh_requeue_context", side_effect=change_ticket,
+                ), self.assertRaisesRegex(ValueError, "ticket has a human assignee"):
+                    self.module.release_expired_claim(7)
+
+                self.assertEqual(self.github.comments, original_comments)
+                self.assertEqual(self.mutation_calls(), [])
+                self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])

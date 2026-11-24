@@ -87,6 +87,20 @@ class LandHostTest(unittest.TestCase):
                 return {"login": "factory"}
             if args[:3] == ["api", "--paginate", "--slurp"]:
                 return [self.comments.copy()]
+            if args[:1] == ["api"] and "--method" in args:
+                method = args[args.index("--method") + 1]
+                body = args[args.index("-f") + 1].removeprefix("body=")
+                if method == "POST" and args[1].endswith("/comments"):
+                    comment = {"id": len(self.comments) + 1,
+                               "created_at": datetime.now(UTC).isoformat(),
+                               "user": {"login": "factory"}, "body": body}
+                    self.comments.append(comment)
+                    return comment.copy()
+                if method == "PATCH":
+                    comment = next(row for row in self.comments
+                                   if str(row["id"]) == args[1].rsplit("/", 1)[1])
+                    comment["body"] = body
+                    return comment.copy()
             return self.github.gh_json(args)
 
         self.enterContext(mock.patch.object(module, "run", side_effect=run))
@@ -147,12 +161,18 @@ class LandHostTest(unittest.TestCase):
         self.assert_untouched(tank)
         self.assertEqual(self.commands["tank"], [])
 
-    def test_expired_foreign_elected_claim_is_still_skipped(self):
+    def test_expired_foreign_elected_claim_is_reclaimed_and_landed(self):
         tank = self.dispatcher("tank")
+        head = self.approve(tank)
         self.claim("ultron", age=3 * 3600)
-        tank.merge_pass_locked(False)
-        self.assert_untouched(tank)
-        self.assertEqual(self.commands["tank"], [])
+        foreign_comment = self.comments[0].copy()
+        tank.land_pass(False)
+        self.assertTrue(self.github.merged)
+        self.assertEqual([row["head"] for row in self.events(tank, "merged")], [head])
+        self.assertIn(foreign_comment, self.comments)
+        self.assertTrue(any(row["body"].startswith("Factory requeue: nonce=ultron-nonce")
+                            for row in self.comments))
+        self.assertFalse(any("DELETE" in cmd for cmd in self.commands["tank"]))
 
     def move_main(self):
         (self.origin / "main.txt").write_text("main moved\n")
