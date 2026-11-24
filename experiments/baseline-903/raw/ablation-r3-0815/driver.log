@@ -1,0 +1,45 @@
+2026-11-24T08:12:24-0800 driver start pid 94683; budget 18000s
+To https://github.com/mikeroySoft/factory.git
+   c67eb7e1..4771947c  4771947cb2f2534508d0f825ff615ef739433a72 -> agent/903
+2026-11-24T08:12:26-0800 pushed 4771947cb2f2534508d0f825ff615ef739433a72 (start)
+2026-11-24T08:12:37-0800 start control-1-try1 (control)
+2026-11-24T08:39:13-0800 end control-1-try1 rc=0 wall=1596s
+To https://github.com/mikeroySoft/factory.git
+   4771947c..9b8a5689  9b8a56894489988dd7e32eecc68c8b2d84777e97 -> agent/903
+2026-11-24T08:39:26-0800 pushed 9b8a56894489988dd7e32eecc68c8b2d84777e97 (control-1-try1)
+hdiutil: WARNING: 'hdiutil attach -nomount ...' is deprecated. Please use 'diskutil image attach --noMount ...' instead.
+Started erase on disk18
+Unmounting disk
+Erasing
+Initialized /dev/rdisk18 as a 4 GB case-insensitive HFS Plus volume
+Mounting disk
+Finished erase on disk18 (RamDisk0735)
+2026-11-24T08:39:39-0800 attached /dev/disk18
+2026-11-24T08:39:39-0800 start ram-try1 (ram)
+2026-11-24T09:06:28-0800 end ram-try1 rc=1 wall=1609s
+hdiutil: WARNING: 'hdiutil detach ...' is deprecated. Please use 'diskutil eject ...' instead.
+"disk18" ejected.
+2026-11-24T09:06:39-0800 detached /dev/disk18 forced=false
+To https://github.com/mikeroySoft/factory.git
+   9b8a5689..39183703  3918370381cc7454348170372b2a7c42e13bd764 -> agent/903
+2026-11-24T09:06:41-0800 pushed 3918370381cc7454348170372b2a7c42e13bd764 (ram-try1)
+2026-11-24T09:06:41-0800 ram try1 INVALID_outcome
+hdiutil: WARNING: 'hdiutil attach -nomount ...' is deprecated. Please use 'diskutil image attach --noMount ...' instead.
+Started erase on disk18
+Unmounting disk
+Erasing
+Initialized /dev/rdisk18 as a 4 GB case-insensitive HFS Plus volume
+Mounting disk
+Finished erase on disk18 (RamDisk0735)
+2026-11-24T09:06:54-0800 attached /dev/disk18
+2026-11-24T09:06:54-0800 start ram-try2 (ram)
+2026-11-24T09:33:09-0800 end ram-try2 rc=1 wall=1575s
+hdiutil: WARNING: 'hdiutil detach ...' is deprecated. Please use 'diskutil eject ...' instead.
+"disk18" ejected.
+2026-11-24T09:33:21-0800 detached /dev/disk18 forced=false
+To https://github.com/mikeroySoft/factory.git
+   39183703..0a24baf1  0a24baf1084d546652d7ab589f50d53bf54874ea -> agent/903
+2026-11-24T09:33:23-0800 pushed 0a24baf1084d546652d7ab589f50d53bf54874ea (ram-try2)
+2026-11-24T09:33:23-0800 ram try2 INVALID_outcome
+2026-11-24T09:33:23-0800 factory resumed (pause file removed)
+2026-11-24T09:33:24-0800 final config sha e071ebe909c9b2c1fea62bad01545406307952ae664416029dea9361444f026b (expect e071ebe909c9b2c1fea62bad01545406307952ae664416029dea9361444f026b) uv.lock ac6661ba52ea87d7bf27c9b8d2c5c167eb7c4f73573b35b402d6e367775a7651 (expect ac6661ba52ea87d7bf27c9b8d2c5c167eb7c4f73573b35b402d6e367775a7651)
