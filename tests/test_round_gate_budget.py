@@ -676,6 +676,86 @@ class RoundGateBudgetTest(unittest.TestCase):
     def test_manager_fix_runner_failure_precedes_fixup_budget(self):
         self.assert_runner_failure_precedes_fixup_budget("manager")
 
+    def test_active_worker_gate_ignores_foreign_and_non_gate_events(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            state = (None, "head", "", None)
+            with lifecycle.scope(self.events, "worker", ticket=7):
+                foreign = lifecycle.Execution(self.events, "gate", ticket=8)
+                foreign.parent_execution_id = "different-worker"
+                foreign.emit("enter")
+                proc = mock.Mock()
+                proc.wait.side_effect = [subprocess.TimeoutExpired("worker", 5), 0]
+                with mock.patch.object(dispatch.time, "monotonic", return_value=61), \
+                        mock.patch.object(dispatch, "_activity", return_value=state):
+                    fired = dispatch._watch(proc, wt, self.base / "log", self.base / "handoff", 60, state)
+                foreign.emit("exit")
+                self.assertEqual(fired, "budget_min")
+                self.assertEqual(proc.wait.call_count, 1)
+
+    def test_exact_work_cutoff_refuses_round_and_worker_launch(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            with mock.patch.object(dispatch.time, "monotonic", return_value=10.0), \
+                    mock.patch.object(dispatch, "run_worker") as worker, \
+                    mock.patch.object(dispatch, "run_gate") as gate:
+                ok, report, _, _ = dispatch.worker_round(7, wt, set(), "fix", "", 1, 60.0)
+            self.assertFalse(ok)
+            self.assertTrue(report.startswith("budget exceeded before work"))
+            worker.assert_not_called()
+            gate.assert_not_called()
+            marker = self.base / "forbidden-launch"
+            command = [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"]
+            with mock.patch.object(dispatch.time, "monotonic", return_value=10.0):
+                result = dispatch.run_worker(command, wt, dispatch.LOGS / "cutoff.log", self.base / "handoff", 10.0)
+            self.assertEqual(result, (None, "budget_min"))
+            self.assertFalse(marker.exists())
+        row, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "round-budget"]
+        self.assertFalse(row["admitted"])
+        self.assertEqual(row["remaining_seconds"], 50)
+        self.assertEqual(row["work_seconds"], 0)
+
+    def test_round_journals_positive_remaining_wall_time(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            with mock.patch.object(dispatch.cfg, "gate_reserve_seconds", 90), \
+                    mock.patch.object(dispatch.time, "monotonic", return_value=10.25), \
+                    mock.patch.object(dispatch, "run_worker") as worker:
+                ok, _, _, _ = dispatch.worker_round(7, wt, set(), "fix", "", 1, 100.0)
+            self.assertFalse(ok)
+            worker.assert_not_called()
+        row, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "round-budget"]
+        self.assertEqual(row["remaining_seconds"], 89.75)
+        self.assertEqual(row["work_seconds"], 0)
+
+    def test_passing_gate_does_not_run_mechanical_repairs(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            with mock.patch.object(dispatch.cfg, "fixups", [["must-not-run"]]), \
+                    mock.patch.object(dispatch.time, "monotonic", return_value=0), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(0, None)), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "- code: PASS")) as gate, \
+                    mock.patch.object(dispatch, "retry_gate_fixups", side_effect=AssertionError("repaired a passing gate")):
+                ok, report, _, _ = dispatch.worker_round(7, wt, set(), "fix", "", 1, 100)
+            self.assertTrue(ok, report)
+            self.assertEqual(report, "- code: PASS")
+            gate.assert_called_once()
+
+    def test_idle_worker_is_not_reported_as_a_gate_hard_cap(self):
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            with mock.patch.object(dispatch.time, "monotonic", return_value=0), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(143, "idle_timeout")), \
+                    mock.patch.object(dispatch, "run_gate") as gate:
+                ok, report, _, _ = dispatch.worker_round(7, wt, set(), "fix", "", 1, 100)
+            self.assertFalse(ok)
+            self.assertIn("worker stuck: idle_timeout fired", report)
+            self.assertNotIn("hard cap", report)
+            gate.assert_not_called()
+        attempt, = [r for r in lifecycle.read_events(self.events) if r.get("event") == "attempt"]
+        self.assertEqual(attempt["reason"], "stuck")
+        self.assertIsNone(attempt["gate"])
+
     def test_positive_subsecond_floor_is_accepted(self):
         path = self.repo / ".factory.toml"
         path.write_text(path.read_text().replace("[dispatch]\n", "[dispatch]\ngate_reserve_seconds = 0.25\n"))
@@ -701,6 +781,7 @@ class RoundGateBudgetTest(unittest.TestCase):
                     timing(100, ticket=ticket - 1)
                     timing(100, ticket=ticket + 1)
                     timing(100, event="attempt")
+                    timing(100, event="result")
                     timing(100, stage="claim")
                     timing(100, stage="worker")
                     timing(100, stage="review")
@@ -812,27 +893,36 @@ class RoundGateBudgetTest(unittest.TestCase):
                 self.assertNotIn("private diff", comment)
                 self.assertIn(extra, (dispatch.FACTORY / "escalations/7.md").read_text())
 
-    def test_bounce_protected_failure_bounds_offending_diff(self):
+    def assert_protected_failure_bounds_offending_diff(self, mode):
         with chdir(self.repo), mock.patch.dict(os.environ, self.env):
             wt = self.configure_round()
             head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
             logfile = dispatch.LOGS / "worker.log"
             report = "- protected-paths: FAIL\n".ljust(6000, "x") + "SENSITIVE-TAIL"
             issue = dispatch.gh_json(["issue", "view", "7"])
-            with mock.patch.object(dispatch, "worker_round", side_effect=[
-                    (True, "PASS", logfile, head), (False, report, logfile, head)]), \
+            failure = (False, report, logfile, head)
+            rounds = [(True, "PASS", logfile, head), failure] if mode == "bounce" else [failure]
+            with mock.patch.object(dispatch, "worker_round", side_effect=rounds), \
                     mock.patch.object(dispatch.time, "monotonic", return_value=0), \
-                    mock.patch.object(dispatch, "push_and_pr", return_value=True), \
+                    mock.patch.object(dispatch, "push_and_pr", return_value=True) as publish, \
                     mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])), \
                     mock.patch.object(dispatch, "pr_gate_and_review", return_value=("REVISE", "fix", False)), \
                     mock.patch.object(dispatch, "escalate") as escalate, \
                     mock.patch.object(dispatch, "push_agent") as push:
                 dispatch.process_ticket(issue, 1, False, forced=True)
             push.assert_not_called()
+            self.assertEqual(publish.call_count, int(mode == "bounce"))
+            escalate.assert_called_once()
             self.assertEqual(escalate.call_args.kwargs["code"], "protected_paths")
             extra = escalate.call_args.kwargs["extra"]
             self.assertIn("Human-only authority", extra)
             self.assertEqual(extra.split("## Offending diff\n\n", 1)[1], report[:6000])
+
+    def test_bounce_protected_failure_bounds_offending_diff(self):
+        self.assert_protected_failure_bounds_offending_diff("bounce")
+
+    def test_attempt_protected_failure_bounds_offending_diff(self):
+        self.assert_protected_failure_bounds_offending_diff("attempt")
 
     def test_worker_gate_hard_cap_is_not_reported_as_idle_timeout(self):
         with chdir(self.repo), mock.patch.dict(os.environ, self.env):

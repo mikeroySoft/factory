@@ -58,7 +58,7 @@ class RoundGateFixupsTest(unittest.TestCase):
                     self.assertEqual(event["seconds_remaining"], 0)
                     self.assertEqual(event["work_deadline"], 10.0)
 
-    def exercise_successful_fixup_cutoff(self, commands):
+    def exercise_successful_fixup_cutoff(self, commands, ended_at=10.0):
         clock = [9.0]
         repair_timeouts = []
         with chdir(self.repo), mock.patch.dict(os.environ, self.env):
@@ -69,7 +69,7 @@ class RoundGateFixupsTest(unittest.TestCase):
                 if cmd == ["repair"]:
                     repair_timeouts.append(kwargs["timeout"])
                     (wt / "partial-fix.txt").write_text("repaired\n")
-                    clock[0] = 10.0
+                    clock[0] = ended_at
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 if cmd == ["must-not-run"]:
                     self.fail("launched a repair after the work cutoff")
@@ -100,6 +100,9 @@ class RoundGateFixupsTest(unittest.TestCase):
 
     def test_last_fixup_finishing_exactly_at_cutoff_is_not_committed_or_regated(self):
         self.exercise_successful_fixup_cutoff([["repair"]])
+
+    def test_last_fixup_finishing_after_cutoff_is_not_committed_or_regated(self):
+        self.exercise_successful_fixup_cutoff([["repair"]], ended_at=11.0)
 
     def exercise_exception(self, exception, moment):
         clock = [5.0]
