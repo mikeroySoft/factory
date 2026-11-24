@@ -826,8 +826,22 @@ reusing a worktree (or its local branch), dispatch fetches origin and explicitly
 fetches the remote ticket branch even with a main-only fetch refspec, then
 fast-forwards a clean local ancestor to `origin/agent/<n>`, journaling `worktree-fast-forward`
 with `from_head` and `to_head`. Equal heads and unpublished local-ahead commits
-are kept. Dirty or diverged worktrees escalate before the worker or gate, naming
-both heads and preserving the worktree; generated `.factory/` and
+are kept. Dirty worktrees escalate before the worker or gate, naming both heads
+and preserving the worktree. A diverged clean HEAD is preserved under a create-only
+`refs/heads/backup/<n>-<full-sha>` ref, then escalates once per exact head pair with
+both SHAs, the backup ref and `neither-is-ancestor` evidence. Requeue/RETRY of the
+same pair returns the ticket to human attention without another escalation packet
+or comment; neither branch is reset, rebased, deleted or pushed. If the kept tree
+has been moved aside with `git worktree move` (or registered with `git worktree repair`),
+resume preserves its HEAD in the same backup ref, detaches that tree without changing
+its files, and points the freed `agent/<n>` branch at the fetched PR head before
+creating the fresh ticket worktree. `worktree-recovered` records the old path, both
+heads and backup ref. Pre-launch refusal escalations omit prior-attempt handoff notes
+(retained on disk) and stop only lifecycle-attributed worker descendants, including
+detached daemons. Cleanup failures are recorded in the journal and escalation packet
+without preventing escalation or claim release. Other escalations retain worker
+handoff notes even without a log path. Normal worker
+exit also reaps its remaining process group. Generated `.factory/` and
 `.factory-prompt.md` artifacts do not count as worker edits. The lease and
 `claimed.base` use the synchronized head. No reset or recut is used for resume.
 With `fresh`, `agent/<n>` is recut from main at the generation's first claim,
