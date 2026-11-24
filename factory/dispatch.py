@@ -5554,7 +5554,10 @@ def transcript_usage(path: Path) -> dict:
 
 
 def _gate_has_result(report: str) -> bool:
-    return bool(re.search(r"(?m)^- [^:\n]+: (?:PASS|FAIL|SKIP)\b", report.partition("```")[0]))
+    return bool(re.search(
+        r"(?m)^(?:- [^:\n]+: (?:PASS|FAIL|SKIP)\b|gate runner did not write )",
+        report.partition("```")[0],
+    ))
 
 
 def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
