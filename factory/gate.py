@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextvars
 import fcntl
 import fnmatch
 import json
@@ -18,7 +19,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path
 
 from factory import config, lifecycle, mutation_scope, runner
@@ -40,6 +43,9 @@ MUTATION_PROOF_COUNTS = ("planned", "ran", "killed", "survived", "timeouts", "bl
 MUTATION_PROOF_KEYS = {"protocol", "version", "mode", "status", "reason", "exit", "files", "counts",
                        "scope"}
 SKIP_NO_FACTORY_CODE = "SKIP (no changed factory code)"
+# Fixed host namespace: never under a repo, gate.lock, or the gate's private TMPDIR.
+MUTATION_SLOT_PREFIX = Path("/tmp/factory-mutation")
+_MUTATION_SLOT_FDS = contextvars.ContextVar("factory_mutation_slot_fds", default=())
 
 
 def configure(c: Config) -> None:
@@ -93,6 +99,7 @@ def timed(
     proc = subprocess.Popen(
         cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         encoding="utf-8", errors="replace", start_new_session=True, env=env,
+        pass_fds=_MUTATION_SLOT_FDS.get(),
     )
     if execution:
         execution.child(proc.pid)
@@ -478,6 +485,47 @@ def _release_exclusive(execution, lock) -> None:
     fcntl.flock(lock, fcntl.LOCK_UN)
     lock.close()
     execution.resource("released", GPU_LOCK, scope="host", blocking=True)
+
+
+@contextmanager
+def _mutation_slot(slots: int, execution):
+    started = time.monotonic()
+    lock = None
+    waiting = False
+    try:
+        while lock is None:
+            for index in range(slots):
+                path = MUTATION_SLOT_PREFIX.with_name(f"{MUTATION_SLOT_PREFIX.name}-{index}.lock")
+                candidate = path.open("a")
+                try:
+                    fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    candidate.close()
+                except BaseException:
+                    candidate.close()
+                    raise
+                else:
+                    lock = candidate
+                    break
+            if lock is None:
+                if not waiting:
+                    execution.wait("mutation_slot", mode="blocking", slots=slots)
+                    waiting = True
+                time.sleep(0.1)
+        execution.resource("acquired", path, scope="host", blocking=True)
+        execution.wait_end()
+        token = _MUTATION_SLOT_FDS.set((lock.fileno(),))
+        try:
+            # Share the flock's open file description with the mutation process.
+            # Parent interruption (even SIGKILL) cannot release a live child's slot.
+            yield time.monotonic() - started
+        finally:
+            _MUTATION_SLOT_FDS.reset(token)
+    finally:
+        if lock is not None:
+            lock.close()  # release without unlinking: other processes may hold this inode
+            execution.resource("released", path, scope="host", blocking=True)
+        execution.wait_end()
 
 
 
@@ -1233,6 +1281,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     rank = config.CHECK_TIERS.index(args.tier)
     listed = [check for check in cfg.checks if config.CHECK_TIERS.index(check.when) >= rank]
     proofs: dict[str, tuple[str, str]] = {}  # check name -> (record-decided status, binding)
+    slot_waits: dict[str, float] = {}
 
     def proved(check: config.Check) -> bool:
         return args.mutation_proof and check.proof == config.MUTATION_PROOF
@@ -1248,10 +1297,17 @@ def execute(args: argparse.Namespace, execution) -> int:
         proofs[check.name] = (status, binding)
         return passed, output
 
-    configured = [
-        (check.name, (lambda c=check: run_proved(c)) if proved(check) else (lambda c=check: run(command(c))))
-        for check in listed
-    ]
+    def run_configured(check: config.Check) -> tuple[bool, str]:
+        fn = (lambda: run_proved(check)) if proved(check) else (lambda: run(command(check)))
+        mutation = (check.name == "mutation" or check.proof == config.MUTATION_PROOF
+                    or "scripts/mutation.py" in check.run)
+        if args.tier != "pr" or cfg.mutation_slots is None or not mutation:
+            return fn()
+        with _mutation_slot(cfg.mutation_slots, lifecycle.current()) as waited:
+            slot_waits[check.name] = waited
+            return fn()
+
+    configured = [(check.name, lambda c=check: run_configured(c)) for check in listed]
     registries = [
         check for check in cfg.checks
         if "scripts/mutation.py" in check.run and "--equivalents" in check.run
@@ -1311,7 +1367,9 @@ def execute(args: argparse.Namespace, execution) -> int:
                    for name, (status, binding) in proofs.items()]
     lines = [
         "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "",
-        *([*proof_lines, ""] if proof_lines else []), "## Host toolchain",
+        *([*proof_lines, ""] if proof_lines else []),
+        *[f"Mutation slot wait: {name} {waited:.3f}s" for name, waited in slot_waits.items()],
+        "## Host toolchain",
         f"ROCm: {host['rocm']}", f"Kernel: {host['kernel']}", f"amdgpu: {host['amdgpu']}", "",
         *audit,
     ]

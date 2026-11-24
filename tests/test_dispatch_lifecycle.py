@@ -1148,6 +1148,12 @@ class LeaseRefusedCLI(unittest.TestCase):
         tree = self.git("rev-parse", "HEAD^{tree}").stdout.strip()
         sha = self.git("commit-tree", tree, "-p", "HEAD", "-m", "Update branch").stdout.strip()
         self.git("push", "--force", "origin", f"{sha}:refs/heads/agent/7")
+        # Move the remote after resume synchronization and lease capture, not before.
+        self.git("push", "origin", "--delete", "agent/7")
+        self.worker.write_text(self.worker.read_text() + (
+            "\nimport subprocess\n"
+            f"subprocess.run(['git', 'push', 'origin', '{sha}:refs/heads/agent/7'], check=True)\n"
+        ))
         return sha
 
     def gh_calls(self, *prefix):

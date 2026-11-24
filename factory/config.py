@@ -80,7 +80,7 @@ ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engin
 # `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
 # `leak_scan.extra` is read from both and concatenated: host terms only add to the scan.
 HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "manager", "install", "prices"})
-HOST_KEYS = {"dashboard": ("port",), "gate": ("lock", "mutation_duration"),
+HOST_KEYS = {"dashboard": ("port",), "gate": ("lock", "mutation_duration", "mutation_slots"),
              "review": ("command", "second_command", "json_mode")}
 HOST_SCALARS = ("host_name", "triage_host", "land_host", "release_host", "claim_ttl")
 
@@ -99,7 +99,7 @@ KNOWN_KEYS = {
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
-    "gate": ("timeout", "mutation_duration", "lock", "check", "fixups", "protected_paths", "add_only_paths"),
+    "gate": ("timeout", "mutation_duration", "mutation_slots", "lock", "check", "fixups", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout", "service", "max_tokens", "chat_template_kwargs"),
     "journal": ("max_mb", "retention"),
@@ -254,6 +254,7 @@ class Config:
     add_only_paths: list[str] = field(default_factory=list)
     check_timeout: int = 1200
     mutation_duration: float | None = None  # total seconds for an opted PR mutation proof check
+    mutation_slots: int | None = None  # host-wide concurrent PR mutation runs; None = uncapped
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
     leak_pattern: str | None = DEFAULT_LEAK_PATTERN
     leak_exclude: list[str] = field(default_factory=list)
@@ -938,6 +939,14 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         ):
             raise ConfigError("gate.mutation_duration must be finite and greater than the 60s cleanup reserve")
         cfg.mutation_duration = duration
+    if "mutation_slots" in raw_repo.get("gate", {}):
+        raise ConfigError(f"{path}: gate.mutation_slots is host-only; set it in "
+                          f'{host_config_path()} [defaults.gate] or [repo."<slug>".gate]')
+    if "mutation_slots" in gate:
+        slots = gate["mutation_slots"]
+        if type(slots) is not int or slots < 1:
+            raise ConfigError("gate.mutation_slots must be a positive integer")
+        cfg.mutation_slots = slots
     fixups = gate.get("fixups", [])
     if not isinstance(fixups, list) or any(
         not isinstance(argv, list) or not argv
