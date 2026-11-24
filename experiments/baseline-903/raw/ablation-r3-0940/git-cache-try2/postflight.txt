@@ -1,0 +1,18 @@
+2026-11-24T11:05:34-0800
+vm.loadavg: { 2.01 2.46 2.67 }
+11:05  up 6 days,  1:56, 5 users, load averages: 2.01 2.46 2.67
+vm_cpu_mean3=23.26
+--- benito/factory processes
+  533     1 06-01:55:44   0.0 /Users/mike/dev/mikeroysoft/benito-app/.derivedData/BenitoServer/Build/Products/Debug/Benito Server.app/Contents/MacOS/Benito Server
+ 1096     1 06-01:55:28   0.0 /Users/mike/Library/Application Support/Benito/bin/benito-server
+ 1108     1 06-01:55:28   0.0 /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m http.server 8091 --bind 0.0.0.0 --directory /Users/mike/dev/mi
+ 1674  1096 06-01:55:12   0.0 /usr/bin/dns-sd -R Benito _benito._tcp local 8082 version=0.1.0
+--- top cpu
+  PID  %CPU COMMAND
+42612  25.8 /Applications/VMware Fusion.app/Contents/Library/vmware-vmx -E en -s vmx.stdio.keep=TRUE -# product=64;name=VMware Fusion;version=13.6.3;buildnumber
+ 1263   7.2 /Users/mike/.t3/runtime/versions/0.0.45/resource-monitor/darwin-arm64/t3-resource-monitor
+ 1120   6.5 /Library/Application Support/Universal Audio/Apollo/UA Mixer Engine.app/Contents/MacOS/UA Mixer Engine -silent
+  393   5.7 /Library/Application Support/Audinate/ConMon.bundle/Contents/MacOS/conmon_cmm -ms -bd -ml -w -cmcp=connected -ll=warning -lf=/Library/Logs/Audinate/
+ 1372   3.4 /usr/bin/powermetrics -i 2000 --samplers cpu_power gpu_power -a --hide-cpu-duty-cycle
+82065   1.9 /Users/mike/Library/Application Support/com.superlogical.rex/RexServer/Versions/2061/Rex Server.app/Contents/MacOS/rex server logs --follow
+  429   1.3 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN com.apple.bcmwlan 0x10000155c com.apple.Driv
