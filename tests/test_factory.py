@@ -600,7 +600,11 @@ class HostConfigTest(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertFalse(marker.exists(), "service imported the checkout package")
-            self.assertEqual(commands, ["triage", "dispatch", "dashboard"])
+            self.assertEqual(commands, ["triage", "dispatch", "dispatch", "dashboard"])
+            self.assertIn(
+                f"ExecStart={selected} -P -m factory dispatch --land-only\n",
+                generated.stdout,
+            )
             self.assertRegex(generated.stdout, r"\nExecStopPost=-.* -P -m factory watch\n")
 
             installed = run("install", "--no-dashboard")
