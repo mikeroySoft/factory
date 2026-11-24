@@ -1343,8 +1343,20 @@ def execute(args: argparse.Namespace, execution) -> int:
             with tempfile.NamedTemporaryFile(prefix="factory-unittest-", suffix=".json") as record:
                 passed, output = run(cmd, unittest_path=Path(record.name))
                 try:
-                    test_evidence[check.name] = json.loads(Path(record.name).read_text())
-                except (ValueError, OSError) as error:
+                    evidence = json.loads(Path(record.name).read_text())
+                    if (
+                        not isinstance(evidence["testsRun"], int)
+                        or isinstance(evidence["testsRun"], bool)
+                        or evidence["testsRun"] < 0
+                        or not isinstance(evidence["skipped"], list)
+                        or not all(
+                            isinstance(skip["name"], str) and isinstance(skip["reason"], str)
+                            for skip in evidence["skipped"]
+                        )
+                    ):
+                        raise ValueError("invalid unittest result record fields")
+                    test_evidence[check.name] = evidence
+                except (ValueError, OSError, KeyError, TypeError) as error:
                     return False, output + f"\nunittest result record unavailable: {error}"
                 return passed, output
         fn = (lambda: run_proved(check)) if proved(check) else (lambda: run(command(check)))

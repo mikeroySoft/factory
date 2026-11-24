@@ -1264,6 +1264,31 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 self.assertIn("unittest result record unavailable:", report)
                 self.assertNotIn("## test test evidence", report)
 
+    def test_report_accepts_zero_tests_in_result_record(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            repo = repo_with_test(Path(directory), toml)
+            (repo / "tests" / "test_zero.py").write_text(
+                "import os, unittest\nfrom pathlib import Path\n"
+                "class ZeroRecord(unittest.TestCase):\n"
+                "    def test_record(self):\n"
+                "        Path(os.environ['FACTORY_UNITTEST_RESULT']).write_text("
+                "'{\"testsRun\": 0, \"skipped\": []}')\n"
+                "        os._exit(0)\n"
+            )
+            commit(repo, "valid zero-count unittest result record")
+
+            code, out, report = gate(repo)
+
+            self.assertEqual(code, 0, out + report)
+            self.assertIn("- test: PASS", report)
+            self.assertIn("## test test evidence\n```\nRan 0 tests\n```", report)
+
 
 if __name__ == "__main__":
     unittest.main()
