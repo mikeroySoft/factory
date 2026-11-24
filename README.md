@@ -418,6 +418,29 @@ Blocked outcomes and approvals are journaled once per head; `merged` is written
 only after a successful merge. A human-merged lessons PR is reconciled on the
 next pass with `by: human` and opens the same promotion measurement.
 
+
+Merge admission reads `gh pr checks --required`. When required checks exist,
+only they count; otherwise all checks count except names matching `[merge]`
+`advisory_checks` (case-sensitive fnmatch globs, default `[]`). For example:
+
+```toml
+[merge]
+advisory_checks = ["E2E tests (*", "E2E consolidated report (self-hosted)"]
+queued_check_timeout = "6h"
+```
+
+After `queued_check_timeout` (positive duration using `s`, `m`, `h`, `d`; default
+six hours), a queued or infra-cancelled self-hosted job is `skipped-infra` only
+if it never had a runner or ran steps and no registered repository runner matches
+all its labels (case-insensitive). Runner inventory is paginated; missing access,
+malformed evidence, a matching offline runner, and younger jobs remain blocking.
+Such jobs are not rerun. Required jobs are never waived: runner starvation
+escalates as `ci_runner` with an explicit merge-blocking message and eligibility
+wait on later passes. Other cancelled-job recovery remains unchanged.
+Merge decisions retain all selected checks, including advisory original buckets
+and skipped-infra runner/queue evidence, in their `checks` field even when bounded
+trace inputs omit them. At least one non-advisory check must still pass.
+
 Merge CI and advisory review readiness verify each active base-branch ruleset's
 required context against check runs on the caller's captured PR head, including
 its source GitHub App (`integration_id`). A push before the first provenance read
@@ -2435,6 +2458,7 @@ not indefinitely active stages.
 | `merge_lock_contended` | Nonblocking landing lock miss; skip this pass, retry next pass, never convert to a blocking wait. |
 | `exclusive_resource` | Gate observed its exclusive lock held before the unchanged blocking acquisition. |
 | `ci_pending` | Existing `pr_checks` result contained pending checks; `pr` integer. No extra CI query or polling loop. |
+| `ci_runner` | Runner infrastructure still blocks merge, including required checks with proven unavailable runners; `pr` integer. Escalated once, then recorded as an eligibility wait rather than silent pending. |
 | `no_passing_ci` | Existing result had no passing check; `pr` integer. The cause is unknown, not an inferred CI outage. |
 | `scheduled_next_pass` | Local timer explicitly active, service explicitly idle, and a future `next_at` timestamp reported by the existing systemctl seam. |
 

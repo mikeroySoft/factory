@@ -134,6 +134,15 @@
 # profile = "default"
 # schedule = false
 
+[merge]
+# When branch protection has required checks, only those checks determine merge
+# readiness and they are never bypassed. Otherwise, all checks must pass except
+# check names matching these fnmatch globs.
+# advisory_checks = ["codecov/*", "docs-preview"]
+# queued_check_timeout = "6h"  # positive duration (s, m, h, d) before a queued
+#                              # non-required check may be treated as stale infrastructure;
+#                              # required checks still block
+
 [gate]
 # timeout = 1200                      # seconds per check; a wedged check FAILs
 # lock = "/tmp/factory.lock"          # host-wide lock held by `exclusive` checks

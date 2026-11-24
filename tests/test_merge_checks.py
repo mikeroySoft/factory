@@ -1,0 +1,247 @@
+"""Merge admission with required/advisory checks and unavailable self-hosted runners."""
+from __future__ import annotations
+
+import json
+import subprocess
+import tempfile
+import unittest
+from datetime import UTC, datetime
+from pathlib import Path
+from unittest import mock
+
+from factory import config, dispatch, lifecycle
+
+
+class MergeChecksTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        dispatch.configure(config.Config(root=Path(temp.name), repo="acme/widgets", signoff=False))
+        self.pr = {"number": 70, "headRefName": "agent/7", "headRefOid": "head",
+                   "baseRefName": "main", "isDraft": False, "state": "OPEN", "title": "feature",
+                   "labels": [{"name": "factory-approved"}], "reviewDecision": "APPROVED"}
+        self.passing = {"name": "unit", "bucket": "pass", "link": ""}
+        self.gpu = {"name": "E2E tests (mi300x)", "bucket": "pending",
+                    "link": "https://github.com/acme/widgets/actions/runs/123/job/456"}
+        self.required = []
+        self.all_checks = [self.passing, self.gpu]
+        self.job = {"status": "queued", "conclusion": None, "steps": [],
+                    "runner_id": None, "runner_name": None,
+                    "labels": ["self-hosted", "linux", "mi300x"],
+                    "created_at": "2026-01-01T00:00:00Z"}
+        self.runners = [{"runners": []}]
+        self.errors = {}
+        self.required_error = None
+        self.check_reads = 0
+        self.second_checks = None
+        self.commands = []
+        self.policy = []
+        self.enterContext(mock.patch.object(dispatch, "run", side_effect=self.run_gh))
+        self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=self.query))
+        self.enterContext(mock.patch.object(dispatch, "_required_ci", side_effect=lambda *a, **k: self.policy))
+        self.enterContext(mock.patch.object(dispatch, "_head_evidence_matches", return_value=True))
+        self.enterContext(mock.patch.object(dispatch, "cleanup_after_merge"))
+        self.escalate = self.enterContext(mock.patch.object(dispatch, "escalate"))
+        dispatch.record("approved", ticket=7, pr=70, head="head", gate_head="head", review_head="head")
+
+    def query(self, args):
+        if args[:2] == ["pr", "list"]:
+            return [self.pr]
+        if args[:2] == ["pr", "view"]:
+            return self.pr
+        if args[:2] == ["issue", "view"]:
+            return {"labels": []}
+        if args[0] == "api":
+            return {"behind_by": 0}
+        self.fail(args)
+
+    def run_gh(self, cmd, **kwargs):
+        self.commands.append(cmd)
+        if cmd[:3] == ["gh", "pr", "checks"]:
+            if "--required" in cmd:
+                if self.required_error:
+                    return subprocess.CompletedProcess(cmd, *self.required_error)
+                self.check_reads += 1
+                rows = self.required
+            else:
+                rows = self.second_checks if self.check_reads > 1 and self.second_checks is not None else self.all_checks
+            code = 1 if any(row["bucket"] == "fail" for row in rows) else 8 if any(
+                row["bucket"] == "pending" for row in rows) else 0
+            return subprocess.CompletedProcess(cmd, code, json.dumps(rows), "")
+        if cmd[:2] == ["gh", "api"]:
+            endpoint = cmd[2]
+            if endpoint in self.errors:
+                code, text = self.errors[endpoint]
+                return subprocess.CompletedProcess(cmd, code, text, "")
+            if "/actions/jobs/" in endpoint:
+                value = self.job
+            elif "/actions/runners?" in endpoint:
+                self.assertEqual(cmd[-2:], ["--paginate", "--slurp"])
+                value = self.runners
+            elif "/actions/runs/" in endpoint:
+                value = {"status": "completed"}
+            else:
+                self.fail(cmd)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(value), "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def merged(self):
+        return any(cmd[:3] == ["gh", "pr", "merge"] for cmd in self.commands)
+
+    def decision(self):
+        return next(row for row in reversed(lifecycle.read_events(dispatch.EVENTS))
+                    if row.get("event") == "decision" and row.get("stage") == "merge")
+
+    def test_advisory_pending_and_failed_merge_without_withdrawing_approval(self):
+        dispatch.cfg.advisory_checks = ["E2E tests (*"]
+        for bucket in ("pending", "fail", "cancel"):
+            with self.subTest(bucket=bucket):
+                self.commands.clear()
+                self.gpu["bucket"] = bucket
+                dispatch.merge_pass_locked(False)
+                self.assertTrue(self.merged())
+                self.assertFalse(any("--remove-label" in cmd for cmd in self.commands))
+                self.escalate.assert_not_called()
+                row = self.decision()["checks"][1]
+                self.assertEqual((row["disposition"], row["original_bucket"]), ("advisory", bucket))
+                self.assertFalse(any("/actions/jobs/" in str(cmd) for cmd in self.commands))
+
+    def test_required_pending_and_failure_override_advisory_and_runner_skip(self):
+        dispatch.cfg.advisory_checks = ["*"]
+        for bucket in ("pending", "fail"):
+            with self.subTest(bucket=bucket):
+                self.commands.clear()
+                self.required = [{**self.passing, "bucket": bucket}]
+                dispatch.merge_pass_locked(False)
+                self.assertFalse(self.merged())
+                self.assertEqual(any("--remove-label" in cmd for cmd in self.commands), bucket == "fail")
+        self.assertEqual(self.escalate.call_args.kwargs["code"], "ci_failed")
+
+    def test_stale_unassigned_job_without_matching_runner_merges_without_rerun(self):
+        for bucket in ("pending", "cancel", "infra"):
+            # infra is an existing cancelled-triage result, not a GitHub check bucket.
+            if bucket == "infra":
+                rows = dispatch.triage_cancelled(70, [{**self.gpu, "bucket": bucket}])
+                self.assertEqual(rows[0]["bucket"], "skipped-infra")
+                continue
+            with self.subTest(bucket=bucket):
+                self.commands.clear()
+                self.gpu["bucket"] = bucket
+                self.job.update(status="queued" if bucket == "pending" else "completed",
+                                conclusion=None if bucket == "pending" else "cancelled")
+                self.runners = [{"runners": [{"labels": [{"name": label} for label in
+                                                        ("self-hosted", "linux", "w7900")]}]}]
+                dispatch.merge_pass_locked(False)
+                self.assertTrue(self.merged())
+                row = self.decision()["checks"][1]
+                self.assertEqual(row["bucket"], "skipped-infra")
+                self.assertEqual(row["labels"], ["linux", "mi300x", "self-hosted"])
+                self.assertEqual(row["registered_runners"], 1)
+                self.assertEqual((row["run"], row["job"]), (123, 456))
+                self.assertGreater(row["queued_seconds"], 21600)
+                self.assertFalse(any(cmd[:3] == ["gh", "run", "rerun"] for cmd in self.commands))
+                self.escalate.assert_not_called()
+
+    def test_zero_runners_skip_but_policy_provenance_still_blocks(self):
+        self.policy = [{"name": "required CI evidence unavailable", "bucket": "pending"}]
+        dispatch.merge_pass_locked(False)
+        self.assertFalse(self.merged())
+        self.policy = []
+        dispatch.merge_pass_locked(False)
+        self.assertTrue(self.merged())
+        self.assertEqual(self.decision()["checks"][1]["bucket"], "skipped-infra")
+
+    def test_available_runner_on_later_page_and_casefolded_labels_blocks(self):
+        self.runners += [{"runners": [{"labels": [{"name": label} for label in
+                                                  ("SELF-HOSTED", "Linux", "MI300X", "extra")]}]}]
+        dispatch.merge_pass_locked(False)
+        self.assertFalse(self.merged())
+        self.escalate.assert_not_called()
+
+    def test_missing_runner_evidence_never_skips(self):
+        for endpoint in ("actions/jobs/456", "actions/runners?per_page=100"):
+            for code, text in ((1, "unavailable"), (0, "not-json"), (0, "{}"), (0, "null")):
+                with self.subTest(endpoint=endpoint, code=code, text=text):
+                    self.errors = {f"repos/acme/widgets/{endpoint}": (code, text)}
+                    dispatch.merge_pass_locked(False)
+                    self.assertFalse(self.merged())
+        self.errors = {}
+        for value in ([], [{"runners": [{"labels": None}]}]):
+            self.runners = value
+            dispatch.merge_pass_locked(False)
+            self.assertFalse(self.merged())
+
+    def test_recent_assigned_hosted_or_started_jobs_do_not_skip(self):
+        original = self.job.copy()
+        for change in ({"created_at": datetime.now(UTC).isoformat()}, {"runner_id": 1},
+                       {"runner_name": "worker"}, {"labels": ["ubuntu-latest"]},
+                       {"steps": [{"conclusion": "success"}]},
+                       {"steps": [{"started_at": "2026-01-01T01:00:00Z"}]},
+                       {"status": "in_progress"}, {"status": "completed", "conclusion": "failure"},
+                       {"created_at": "unknown"}, {"created_at": "2026-01-01"}):
+            with self.subTest(change=change):
+                self.job = {**original, **change}
+                dispatch.merge_pass_locked(False)
+                self.assertFalse(self.merged())
+        self.escalate.assert_not_called()
+
+    def test_timeout_boundary_and_configured_limit(self):
+        self.job["created_at"] = "2026-01-01T00:00:00Z"
+        with mock.patch.object(dispatch, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 1, 1, 6, tzinfo=UTC)
+            rows = dispatch.pr_checks(70, "head")
+            self.assertEqual(rows[1]["bucket"], "skipped-infra")
+            self.assertEqual(rows[1]["queued_seconds"], 21600)
+            dispatch.cfg.queued_check_timeout = "6h1s"
+            rows = dispatch.pr_checks(70, "head")
+            self.assertEqual(rows[1]["bucket"], "pending")
+
+    def test_required_starvation_escalates_explicit_block_and_journals_wait(self):
+        self.required = [self.passing, self.gpu]
+        dispatch.merge_pass_locked(False)
+        self.assertFalse(self.merged())
+        self.assertIn("blocks merge", self.escalate.call_args.args[1])
+        self.assertEqual(self.escalate.call_args.kwargs["code"], "ci_runner")
+        self.assertFalse(any(cmd[:3] == ["gh", "run", "rerun"] for cmd in self.commands))
+        self.assertEqual(self.decision()["checks"][1]["bucket"], "infra")
+        waits = [row["wait"] for row in lifecycle.read_events(dispatch.EVENTS)
+                 if row.get("kind") == "wait"]
+        self.assertEqual(waits[-1]["reason"], "ci_runner")
+        self.assertEqual(waits[-1]["mode"], "eligibility")
+
+    def test_final_recheck_rejects_new_pending_or_failed_required_check(self):
+        for bucket in ("pending", "fail"):
+            with self.subTest(bucket=bucket):
+                self.commands.clear()
+                self.check_reads = 0
+                def required(cmd, bucket=bucket, **kwargs):
+                    if cmd[:3] == ["gh", "pr", "checks"] and "--required" in cmd:
+                        self.required = [self.passing if self.check_reads == 0 else
+                                         {**self.passing, "bucket": bucket}]
+                    return self.run_gh(cmd, **kwargs)
+                with mock.patch.object(dispatch, "run", side_effect=required):
+                    dispatch.merge_pass_locked(False)
+                self.assertFalse(self.merged())
+
+    def test_required_query_error_fails_closed_and_known_empty_falls_back(self):
+        for error in ((1, "", "authentication failed"), (1, "[]", "forbidden"),
+                      (0, "null", ""), (0, "{}", ""), (0, "not-json", ""),
+                      (0, '[{"name":"unit","bucket":"unknown"}]', "")):
+            with self.subTest(error=error):
+                self.required_error = error
+                dispatch.merge_pass_locked(False)
+                self.assertFalse(self.merged())
+        self.required_error = (1, "", "no required checks reported on the 'main' branch")
+        dispatch.merge_pass_locked(False)
+        self.assertTrue(self.merged())
+
+    def test_decision_retains_advisory_checks_beyond_bounded_trace_inputs(self):
+        dispatch.cfg.advisory_checks = ["E2E tests (*"]
+        self.all_checks = [self.passing] * 20 + [self.gpu]
+        dispatch.merge_pass_locked(False)
+        self.assertTrue(self.merged())
+        self.assertEqual(self.decision()["checks"][-1]["disposition"], "advisory")
+
+
+if __name__ == "__main__":
+    unittest.main()
