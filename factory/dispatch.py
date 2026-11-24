@@ -5842,8 +5842,8 @@ def process_ticket(
                         escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
                     return
                 if time.monotonic() > deadline:
-                    if has_gate:
-                        escalate(n, f"gate failed; worktree kept at {wt}", logfile, code="gate_failed")
+                    if failed_gate_log is not None:
+                        escalate(n, f"gate failed; worktree kept at {wt}", failed_gate_log, code="gate_failed")
                     else:
                         escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
                     return
