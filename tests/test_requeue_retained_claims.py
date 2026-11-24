@@ -135,6 +135,23 @@ class RetainedClaimActionTest(unittest.TestCase):
         self.assertEqual(self.issue, before)
         self.assertEqual(self.mutations, [])
 
+    def test_outsider_comment_does_not_hide_later_authenticated_claim(self):
+        claim = {
+            "body": "Factory claim: host=tank nonce=kept at=2020-01-01T00:00:00Z",
+            "user": {"login": "alice"}, "created_at": "2020-01-01T00:00:00Z",
+        }
+        outsider = {**claim, "user": {"login": "outsider"}}
+        with self.claim_transport([[]]):
+            preview = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
+        before = copy.deepcopy(self.issue)
+        with self.claim_transport([[], [outsider, claim]]):
+            prepared = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
+            applied = self.apply_mcp(preview)
+        for result in (prepared, applied):
+            self.assertEqual(result.get("error", {}).get("code"), "target_busy", result)
+        self.assertEqual(self.issue, before)
+        self.assertEqual(self.mutations, [])
+
     def test_hostless_action_does_not_read_retained_claims(self):
         with self.claim_transport([[]], failed=True):
             preview = self.via_mcp("requeue_agent", {"number": 7})
