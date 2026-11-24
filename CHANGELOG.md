@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Dispatch no longer fails an ordinary pass after a claimed ticket's error is escalated as `dispatcher_error`; other tickets finish normally. Escalation labels, comments and reasons are unchanged; explicit `--ticket`, unhandled ticket, and pass-level failures still propagate (#895).
 - Expired own-host claims interrupted during an open PR attempt now escalate to `ready-for-human` with a nonce-bearing `Factory requeue` comment rather than holding as `open PR` forever, including kills before the local `claimed` receipt. New receipts bind to the claim nonce instead of comparing GitHub and host clocks. Recovery rechecks heartbeat/ownership, preserves the PR and worktree, and reports retained local HEAD and unpushed commit SHAs; live, foreign, completed and already-escalated claims retain their existing behavior (#886).
 - Host-only `gate.mutation_slots` caps concurrent PR-tier mutation checks using independent host-wide slot flocks inherited by mutation children, retaining admission after gate interruption. Gate reports record slot waits outside check timeouts and mutation durations; unset settings preserve uncapped execution (#884).
 - Reviewer approval skips `factory-held` PRs whether draft or not, rechecks holds after labeling, and withdraws racing approval without recording it. Failed withdrawal reports failure instead of successful approval. Releasing a hold preserves exact reviewed-SHA requirements (#877).
