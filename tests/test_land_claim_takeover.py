@@ -558,9 +558,50 @@ class LandClaimTakeoverTest(unittest.TestCase):
         self.assert_no_deletes()
 
 
+    def test_dashboard_released_own_claim_survives_conflict_refresh_and_worker_recovery(self):
+        tank = self.dispatcher("tank")
+        old_head = self.approve(tank)
+        self.claim("tank", age=3 * 3600)
+        original = self.comments[0].copy()
+        tank.release_expired_claim(9, reason="dashboard release_claim")
+        (self.origin / "feature.txt").write_text("main feature\n")
+        fixture.git(self.origin, "add", "feature.txt")
+        fixture.git(self.origin, "commit", "-qm", "conflicting main change")
+
+        tank.land_pass(False)
+
+        self.assertEqual(len(self.events(tank, "conflict-requeue")), 1)
+        self.assertEqual(self.events(tank, "claim-takeover"), [])
+        self.assertEqual(tank.live_host_claims(tank.host_claims(9)), [])
+        self.assertIn(original, self.comments)
+        self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+        self.assertFalse(self.github.merged)
+        self.assert_no_deletes()
+        resolver = self.tmp / "released-claim-resolve.py"
+        resolver.write_text(refresh_fixture.RESOLVER.replace("shared.txt", "feature.txt"))
+        prompt = self.tmp / "released-claim-prompt.md"
+        tank.cfg.workers = {"default": [sys.executable, str(resolver), str(prompt)]}
+        with mock.patch.object(tank, "run_gate", return_value=(True, "resolved gate")) as gate, \
+                mock.patch.object(tank, "review", wraps=tank.review) as review:
+            [ready] = tank.frontier()
+            self.assertNotIn("held", ready)
+            tank.process_ticket(ready, 30, False)
+        head = self.github.head()
+        self.assertNotEqual(head, old_head)
+        gate.assert_called_once()
+        self.assertEqual(review.call_args.args[-1], head)
+        tank.land_pass(False)
+        self.assertTrue(self.github.merged)
+        self.assertEqual([row["head"] for row in self.events(tank, "merged")], [head])
+        self.assertIn(original, self.comments)
+        self.assertFalse(any("Factory claim history: retained" in row["body"] for row in self.comments))
+        self.assert_no_deletes()
+
+
 class LandingClaimLifetimeTest(unittest.TestCase):
     setUp = claim_fixture.HostClaimRaceTest.setUp
     dispatcher = claim_fixture.HostClaimRaceTest.dispatcher
+    launch = claim_fixture.HostClaimRaceTest.launch
 
     def test_normal_owned_claim_is_released_and_does_not_block_admission(self):
         tank = self.dispatcher("tank")
@@ -704,6 +745,31 @@ class LandingClaimLifetimeTest(unittest.TestCase):
             f"Factory requeue: nonce={foreign['nonce']}\nFactory claim history: retained\n",
         )
         self.assertFalse(any("DELETE" in cmd for _, cmd in self.github.calls))
+
+    def test_dashboard_release_on_other_host_survives_replacement_admission_and_cleanup(self):
+        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        original = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3)).copy()
+        tank.release_expired_claim(7, reason="dashboard release_claim")
+        self.assertFalse(ultron.EVENTS.exists())
+
+        [ready] = ultron.frontier()
+        self.assertNotIn("held", ready)
+        ultron.process_ticket(ready, 1, False)
+
+        self.assertEqual(self.launched, ["ultron"])
+        self.assertIn(original, self.github.comments)
+        self.assertFalse(any("DELETE" in cmd for _, cmd in self.github.calls))
+        self.assertFalse(ultron.owned_host_claim(7)["preserve_history"])
+        ultron.unclaim(7, "--add-label", config.LABEL_AGENT)
+        self.assertEqual(ultron.host_claims(7)[0]["id"], original["id"])
+        self.assertEqual(len(ultron.host_claims(7)), 1)
+        self.assertIsNone(ultron.host_claim_hold(7, self.github.issue, ultron.host_claims(7)))
+        self.assertFalse(any("Factory claim history: retained" in row["body"]
+                             for row in self.github.comments))
+        self.assertFalse(any(
+            "DELETE" in cmd and cmd[2].endswith(f"/{original['id']}")
+            for _, cmd in self.github.calls
+        ))
 
 
 if __name__ == "__main__":
