@@ -2494,6 +2494,65 @@ class DispatchTest(unittest.TestCase):
 
             self.assertEqual(selected_base["value"], "stable")
 
+    def test_push_and_pr_bounds_oversized_body(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            dispatch.FACTORY.mkdir()
+            prefix = "Closes #7\n\n## Gate report\n\nHead SHA: abc123\n\n- test: PASS\n\n"
+            small = prefix + "Ran 1 test\n"
+            large = prefix + ("test_hardware (test_gpu.GpuTest.test_hardware) ... skipped 'needs GPU'\n" * 2000)
+            bodies = []
+
+            def fake_run(cmd, *args, **kwargs):
+                stdout = "1\n" if cmd[:3] == ["git", "rev-list", "--count"] else ""
+                if cmd[:3] == ["gh", "pr", "create"]:
+                    body = Path(cmd[cmd.index("--body-file") + 1]).read_text()
+                    self.assertLessEqual(len(body), 65_536)
+                    bodies.append(body)
+                return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+            with mock.patch.object(dispatch, "run", side_effect=fake_run), \
+                    mock.patch.object(dispatch, "gh_json", return_value=[]):
+                for body in (small, large):
+                    self.assertTrue(dispatch.push_and_pr(repo, "agent/7", "feature", body))
+
+            self.assertEqual(bodies[0], small)
+            self.assertTrue(bodies[1].startswith(prefix))
+            self.assertIn("truncated", bodies[1])
+
+    def test_push_and_pr_truncates_only_above_excerpt_boundary(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            dispatch.FACTORY.mkdir()
+            published = []
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "create"]:
+                    published.append(Path(cmd[cmd.index("--body-file") + 1]).read_text())
+                stdout = "1\n" if cmd[:3] == ["git", "rev-list", "--count"] else ""
+                return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+            with mock.patch.object(dispatch, "run", side_effect=fake_run), \
+                    mock.patch.object(dispatch, "gh_json", return_value=[]):
+                for size in (59_999, 60_000, 60_001):
+                    with self.subTest(size=size):
+                        body = "x" * size
+                        self.assertTrue(dispatch.push_and_pr(repo, "agent/7", "feature", body))
+                        expected = body if size <= 60_000 else body[:60_000] + (
+                            "\n\n[truncated: PR body excerpt; full gate report retained in the worktree]\n"
+                        )
+                        self.assertEqual(published[-1], expected)
+
     def test_push_and_pr_does_not_push_existing_wrong_or_missing_base(self) -> None:
         from unittest import mock
 

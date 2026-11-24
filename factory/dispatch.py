@@ -3564,6 +3564,8 @@ def push_and_pr(
             record("pr-opened", ticket=ticket, pr=existing[0]["number"])
         return True
     body_file = FACTORY / f"pr-body-{branch.removeprefix('agent/')}.md"
+    if len(body) > 60_000:
+        body = body[:60_000] + "\n\n[truncated: PR body excerpt; full gate report retained in the worktree]\n"
     body_file.write_text(body)
     created = run(
         [
