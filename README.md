@@ -821,9 +821,17 @@ by a human. A journal with no `generation` row is generation 0 and counts exactl
 before.
 
 `requeue_agent` takes an optional `intent`. With `resume` (the default, and what a
-plain relabel means), the branch, worktree and refresh context are kept. With `fresh`,
-`agent/<n>` is recut from main at the generation's first claim, and the superseded local
-and remote heads stay under create-only
+plain relabel means), the branch, worktree and refresh context are kept. Before
+reusing a worktree (or its local branch), dispatch fetches origin and explicitly
+fetches the remote ticket branch even with a main-only fetch refspec, then
+fast-forwards a clean local ancestor to `origin/agent/<n>`, journaling `worktree-fast-forward`
+with `from_head` and `to_head`. Equal heads and unpublished local-ahead commits
+are kept. Dirty or diverged worktrees escalate before the worker or gate, naming
+both heads and preserving the worktree; generated `.factory/` and
+`.factory-prompt.md` artifacts do not count as worker edits. The lease and
+`claimed.base` use the synchronized head. No reset or recut is used for resume.
+With `fresh`, `agent/<n>` is recut from main at the generation's first claim,
+and the superseded local and remote heads stay under create-only
 `refs/factory-evidence/<n>-generation-<g>-{local,remote}-<sha12>` refs, so replaying an
 interrupted restart never replaces them. A `generation-restart` row (`local`, `remote`,
 `base`) is the receipt: later claims of the generation reuse the recut worktree instead
@@ -1142,6 +1150,19 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    runs only pr checks (release ones SKIP) and `--tier release` only release
    checks, with no built-ins. This attempt gate is what the worker and the
    dispatcher run after each attempt, and what the merge-stage refresh re-runs.
+   Attempt-tier reports record the starting `Head SHA` and retain a `## <check>
+   test evidence` section for passing unittest checks: the `Ran N tests` summary
+   and skipped-test identities with reasons, without the failure-output tail
+   limit. Direct Python and `uv run` Python invocations with only the recognized uv
+   flags (`--frozen`, `--no-managed-python`, `--no-project`, `--offline`) use an
+   injected unittest result class. Its `addSkip` callback records each test identity
+   and reason; `stopTestRun` records `testsRun` in a gate-created temporary JSON file
+   passed through `FACTORY_UNITTEST_RESULT`. The report reads this file, never
+   stdout diagnostics or progress text. Other commands (including coverage, pytest,
+   and uv commands with value-taking or unknown options) are left unchanged.
+   PR creation preserves bodies up to 60,000 characters; larger
+   bodies carry that prefix and a truncation notice. The full gate report remains
+   in the worktree.
    Repositories may opt into mechanical repairs with `[gate].fixups`, an array of
    argv arrays (for example `fixups = [["cargo", "xtask", "manifest"]]`). Factory
    never infers commands. Before escalating the last failed worker gate (including
@@ -1210,9 +1231,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    failure leaves an already-`ready-for-human` ticket on its existing escalation
    instead of posting another escalation comment or consuming another manager
    round.
-   `APPROVE` adds the `factory-approved` label only while the remote PR still
-   points to the exact commit that passed the gate and review. The successful
-   label operation and gate/review commit are recorded in `.factory/events.jsonl`.
+   `APPROVE` skips PRs carrying `factory-held`, draft or not, without adding
+   `factory-approved` or recording approval. After a hold is removed, approval
+   still requires the exact remote commit that passed the gate and review.
+   A hold observed in the post-label check withdraws the label without recording
+   approval. Successful label operations and gate/review commits are recorded
+   in `.factory/events.jsonl`.
    The optional `[review].policy` path defaults to `REVIEW.md`. Factory reads it
    from the base ref, never the worker head, so add that path to
    `[gate].protected_paths`. The policy can define bug/security/spec passes,
@@ -1567,6 +1591,28 @@ Other District metadata stays outside pipeline configuration; `doctor` accepts i
 only under `defaults`. An `engine` table under a per-repository host section
 still produces a host-config warning.
 
+To cap concurrent PR-tier mutation checks across repositories on one host:
+
+```toml
+[defaults.gate]
+mutation_slots = 1
+```
+
+`gate.mutation_slots` is a positive integer, host-only; a
+`[repo."owner/name".gate]` host override is also accepted. Use the same limit for
+all repositories sharing the host. Unset preserves uncapped behavior.
+Checks named `mutation`, declaring `proof = "mutation-v1"`, or invoking the exact
+`scripts/mutation.py` token acquire one of `/tmp/factory-mutation-<slot>.lock`
+with `flock`, independently of `gate.lock`, the repository, and `TMPDIR`.
+Both report-only and blocking proof runs use slots; other checks and tiers do not.
+The mutation subprocess inherits its slot descriptor, so interrupting or killing
+the gate cannot admit another run while that child survives. Each slot is released
+when the check returns, fails, or times out (or when an orphaned child exits).
+Do not remove the lock files while gates run. The report records
+`Mutation slot wait: <check> <seconds>s` separately; waiting does not consume the
+check timeout or mutation duration.
+Contention is also recorded as a `mutation_slot` lifecycle wait.
+
 `[engine] yield_for_update = true` in `.factory.toml` opts a repository into
 yielding when stale (default false). For the whole shared host, set:
 
@@ -1688,8 +1734,8 @@ labels from the authenticated dispatcher only before the recorded escalation
 comment; human removals and later edits still hold automatic management.
 
 Expired claims are admitted through the frontier only when no other hold exists.
-A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
-hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
+A human assignee remains a hold. An open `agent/<ticket>` PR also remains a hold
+for foreign claims or completed attempts.
 Same-host claims from interrupted ticket executions are excluded from live leases
 and expired elections as soon as lifecycle evidence proves the execution interrupted
 (including an earlier boot) and the ticket lock is free. A dead dispatcher alone
@@ -1708,6 +1754,16 @@ the usual holds. Admission rechecks
 under its own ticket lock, preserves the shared assignment until a replacement
 wins, then retires abandoned claims even when their old lease or PR would hold.
 This lets an owner resume requeue reuse its open PR on the first post-reboot pass.
+When the elected own-host claim expires without completion or escalation, the
+next pass instead escalates to `ready-for-human` under the ticket lock and posts
+a nonce-bearing `Factory requeue` comment.
+Missing local attempt evidence is recoverable, including a kill before `claimed`
+is journaled. New `claimed` receipts bind to the claim nonce, not GitHub creation
+time; legacy completion receipts use the owner's local heartbeat clock.
+Recovery rechecks heartbeat/election, keeps the PR and worktree intact, and reports
+the local HEAD, remote branch head and unpushed commit SHAs when readable (otherwise
+explicitly unavailable). It never resets or recreates the worktree. The next owner
+must merge main before resuming gate/review and publishing the retained commits.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
