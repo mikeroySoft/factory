@@ -1340,10 +1340,12 @@ def execute(args: argparse.Namespace, execution) -> int:
     def run_configured(check: config.Check) -> tuple[bool, str]:
         cmd = command(check)
         if check.name in unittest_checks:
-            with tempfile.NamedTemporaryFile(prefix="factory-unittest-", suffix=".json") as record:
-                passed, output = run(cmd, unittest_path=Path(record.name))
+            with tempfile.TemporaryDirectory(prefix="factory-unittest-") as directory:
+                record = Path(directory) / "result.json"
+                record.touch()
+                passed, output = run(cmd, unittest_path=record)
                 try:
-                    evidence = json.loads(Path(record.name).read_text())
+                    evidence = json.loads(record.read_text())
                     if (
                         not isinstance(evidence["testsRun"], int)
                         or isinstance(evidence["testsRun"], bool)
