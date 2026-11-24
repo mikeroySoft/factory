@@ -6,7 +6,7 @@
 # GitHub "owner/name". Default: parsed from the `origin` remote.
 # slug = "owner/name"
 # Fork workflow: name of the remote whose `main` is merged into ours every
-# pass (gated, one merge per pass; conflicts open a ready-for-human issue).
+# landing stage (gated; conflicts open a ready-for-human issue).
 # Leave unset if this repository is not a fork.
 # upstream = "upstream"
 # main = "main"

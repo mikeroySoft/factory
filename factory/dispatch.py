@@ -2,8 +2,8 @@
 
 One pass per invocation: first the upstream sync stages any new upstream main
 commits as a `ready-for-agent` sync ticket on an `agent/<issue>` candidate
-(never moving main), then the merge stage lands at most one approved, green,
-up-to-date factory PR on main; then pick
+(never moving main), then the merge stage drains approved, green,
+up-to-date factory PRs on main; then pick
 claimable issues (or --ticket N), run a worker agent in a git worktree, gate,
 open a PR, review with the reviewer model, and bounce once. Approval and merge
 require the gate, review, durable approval event, CI, and remote PR to agree on
@@ -32,7 +32,7 @@ import threading
 import time
 import tomllib
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager, nullcontext, suppress
 from datetime import UTC, datetime
 from functools import cache
@@ -4785,15 +4785,12 @@ def cleanup_after_merge(n: int, head: str) -> None:
 
 
 def land_pass(dry_run: bool) -> None:
-    """Under one lock: upstream sync (stages a sync ticket, never moves main), then
-    the merge stage (at most ONE approved, green, up-to-date factory PR per pass).
+    """Under one lock, stage upstream sync and drain one finite open-PR snapshot.
 
-    A merge requires independently produced gate and reviewer evidence bound
-    to the same head, a matching durable approval plus `factory-approved`,
-    green GitHub CI for that unchanged head, a head containing the current
-    main tip, and no human requested-changes veto. One merge per pass is the
-    merge queue: landing one PR makes the others stale, and the refresh path
-    re-earns gate and fresh review evidence before they land.
+    Each ticket candidate is independently locked, then rechecked against its
+    exact approved head, CI, current main, holds, and human vetoes. Landing one
+    PR can make later candidates stale; those candidates refresh and re-earn
+    approval instead of merging stale evidence.
     """
     if cfg.host_name is not None and cfg.land_host is not None and cfg.host_name != cfg.land_host:
         log(f"land: skipped, land host is {cfg.land_host}")
@@ -4827,8 +4824,46 @@ def land_pass(dry_run: bool) -> None:
             execution.resource("released", lock_path, scope="repository")
 
 
+def _land_pr_skip_reason(
+    pr: dict, n: int, expected_head: str | None = None,
+) -> tuple[str, str] | None:
+    if (expected_head is not None or "state" in pr) and pr.get("state") != "OPEN":
+        return "state_changed", f"state is {pr.get('state')!r}"
+    if pr.get("headRefName") != f"agent/{n}":
+        return "branch_changed", f"head branch changed to {pr.get('headRefName')!r}"
+    if pr.get("isDraft"):
+        return "draft", "PR is a draft"
+    if pr.get("baseRefName") != cfg.main:
+        return "wrong_base", f"targets {pr.get('baseRefName')!r}, not {cfg.main!r}"
+    labels = {label["name"] for label in pr.get("labels", [])}
+    if "factory-held" in labels:
+        return "held", "factory-held label is present"
+    if FACTORY_APPROVED not in labels:
+        return "not_approved", f"{FACTORY_APPROVED} label is absent"
+    if pr.get("reviewDecision") == "CHANGES_REQUESTED":
+        return "human_veto", "human requested changes"
+    if expected_head is not None and pr.get("headRefOid") != expected_head:
+        return "head_changed", f"head changed from {expected_head} to {pr.get('headRefOid')}"
+    return None
+
+
+def _record_land_skip(
+    dry_run: bool, pr: int | None, n: int | None, reason: str, detail: str,
+) -> None:
+    prefix = f"PR #{pr}: " if pr is not None else "land: "
+    log(f"{prefix}{detail}; not landing")
+    if not dry_run:
+        payload: dict[str, object] = {"reason": reason, "detail": detail}
+        if pr is not None:
+            payload["pr"] = pr
+        if n is not None:
+            payload["ticket"] = n
+        record("merge-skipped", **payload)
+
+
 def merge_pass_locked(dry_run: bool) -> None:
-    """Ticket PR merge stage; `factory learn` PRs in the same listing go to `learn.promote_pass` first."""
+    """Drain ticket PRs from one bounded snapshot; promote lessons PRs first."""
+    limit = 1000
     prs = gh_json(
         [
             "pr",
@@ -4837,10 +4872,17 @@ def merge_pass_locked(dry_run: bool) -> None:
             REPO,
             "--state",
             "open",
+            "--limit",
+            str(limit),
             "--json",
             "number,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision",
         ]
     )
+    if len(prs) == limit:
+        _record_land_skip(
+            dry_run, None, None, "outside_listing",
+            f"open-PR snapshot reached --limit {limit}; PRs outside the snapshot were not evaluated",
+        )
     from factory.learn import promote_pass
 
     try:
@@ -4849,39 +4891,73 @@ def merge_pass_locked(dry_run: bool) -> None:
         log(f"promotion: failed ({type(exc).__name__}: {exc})")
     candidates = []
     for pr in prs:
-        m = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
-        if not m or pr["isDraft"]:
+        branch = pr.get("headRefName") or ""
+        m = re.fullmatch(r"agent/(\d+)", branch)
+        if not m:
+            _record_land_skip(
+                dry_run, pr["number"], None, "unsupported_branch",
+                f"unsupported ticket branch {branch!r}",
+            )
             continue
-        if pr.get("baseRefName") != cfg.main:
-            log(f"PR #{pr['number']}: targets {pr.get('baseRefName')!r}, not {cfg.main!r}; not merging")
+        n = int(m.group(1))
+        if skipped := _land_pr_skip_reason(pr, n):
+            _record_land_skip(dry_run, pr["number"], n, *skipped)
             continue
-        if FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}:
+        if not pr.get("headRefOid"):
+            _record_land_skip(
+                dry_run, pr["number"], n, "missing_head", "listed head is unavailable",
+            )
             continue
-        if pr["reviewDecision"] == "CHANGES_REQUESTED":
-            log(f"PR #{pr['number']}: human requested changes; not merging")
-            continue
-        candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
+        candidates.append((pr["number"], n, pr["headRefOid"]))
     for pr_num, n, listed_head in sorted(candidates):
         if cfg.host_name is not None:
             elected = elected_host_claim(host_claims(n))
             if elected is not None and elected["host"] != cfg.host_name:
-                log(f"PR #{pr_num}: skipped, elected claim belongs to host {elected['host']}")
+                _record_land_skip(
+                    dry_run, pr_num, n, "foreign_host",
+                    f"elected claim belongs to host {elected['host']}",
+                )
                 continue
+        lock_fd = None
+        if not dry_run:
+            lock_fd = ticket_lock(n).open("w")
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                lock_fd.close()
+                _record_land_skip(
+                    False, pr_num, n, "active_ticket",
+                    f"active ticket #{n} holds its pipeline lock",
+                )
+                continue
+        _merge_candidate_locked(dry_run, pr_num, n, listed_head, lock_fd)
+
+
+def _merge_candidate_locked(
+    dry_run: bool, pr_num: int, n: int, listed_head: str, lock_fd,
+) -> None:
+    try:
         with nullcontext() if dry_run else lifecycle.scope(
-            EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
+            EVENTS, "merge-eligibility", ticket=n, lock=ticket_lock(n)
         ) as execution:
             if initiative_kind(n):
-                log(f"PR #{pr_num}: refused (ticket #{n} is an initiative record); not merging")
+                _record_land_skip(
+                    dry_run, pr_num, n, "initiative",
+                    f"ticket #{n} is an initiative record",
+                )
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "initiative"
-                continue
+                return
             verdict = latest_head_review_verdict(
                 lifecycle.read_events(EVENTS), n, pr_num, listed_head,
             )
             if verdict in {"REQUEST_CHANGES", "REVISE"}:
-                log(f"PR #{pr_num}: journaled {verdict} at {listed_head}; not merging")
+                _record_land_skip(
+                    dry_run, pr_num, n, "review_revise",
+                    f"journaled {verdict} at {listed_head}",
+                )
                 if dry_run:
-                    continue
+                    return
                 record_merge_decision(
                     n, pr_num, "review_revise",
                     f"journaled {verdict} at {listed_head}; approval is no longer eligible",
@@ -4908,16 +4984,19 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 if execution:
                     execution.outcome, execution.reason = "project_escalation", "review_revise"
-                continue
+                return
             checks = triage_cancelled(pr_num, pr_checks(pr_num, listed_head), dry_run, n, listed_head)
             buckets: dict[str, int] = {}
             for c in checks:
                 buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
             failed = [c["name"] for c in checks if c["bucket"] == "fail"]
             if failed:
+                _record_land_skip(
+                    dry_run, pr_num, n, "ci_failed",
+                    f"CI failed: {', '.join(failed)}",
+                )
                 if dry_run:
-                    log(f"PR #{pr_num}: would escalate (CI failed: {', '.join(failed)})")
-                    continue
+                    return
                 record_merge_decision(
                     n, pr_num, "remove stale factory-approved label",
                     f"CI failed ({', '.join(failed)}); approval is no longer eligible",
@@ -4942,44 +5021,41 @@ def merge_pass_locked(dry_run: bool) -> None:
                     f"`{FACTORY_APPROVED}` label removed",
                     None, code="ci_failed",
                 )
-                continue
+                return
             starved = [c for c in checks if c["bucket"] == "infra"]
             if starved and runner_unavailable(n, pr_num, starved, dry_run):
+                _record_land_skip(
+                    dry_run, pr_num, n, "ci_infra",
+                    "CI runner infrastructure is unavailable",
+                )
                 if not dry_run:
                     record_merge_decision(
                         n, pr_num, "ci-infra", "CI runner infrastructure is unavailable",
                         listed_head, listed_head, checks,
                     )
-                continue
+                return
             if buckets.get("pending") or starved:
-                log(f"PR #{pr_num}: CI pending {buckets}; waiting")
+                _record_land_skip(
+                    dry_run, pr_num, n, "ci_pending", f"CI pending {buckets}",
+                )
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "ci_pending"
                     execution.wait("ci_pending", mode="eligibility", pr=pr_num)
-                continue
+                return
             if not buckets.get("pass"):
-                log(f"PR #{pr_num}: no passing CI checks reported; refusing to merge")
+                _record_land_skip(
+                    dry_run, pr_num, n, "no_passing_ci", "no passing CI checks reported",
+                )
                 if execution:
                     execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
                     execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
-                continue
+                return
             fields = "number,state,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision,title,files"
             fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
-            labels = {label["name"] for label in fresh.get("labels", [])}
             head = fresh.get("headRefOid")
-            if (
-                fresh.get("state") != "OPEN"
-                or fresh.get("headRefName") != f"agent/{n}"
-                or fresh.get("baseRefName") != cfg.main
-                or fresh.get("isDraft")
-                or FACTORY_APPROVED not in labels
-                or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
-            ):
-                log(f"PR #{pr_num}: state changed during eligibility check; not merging")
-                continue
-            if not head or head != listed_head:
-                log(f"PR #{pr_num}: head changed during CI check; retrying next pass")
-                continue
+            if skipped := _land_pr_skip_reason(fresh, n, listed_head):
+                _record_land_skip(dry_run, pr_num, n, *skipped)
+                return
             behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]
             from factory import eval as eval_suite
 
@@ -4993,7 +5069,9 @@ def merge_pass_locked(dry_run: bool) -> None:
             )
             if dry_run:
                 if behind:
-                    log(f"PR #{pr_num}: would refresh (behind main)")
+                    _record_land_skip(
+                        True, pr_num, n, "behind", f"branch is behind {cfg.main}; would refresh",
+                    )
                 elif (
                     cfg.eval_schedule
                     and "files" in fresh
@@ -5046,6 +5124,10 @@ def merge_pass_locked(dry_run: bool) -> None:
                     != 0
                 )
             if behind:
+                _record_land_skip(
+                    False, pr_num, n, "behind",
+                    f"approval head {head} is behind {cfg.main}; refreshing",
+                )
                 record_merge_decision(
                     n, pr_num, "refresh branch",
                     f"approval head {head} is stale because the branch is behind {cfg.main}",
@@ -5070,12 +5152,15 @@ def merge_pass_locked(dry_run: bool) -> None:
                         f"cd {shlex.quote(str(ROOT))} && "
                         f"{eval_command} && {candidate_command}"
                     )
-                log(f"PR #{pr_num}: worker eval keep claim missing for {head}; run `{command}`; not merging")
+                _record_land_skip(
+                    False, pr_num, n, "eval_required",
+                    f"worker eval keep claim missing for {head}; run `{command}`",
+                )
                 execution.outcome, execution.reason = "not_eligible", "eval_required"
                 execution.wait(
                     "eval_required", mode="eligibility", pr=pr_num, head=head, command=command,
                 )
-                continue
+                return
             approved = _head_evidence_matches(
                 events, n, head, changed_paths=changed_paths,
             ) and any(
@@ -5088,6 +5173,10 @@ def merge_pass_locked(dry_run: bool) -> None:
                 for e in events
             )
             if not approved:
+                _record_land_skip(
+                    False, pr_num, n, "approval_missing",
+                    f"approval evidence is missing or stale for head {head}",
+                )
                 record_merge_decision(
                     n, pr_num, "remove stale factory-approved label",
                     f"approval evidence is missing or stale for head {head}",
@@ -5105,11 +5194,15 @@ def merge_pass_locked(dry_run: bool) -> None:
                     None, code="approval_missing",
                 )
                 execution.outcome, execution.reason = "project_escalation", "state_changed"
-                continue
+                return
             latest_checks = triage_cancelled(pr_num, pr_checks(pr_num, head), False, n, head)
             latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
             latest_starved = [c for c in latest_checks if c["bucket"] == "infra"]
             if latest_failed:
+                _record_land_skip(
+                    False, pr_num, n, "ci_failed",
+                    f"CI failed after eligibility check: {', '.join(latest_failed)}",
+                )
                 record_merge_decision(
                     n, pr_num, "remove stale factory-approved label",
                     f"CI failed after eligibility check ({', '.join(latest_failed)})",
@@ -5126,22 +5219,37 @@ def merge_pass_locked(dry_run: bool) -> None:
                     f"`{FACTORY_APPROVED}` label removed",
                     None, code="ci_failed",
                 )
-                continue
+                return
             if latest_starved and runner_unavailable(n, pr_num, latest_starved, False):
+                _record_land_skip(
+                    False, pr_num, n, "ci_infra",
+                    "CI runner infrastructure became unavailable",
+                )
                 record_merge_decision(
                     n, pr_num, "ci-infra", "CI runner infrastructure became unavailable",
                     head, head, latest_checks,
                 )
-                continue
+                return
             if any(c["bucket"] in ("pending", "infra") for c in latest_checks):
+                _record_land_skip(
+                    False, pr_num, n, "ci_pending", "CI became pending before merge",
+                )
                 execution.outcome, execution.reason = "not_eligible", "ci_pending"
                 execution.wait("ci_pending", mode="eligibility", pr=pr_num)
-                continue
+                return
             if not any(c["bucket"] == "pass" for c in latest_checks):
+                _record_land_skip(
+                    False, pr_num, n, "no_passing_ci",
+                    "no passing CI checks remained before merge",
+                )
                 execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
                 execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
-                continue
+                return
             if gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]:
+                _record_land_skip(
+                    False, pr_num, n, "behind",
+                    f"approval head {head} moved behind {cfg.main}; refreshing",
+                )
                 record_merge_decision(
                     n, pr_num, "refresh branch",
                     f"approval head {head} became stale because the branch moved behind {cfg.main}",
@@ -5151,18 +5259,9 @@ def merge_pass_locked(dry_run: bool) -> None:
                     execution.outcome = "refreshed"
                 return
             final = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
-            final_labels = {label["name"] for label in final.get("labels", [])}
-            if (
-                final.get("state") != "OPEN"
-                or final.get("headRefName") != f"agent/{n}"
-                or final.get("headRefOid") != head
-                or final.get("baseRefName") != cfg.main
-                or final.get("isDraft")
-                or FACTORY_APPROVED not in final_labels
-                or final.get("reviewDecision") == "CHANGES_REQUESTED"
-            ):
-                log(f"PR #{pr_num}: head, label, or human review changed before merge; not merging")
-                continue
+            if skipped := _land_pr_skip_reason(final, n, head):
+                _record_land_skip(False, pr_num, n, *skipped)
+                return
             method = "--merge" if carries_upstream else "--squash"
             body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
             with lifecycle.scope(EVENTS, "merge", ticket=n):
@@ -5203,6 +5302,9 @@ def merge_pass_locked(dry_run: bool) -> None:
             log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
             cleanup_after_merge(n, head)
             return
+    finally:
+        if lock_fd is not None:
+            lock_fd.close()
 
 
 def _handoff_done(path: Path) -> bool:
@@ -5959,7 +6061,7 @@ def fairness_session() -> dict:
 
 
 def ticket_pass(budget_min: int, dry_run: bool) -> None:
-    """Claim up to capacity frontier tickets in accepted-priority order and work them concurrently.
+    """Work the initial capacity, then refill freed slots while a sibling pipeline runs.
 
     The frontier is re-read and re-ranked before each pick, so a Plan baseline re-bound while
     an earlier pick was claimed ranks the next one; each admission decision records the
@@ -5998,14 +6100,33 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
         finally:
             issue["_factory_admitted"].set()  # a skipped, refused or crashed pick releases the next one too
 
-    pool = ThreadPoolExecutor(max_workers=capacity)
+    pool = ThreadPoolExecutor(max_workers=MAX_ACTIVE)
+    initial_slots = capacity
     try:
-        for remaining in range(capacity, 0, -1):
+        while True:
+            pending = {future for _, future in pipelines if not future.done()}
+            if initial_slots:
+                remaining = initial_slots
+                initial_slots -= 1
+            elif dry_run or not pending:
+                break
+            else:
+                active = active_tickets()
+                running = set(active) | {n for n, future in pipelines if not future.done()}
+                remaining = MAX_ACTIVE - len(running)
+                if remaining <= 0:
+                    wait(pending, return_when=FIRST_COMPLETED)
+                    continue
+                experiments = schedule.active_experiments(lifecycle.read_events(EVENTS), running)
             with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True):
                 rows = [issue for issue in frontier() if issue["number"] not in picked]
                 if all(issue.get("held") for issue in rows):
                     if not picked:
                         log("frontier empty, nothing to do")
+                    if pending and not dry_run:
+                        initial_slots = 0
+                        wait(pending, return_when=FIRST_COMPLETED)
+                        continue
                     break
                 decided = schedule.plan(
                     rows, remaining, repo=REPO, streak=streak, experiments=experiments, parents=parents,
@@ -6020,6 +6141,10 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
                     record("scheduling", capacity=remaining, active=active, explained=decided["explained"],
                            fairness_session=session)
             if not decided["selected"]:
+                if pending and not dry_run:
+                    initial_slots = 0
+                    wait(pending, return_when=FIRST_COMPLETED)
+                    continue
                 break
             issue = decided["selected"][0]
             picked.add(issue["number"])
@@ -6106,7 +6231,12 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="AI-factory dispatcher (one pass, stateless)"
     )
-    parser.add_argument("--ticket", type=int, help="process exactly this open issue")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--ticket", type=int, help="process exactly this open issue")
+    mode.add_argument(
+        "--land-only", action="store_true",
+        help="run sync, merge and refresh only, independently of ticket workers",
+    )
     parser.add_argument(
         "--budget-min",
         type=int,
@@ -6117,7 +6247,7 @@ def main(argv: list[str]) -> int:
         "--dry-run", action="store_true", help="print planned actions; no side effects"
     )
     args = parser.parse_args(argv)
-    if not args.dry_run:
+    if not args.dry_run and not args.land_only:
         dirty = pin_root()
         if dirty:
             root = config.repo_root()
@@ -6127,8 +6257,8 @@ def main(argv: list[str]) -> int:
                 execution.outcome, execution.reason = "project_escalation", "root_dirty"
                 execution.emit("result", paths=dirty)
             return 1
-    configure(config.load())  # from the tree now pinned at origin/<main>
-    if not args.dry_run:
+    configure(config.load())  # Full passes pin first; land-only leaves the active checkout alone.
+    if not args.dry_run and not args.land_only:
         _sweep_stale_factory_tempdirs()
     if args.budget_min is None:
         args.budget_min = cfg.budget_min
@@ -6148,6 +6278,9 @@ def main(argv: list[str]) -> int:
             if not args.dry_run:
                 record("engine-stale", installed_commit=installed, target_commit=target,
                        yield_for_update=cfg.engine_yield_for_update)
+        if args.land_only:
+            land_pass(args.dry_run)
+            return 0
         if not args.dry_run:
             from factory import results
 

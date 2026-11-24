@@ -942,7 +942,7 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
     # At boot the user manager's PATH is the systemd default (no ~/.local/bin),
     # so gh/omp/codex vanish; carry the installing shell's PATH into the units.
     # [install].env (host config) adds one line each: policy such as UV_EXCLUDE_NEWER.
-    # [install].dispatch_env goes only into the triage+dispatcher unit: its GitHub identity.
+    # [install].dispatch_env selects the GitHub identity for triage, dispatch and landing.
     env = f"Environment=PATH={os.environ['PATH']}\n"
     env += "".join(systemd_environment(k, v) for k, v in cfg.install["env"].items())
     dispatch_env = env + "".join(systemd_environment(k, v) for k, v in cfg.install.get("dispatch_env", {}).items())
@@ -961,6 +961,16 @@ def units(cfg: config.Config, every: str, host: str) -> dict[str, str]:
             f"[Unit]\nDescription=Run the factory pass for {cfg.repo} every {every}\n\n"
             f"[Timer]\nOnBootSec=5min\nOnUnitActiveSec={every}\nRandomizedDelaySec=90\n\n"
             f"[Install]\nWantedBy=timers.target\n"
+        ),
+        f"{cfg.unit}-land.service": (
+            f"[Unit]\nDescription=Land eligible factory PRs for {cfg.repo} (one pass)\n\n"
+            f"[Service]\nType=oneshot\nWorkingDirectory={cfg.root}\n{dispatch_env}"
+            f"ExecStart={exe} dispatch --land-only\n"
+        ),
+        f"{cfg.unit}-land.timer": (
+            f"[Unit]\nDescription=Land eligible factory PRs for {cfg.repo} every 2 minutes\n\n"
+            "[Timer]\nOnBootSec=2min\nOnUnitActiveSec=2min\nRandomizedDelaySec=30\n\n"
+            "[Install]\nWantedBy=timers.target\n"
         ),
         f"{cfg.unit}-dashboard.service": (
             f"[Unit]\nDescription=factory dashboard for {cfg.repo}\nAfter=network.target\n\n"
@@ -1039,6 +1049,7 @@ def install(argv: list[str]) -> int:
 
     wanted = units(cfg, args.every, args.host)
     dash_unit = f"{cfg.unit}-dashboard.service"
+    land_timer = f"{cfg.unit}-land.timer"
     probe_service = f"{cfg.unit}-triage-probe.service"
     probe_timer = f"{cfg.unit}-triage-probe.timer"
     eval_service = f"{cfg.unit}-eval.service"
@@ -1106,7 +1117,7 @@ def install(argv: list[str]) -> int:
                 (udir / name).unlink()
                 print(f"removed {udir / name}")
     systemctl("daemon-reload")
-    activation = [f"{cfg.unit}.timer"]
+    activation = [f"{cfg.unit}.timer", land_timer]
     if cfg.triage_service:
         activation.append(probe_timer)
     if cfg.eval_schedule:

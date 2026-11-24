@@ -178,17 +178,24 @@ class LandDrainTest(unittest.TestCase):
         dispatch.merge_pass_locked(False)
 
         journal = "\n".join(self.logs)
-        for number, reason in (
-            (101, "unsupported"),
-            (102, "draft"),
-            (103, "release"),
-            (104, "not approved"),
-            (105, "factory-held"),
-            (106, "requested changes"),
-        ):
+        expected = {
+            101: ("unsupported", "unsupported_branch"),
+            102: ("draft", "draft"),
+            103: ("release", "wrong_base"),
+            104: ("factory-approved", "not_approved"),
+            105: ("factory-held", "held"),
+            106: ("requested changes", "human_veto"),
+        }
+        skipped = {
+            row["pr"]: row["reason"]
+            for row in lifecycle.read_events(dispatch.EVENTS)
+            if row.get("event") == "merge-skipped"
+        }
+        for number, (message, reason) in expected.items():
             with self.subTest(pr=number):
                 self.assertIn(f"PR #{number}", journal)
-                self.assertIn(reason, journal)
+                self.assertIn(message, journal)
+                self.assertEqual(skipped[number], reason)
         self.assertEqual((self.github.merged, self.github.refreshed, self.escalations), ([], [], []))
         self.assertFalse(any(command[:2] == ["git", "fetch"] for command in self.github.commands))
 
@@ -201,8 +208,80 @@ class LandDrainTest(unittest.TestCase):
         dispatch.merge_pass_locked(False)
 
         self.assertTrue(any(f"PR #{row['number']}" in line and "active ticket" in line for line in self.logs))
+        [skipped] = [
+            event for event in lifecycle.read_events(dispatch.EVENTS)
+            if event.get("event") == "merge-skipped"
+        ]
+        self.assertEqual(
+            (skipped["ticket"], skipped["pr"], skipped["reason"]),
+            (7, row["number"], "active_ticket"),
+        )
         self.assertEqual((self.github.merged, self.github.refreshed), ([], []))
         self.assertFalse(any(command[:2] == ["git", "fetch"] for command in self.github.commands))
+
+    def test_hold_appearing_on_fresh_read_blocks_before_git(self) -> None:
+        row = self.approve(8)
+        original = self.github.gh_json
+
+        def hold_on_view(args: list[str]):
+            if args[:3] == ["pr", "view", str(row["number"])]:
+                self.github.prs[row["number"]]["labels"].append({"name": "factory-held"})
+            return original(args)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=hold_on_view):
+            dispatch.merge_pass_locked(False)
+
+        self.assertEqual((self.github.merged, self.github.refreshed), ([], []))
+        self.assertFalse(any(command[:2] == ["git", "fetch"] for command in self.github.commands))
+        [skipped] = [
+            event for event in lifecycle.read_events(dispatch.EVENTS)
+            if event.get("event") == "merge-skipped"
+        ]
+        self.assertEqual(skipped["reason"], "held")
+
+    def test_hold_appearing_on_final_read_blocks_merge(self) -> None:
+        row = self.approve(9)
+        original = self.github.gh_json
+        views = 0
+
+        def hold_on_final_view(args: list[str]):
+            nonlocal views
+            if args[:3] == ["pr", "view", str(row["number"])]:
+                views += 1
+                if views == 2:
+                    self.github.prs[row["number"]]["labels"].append({"name": "factory-held"})
+            return original(args)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=hold_on_final_view):
+            dispatch.merge_pass_locked(False)
+
+        self.assertEqual((self.github.merged, self.github.refreshed), ([], []))
+        self.assertTrue(any(command[:2] == ["git", "fetch"] for command in self.github.commands))
+        [skipped] = [
+            event for event in lifecycle.read_events(dispatch.EVENTS)
+            if event.get("event") == "merge-skipped"
+        ]
+        self.assertEqual(skipped["reason"], "held")
+
+    def test_fresh_snapshot_without_state_cannot_authorize_merge(self) -> None:
+        row = self.approve(10)
+        original = self.github.gh_json
+
+        def missing_state(args: list[str]):
+            value = original(args)
+            if args[:3] == ["pr", "view", str(row["number"])]:
+                value.pop("state")
+            return value
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=missing_state):
+            dispatch.merge_pass_locked(False)
+
+        self.assertEqual((self.github.merged, self.github.refreshed), ([], []))
+        self.assertFalse(any(command[:2] == ["git", "fetch"] for command in self.github.commands))
+        skipped = [event for event in lifecycle.read_events(dispatch.EVENTS)
+                   if event.get("event") == "merge-skipped"]
+        self.assertEqual([(event["pr"], event["reason"]) for event in skipped],
+                         [(row["number"], "state_changed")])
 
 
 if __name__ == "__main__":

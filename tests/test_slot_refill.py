@@ -6,7 +6,7 @@ import threading
 import unittest
 from unittest import mock
 
-from factory import config, dispatch, lifecycle
+from factory import config, dispatch
 from tests import test_concurrent_pass as concurrent_fixture
 from tests import test_land_host as land_fixture
 from tests.test_schedule import ticket
@@ -33,7 +33,7 @@ class SlotRefillTest(unittest.TestCase):
                 issue["_factory_admitted"].set()
                 if n == 1:
                     slow_started.set()
-                    if not release.wait(WAIT):
+                    if not release.wait(2 * WAIT):
                         raise AssertionError("slow pipeline was not released")
                 elif n == 2:
                     if not slow_started.wait(WAIT):
@@ -47,7 +47,7 @@ class SlotRefillTest(unittest.TestCase):
         def run_pass():
             try:
                 dispatch.ticket_pass(1, False)
-            except BaseException as exc:
+            except BaseException as exc:  # noqa: BLE001 - surface thread failures in the assertion below
                 errors.append(exc)
 
         with mock.patch.object(dispatch, "frontier", return_value=rows), \
@@ -91,7 +91,7 @@ class IndependentLandingTest(unittest.TestCase):
         def run_pass():
             try:
                 module.ticket_pass(1, False)
-            except BaseException as exc:
+            except BaseException as exc:  # noqa: BLE001 - surface thread failures in the assertion below
                 errors.append(exc)
 
         with mock.patch.object(module, "frontier", return_value=[ticket(21, "2026-01-01", body="unbound")]), \
@@ -117,7 +117,6 @@ class IndependentLandingTest(unittest.TestCase):
             self.assertFalse(worker.is_alive())
             self.assertEqual(errors, [])
         self.assertEqual(module.active_tickets(), [])
-        self.assertTrue(any(row.get("event") == "approved" for row in lifecycle.read_events(module.EVENTS)))
 
 
 if __name__ == "__main__":

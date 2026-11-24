@@ -58,7 +58,7 @@ factory init            # .factory.toml, .gitignore, issue template, labels
 $EDITOR .factory.toml   # put your real test/lint commands in [[gate.check]]
 git add .factory.toml .gitignore .github/ISSUE_TEMPLATE && git commit
 factory doctor          # tools, auth, remotes, model, dashboard port and .factory safety
-factory install --dashboard   # systemd user timer every 10 min + dashboard on :8765
+factory install --dashboard   # ticket timer every 10 min, landing every 2 min, dashboard on :8765
 ```
 
 `factory install` enables and starts new units. On reinstall it snapshots each
@@ -73,6 +73,16 @@ If `is-enabled` fails without stdout (as on older systemd versions), install
 checks `LoadState` to confirm a missing unit. An inconclusive query aborts before
 unit files are changed, rather than treating a query failure as a fresh install.
 
+Landing uses its own `<unit>-land.service` and two-minute timer, independent of
+the ticket service. Reinstall to add them. It runs `factory dispatch --land-only`
+without repinning the checkout or waiting for workers; `merge.lock` serializes
+landing and ticket locks protect in-flight worktrees. A land stage visits every
+listed candidate once, rechecking main and exact-head evidence for each merge.
+Refreshed heads wait for CI on a later tick; blocked candidates do not stop others.
+The snapshot is capped at 1,000 open PRs; hitting that safety limit journals
+`merge-skipped` with reason `outside_listing`. Other skips journal the PR and
+reason, including absent approval, holds, drafts, CI waits and active tickets.
+
 `doctor` checks the configured dashboard bind address and port; `install --dashboard`
 refuses a foreign or unidentified holder before writing units. Each factory needs
 its own `[repo."owner/name".dashboard] port` in the host config. The preflight cannot
@@ -83,8 +93,9 @@ with a one-line diagnostic, and the existing systemd restart policy still applie
 `ExecCondition=<python> -P -m factory drain-check` first in each pass service,
 before triage. Exit 0 admits the whole pass; exit 1 skips it without failing the
 unit. `watch` ignores the resulting `SERVICE_RESULT=exec-condition`; a skip adds
-no lifecycle failure or failure-metric sample. Dashboard, triage-probe and eval
-units are not gated. Timers fire normally: the drain feature never changes their
+no lifecycle failure or failure-metric sample. Landing, dashboard, triage-probe
+and eval units are not gated: landing can finish already-approved work while
+new ticket passes are drained. Timers fire normally; drain never changes their
 state. Hand-run `triage`, `dispatch` and `gate` remain ungated.
 
 District atomically writes (same-directory temporary file + rename) and removes
@@ -192,8 +203,8 @@ To act on GitHub under a separate machine account, set host-owned
 `[install].dispatch_env` (same shape as `[install].env`), for example
 `GH_CONFIG_DIR` pointing at a gh config logged in as that account, plus
 `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL`.
-Its lines are rendered only into the triage+dispatcher unit, after `[install].env`;
-the dashboard unit keeps the human identity. The token stays in gh's store and is
+Its lines are rendered into the triage+dispatcher and landing units, after
+`[install].env`; the dashboard unit keeps the human identity. The token stays in gh's store and is
 never written into a unit. `doctor` then reports both logins (`gh api user`) and
 fails when they are equal; unset, nothing changes. Worker and reviewer agents never
 get a GitHub credential: the dispatcher drops `GH_TOKEN`/`GITHUB_TOKEN` and points
@@ -372,7 +383,8 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory claims --supported` | Prints exactly `host-claims 1` and exits 0 for District's multi-host capability check. Works offline outside a repository; bare or other arguments exit 2. |
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or `wontfix-proposal` (proposal comment and label; a human closes). An issue unchanged since its last triage comment is skipped. After two consecutive unparseable model decisions, it comments once, records `triage_stalled`, and keeps the issue for retry. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory triage-probe` | Sends `GET <triage base>/models` with a three-second timeout. A 503 `Loading model` response is alive. After three consecutive failures it restarts `[triage].service` at most once per 15 minutes; failures and restarts are lifecycle-journaled. With no service configured it reports only. |
-| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets, worked concurrently → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
+| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync → drain eligible PRs → review-only PR intake → manager → claim tickets up to `max_active` concurrently, refilling freed slots while siblings run → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
+| `factory dispatch --land-only` | Sync, merge and refresh only, with the same GitHub budget/host preflight and landing checks. Does not pin the checkout, probe workers, start tickets, or wait for ticket pool shutdown. Installed on an independent two-minute timer; also works by hand or with `--dry-run`. |
 | `factory explain N [--json] [--since ISO]` | Reads the live `.factory/events.jsonl` and retained `events.jsonl.N.gz` segments without writing. JSON mode returns `{ticket,nodes,edges,loops,cost,frontier,frontier_stage,coverage}`; `cost` totals the ticket and each retry loop has its own total. `frontier_stage` distinguishes gate, review, manager, human, merge eligibility, and blocker waits; merged and wontfix tickets have a null frontier. Text mode prints a compact decision tree. Legacy `claimed`, `attempt`, `review`, `approved`, `merged`, and `escalate` rows become `synthesized: true` nodes, while `coverage` names part-1 stages with no structured record. Output is bounded to the runtime projection's 1 MiB limit. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
@@ -1053,8 +1065,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    ranked and claimed one at a time, in order, so `claimed` rows follow pick
    order; once a pick's `claimed` row is written the next pick is ranked while
    it works. Each ticket runs its pipeline in its own thread with its own
-   worktree and lock, so up to `max_active` tickets (counting ones already in
-   flight when the pass started) work at once. The pass waits for all of them;
+   worktree and lock, so up to `max_active` tickets (including other live ticket
+   locks) work at once. A freed slot is re-ranked and refilled while a sibling
+   pipeline remains running; each ticket is picked at most once in this pass.
+   Dry runs show only the initial capacity. The pass waits for its pipelines;
    a failing ticket does not stop the others, and a ranking error for the next
    pick does not stop tickets already claimed. Every ticket failure is logged at
    the end; the pass then raises its own ranking error, else the first failed
@@ -1358,9 +1372,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `factory stats --by-risk` and the dashboard report human interventions,
    human-wait minutes, rounds, disagreement rate, and escape rate per tier.
 
-6. **Merge stage** (start of the next pass). One PR per pass requires green
-   GitHub checks, a current-main head, no human requested-changes veto, the
-   `factory-approved` label, and a matching successful journal approval whose
+6. **Merge stage** (independent landing timer, also at the start of a full pass).
+   Every eligible PR in the stage's finite snapshot is merged or refreshed,
+   not just the first. Each merge requires green GitHub checks, a current-main
+   head, no hold or human requested-changes veto, the `factory-approved` label,
+   and a matching successful journal approval whose
    gate, review, approval, and current PR head SHAs are identical. Checks are
    associated with that head and rechecked after evidence evaluation; the PR
    head, target branch, label, and veto are then re-read immediately before
