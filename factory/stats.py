@@ -27,6 +27,12 @@ REGRESSED_BY = re.compile(r"^[ \t]*Regressed-by:[ \t]*#(\d+)\b", re.MULTILINE)
 HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? ")
 WORKERS = 8  # concurrent per-ticket gh reads
 NOT_REPORTED = "n/a (not reported)"
+MISSING_WORKER_MODEL = "(missing worker_model)"
+NO_WORKER_CLAIM = "(no claim or worker evidence)"
+POST_FIX_CAVEAT = (
+    "FIX decisions in the window; outcomes are followed through the journal. "
+    "Baseline: 6/35 merged (17%); observational, not controlled: case mix and no-claim FIXes may differ."
+)
 
 
 def configure(c: Config) -> None:
@@ -168,6 +174,115 @@ def _stamp(value: datetime) -> str:
 def window_rows(rows: list[dict], start: datetime, end: datetime) -> list[dict]:
     """Rows whose timestamps fall inside the inclusive UTC window."""
     return [row for row in rows if (at := _timestamp(row.get("at"))) is not None and start <= at <= end]
+
+
+def post_fix_metrics(rows: list[dict], start: datetime, end: datetime) -> dict[str, Any]:
+    """Outcomes of manage-FIX cohorts started in the inclusive UTC window.
+
+    Each FIX starts a cohort. A later FIX leaves an unresolved earlier cohort pending;
+    the first subsequent merged/escalate resolves the current one. Attribution starts
+    with the first claimed ``worker_model``. The first worker llm-usage or attempt
+    identifies actual execution (including launch fallback), and also covers manager
+    FIX rounds that call worker_round without a claim. Later retries do not change
+    it or fill in missing historical models. Missing models and cohorts with no
+    claim/execution stay separate. Outcomes after ``end`` are followed through the
+    journal, while FIX decisions outside the window never enter the cohort.
+    """
+    active: dict[int, dict[str, object]] = {}
+    outcomes: list[tuple[str, str]] = []
+
+    def finish(cohort: dict[str, object], outcome: str) -> None:
+        model = cohort["model"]
+        key = model if isinstance(model, str) else (
+            MISSING_WORKER_MODEL if cohort["claimed"] or cohort["executed"] else NO_WORKER_CLAIM
+        )
+        outcomes.append((key, outcome))
+
+    ordered = sorted(
+        (at, index, row)
+        for index, row in enumerate(rows)
+        if (at := _timestamp(row.get("at"))) is not None
+    )
+    for at, _, row in ordered:
+        ticket = row.get("ticket")
+        if type(ticket) is not int:
+            continue
+        event = row.get("event")
+        if event == "manage" and row.get("decision") == "FIX":
+            if cohort := active.pop(ticket, None):
+                finish(cohort, "pending")
+            if start <= at <= end:
+                active[ticket] = {"model": None, "claimed": False, "executed": False}
+            continue
+        cohort = active.get(ticket)
+        if cohort is None:
+            continue
+        if event in {"merged", "escalate"}:
+            finish(active.pop(ticket), "merged" if event == "merged" else "re_escalated")
+            continue
+        model = row.get("worker_model")
+        if event == "claimed" and not cohort["claimed"] and not cohort["executed"]:
+            cohort["claimed"] = True
+            if isinstance(model, str) and model:
+                cohort["model"] = model
+        elif (
+            not cohort["executed"]
+            and (event == "attempt" or event == "llm-usage" and row.get("stage") == "worker")
+        ):
+            if isinstance(model, str) and model:
+                cohort["model"] = model
+            cohort["executed"] = True
+
+    for cohort in active.values():
+        finish(cohort, "pending")
+
+    by_model: dict[str, dict[str, int | float | None]] = {}
+    for model, outcome in outcomes:
+        counts = by_model.setdefault(
+            model, {"merged": 0, "re_escalated": 0, "pending": 0},
+        )
+        counts[outcome] += 1
+    for counts in by_model.values():
+        resolved = counts["merged"] + counts["re_escalated"]
+        counts["resolved"] = resolved
+        counts["merge_rate"] = counts["merged"] / resolved if resolved else None
+    merged = sum(counts["merged"] for counts in by_model.values())
+    re_escalated = sum(counts["re_escalated"] for counts in by_model.values())
+    pending = sum(counts["pending"] for counts in by_model.values())
+    resolved = merged + re_escalated
+    return {
+        "window": {"start": _stamp(start), "end": _stamp(end)},
+        "cohorts": len(outcomes),
+        "merged": merged,
+        "re_escalated": re_escalated,
+        "pending": pending,
+        "resolved": resolved,
+        "merge_rate": merged / resolved if resolved else None,
+        "by_worker_model": dict(sorted(by_model.items())),
+        "baseline": {"merged": 6, "resolved": 35, "merge_rate": 6 / 35},
+        "caveat": POST_FIX_CAVEAT,
+    }
+
+
+def print_post_fix(rows: dict[str, Any]) -> None:
+    print("\nPost-FIX outcomes by worker model")
+    print("worker_model                         merged  re-escalated  pending  merge rate")
+    for model, counts in rows["by_worker_model"].items():
+        rate = counts["merge_rate"]
+        print(
+            f"{model:<36}  {counts['merged']:>6}  {counts['re_escalated']:>12}  "
+            f"{counts['pending']:>7}  {rate if rate is not None else 'n/a'}"
+        )
+    rate = rows["merge_rate"]
+    print(
+        f"Overall: {rows['merged']} merged, {rows['re_escalated']} re-escalated, "
+        f"{rows['pending']} pending; resolved merge rate "
+        f"{rate if rate is not None else 'n/a'} ({rows['merged']}/{rows['resolved']})"
+    )
+    print("Scope: FIX decisions in window; outcomes followed through journal end.")
+    print(POST_FIX_CAVEAT)
+
+
 SKILL_AFTER_CALLS = 10
 
 
@@ -996,13 +1111,15 @@ def main(argv: list[str]) -> int:
     if args.week:
         now = _now()
         start = now - timedelta(days=7)
-        journal_rows = window_rows(lifecycle.read_events(journal), start, now)
+        all_journal_rows = lifecycle.read_events(journal)
+        journal_rows = window_rows(all_journal_rows, start, now)
         rows = weekly_metrics(
             journal_rows, start, now,
             cfg.llm_model if config.local_endpoint(cfg.llm_url) else None,
         )
         rows.setdefault("skills", skill_metrics(journal_rows))
         rows.setdefault("skill_coverage", skill_coverage(journal_rows))
+        rows["post_fix"] = post_fix_metrics(all_journal_rows, start, now)
         rows["stuck_over_days"] = stuck_over_days(now)
         if args.json:
             print(json.dumps(rows, indent=2))
@@ -1019,6 +1136,7 @@ def main(argv: list[str]) -> int:
             print(f"Local token share: {rows['local_token_share']}; missing usage: {rows['usage_missing']}")
             print(f"Stuck over 7 days: {rows['stuck_over_days']}")
             print_skills(rows["skills"], rows["skill_coverage"])
+            print_post_fix(rows["post_fix"])
         return 0
     if args.stages:
         passes = lifecycle.last_successful_passes(journal)

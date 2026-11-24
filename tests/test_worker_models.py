@@ -149,6 +149,34 @@ class WorkerModelJournalTest(unittest.TestCase):
                 self.assertEqual(len(self.events("worker-model-mismatch")) - before, int(mismatch))
                 self.assertEqual(self.events("attempt")[-1]["worker_model"], "ollama/qwen3:30b")
 
+    def test_structured_non_omp_model_is_a_cross_check_even_on_failed_exit(self) -> None:
+        self.ticket()
+        script = self.cfg.workers["default"]
+        self.cfg.workers["chore"] = [*script, "--model", "gpt-6-sol"]
+        self.cfg.worker_usage["chore"] = config.usage_spec("chore", {"model": "result.model"})
+        self.process()
+        wt = dispatch.FACTORY / "wt-9"
+
+        def worker(argv, cwd, logfile, *_args):
+            logfile.write_text(json.dumps({"result": {"model": "different-model"}}) + "\n")
+            return 1, None
+
+        with mock.patch.object(dispatch, "build_prompt", return_value="prompt"), \
+                mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                mock.patch.object(dispatch, "commit_leftovers"), \
+                mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")):
+            dispatch.worker_round(9, wt, {"chore"}, "change", "", 2, float("inf"))
+            with mock.patch.object(dispatch, "worker_usage", return_value={
+                "model": "gpt-6-sol", "provider": "openai", "cost": None,
+            }):
+                dispatch.worker_round(9, wt, {"chore"}, "change", "", 3, float("inf"))
+        self.assertEqual(len(self.events("worker-model-mismatch")), 1)
+        event = self.events("worker-model-mismatch")[-1]
+        self.assertEqual((event["worker"], event["worker_model"], event["reported_model"]),
+                         ("chore", "gpt-6-sol", "different-model"))
+        attempt = self.events("attempt")[-1]
+        self.assertEqual((attempt["worker_model"], attempt["worker_exit"]), ("gpt-6-sol", 1))
+
 
 if __name__ == "__main__":
     unittest.main()

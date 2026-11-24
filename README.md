@@ -1364,10 +1364,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    an ordinary worker diff. The registry ships empty (`[]`); #541 adds its own
    reviewed entries pinned to its gated head. No survivor is pre-approved by this
    mechanism.
-   The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
-   profiles must also name a model. `factory doctor` warns when any of the
-   worker, primary-reviewer, or second-reviewer models is missing or not
-   distinct, or when the second reviewer cannot launch.
+   The built-in OMP worker pins `openai-codex/gpt-6.1-sol`; custom worker
+   profiles must also name a model. `factory doctor` FAILs missing worker models
+   and warns when primary/second-reviewer models are missing or not distinct,
+   or when the second reviewer cannot launch.
    `factory stats --by-risk` and the dashboard report human interventions,
    human-wait minutes, rounds, disagreement rate, and escape rate per tier.
 
@@ -1503,13 +1503,13 @@ review_rounds = 1                # REVISE -> worker -> re-review cycles
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
 [workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree
-default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
-chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+default = ["omp", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "{cwd}", "@{prompt}"]
+chore   = ["droid", "exec", "--model", "gpt-6-sol", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 
 # A differently named OMP-compatible worker selected by a separate pilot label:
 # [workers.prime]
 # when = { label = "harness-pilot" }
-# command = ["factory-prime-agent", "-p", "--cwd", "{cwd}", "@{prompt}", "--mode", "json"]
+# command = ["factory-prime-agent", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "{cwd}", "@{prompt}", "--mode", "json"]
 # transcript = "omp-session"
 # version = "0.10.0"
 # env = { DO_NOT_TRACK = "1", PRIME_AGENT_TELEMETRY = "0", PRIME_AGENT_CODING_AGENT_DIR = "{root}/.factory/prime-agent" }
@@ -1813,6 +1813,26 @@ failure lists each hit as `path:line: [matched term] line`.
 extra = ["\\bbluefin\\b", "\\.example-corp\\.com\\b"]
 ```
 
+Every worker profile pins `--model` in argv, including non-OMP workers;
+`factory doctor` FAILs implicit profiles even when `usage.model` is configured.
+`claimed`, `attempt` and worker `llm-usage` rows record this admission-time
+identity as `worker_model`. Runtime `usage.model` is only a cross-check:
+disagreement emits `worker-model-mismatch` with the pinned and reported IDs.
+OMP transcript providers qualify that comparison but do not rewrite the raw
+`model` used for pricing, token grouping or local-token attribution. Without
+a reported provider, an unqualified model may match the pinned model's suffix.
+Missing runtime usage leaves pinned identity intact; history is never amended.
+
+`factory stats --week [--json]` reports post-FIX outcomes by `worker_model`:
+merged, re-escalated, pending and merged/resolved. The cohort is manager FIX
+decisions in the seven-day window, followed through the available journal end.
+The first worker usage/attempt identifies execution (including fallback or a
+direct manager FIX without a claim); otherwise the first claim supplies identity.
+Later retries never replace it or fill missing historical models. A new FIX
+leaves an unresolved earlier round pending. Missing-model and no-worker cohorts
+remain separate. This is observational, not controlled: case mix can differ;
+the historical default-worker baseline is 6/35 merged (17%).
+
 Each worker attempt journals one `llm-usage` event (`stage = "worker"`) with
 `model`, `prompt_tokens` (cached included), `completion_tokens`,
 `cached_tokens`, `cost`, and `local`; anything the worker does not report is
@@ -1829,7 +1849,7 @@ those totals to the worker's claim label; workers with neither source remain
 
 ```toml
 [workers.claude]   # Claude Code `-p --output-format json` prints one result object (paths checked on 2.1.292)
-command = ["claude-worker", "--output-format", "json", "{prompt}"]
+command = ["claude-worker", "--model", "claude-opus-5-5", "--output-format", "json", "{prompt}"]
 
 [workers.claude.usage]
 match = { type = "result" }

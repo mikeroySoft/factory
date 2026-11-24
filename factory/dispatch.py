@@ -5315,7 +5315,7 @@ def worker_round(
     reported_model = usage.get("model")
     if spec.model and reported_model:
         provider = usage.get("provider")
-        reported_identity = f"{provider}/{reported_model}" if provider else reported_model
+        reported_identity = f"{provider}/{reported_model}" if provider and "/" in spec.model else reported_model
         matches = reported_identity == spec.model or (
             not provider and reported_model == spec.model.partition("/")[2]
         )

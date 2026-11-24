@@ -134,6 +134,35 @@ class PostFixMetricsTest(unittest.TestCase):
             },
         })
 
+    def test_resolved_rate_ignores_other_stages_and_keeps_empty_models_unknown(self) -> None:
+        rows = [
+            {"at": at(timedelta(hours=-6)), "event": "manage", "ticket": 1, "decision": "FIX"},
+            {"at": at(timedelta(hours=-5)), "event": "llm-usage", "ticket": 1,
+             "stage": "triage", "worker_model": "not-a-worker"},
+            {"at": at(timedelta(hours=-4)), "event": "claimed", "ticket": 1, "worker_model": "shared"},
+            {"at": at(timedelta(hours=-3)), "event": "attempt", "ticket": 1, "worker_model": "shared"},
+            {"at": at(timedelta(hours=-2)), "event": "merged", "ticket": 1},
+            {"at": at(timedelta(hours=-6)), "event": "manage", "ticket": 2, "decision": "FIX"},
+            {"at": at(timedelta(hours=-4)), "event": "claimed", "ticket": 2, "worker_model": "shared"},
+            {"at": at(timedelta(hours=-1)), "event": "escalate", "ticket": 2},
+            {"at": at(timedelta(hours=-6)), "event": "manage", "ticket": 3, "decision": "RETRY"},
+            {"at": at(timedelta(hours=-5)), "event": "claimed", "ticket": 3, "worker_model": "unrelated"},
+            {"at": at(timedelta(hours=-1)), "event": "merged", "ticket": 3},
+            {"at": at(), "event": "manage", "ticket": 4, "decision": "FIX"},
+            {"at": at(timedelta(hours=1)), "event": "claimed", "ticket": 4, "worker_model": ""},
+            {"at": at(timedelta(hours=2)), "event": "merged", "ticket": 4},
+            {"at": at(timedelta(hours=-6)), "event": "manage", "ticket": 5, "decision": "FIX"},
+            {"at": at(timedelta(hours=-5)), "event": "llm-usage", "ticket": 5,
+             "stage": "worker", "worker_model": ""},
+            {"at": at(timedelta(hours=-1)), "event": "escalate", "ticket": 5},
+        ]
+        result = stats.post_fix_metrics(rows, START, NOW)
+        self.assertEqual((result["cohorts"], result["merge_rate"]), (4, 0.5))
+        self.assertEqual(result["by_worker_model"], {
+            model: {"merged": 1, "re_escalated": 1, "pending": 0, "resolved": 2, "merge_rate": 0.5}
+            for model in ("shared", stats.MISSING_WORKER_MODEL)
+        })
+
 
 class PostFixCommandTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -169,7 +198,8 @@ class PostFixCommandTest(unittest.TestCase):
         self.assertIn("Post-FIX outcomes by worker model", text)
         self.assertIn("openai-codex/gpt-6.1-sol", text)
         self.assertIn("resolved merge rate 1.0 (1/1)", text)
-        self.assertIn("Baseline: 6/35 merged (17%); small windowed cohorts are noisy.", text)
+        self.assertIn("Baseline: 6/35 merged (17%)", text)
+        self.assertIn("not controlled", text)
 
 
 if __name__ == "__main__":
