@@ -1,0 +1,240 @@
+Tue Nov 24 01:42:47 UTC 2026
+hw.ncpu: 20
+hw.memsize: 137438953472
+hw.perflevel0.logicalcpu: 16
+hw.perflevel1.logicalcpu: 4
+The system has 137438953472 (8388608 pages with a page size of 16384).
+System-wide memory free percentage: 95%
+vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                  3085805.
+Pages active:                                2414820.
+Pages inactive:                              2414526.
+Pages speculative:                             25173.
+Pages throttled:                                   0.
+Pages wired down:                             226159.
+Pages purgeable:                               37252.
+"Translation faults":                    45965727997.
+Pages copy-on-write:                      6873734856.
+Pages zero filled:                       11244799976.
+Pages reactivated:                           2899899.
+Pages purged:                                1699601.
+File-backed pages:                           1002538.
+Anonymous pages:                             3851981.
+Pages stored in compressor:                   294411.
+Pages occupied by compressor:                 167962.
+Decompressions:                              1080347.
+Compressions:                                3788682.
+Pageins:                                   297503554.
+Pageouts:                                         19.
+Swapins:                                           0.
+Swapouts:                                          0.
+              disk0              disk10              disk12       cpu    load average
+    KB/t  tps  MB/s     KB/t  tps  MB/s     KB/t  tps  MB/s  us sy id   1m   5m   15m
+    8.48  408  3.38     5.60    0  0.00     6.58    0  0.00   7 10 84  2.66 1.86 1.50
+    4.76  330  1.53     0.00    0  0.00     0.00    0  0.00   4  4 92  2.40 1.84 1.50
+    5.12  441  2.20     0.00    0  0.00     0.00    0  0.00   5  6 89  2.35 1.84 1.50
+   18.06  330  5.83     0.00    0  0.00     0.00    0  0.00   4  4 92  2.29 1.85 1.51
+   11.97  310  3.62     0.00    0  0.00     0.00    0  0.00   4  4 92  1.93 1.78 1.49
+    5.63  332  1.82     0.00    0  0.00     0.00    0  0.00   4  5 91  1.79 1.76 1.48
+    5.87  273  1.57     0.00    0  0.00     0.00    0  0.00   4  5 91  1.67 1.73 1.48
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                  3090275.
+Pages active:                                2412030.
+Pages inactive:                              2414754.
+Pages speculative:                             25161.
+Pages throttled:                                   0.
+Pages wired down:                             224263.
+Pages purgeable:                               36753.
+"Translation faults":                    45970080728.
+Pages copy-on-write:                      6874429076.
+Pages zero filled:                       11245758696.
+Pages reactivated:                           2899988.
+Pages purged:                                1699611.
+File-backed pages:                           1002736.
+Anonymous pages:                             3849209.
+Pages stored in compressor:                   294411.
+Pages occupied by compressor:                 167962.
+Decompressions:                              1080347.
+Compressions:                                3788682.
+Pageins:                                   297527475.
+Pageouts:                                         19.
+Swapins:                                           0.
+Swapouts:                                          0.
+Tue Nov 24 01:43:48 UTC 2026
+1795484385 2026-11-23 17:39:45.205050309 -0800 /Users/mike/factories/factory/.factory/locks/696.lock
+1795484403 2026-11-23 17:40:03.717103811 -0800 /Users/mike/factories/factory/.factory/locks/550.lock
+1794853592 2026-11-16 10:26:32.579904502 -0800 /Users/mike/factories/factory/.factory/locks/442.lock
+1795275024 2026-11-21 07:30:24.565926864 -0800 /Users/mike/factories/factory/.factory/locks/854.lock
+1795484379 2026-11-23 17:39:39.237820078 -0800 /Users/mike/factories/factory/.factory/locks/815.lock
+1795484384 2026-11-23 17:39:44.328105640 -0800 /Users/mike/factories/factory/.factory/locks/706.lock
+1795484397 2026-11-23 17:39:57.999343484 -0800 /Users/mike/factories/factory/.factory/locks/585.lock
+1795484397 2026-11-23 17:39:57.116769857 -0800 /Users/mike/factories/factory/.factory/locks/593.lock
+1795462968 2026-11-23 11:42:48.040289130 -0800 /Users/mike/factories/factory/.factory/locks/878.lock
+1795484391 2026-11-23 17:39:51.493762068 -0800 /Users/mike/factories/factory/.factory/locks/622.lock
+1795484413 2026-11-23 17:40:13.650238656 -0800 /Users/mike/factories/factory/.factory/locks/458.lock
+1795275023 2026-11-21 07:30:23.860931327 -0800 /Users/mike/factories/factory/.factory/locks/862.lock
+1795484392 2026-11-23 17:39:52.858850007 -0800 /Users/mike/factories/factory/.factory/locks/618.lock
+1795484401 2026-11-23 17:40:01.942200932 -0800 /Users/mike/factories/factory/.factory/locks/566.lock
+1795484378 2026-11-23 17:39:38.769644391 -0800 /Users/mike/factories/factory/.factory/locks/823.lock
+1795484399 2026-11-23 17:39:59.368302006 -0800 /Users/mike/factories/factory/.factory/locks/570.lock
+1795445477 2026-11-23 06:51:17.930315843 -0800 /Users/mike/factories/factory/.factory/locks/875.lock
+1795484387 2026-11-23 17:39:47.922690646 -0800 /Users/mike/factories/factory/.factory/locks/658.lock
+1795484398 2026-11-23 17:39:58.906573735 -0800 /Users/mike/factories/factory/.factory/locks/571.lock
+1794853562 2026-11-16 10:26:02.044543289 -0800 /Users/mike/factories/factory/.factory/locks/434.lock
+1795484399 2026-11-23 17:39:59.821186444 -0800 /Users/mike/factories/factory/.factory/locks/567.lock
+1795484406 2026-11-23 17:40:06.854001128 -0800 /Users/mike/factories/factory/.factory/locks/530.lock
+1795011536 2026-11-18 06:18:56.985159710 -0800 /Users/mike/factories/factory/.factory/locks/merge.lock
+1795484391 2026-11-23 17:39:51.067977379 -0800 /Users/mike/factories/factory/.factory/locks/623.lock
+1795484397 2026-11-23 17:39:57.561742754 -0800 /Users/mike/factories/factory/.factory/locks/592.lock
+1795484383 2026-11-23 17:39:43.869167203 -0800 /Users/mike/factories/factory/.factory/locks/711.lock
+1795484388 2026-11-23 17:39:48.827656188 -0800 /Users/mike/factories/factory/.factory/locks/639.lock
+1795484376 2026-11-23 17:39:36.553998908 -0800 /Users/mike/factories/factory/.factory/locks/855.lock
+1795484385 2026-11-23 17:39:45.638656332 -0800 /Users/mike/factories/factory/.factory/locks/678.lock
+1795484417 2026-11-23 17:40:17.219365411 -0800 /Users/mike/factories/factory/.factory/locks/389.lock
+1795484414 2026-11-23 17:40:14.558860907 -0800 /Users/mike/factories/factory/.factory/locks/448.lock
+1795484402 2026-11-23 17:40:02.826443934 -0800 /Users/mike/factories/factory/.factory/locks/560.lock
+1795484377 2026-11-23 17:39:37.911128179 -0800 /Users/mike/factories/factory/.factory/locks/825.lock
+1795484407 2026-11-23 17:40:07.768427295 -0800 /Users/mike/factories/factory/.factory/locks/521.lock
+1794851585 2026-11-16 09:53:05.423134132 -0800 /Users/mike/factories/factory/.factory/locks/413.lock
+1795484390 2026-11-23 17:39:50.634255733 -0800 /Users/mike/factories/factory/.factory/locks/628.lock
+1795484408 2026-11-23 17:40:08.638516339 -0800 /Users/mike/factories/factory/.factory/locks/517.lock
+1795484416 2026-11-23 17:40:16.773812599 -0800 /Users/mike/factories/factory/.factory/locks/405.lock
+1795484376 2026-11-23 17:39:36.084521970 -0800 /Users/mike/factories/factory/.factory/locks/868.lock
+1795484415 2026-11-23 17:40:15.856629348 -0800 /Users/mike/factories/factory/.factory/locks/429.lock
+1795484396 2026-11-23 17:39:56.647109504 -0800 /Users/mike/factories/factory/.factory/locks/604.lock
+1795484373 2026-11-23 17:39:33.522859627 -0800 /Users/mike/factories/factory/.factory/locks/890.lock
+1795484396 2026-11-23 17:39:56.183351691 -0800 /Users/mike/factories/factory/.factory/locks/605.lock
+1795484377 2026-11-23 17:39:37.029357594 -0800 /Users/mike/factories/factory/.factory/locks/828.lock
+1795484398 2026-11-23 17:39:58.433966423 -0800 /Users/mike/factories/factory/.factory/locks/582.lock
+1795202590 2026-11-20 11:23:10.589990856 -0800 /Users/mike/factories/factory/.factory/locks/869.lock
+1794853554 2026-11-16 10:25:54.674797026 -0800 /Users/mike/factories/factory/.factory/locks/541.lock
+1795050966 2026-11-18 17:16:06.163766684 -0800 /Users/mike/factories/factory/.factory/locks/845.lock
+1795484414 2026-11-23 17:40:14.994772428 -0800 /Users/mike/factories/factory/.factory/locks/445.lock
+1795484390 2026-11-23 17:39:50.188046460 -0800 /Users/mike/factories/factory/.factory/locks/629.lock
+1795484380 2026-11-23 17:39:40.137519871 -0800 /Users/mike/factories/factory/.factory/locks/783.lock
+1795484393 2026-11-23 17:39:53.298182445 -0800 /Users/mike/factories/factory/.factory/locks/609.lock
+1795275019 2026-11-21 07:30:19.725956949 -0800 /Users/mike/factories/factory/.factory/locks/873.lock
+1795484378 2026-11-23 17:39:38.345617326 -0800 /Users/mike/factories/factory/.factory/locks/824.lock
+1795484405 2026-11-23 17:40:05.932818794 -0800 /Users/mike/factories/factory/.factory/locks/536.lock
+1795275023 2026-11-21 07:30:23.464095157 -0800 /Users/mike/factories/factory/.factory/locks/865.lock
+1795484412 2026-11-23 17:40:12.296073133 -0800 /Users/mike/factories/factory/.factory/locks/473.lock
+1794571399 2026-11-13 04:03:19.904048056 -0800 /Users/mike/factories/factory/.factory/locks/721.lock
+1795484389 2026-11-23 17:39:49.740869231 -0800 /Users/mike/factories/factory/.factory/locks/633.lock
+1795484414 2026-11-23 17:40:14.112998718 -0800 /Users/mike/factories/factory/.factory/locks/449.lock
+1795484374 2026-11-23 17:39:34.388518296 -0800 /Users/mike/factories/factory/.factory/locks/870.lock
+1795484381 2026-11-23 17:39:41.017237706 -0800 /Users/mike/factories/factory/.factory/locks/718.lock
+1795016515 2026-11-18 07:41:55.107497059 -0800 /Users/mike/factories/factory/.factory/locks/827.lock
+1795484373 2026-11-23 17:39:33.959345940 -0800 /Users/mike/factories/factory/.factory/locks/889.lock
+1795484406 2026-11-23 17:40:06.399775814 -0800 /Users/mike/factories/factory/.factory/locks/535.lock
+1794852528 2026-11-16 10:08:48.150630446 -0800 /Users/mike/factories/factory/.factory/locks/626.lock
+1795484386 2026-11-23 17:39:46.594403498 -0800 /Users/mike/factories/factory/.factory/locks/671.lock
+1795484395 2026-11-23 17:39:55.715343796 -0800 /Users/mike/factories/factory/.factory/locks/606.lock
+1795484405 2026-11-23 17:40:05.069805208 -0800 /Users/mike/factories/factory/.factory/locks/542.lock
+1795484426 2026-11-23 17:40:26.488970119 -0800 /Users/mike/factories/factory/.factory/locks/903.lock
+1795484416 2026-11-23 17:40:16.320672910 -0800 /Users/mike/factories/factory/.factory/locks/411.lock
+1795484417 2026-11-23 17:40:17.657875851 -0800 /Users/mike/factories/factory/.factory/locks/369.lock
+1795484403 2026-11-23 17:40:03.251906664 -0800 /Users/mike/factories/factory/.factory/locks/555.lock
+1795099005 2026-11-19 06:36:45.853645820 -0800 /Users/mike/factories/factory/.factory/locks/847.lock
+1795484405 2026-11-23 17:40:05.506275772 -0800 /Users/mike/factories/factory/.factory/locks/543.lock
+1795484395 2026-11-23 17:39:55.271766898 -0800 /Users/mike/factories/factory/.factory/locks/607.lock
+1795484309 2026-11-23 17:38:29.611422501 -0800 /Users/mike/factories/factory/.factory/locks/559.lock
+1795484408 2026-11-23 17:40:08.206787567 -0800 /Users/mike/factories/factory/.factory/locks/518.lock
+1794570290 2026-11-13 03:44:50.293850853 -0800 /Users/mike/factories/factory/.factory/locks/631.lock
+1795484387 2026-11-23 17:39:47.042982727 -0800 /Users/mike/factories/factory/.factory/locks/666.lock
+1795484412 2026-11-23 17:40:12.726525322 -0800 /Users/mike/factories/factory/.factory/locks/471.lock
+1795482224 2026-11-23 17:03:44.845869128 -0800 /Users/mike/factories/factory/.factory/locks/888.lock
+1795484377 2026-11-23 17:39:37.474739240 -0800 /Users/mike/factories/factory/.factory/locks/826.lock
+1795484380 2026-11-23 17:39:40.583763810 -0800 /Users/mike/factories/factory/.factory/locks/719.lock
+1795484411 2026-11-23 17:40:11.417061422 -0800 /Users/mike/factories/factory/.factory/locks/488.lock
+1795484277 2026-11-23 17:37:57.811857348 -0800 /Users/mike/factories/factory/.factory/locks/895.lock
+1795484383 2026-11-23 17:39:43.412138348 -0800 /Users/mike/factories/factory/.factory/locks/712.lock
+1795484388 2026-11-23 17:39:48.358767584 -0800 /Users/mike/factories/factory/.factory/locks/641.lock
+1795015531 2026-11-18 07:25:31.231934669 -0800 /Users/mike/factories/factory/.factory/locks/840.lock
+1795484379 2026-11-23 17:39:39.691334933 -0800 /Users/mike/factories/factory/.factory/locks/801.lock
+1795484413 2026-11-23 17:40:13.194118676 -0800 /Users/mike/factories/factory/.factory/locks/460.lock
+1795484373 2026-11-23 17:39:33.049348231 -0800 /Users/mike/factories/factory/.factory/locks/899.lock
+1794851585 2026-11-16 09:53:05.271313544 -0800 /Users/mike/factories/factory/.factory/locks/437.lock
+1795484402 2026-11-23 17:40:02.393050453 -0800 /Users/mike/factories/factory/.factory/locks/564.lock
+1795484411 2026-11-23 17:40:11.858231986 -0800 /Users/mike/factories/factory/.factory/locks/476.lock
+1795484404 2026-11-23 17:40:04.183220914 -0800 /Users/mike/factories/factory/.factory/locks/548.lock
+1795484389 2026-11-23 17:39:49.290374584 -0800 /Users/mike/factories/factory/.factory/locks/636.lock
+1795484392 2026-11-23 17:39:52.411086777 -0800 /Users/mike/factories/factory/.factory/locks/620.lock
+1795484410 2026-11-23 17:40:10.500213298 -0800 /Users/mike/factories/factory/.factory/locks/509.lock
+1795484386 2026-11-23 17:39:46.121408060 -0800 /Users/mike/factories/factory/.factory/locks/677.lock
+1795484384 2026-11-23 17:39:44.768930913 -0800 /Users/mike/factories/factory/.factory/locks/699.lock
+1795484410 2026-11-23 17:40:10.968456026 -0800 /Users/mike/factories/factory/.factory/locks/508.lock
+1795484391 2026-11-23 17:39:51.958219256 -0800 /Users/mike/factories/factory/.factory/locks/621.lock
+1795484387 2026-11-23 17:39:47.485000957 -0800 /Users/mike/factories/factory/.factory/locks/660.lock
+1795484284 2026-11-23 17:38:04.582173794 -0800 /Users/mike/factories/factory/.factory/locks/861.lock
+1795016534 2026-11-18 07:42:14.498112866 -0800 /Users/mike/factories/factory/.factory/locks/836.lock
+1795484415 2026-11-23 17:40:15.433361075 -0800 /Users/mike/factories/factory/.factory/locks/436.lock
+1795009654 2026-11-18 05:47:34.089124275 -0800 /Users/mike/factories/factory/.factory/locks/820.lock
+1795484269 2026-11-23 17:37:49.861325415 -0800 /Users/mike/factories/factory/.factory/locks/898.lock
+1794851582 2026-11-16 09:53:02.617170760 -0800 /Users/mike/factories/factory/.factory/locks/553.lock
+1795484404 2026-11-23 17:40:04.628324061 -0800 /Users/mike/factories/factory/.factory/locks/545.lock
+1795484382 2026-11-23 17:39:42.938070828 -0800 /Users/mike/factories/factory/.factory/locks/713.lock
+1795484407 2026-11-23 17:40:07.308170524 -0800 /Users/mike/factories/factory/.factory/locks/528.lock
+1794775176 2026-11-15 12:39:36.988752882 -0800 /Users/mike/factories/benito-app/.factory/locks/9.lock
+1795107451 2026-11-19 08:57:31.651105309 -0800 /Users/mike/factories/benito-app/.factory/locks/23.lock
+1795484060 2026-11-23 17:34:20.118957622 -0800 /Users/mike/factories/benito-app/.factory/locks/merge.lock
+1794777266 2026-11-15 13:14:26.506253204 -0800 /Users/mike/factories/benito-app/.factory/locks/14.lock
+1795105724 2026-11-19 08:28:44.869499071 -0800 /Users/mike/factories/benito-app/.factory/locks/22.lock
+1794775191 2026-11-15 12:39:51.085884265 -0800 /Users/mike/factories/benito-app/.factory/locks/8.lock
+1795451429 2026-11-23 08:30:29.224216681 -0800 /Users/mike/factories/benito-app/.factory/locks/28.lock
+1794534379 2026-11-12 17:46:19.713980000 -0800 /Users/mike/factories/benito-app/.factory/locks/12.lock
+1795453297 2026-11-23 09:01:37.418917170 -0800 /Users/mike/factories/benito-app/.factory/locks/30.lock
+1794447399 2026-11-11 17:36:39.386199087 -0800 /Users/mike/factories/benito-app/.factory/locks/10.lock
+1795103442 2026-11-19 07:50:42.375446467 -0800 /Users/mike/factories/benito-app/.factory/locks/21.lock
+1794965593 2026-11-17 17:33:13.976404658 -0800 /Users/mike/factories/benito-app/.factory/locks/17.lock
+1794963739 2026-11-17 17:02:19.861246150 -0800 /Users/mike/factories/benito-app/.factory/locks/16.lock
+=== pass Mon Nov 23 17:03:33 PST 2026
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+=== end rc=0 Mon Nov 23 17:03:47 PST 2026
+=== pass Mon Nov 23 17:13:47 PST 2026
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+=== end rc=0 Mon Nov 23 17:14:01 PST 2026
+=== pass Mon Nov 23 17:24:01 PST 2026
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+=== end rc=0 Mon Nov 23 17:24:15 PST 2026
+=== pass Mon Nov 23 17:34:15 PST 2026
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+=== end rc=0 Mon Nov 23 17:34:29 PST 2026
+[dispatch] #861: skipped (host label (tank))
+[dispatch] #836: skipped (open PR)
+[dispatch] #559: skipped (open PR)
+[dispatch] #437: skipped (open PR)
+[dispatch] #903: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #898: held (host label (tank))
+[dispatch] #895: held (host label (tank))
+[dispatch] #888: held (host label (tank))
+[dispatch] #878: held (host claim (tank))
+[dispatch] #875: held (host label (tank))
+[dispatch] #874: held (open PR)
+[dispatch] #873: held (host claim (tank))
+[dispatch] #869: held (open PR)
+[dispatch] #861: held (host label (tank))
+[dispatch] #836: held (open PR)
+[dispatch] #559: held (open PR)
+[dispatch] #437: held (open PR)
+[dispatch] #903: skipped (host claim (ultron))
+[dispatch] #898: skipped (host label (tank))
+[dispatch] #895: skipped (host label (tank))
+[dispatch] #888: skipped (host label (tank))
+[dispatch] #878: skipped (host claim (tank))
+[dispatch] #875: skipped (host label (tank))
+[dispatch] #874: skipped (open PR)
+[dispatch] #873: skipped (host claim (tank))
+[dispatch] #869: skipped (open PR)
+[dispatch] #861: skipped (host label (tank))
+[dispatch] #903 worker: omp --session-dir /Users/mike/factories/factory/.factory/transcripts/903 -p --model openai-codex/gpt-6.1-sol --cwd /Users/mike/factories/factory/.factory/wt-903 @/Users/mike/factories/factory/.factory/wt-903/.factory-prompt.md -> /Users/mike/factories/factory/.factory/logs/903-attempt-1.log
+[dispatch] #836: skipped (open PR)
+[dispatch] #559: skipped (open PR)

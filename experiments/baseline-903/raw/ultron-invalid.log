@@ -1,0 +1,382 @@
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7 PR #70: merged into main (squash, ticket #7)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7 PR #70: merged into main (squash, ticket #7)
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: escalating to human (review_revise: REVISE verdict after 257 review round(s))
+[dispatch] #7: escalating to human (review_revise: REVISE verdict after 2 review round(s))
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: escalating to human (review_revise: REVISE verdict after 0 review round(s))
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7: escalating to human (review_revise: PR #70: fresh review requested changes after rebase onto moved main; `factory-approved` label removed)
+[dispatch] #7: escalating to human (pr_checks_failed: PR #70: fresh review requested changes after rebase onto moved main; `factory-approved` label removed)
+[dispatch] #7: escalating to human (review_revise: PR #70: review rejected the refreshed head; `factory-approved` label removed)
+[dispatch] #7: escalating to human (protected_paths: PR #70: PR gate blocked by protected paths; `factory-approved` label removed)
+[dispatch] #7: escalating to human (review_revise: PR #70: review round budget exhausted after refresh; `factory-approved` label removed)
+[dispatch] #7: escalating to human (review_revise: PR #70: review round budget exhausted after refresh; `factory-approved` label removed)
+[dispatch] #10000: escalating to human (review_revise: REVISE verdict after 2 review round(s))
+Brief Jev rerank failed; using noun order
+Traceback (most recent call last):
+  File "/private/tmp/factory-899-solo.CYBxyt/tree/factory/brief.py", line 95, in rerank
+    with urllib.request.urlopen(request, timeout=15) as response:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mike/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/unittest/mock.py", line 1139, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mike/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/unittest/mock.py", line 1143, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mike/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/unittest/mock.py", line 1198, in _execute_mock_call
+    raise effect
+OSError: offline
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+{"event": "score", "ticket": 10, "attempt": 1, "transcript": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpt_vi04_9/.factory/transcripts/10/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #11, #12, #13, #14, #15, #16, #17, #18, #19, #20:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t20
+{"event": "score", "ticket": 1, "attempt": 1, "transcript": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp_3hwf32i/.factory/transcripts/1/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 2, "attempt": 1, "transcript": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp_3hwf32i/.factory/transcripts/2/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 3, "attempt": 1, "transcript": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp_3hwf32i/.factory/transcripts/3/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 4, "attempt": 1, "transcript": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp_3hwf32i/.factory/transcripts/4/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 5, "attempt": 1, "transcript": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp_3hwf32i/.factory/transcripts/5/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 6, "attempt": 1, "transcript": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp_3hwf32i/.factory/transcripts/6/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 7, "attempt": 1, "transcript": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp_3hwf32i/.factory/transcripts/7/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 8, "attempt": 1, "transcript": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp_3hwf32i/.factory/transcripts/8/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 9, "attempt": 1, "transcript": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp_3hwf32i/.factory/transcripts/9/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 10, "attempt": 1, "transcript": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp_3hwf32i/.factory/transcripts/10/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp6e3avp7h/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp6e3avp7h/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: worker killed by budget_min (budget_exceeded) before gate; last gate passed; worktree kept at /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp6e3avp7h/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (budget: worker killed by budget_min (budget_exceeded) before gate; last gate passed; worktree kept at /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp3xiz46t_/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (budget: worker killed by budget_exceeded (budget_exceeded) before gate; last gate passed; worktree kept at /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp3xiz46t_/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (budget: worker killed by budget_exceeded (budget_exceeded) before gate; last gate passed; worktree kept at /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp3xiz46t_/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #3 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python -c import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(6) /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpev01npwr/child.pid -> /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpev01npwr/worker.log
+[dispatch] #3: pipeline raised KeyboardInterrupt('dispatcher interrupted')
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #1: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #1: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #1: pipeline raised TicketFailed('#1 pipeline failed')
+[dispatch] worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python -c import json, os, sys; d = os.environ.get('GH_CONFIG_DIR'); json.dump({'tokens': [k for k in ('GH_TOKEN', 'GITHUB_TOKEN') if k in os.environ], 'dir': d, 'entries': os.listdir(d) if d and os.path.isdir(d) else None}, open(sys.argv[1], 'w')); print('```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE') /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpjpjvx_7i/seen.json -> /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpjpjvx_7i/worker.log
+[dispatch] worker exited 0 after 0s
+[dispatch] command failed (exit 128); stderr tail:
+fatal: '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpyws3k7a1/origin.git/missing' does not appear to be a git repository
+fatal: Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.
+
+[dispatch] command failed (exit 1); stderr tail:
+To /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpii2cvpbz/origin.git
+ ! [rejected]        agent/curate-x -> agent/curate-x (non-fast-forward)
+error: failed to push some refs to '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpii2cvpbz/origin.git'
+hint: Updates were rejected because the tip of your current branch is behind
+hint: its remote counterpart. If you want to integrate the remote changes,
+hint: use 'git pull' before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpxh4n3pr3/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpxh4n3pr3/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmprfn7ef40/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmprfn7ef40/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmphecuulo2/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmphecuulo2/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpypf9cfjg/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpypf9cfjg/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpembo5olj/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpembo5olj/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmplimd8d3z/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmplimd8d3z/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at b699722ffaef)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpx057e2ca/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpx057e2ca/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpa6_iad9x/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpa6_iad9x/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited -15 after 0s (budget_min fired: budget_exceeded)
+[dispatch] #7: escalating to human (budget: wall-clock budget (0 min) exceeded)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpb5gign_0/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpb5gign_0/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp0f0s6u62/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp0f0s6u62/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 1 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp7xgup0y6/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp7xgup0y6/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp7xgup0y6/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp7xgup0y6/repo/.factory/logs/7-attempt-3.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at 234119d99404)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpwzwm4ywh/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpwzwm4ywh/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at faa64027ad9b)
+[dispatch] #7 worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpxe2oxxrt/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpxe2oxxrt/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at 625386034c5b)
+[dispatch] #7: escalating to human (protected_paths: worker removed or changed existing tests)
+[dispatch] worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpbkmigjw2/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpbkmigjw2/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp8jwhdzhx/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp8jwhdzhx/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: manager FIX failed (reviewer_unavailable: reviewer unavailable after manager FIX); ticket is already ready-for-human
+[dispatch] worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp364dedpq/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp364dedpq/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #7: restored unplanned dependency lockfile drift: uv.lock, web/package-lock.json
+[dispatch] worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpn9928peg/worker.py -> /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpn9928peg/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #7: restored unplanned dependency lockfile drift: uv.lock
+[dispatch] #7: restored unplanned dependency lockfile drift: uv.lock
+[dispatch] #7: restored unplanned dependency lockfile drift: services/api/uv.lock
+[dispatch] #7: restored unplanned dependency lockfile drift: sub/uv.lock, uv.lock
+[dispatch] #7: done (approved at d65ee26905ac)
+[dispatch] #7: done (approved at 4d93633cbcbf)
+[dispatch] #7: done (approved at 1be080b1fd32)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7: done (approved at 867709f4922e)
+[dispatch] #7: refused (Factory claim author login tank-login does not match dispatcher login ultron-login)
+[dispatch] #7: refused (Factory claim author login ultron-login does not match dispatcher login tank-login)
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, District target aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target cccccccccccccccccccccccccccccccccccccccc
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+eval default: not_tested (token budget exceeded (6 > 5))
+eval default: baseline
+eval default: baseline
+eval default: keep (train +0.000 (noise 0.000); lockbox +0.000 (noise 0.000))
+eval default: revert (train drop -1.000 beyond noise 0.000)
+[dispatch] #7 PR #42: worker eval keep claim missing for aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; run `cd /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpnya9tghw/.factory/wt-7 && /private/tmp/factory-899-mutenv.iGXmKr/bin/python -m factory eval --profile prime`; not merging
+eval default: baseline
+eval default: revert (train drop -1.000 beyond noise 0.000)
+eval default: revert (train drop -1.000 beyond noise 0.000)
+eval default: baseline
+eval default: keep (train +1.000 (noise 0.000); lockbox +1.000 (noise 0.000))
+eval default: keep (train +0.000 (noise 0.000); lockbox +0.000 (noise 0.000))
+[dispatch] PR #1: would record review intake at head-1
+[dispatch] PR #2: would record review intake at head-2
+[dispatch] PR #6: would record review intake at head-6
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+[dispatch] PR #1: recording review intake at head-1
+[dispatch] PR #2: recording review intake at head-2
+[dispatch] PR #6: retrying review at head-6 after intake without a result
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+[dispatch] PR #1: retrying review at head-1 after intake without a result
+[dispatch] PR #2: retrying review at head-2 after intake without a result
+[dispatch] PR #6: retrying review at head-6 after intake without a result
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+[dispatch] PR #17: recording review intake at head-0
+[dispatch] PR #17: unresolved after 1 automated review attempt(s); would escalate to human
+[dispatch] PR #17: unresolved after 1 automated review attempt(s); escalating to human
+[dispatch] PR #17: recording review intake at head-0
+[dispatch] PR #17: recording review intake at head-1
+[dispatch] PR #17: unresolved after 2 automated review attempt(s); would escalate to human
+[dispatch] PR #17: unresolved after 2 automated review attempt(s); escalating to human
+[dispatch] PR #17: recording review intake at head-1
+[dispatch] PR #17: recording review intake at head-2
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at head-17
+[dispatch] PR #17: diff too large to review at head-17
+[dispatch] PR #18: recording review intake at head-18
+learned from tickets #3:
+- Run `make test` before the gate.
+wrote /private/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpf60j0ujh/repo/.factory-lessons.md; review and commit it
+[dispatch] #7 PR #70: CI pending {'pending': 2}; waiting
+[dispatch] #7 PR #70: CI pending {'infra': 2}; waiting
+[dispatch] #7 PR #70: head, label, or human review changed before merge; not merging
+[dispatch] #7 PR #70: head, label, or human review changed before merge; not merging
+[dispatch] #7 PR #70: head, label, or human review changed before merge; not merging
+[dispatch] PR #70: targets 'main', not 'stable'; not merging
+[dispatch] PR #70: targets None, not 'stable'; not merging
+[dispatch] PR #70: agent/curate-2026-10-08 waiting for review at head
+[dispatch] PR #71: agent/lessons-2026-10-08 waiting for review at head
+[dispatch] #7 PR #70: state changed during eligibility check; not merging
+[dispatch] #7 PR #70: CI pending {'pass': 1, 'pending': 1}; waiting
+[dispatch] #7 PR #70: CI pending {'pass': 1, 'pending': 1}; waiting
+[dispatch] #7 PR #70: state changed during eligibility check; not merging
+[dispatch] #31 PR #100: merged into main (merge, ticket #31)
+[dispatch] #31: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #99 PR #200: merged into main (squash, ticket #99)
+[dispatch] #99: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #7 PR #70: CI pending {'pending': 1}; waiting
+[dispatch] #7 PR #70: CI pending {'pending': 2}; waiting
+[dispatch] #7 PR #70: CI pending {'pass': 1, 'pending': 1}; waiting
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed again)
+[dispatch] agent/7: existing PR #17 targets 'main', not 'stable'; not pushing
+[dispatch] agent/7: existing PR #17 targets None, not 'stable'; not pushing
+[dispatch] #9: PR #102 rebased onto current main, re-gated, and re-approved at 9ef1cda427e3
+[dispatch] #31: PR #100 merged onto current main, re-gated, and re-approved at 9b0763ea0540
+[dispatch] PR #70: targets 'stable', not 'release'; not refreshing
+[dispatch] PR #70: targets None, not 'release'; not refreshing
+[dispatch] #7: PR #100 rebased onto current main, re-gated, and re-approved at 8fa62cd51f17
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 1s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 2s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 2.5s
+[dispatch] worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python -c import time; time.sleep(60) -> /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp1k9t7a3d/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited -15 after 0s (idle_timeout fired: stuck)
+[dispatch] upstream sync: staged 2 commit(s) at f7164ac9e715 as #42 (agent/42 at b6abcb8833f9, gate not run: merge conflict)
+[dispatch] upstream sync: staged 1 commit(s) at cfdc47c2fcb7 as #42 (agent/42 at 2b4e4d398a85, gate PASS)
+[dispatch] upstream sync: 1 commit(s) behind; waiting on sync ticket #7
+[dispatch] worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python -c import pathlib, time; p = pathlib.Path('.factory'); p.mkdir(exist_ok=True); (p / 'handoff-7.md').write_text('done'); time.sleep(60) -> /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp3xjjpwza/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited -15 after 1s (exit_grace fired: hung_after_done)
+[dispatch] worker: /private/tmp/factory-899-mutenv.iGXmKr/bin/python -c import pathlib, subprocess, time; pathlib.Path('work.txt').write_text('x'); subprocess.run(['git', 'add', 'work.txt'], check=True); subprocess.run(['git', 'commit', '-qm', 'work'], check=True); time.sleep(60) -> /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpjpk9o_r7/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited -15 after 1s (exit_grace fired: hung_after_done)
+[dispatch] #9 PR #90: refused (ticket #9 is an initiative record); not merging
+[dispatch] #7 worker: sh -c printf 'assert False\n' > tests/test_old.py -> /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpr1_unfpk/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] worker: sh -c printf 'worker edit\n' > checks/oracle.txt -> /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmp20n76t9a/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: sh -c printf 'worker edit\n' > checks/oracle.txt -> /var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/tmpk4_0zhmf/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #8: handoff request 8/1 published to unassigned
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (gate))
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] PR #80: skipped, elected claim belongs to host tank
+[dispatch] #79 PR #80: frontier failed: Command '['gh', 'pr', 'close', '80', '--repo', 'example/project']' returned non-zero exit status 1.; leaving for human
+[dispatch] #79 PR #80: not factory-owned (unverified); not in frontier
+[dispatch] #79 PR #80: not factory-owned (unverified); not in frontier
+[dispatch] #79 PR #80: refused (ticket #79 is an initiative record)
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 3 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 1 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79 PR #80: changed while the manager was thinking; decision discarded
+[dispatch] PR #80: skipped, elected claim belongs to host ultron
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (gate))
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: escalating to human (pr_stale: PR #80: no activity for 327 days (stale_days = 7))
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (gate))
+[dispatch] #79: gate and review passed at aaaaaaaaaaaa; waiting for manager approval (manager.review = all)
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (unit))
+[dispatch] #79 PR #80: CI pending; waiting
+[dispatch] #79: escalating to human (pr_stale: PR #80: no activity for 327 days (stale_days = 7))
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (unit))
+[dispatch] #79 PR #80: red CI predates ticket #79's release to ready-for-agent; waiting for a worker
+[dispatch] #79: gate and review passed at aaaaaaaaaaaa; waiting for manager approval (manager.review = all)
+[dispatch] #79: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #79: escalating to human (manager_exhausted: PR #80: manager rounds exhausted before approval)
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (ci))
+======================================================================
+ERROR: test_leak_scan_finds_pattern_beside_non_utf8_filename (test_gate.GateOutputEncodingTest.test_leak_scan_finds_pattern_beside_non_utf8_filename)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/factory-899-solo.CYBxyt/tree/tests/test_gate.py", line 260, in test_leak_scan_finds_pattern_beside_non_utf8_filename
+    stage_name(repo, b"\xff-leak.txt", b"codename\n")
+  File "/private/tmp/factory-899-solo.CYBxyt/tree/tests/test_gate.py", line 64, in stage_name
+    subprocess.run(
+  File "/Users/mike/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/subprocess.py", line 548, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mike/factories/factory/.factory/wt-903/experiments/baseline-903/profile.py", line 24, in __init__
+    self.measure_record = {'program': Path(os.fsdecode(args[0])).name if isinstance(args, (list, tuple)) else 'shell'}
+                                      ^^^^^^^^^^^^^
+  File "/Users/mike/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py", line 1162, in __init__
+    super().__init__(*args)
+  File "/Users/mike/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/pathlib.py", line 373, in __init__
+    raise TypeError(
+TypeError: argument should be a str or an os.PathLike object where __fspath__ returns a str, not 'bytes'
+
+----------------------------------------------------------------------
+Ran 829 tests in 644.014s
+
+FAILED (errors=1, skipped=7)
