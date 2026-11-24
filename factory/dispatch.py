@@ -1909,10 +1909,11 @@ def _active_worker_gate() -> bool:
             descendants.add(row["execution_id"])
         if row.get("stage") != "gate" or row.get("execution_id") not in descendants:
             continue
-        if row.get("kind") == "enter":
-            gates[row["execution_id"]] = row
-        elif row.get("kind") == "exit":
-            gates.pop(row["execution_id"], None)
+        match row.get("kind"):
+            case "enter":
+                gates[row["execution_id"]] = row
+            case "exit":
+                gates.pop(row["execution_id"], None)
     return "alive" in (lifecycle._process_state(row.get("process")) for row in gates.values())
 
 
@@ -2428,10 +2429,12 @@ def retry_gate_fixups(
     if run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip() != head or run(status, cwd=wt).stdout.strip():
         notes.append("Mechanical fixups not run: HEAD changed or worktree is not clean.")
         return finish(False, report, head)
+    progress = "not run"
     for argv in cfg.fixups:
         remaining = work_deadline - time.monotonic()
         if remaining <= 0:
-            return budget_stop("not run" if len(notes) == 1 else "stopped")
+            return budget_stop(progress)
+        progress = "stopped"
         timeout = min(cfg.check_timeout, remaining)
         try:
             proc = run(argv, cwd=wt, check=False, timeout=timeout)
