@@ -1224,6 +1224,46 @@ class PassingAttemptEvidenceTest(unittest.TestCase):
                 if status == "FAIL":
                     self.assertIn("broken check", report)
 
+    def test_report_fails_closed_for_malformed_or_wrongly_shaped_result_records(self) -> None:
+        import json
+
+        toml = TOML + (
+            '\n[[gate.check]]\nname = "test"\n'
+            f'run = [{json.dumps(sys.executable)}, "-m", "unittest", "discover", "-s", "tests"]\n'
+        )
+        records = [
+            "invalid JSON", "{}", "[]", "null", "1",
+            '{"testsRun": 1}', '{"skipped": []}',
+            *[json.dumps({"testsRun": count, "skipped": []})
+              for count in (None, True, -1, 1.5, "1", [], {})],
+            *[json.dumps({"testsRun": 1, "skipped": skipped})
+              for skipped in (None, {}, "", [None], [[]], [{}],
+                              [{"name": "test"}], [{"reason": "hardware"}],
+                              [{"name": None, "reason": "hardware"}],
+                              [{"name": "test", "reason": None}])],
+        ]
+        for record in records:
+            with self.subTest(record=record), tempfile.TemporaryDirectory() as directory:
+                repo = repo_with_test(Path(directory), toml)
+                (repo / "tests" / "test_bad_record.py").write_text(
+                    "import os, unittest\nfrom pathlib import Path\n"
+                    "class BadRecord(unittest.TestCase):\n"
+                    "    def test_record(self):\n"
+                    f"        Path(os.environ['FACTORY_UNITTEST_RESULT']).write_text({record!r})\n"
+                    "        print('child diagnostic retained', flush=True)\n"
+                    "        os._exit(0)\n"
+                )
+                commit(repo, "malformed unittest result record")
+
+                code, out, report = gate(repo)
+
+                self.assertEqual(code, 1, out + report)
+                self.assertIn("- test: FAIL", report, out)
+                self.assertIn(f"Head SHA: {git(repo, 'rev-parse', 'HEAD')}", report)
+                self.assertIn("child diagnostic retained", report)
+                self.assertIn("unittest result record unavailable:", report)
+                self.assertNotIn("## test test evidence", report)
+
 
 if __name__ == "__main__":
     unittest.main()
