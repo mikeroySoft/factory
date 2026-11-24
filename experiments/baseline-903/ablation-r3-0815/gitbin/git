@@ -1,0 +1,41 @@
+#!/bin/bash
+# r3-0735 git-cache arm wrapper, derived from 3b78a952 git-cache-wrapper.sh. Changes, so the
+# arm cannot change test outcomes: only history/ref reads are cached; every other git call
+# bumps a generation number that invalidates the whole cache (before and after it runs);
+# a failing git keeps its output (the original lost it under set -e); md5 instead of shasum.
+REAL_GIT=/usr/bin/git
+C="${GIT_CACHE_DIR:?GIT_CACHE_DIR must be set}"
+args=("$@"); sub=""; i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  case "${args[$i]}" in
+    -C|-c|--git-dir|--work-tree|--namespace) i=$((i+2)) ;;
+    -*) i=$((i+1)) ;;
+    *) sub="${args[$i]}"; break ;;
+  esac
+done
+case "$sub" in
+  rev-parse|rev-list|log|show|merge-base|for-each-ref|show-ref|cat-file|ls-tree) cacheable=1 ;;
+  status|diff|ls-files|grep|version|help) cacheable=read ;;
+  *) cacheable=0 ;;
+esac
+for a in "$@"; do case "$a" in --batch*|--stdin*|--dirty*) cacheable=0 ;; esac; done
+gen=0; [ -f "$C/gen" ] && gen=$(<"$C/gen")
+bump() { printf '%s' "$$-$RANDOM-$RANDOM" > "$C/gen"; }
+if [ "$cacheable" = 0 ]; then bump; "$REAL_GIT" "$@"; rc=$?; bump; exit "$rc"; fi
+if [ "$cacheable" = read ]; then exec "$REAL_GIT" "$@"; fi
+envs=""; for v in $(compgen -e); do case "$v" in GIT_*) envs+="$v=${!v};" ;; esac; done
+printf -v key '%s|%s|%s|' "$gen" "$PWD" "$envs"; printf -v quoted '%q ' "$@"
+d="$C/$(md5 -q -s "$key$quoted")"
+if [ -f "$d.rc" ]; then
+  [ -s "$d.out" ] && cat "$d.out"
+  [ -s "$d.err" ] && cat "$d.err" >&2
+  exit "$(<"$d.rc")"
+fi
+"$REAL_GIT" "$@" > "$d.out.$$" 2> "$d.err.$$"; rc=$?
+[ -s "$d.out.$$" ] && cat "$d.out.$$"
+[ -s "$d.err.$$" ] && cat "$d.err.$$" >&2
+# publish only if no git write happened meanwhile; rc file last marks the entry complete
+if [ "$gen" = "$( [ -f "$C/gen" ] && cat "$C/gen" || echo 0)" ]; then
+  mv -f "$d.out.$$" "$d.out"; mv -f "$d.err.$$" "$d.err"; printf '%d' "$rc" > "$d.rc"
+else rm -f "$d.out.$$" "$d.err.$$"; fi
+exit "$rc"
