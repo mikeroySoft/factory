@@ -25,11 +25,11 @@ def simulate_test_workload(repo_path, n_iterations=50):
 
         # 3. Run git commands (common in factory tests)
         subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=repo_path,
-                       capture_output=True, env=env)
+                       capture_output=True, check=False, env=env)
         subprocess.run(['git', 'log', '--oneline', '-5'], cwd=repo_path,
-                       capture_output=True, env=env)
+                       capture_output=True, check=False, env=env)
         subprocess.run(['git', 'diff', '--quiet'], cwd=repo_path,
-                       capture_output=True, env=env)
+                       capture_output=True, check=False, env=env)
 
         # 4. Read files back
         for j in range(10):

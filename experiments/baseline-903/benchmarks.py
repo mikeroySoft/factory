@@ -62,11 +62,11 @@ def bench_startup(python, n=200):
     """Measure Python interpreter startup: `python -c pass`."""
     # Warmup
     for _ in range(5):
-        subprocess.run([python, '-I', '-c', 'pass'], capture_output=True)
+        subprocess.run([python, '-I', '-c', 'pass'], capture_output=True, check=False)
     results = []
     t0 = time.monotonic()
     for _ in range(n):
-        subprocess.run([python, '-I', '-c', 'pass'], capture_output=True)
+        subprocess.run([python, '-I', '-c', 'pass'], capture_output=True, check=False)
     total = time.monotonic() - t0
     per_launch = total / n
     results.append({'total': total, 'n': n, 'per_launch': per_launch})
@@ -84,7 +84,7 @@ def bench_git(repo_path, n=500):
         t0 = time.monotonic()
         subprocess.run(
             ['git', 'rev-parse', 'HEAD'],
-            cwd=repo_path, capture_output=True, env=env,
+            cwd=repo_path, capture_output=True, check=False, env=env,
         )
         times.append(time.monotonic() - t0)
     results['rev-parse'] = {
@@ -99,7 +99,7 @@ def bench_git(repo_path, n=500):
         t0 = time.monotonic()
         subprocess.run(
             ['git', 'log', '--oneline', '-1'],
-            cwd=repo_path, capture_output=True, env=env,
+            cwd=repo_path, capture_output=True, check=False, env=env,
         )
         times.append(time.monotonic() - t0)
     results['log-1'] = {
@@ -114,7 +114,7 @@ def bench_git(repo_path, n=500):
         t0 = time.monotonic()
         subprocess.run(
             ['git', 'diff', '--quiet'],
-            cwd=repo_path, capture_output=True, env=env,
+            cwd=repo_path, capture_output=True, check=False, env=env,
         )
         times.append(time.monotonic() - t0)
     results['diff-quiet'] = {
@@ -129,7 +129,7 @@ def bench_git(repo_path, n=500):
         t0 = time.monotonic()
         subprocess.run(
             ['git', 'status', '--porcelain'],
-            cwd=repo_path, capture_output=True, env=env,
+            cwd=repo_path, capture_output=True, check=False, env=env,
         )
         times.append(time.monotonic() - t0)
     results['status'] = {
@@ -193,12 +193,12 @@ def bench_process_launch(n=500):
         true_path = '/bin/true'
     # Warmup
     for _ in range(10):
-        subprocess.run([true_path], capture_output=True)
+        subprocess.run([true_path], capture_output=True, check=False)
     times = []
     t0_all = time.monotonic()
     for _ in range(n):
         t0 = time.monotonic()
-        subprocess.run([true_path], capture_output=True)
+        subprocess.run([true_path], capture_output=True, check=False)
         times.append(time.monotonic() - t0)
     total = time.monotonic() - t0_all
     return {
