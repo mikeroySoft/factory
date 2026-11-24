@@ -225,6 +225,11 @@ Every reason string passed to `dispatch.escalate`, the
 `withdraw` helper in `dispatch.refresh_pr_branch`, or recorded as an `escalate`
 event. `{}` is a runtime value.
 
+High-risk review passes through a dynamic diagnostic when the recorded attempt
+lacks `worker_model`. Ticket, refresh and manager FIX paths machine-escalate with
+`missing_worker_provenance` before reviewer launch; configure an explicit worker
+model and run a new worker attempt.
+
 | Code | Reason | Edge |
 |------|--------|------|
 | `dispatch.escalate` | ``worker killed by {} (budget_exceeded) before gate; last gate passed; worktree kept at {}`` | Budget-killed worker after the current generation's last passing gate → escalate (`budget`, not `gate_failed`) |
@@ -240,7 +245,6 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) after review bounce {}; worktree kept at {}`` | review → escalate |
 | `dispatch.process_ticket` | ``REVISE verdict after {} review round(s)`` | review → escalate |
 | `dispatch.process_ticket` | ``reviewer unavailable after retries`` | review tooling retries exhausted → escalate (`reviewer_unavailable`) |
-| `dispatch.process_ticket`, `dispatch.refresh_pr_branch`, `manage.apply` | ``missing_worker_provenance: High-risk review at {} requires worker_model from the worker attempt`` | Missing worker identity → machine escalation (`missing_worker_provenance`) before reviewer launch; configure an explicit worker model and rerun the worker |
 | `dispatch.process_ticket` | ``pr checks failed`` | review → escalate |
 | `dispatch.process_ticket` | ``PR gate blocked by protected paths`` | PR-tier protected failure → escalate immediately |
 | `dispatch.process_ticket` | ``High-risk machine checks disagreed on two successive heads`` | Non-actionable disagreement → one worker rework; next-head non-actionable disagreement → escalate (`risk_disagreement`) |
