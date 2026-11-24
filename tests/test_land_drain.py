@@ -157,6 +157,16 @@ class LandDrainTest(unittest.TestCase):
         self.assertEqual(self.github.merged, [])
         self.assertEqual(self.github.list_calls, 1)
 
+    def test_lower_behind_pr_does_not_block_higher_ready_pr(self) -> None:
+        behind, ready = self.approve(1), self.approve(2)
+        self.github.forced_behind = {behind["number"]: 1, ready["number"]: 0}
+
+        dispatch.merge_pass_locked(False)
+
+        self.assertEqual(self.github.merged, [ready["number"]])
+        self.assertEqual(self.github.refreshed, [behind["number"]])
+        self.assertEqual(self.github.list_calls, 1)
+
     def test_merge_then_refresh_observes_main_after_each_candidate(self) -> None:
         first, second = self.approve(1), self.approve(2)
 
