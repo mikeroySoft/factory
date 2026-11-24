@@ -1046,7 +1046,7 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
         for row in rows
     )
     if valid:
-        rows = triage_cancelled(n, [{**row, "required": True} for row in rows])
+        rows = triage_cancelled(n, _skip_unrunnable([{**row, "required": True} for row in rows]))
     review = next((e for e in reversed(history)
                    if e.get("event") == "review-result" and e.get("pr") == n
                    and e.get("head") == head), {})
@@ -1687,7 +1687,8 @@ def record_merge_decision(
         cost=None,
         actor=_decision_actor("deterministic", "dispatch.merge_pass_locked"),
     )
-    record("decision", **payload, checks=checks)
+    record("decision", **payload,
+           checks=json.loads(trace._SECRET.sub("[credential withheld]", json.dumps(checks))))
     return payload["decision_id"]
 
 
@@ -4230,9 +4231,9 @@ def _unrunnable_job(check: dict) -> dict | None:
             job["status"] == "completed" and job["conclusion"] != "cancelled"
         ):
             return None
-        if job.get("runner_id") or job.get("runner_name") or any(
+        if job["runner_id"] or job["runner_name"] or any(
             step.get("started_at") or step.get("conclusion") not in (None, "skipped")
-            for step in job["steps"]
+            for step in job.get("steps", [])
         ):
             return None
         labels = {label.casefold() for label in job["labels"]}
@@ -4263,8 +4264,7 @@ def _skip_unrunnable(checks: list[dict]) -> list[dict]:
     return [
         {**check, "bucket": "infra" if check.get("required") else "skipped-infra",
          "original_bucket": check["bucket"], "disposition": "no matching runner", **evidence}
-        if check.get("bucket") in ("pending", "cancel", "infra")
-        and check.get("disposition") != "no matching runner"
+        if check.get("bucket") in ("pending", "cancel")
         and (evidence := _unrunnable_job(check)) else check
         for check in checks
     ]
@@ -4327,7 +4327,6 @@ def triage_cancelled(
     rerun --failed`) and reads `pending` until the rerun attempt reports;
     cancelled for infra again, it reads `infra`.
     """
-    checks = _skip_unrunnable(checks)
     if not any(c.get("bucket") == "cancel" for c in checks):
         return checks
     events = lifecycle.read_events(EVENTS)
@@ -5024,7 +5023,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 continue
             starved = [c for c in checks if c["bucket"] == "infra"]
             escalated = starved and runner_unavailable(n, pr_num, starved, dry_run)
-            if starved and execution:
+            if starved and execution and not escalated:
                 execution.outcome, execution.reason = "not_eligible", "ci_runner"
                 execution.wait("ci_runner", mode="eligibility", pr=pr_num)
             if escalated:
@@ -5211,7 +5210,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 continue
             escalated = latest_starved and runner_unavailable(n, pr_num, latest_starved, False)
-            if latest_starved:
+            if latest_starved and not escalated:
                 execution.outcome, execution.reason = "not_eligible", "ci_runner"
                 execution.wait("ci_runner", mode="eligibility", pr=pr_num)
             if escalated:

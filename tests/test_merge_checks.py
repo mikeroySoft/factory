@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch, lifecycle
+from factory import config, dispatch, lifecycle, runtime_events
 
 
 class MergeChecksTest(unittest.TestCase):
@@ -118,12 +118,7 @@ class MergeChecksTest(unittest.TestCase):
         self.assertEqual(self.escalate.call_args.kwargs["code"], "ci_failed")
 
     def test_stale_unassigned_job_without_matching_runner_merges_without_rerun(self):
-        for bucket in ("pending", "cancel", "infra"):
-            # infra is an existing cancelled-triage result, not a GitHub check bucket.
-            if bucket == "infra":
-                rows = dispatch.triage_cancelled(70, [{**self.gpu, "bucket": bucket}])
-                self.assertEqual(rows[0]["bucket"], "skipped-infra")
-                continue
+        for bucket in ("pending", "cancel"):
             with self.subTest(bucket=bucket):
                 self.commands.clear()
                 self.gpu["bucket"] = bucket
@@ -198,16 +193,31 @@ class MergeChecksTest(unittest.TestCase):
 
     def test_required_starvation_escalates_explicit_block_and_journals_wait(self):
         self.required = [self.passing, self.gpu]
+        self.escalate.side_effect = lambda n, reason, *_args, **kw: dispatch.record(
+            "escalate", ticket=n, reason=reason, code=kw["code"])
         dispatch.merge_pass_locked(False)
         self.assertFalse(self.merged())
         self.assertIn("blocks merge", self.escalate.call_args.args[1])
         self.assertEqual(self.escalate.call_args.kwargs["code"], "ci_runner")
         self.assertFalse(any(cmd[:3] == ["gh", "run", "rerun"] for cmd in self.commands))
         self.assertEqual(self.decision()["checks"][1]["bucket"], "infra")
+        exits = [row for row in lifecycle.read_events(dispatch.EVENTS) if row.get("kind") == "exit"]
+        self.assertEqual(exits[-1]["outcome"], "project_escalation")
+        dispatch.merge_pass_locked(False)
+        self.escalate.assert_called_once()
         waits = [row["wait"] for row in lifecycle.read_events(dispatch.EVENTS)
                  if row.get("kind") == "wait"]
         self.assertEqual(waits[-1]["reason"], "ci_runner")
         self.assertEqual(waits[-1]["mode"], "eligibility")
+        projected = runtime_events.project(dispatch.EVENTS)
+        waits = [row["wait"] for row in projected["events"] if row.get("kind") == "wait"]
+        self.assertEqual(waits[-1]["reason"], "ci_runner")
+
+    def test_queued_job_with_optional_steps_absent_still_skips(self):
+        del self.job["steps"]
+        dispatch.merge_pass_locked(False)
+        self.assertTrue(self.merged())
+        self.assertEqual(self.decision()["checks"][1]["bucket"], "skipped-infra")
 
     def test_final_recheck_rejects_new_pending_or_failed_required_check(self):
         for bucket in ("pending", "fail"):
@@ -241,6 +251,15 @@ class MergeChecksTest(unittest.TestCase):
         dispatch.merge_pass_locked(False)
         self.assertTrue(self.merged())
         self.assertEqual(self.decision()["checks"][-1]["disposition"], "advisory")
+
+    def test_merge_decision_redacts_credentials_in_all_check_evidence(self):
+        dispatch.cfg.advisory_checks = ["E2E tests (*"]
+        secret = "ghp_" + "x" * 20
+        self.gpu["link"] += "?token=" + secret
+        dispatch.merge_pass_locked(False)
+        self.assertTrue(self.merged())
+        self.assertNotIn(secret, json.dumps(self.decision()))
+        self.assertIn("[credential withheld]", self.decision()["checks"][-1]["link"])
 
 
 if __name__ == "__main__":
