@@ -22,6 +22,7 @@ from unittest import mock
 
 from factory import config, dispatch, gate, manage, onboard
 from scripts import mutation
+from tests import test_refresh_conflict as refresh_suite
 
 HEAD = "a" * 40
 NEW_HEAD = "b" * 40
@@ -1201,6 +1202,96 @@ class RestoreFailureTest(unittest.TestCase):
             restore_dispatch(self.bindings({"boom": 1}), self.saved, target)
         self.assertEqual(target.before, "orig-before")
         self.assertEqual(target.after_set, "stale")
+
+
+class WorkerModelProvenanceTest(unittest.TestCase):
+    """Use real attempts, claims, review publication and a retained agent PR."""
+
+    setUp = refresh_suite.RefreshConflictTest.setUp
+    patched, events = refresh_suite.RefreshConflictTest.patched, refresh_suite.RefreshConflictTest.events
+
+    def prepare(self) -> None:
+        self.cfg.workers = config.Config(self.root, "acme/widgets").workers
+        self.cfg.reviewer = ["reviewer", "--model", "primary/model"]
+        self.cfg.second_reviewer = ["reviewer", "--model", "second/model"]
+        self.cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
+        self.github.issue_labels = {config.LABEL_AGENT, config.LABEL_CHORE}
+        self.github.assignees = []
+        self.github.pr_labels = set()
+        self.prompts = []
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(self.patched())
+        stack.enter_context(mock.patch.object(dispatch, "run_worker", side_effect=self.work))
+        stack.enter_context(mock.patch.object(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n")))
+        stack.enter_context(mock.patch.object(dispatch.risk, "classify", return_value=("High", ["high:dispatch"])))
+        self.reviewer = stack.enter_context(mock.patch.object(dispatch, "run_reviewer", side_effect=self.review))
+
+    def work(self, argv, wt, logfile, handoff, *_args, **_kwargs):
+        spec = self.cfg.worker_spec(config.LABEL_CHORE, wt / ".factory-prompt.md", wt)
+        self.assertEqual(argv, spec.argv)
+        subprocess.run(
+            [sys.executable, str(self.tmp / "resolver.py"), str(self.prompt_seen)],
+            cwd=wt, check=True, capture_output=True,
+        )
+        change = wt / "work.txt"
+        change.write_text(change.read_text() + "change\n" if change.exists() else "change\n")
+        logfile.write_text("worker completed\n")
+        handoff.parent.mkdir(exist_ok=True)
+        handoff.write_text("## Changed\n- Work complete.\n## Unverified\nNone.\n")
+        return 0, None
+
+    def review(self, _wt, prompt, head, *, reviewer=None, **_kwargs):
+        self.prompts.append(prompt)
+        model = config.command_model(reviewer or self.cfg.reviewer)
+        return {
+            "verdict": "APPROVE", "findings": "VERDICT: APPROVE", "usage": {"model": model},
+            "accepted": True, "parsed": True, "reason": "APPROVE", "returncode": 0,
+            "actual_head": head, "attempts": 1, "counts": {"important": 0, "nit": 0, "pre-existing": 0},
+            "outside_diff_findings": 0, "rejection_reason": None,
+        }
+
+    def test_builtin_chore_model_survives_requeue_and_post_decision_claim(self) -> None:
+        self.prepare()
+        for mode in ("existing-pr", "factory-requeue", "owner-decision"):
+            with self.subTest(mode=mode):
+                if mode == "factory-requeue":
+                    dispatch.record("risk-requeue", ticket=9, pr=102, head=self.github.head(),
+                                    round=1, packet="Rework retained PR")
+                elif mode == "owner-decision":
+                    dispatch.escalate(9, "previous attempt failed", None, code="gate_failed")
+                    dispatch.record("manage", ticket=9, decision="HUMAN", round=1)
+                self.github.issue_labels = {config.LABEL_AGENT, config.LABEL_CHORE}
+                self.github.assignees = []
+                self.github.pr_labels = set()
+                dispatch.configure(self.cfg)
+                dispatch.process_ticket(self.github.issue(), 30, False, forced=True)
+                attempt = self.events("attempt")[-1]
+                model = attempt["worker_model"]
+                self.assertTrue(model, "configured launch must record an explicit worker model")
+                self.assertNotEqual(model, "unknown")
+                head = self.github.head()
+                self.assertEqual(attempt["head"], head)
+                check = self.events("risk-check")[-1]
+                self.assertEqual(check["models"], ["primary/model", "second/model", model])
+                self.assertTrue(dispatch._head_evidence_matches(
+                    dispatch.lifecycle.read_events(dispatch.EVENTS), 9, head,
+                ))
+                self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+                for prompt in self.prompts[-2:]:
+                    self.assertIn(f"worker={model}", prompt)
+                self.assertIn(f"worker={model}", (dispatch.FACTORY / "review-9.md").read_text())
+        self.assertEqual(len(self.events("claimed")), 3)
+        self.assertEqual(self.events("generation")[-1]["generation"], 1)
+
+    def test_missing_worker_provenance_escalates_before_reviewer_launch(self) -> None:
+        self.prepare()
+        self.cfg.workers[config.LABEL_CHORE] = ["implicit-worker", "{prompt}"]
+        dispatch.process_ticket(self.github.issue(), 30, False, forced=True)
+        self.reviewer.assert_not_called()
+        self.assertEqual(self.events("escalate")[-1]["code"], "missing_worker_provenance")
+        self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+        self.assertIn("worker_model", (dispatch.FACTORY / "review-9.md").read_text())
 
 
 if __name__ == "__main__":
