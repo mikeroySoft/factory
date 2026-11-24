@@ -614,6 +614,68 @@ class RoundGateBudgetTest(unittest.TestCase):
     def test_manager_fix_generic_gate_failure_precedes_fixup_budget(self):
         self.assert_gate_failure_precedes_fixup_budget("manager", "code")
 
+    def assert_runner_failure_precedes_fixup_budget(self, mode):
+        from factory import manage
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt = self.configure_round()
+            head = self.git("-C", str(wt), "rev-parse", "HEAD").stdout.strip()
+            logfile = dispatch.LOGS / "7-attempt-1.log"
+            original_run = dispatch.run
+
+            def crashed_runner(cmd, **kwargs):
+                if cmd[:6] == [sys.executable, "-P", "-E", "-m", "factory", "gate"]:
+                    return subprocess.CompletedProcess(cmd, 1, "", "runner crashed\n" * 6000 + "report-tail\n")
+                return original_run(cmd, **kwargs)
+
+            with mock.patch.object(dispatch, "run", side_effect=crashed_runner):
+                ok, detail = dispatch.run_gate(wt, 7)
+            self.assertFalse(ok)
+            self.assertTrue(detail.startswith("gate runner did not write "))
+            self.assertIn("(exit 1)", detail)
+            with mock.patch.object(dispatch.cfg, "fixups", [["must-not-run"]]):
+                ok, report, candidate = dispatch.retry_gate_fixups(wt, 7, detail, head, work_deadline=0)
+            self.assertTrue(report.startswith("budget exceeded"))
+            failure = (ok, report, logfile, candidate)
+            rounds = [(True, "PASS", logfile, head), failure] if mode == "bounce" else [failure] * dispatch.MAX_ATTEMPTS
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            packet = self.repo / ".factory" / "manager-packet.md"
+            packet.write_text("fix it")
+            with mock.patch.object(dispatch, "worker_round", side_effect=rounds), \
+                    mock.patch.object(dispatch.time, "monotonic", return_value=0), \
+                    mock.patch.object(dispatch, "push_and_pr", return_value=True) as publish, \
+                    mock.patch.object(dispatch, "push_agent") as push, \
+                    mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])), \
+                    mock.patch.object(dispatch, "pr_gate_and_review", return_value=("REVISE", "fix it", False)), \
+                    mock.patch.object(dispatch, "run", wraps=dispatch.run) as run:
+                if mode == "manager":
+                    manage.apply(7, issue, "FIX", "", {"worker": "default", "guidance": "fix"}, packet)
+                else:
+                    dispatch.process_ticket(issue, 1, False, forced=True)
+            push.assert_not_called()
+            self.assertEqual(publish.call_count, int(mode == "bounce"))
+            escalation, = [row for row in lifecycle.read_events(self.events) if row.get("event") == "escalate"]
+            self.assertEqual(escalation["code"], "gate_failed")
+            self.assertNotIn("budget_min / budget_exceeded", escalation["reason"])
+            comments = [
+                call.args[0][-1] for call in run.call_args_list
+                if call.args[0][:3] == ["gh", "issue", "comment"]
+            ]
+            self.assertEqual(len(comments), 1)
+            self.assertLess(len(comments[0]), 65536)
+            self.assertNotIn("budget_min / budget_exceeded", comments[0])
+            self.assertIn(detail, (wt / ".factory/gate-report-7.md").read_text())
+            self.assertIn("report-tail", (dispatch.FACTORY / "escalations/7.md").read_text())
+
+    def test_attempt_runner_failure_precedes_fixup_budget(self):
+        self.assert_runner_failure_precedes_fixup_budget("attempt")
+
+    def test_bounce_runner_failure_precedes_fixup_budget(self):
+        self.assert_runner_failure_precedes_fixup_budget("bounce")
+
+    def test_manager_fix_runner_failure_precedes_fixup_budget(self):
+        self.assert_runner_failure_precedes_fixup_budget("manager")
+
     def test_floor_rejects_invalid_config_values(self):
         path = self.repo / ".factory.toml"
         original = path.read_text()
