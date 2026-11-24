@@ -1293,6 +1293,81 @@ class WorkerModelProvenanceTest(unittest.TestCase):
         self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
         self.assertIn("worker_model", (dispatch.FACTORY / "review-9.md").read_text())
 
+    def test_configured_worker_identity_is_not_replaced_by_later_configuration(self) -> None:
+        self.prepare()
+        self.cfg.workers[config.LABEL_CHORE] = ["worker", "--model", "configured/model", "{prompt}"]
+        dispatch.process_ticket(self.github.issue(), 30, False, forced=True)
+        self.cfg.workers[config.LABEL_CHORE] = ["worker", "--model", "different/model"]
+        head = self.github.head()
+        verdict, findings, _ = dispatch.pr_gate_and_review(
+            dispatch.FACTORY / "wt-9", 9, "- mutation: PASS", head, {},
+        )
+        self.assertEqual(verdict, "APPROVE")
+        self.assertIn("worker=configured/model", findings)
+        self.assertNotIn("different/model", findings)
+
+    def test_missing_provenance_manager_fix_publishes_and_escalates(self) -> None:
+        self.prepare()
+        self.cfg.workers[config.LABEL_CHORE] = ["implicit-worker", "{prompt}"]
+        dispatch.ensure_worktree(9)
+        packet = self.tmp / "packet.md"
+        packet.write_text("Fix retained PR")
+        manage.apply(9, self.github.issue(), "FIX", "",
+                     {"worker": config.LABEL_CHORE, "guidance": "Fix it"}, packet)
+        self.reviewer.assert_not_called()
+        self.assertEqual(self.events("escalate")[-1]["code"], "missing_worker_provenance")
+        self.assertIn("worker_model", (dispatch.FACTORY / "review-9.md").read_text())
+
+    def test_missing_provenance_refresh_publishes_and_escalates(self) -> None:
+        self.prepare()
+        # First resolve the retained PR's conflict, then move main without conflict.
+        self.cfg.workers[config.LABEL_CHORE] = ["implicit-worker", "{prompt}"]
+        dispatch.process_ticket(self.github.issue(), 30, False, forced=True)
+        (self.origin / "later.txt").write_text("main moved\n")
+        refresh_suite.git(self.origin, "add", "later.txt")
+        refresh_suite.git(self.origin, "commit", "-qm", "move main")
+        self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+        self.reviewer.assert_not_called()
+        self.assertEqual(self.events("escalate")[-1]["code"], "missing_worker_provenance")
+        self.assertIn("worker_model", (dispatch.FACTORY / "review-9.md").read_text())
+
+    def test_missing_provenance_after_review_bounce_does_not_reuse_old_model(self) -> None:
+        self.prepare()
+
+        def revise_then_drop_model(*args, **kwargs):
+            result = self.review(*args, **kwargs)
+            result.update(verdict="REVISE", findings="VERDICT: REVISE",
+                          counts={"important": 1, "nit": 0, "pre-existing": 0})
+            if config.command_model(kwargs.get("reviewer") or self.cfg.reviewer) == "second/model":
+                self.cfg.workers[config.LABEL_CHORE] = ["implicit-worker", "{prompt}"]
+            return result
+
+        self.reviewer.side_effect = revise_then_drop_model
+        dispatch.process_ticket(self.github.issue(), 30, False, forced=True)
+        self.assertEqual(self.reviewer.call_count, 2)
+        self.assertEqual(len(self.events("attempt")), 2)
+        self.assertIsNone(self.events("attempt")[-1]["worker_model"])
+        self.assertEqual(self.events("escalate")[-1]["code"], "missing_worker_provenance")
+        self.assertIn("worker_model", (dispatch.FACTORY / "review-9.md").read_text())
+
+    def test_unknown_exact_attempt_cannot_borrow_another_heads_model(self) -> None:
+        self.prepare()
+        for model in (None, "", "unknown", " UNKNOWN "):
+            with self.subTest(model=model):
+                rows = high_events()
+                rows[1]["worker_model"] = model
+                rows.append({"event": "attempt", "ticket": 7, "head": NEW_HEAD,
+                             "worker_model": "other/model"})
+                self.assertFalse(dispatch._head_evidence_matches(rows, 7, HEAD))
+                with mock.patch.object(dispatch.lifecycle, "read_events", return_value=rows):
+                    self.assertIsNone(dispatch._worker_model_for_head(7, HEAD))
+        rows = high_events()
+        rows[1]["head"] = NEW_HEAD  # refresh keeps the original worker's identity
+        rows.append({"event": "refreshed", "ticket": 7, "gate_head": HEAD,
+                     "actual_head": HEAD, "gate": "PASS"})
+        rows.append({"event": "claimed", "ticket": 7})
+        self.assertTrue(dispatch._head_evidence_matches(rows, 7, HEAD))
+
 
 if __name__ == "__main__":
     unittest.main()

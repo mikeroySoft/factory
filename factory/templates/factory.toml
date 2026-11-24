@@ -39,6 +39,7 @@
 # Every profile must pin --model; doctor FAILs implicit models, including non-OMP.
 # default = ["omp", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "{cwd}", "@{prompt}"]
 # chore   = ["droid", "exec", "--model", "gpt-6-sol", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+# High-risk review requires explicit --model provenance from the launched worker attempt.
 # Other agents work the same way, e.g.
 # default = ["claude", "-p", "--model", "claude-opus-5-5", "--dangerously-skip-permissions", "{prompt}"]  # reads the path as text: use a wrapper
 # default = ["codex", "exec", "--model", "gpt-6.1-sol", "--full-auto", "-C", "{cwd}", "@{prompt}"]
