@@ -1,3 +1,4 @@
 run	arm	seconds	verdict	tests fail err load_before(1/5/15) / load_after	vm_cpu_before/after	ended
 control-1-try1	control	1596	clean	2272 0 0 1.46 1.84 2.22 / 3.58 2.86 2.55	30.96/25.36	08:39
 ram-try1	ram	1609	INVALID_outcome	2272 2 0 3.54 2.89 2.57 / 1.85 2.5 2.87	32.23/23.0	09:06
+ram-try2	ram	1575	INVALID_outcome	2272 2 0 1.98 2.49 2.86 / 3.22 2.85 2.73	26.96/24.0	09:33

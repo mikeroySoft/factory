@@ -1,0 +1,49 @@
+{
+  "arm": "ram",
+  "seconds": 1575.3013552500051,
+  "tests_run": 2272,
+  "failures": 2,
+  "errors": 0,
+  "skipped": 12,
+  "success": false,
+  "load_before": [
+    1.9833984375,
+    2.4853515625,
+    2.85595703125
+  ],
+  "load_after": [
+    3.22265625,
+    2.85107421875,
+    2.7265625
+  ],
+  "python": "3.12.13 (main, Mar  3 2026, 15:35:03) [Clang 21.1.4 ]",
+  "timestamp_before": 1795540014.47877,
+  "timestamp_after": 1795541589.9392252,
+  "hostname": "ultron",
+  "tmpdir": "/Volumes/RamDisk0735/",
+  "arm_detail": "TMPDIR=/Volumes/RamDisk0735/",
+  "failure_ids": [
+    "test_gate.GateOutputEncodingTest.test_leak_scan_finds_pattern_beside_non_utf8_filename",
+    "test_subprocess_encoding.DispatchOutputEncodingTest.test_activity_replaces_non_utf8_git_output"
+  ],
+  "error_ids": [],
+  "skipped_ids": [
+    "test_b1_build.SandboxTest.test_every_required_denial_holds_inside",
+    "test_b1_build.SandboxTest.test_stop_request_and_limit_mismatch",
+    "test_b1_build.SandboxTest.test_time_memory_and_file_limits_end_the_payload",
+    "test_codebase.HistoryExtractionTest.test_coverage_exclusion_is_not_a_file_deletion",
+    "test_codebase.HistoryExtractionTest.test_empty_manifests_remain_inventory_but_parse_errors_preserve_history",
+    "test_codebase.HistoryExtractionTest.test_git_object_snapshot_excludes_links_runtime_and_host_preprocessing",
+    "test_codebase.HistoryExtractionTest.test_real_history_tracks_edit_move_delete_cache_and_publication_boundary",
+    "test_runner_runtime.RunnerRuntimeTest.test_non_utf8_process_name_preserves_only_confirmed_live_review_users",
+    "test_workspace_trace_viewport.WorkspaceTraceMountedTest.test_cancelled_or_clickless_pan_does_not_swallow_a_later_click",
+    "test_workspace_trace_viewport.WorkspaceTraceMountedTest.test_mounted_zoom_and_fullscreen_redraw_wires",
+    "test_workspace_trace_viewport.WorkspaceTraceMountedTest.test_pinned_chains_survive_mouse_and_keyboard_viewport_controls",
+    "test_workspace_trace_viewport.WorkspaceTraceMountedTest.test_pinned_chains_survive_pan_but_background_click_and_escape_clear"
+  ],
+  "tracebacks": {
+    "test_gate.GateOutputEncodingTest.test_leak_scan_finds_pattern_beside_non_utf8_filename": "Traceback (most recent call last):\n  File \"/Users/mike/tmp/r3-0735/wt/tests/test_gate.py\", line 256, in test_leak_scan_finds_pattern_beside_non_utf8_filename\n    with self.assertRaises(OSError) as refused:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: OSError not raised\n",
+    "test_subprocess_encoding.DispatchOutputEncodingTest.test_activity_replaces_non_utf8_git_output": "Traceback (most recent call last):\n  File \"/Users/mike/tmp/r3-0735/wt/tests/test_subprocess_encoding.py\", line 69, in test_activity_replaces_non_utf8_git_output\n    with self.assertRaises(OSError) as refused:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: OSError not raised\n"
+  },
+  "harness_rc": 1
+}

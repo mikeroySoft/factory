@@ -1,0 +1,18 @@
+2026-11-24T09:33:09-0800
+vm.loadavg: { 3.22 2.85 2.73 }
+ 9:33  up 6 days, 24 mins, 5 users, load averages: 3.22 2.85 2.73
+vm_cpu_mean3=24.00
+--- benito/factory processes
+  533     1 06-00:23:20   0.0 /Users/mike/dev/mikeroysoft/benito-app/.derivedData/BenitoServer/Build/Products/Debug/Benito Server.app/Contents/MacOS/Benito Server
+ 1096     1 06-00:23:04   0.0 /Users/mike/Library/Application Support/Benito/bin/benito-server
+ 1108     1 06-00:23:04   0.0 /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m http.server 8091 --bind 0.0.0.0 --directory /Users/mike/dev/mi
+ 1674  1096 06-00:22:48   0.0 /usr/bin/dns-sd -R Benito _benito._tcp local 8082 version=0.1.0
+--- top cpu
+  PID  %CPU COMMAND
+42612  24.6 /Applications/VMware Fusion.app/Contents/Library/vmware-vmx -E en -s vmx.stdio.keep=TRUE -# product=64;name=VMware Fusion;version=13.6.3;buildnumber
+  393   9.2 /Library/Application Support/Audinate/ConMon.bundle/Contents/MacOS/conmon_cmm -ms -bd -ml -w -cmcp=connected -ll=warning -lf=/Library/Logs/Audinate/
+ 1120   6.8 /Library/Application Support/Universal Audio/Apollo/UA Mixer Engine.app/Contents/MacOS/UA Mixer Engine -silent
+ 1372   5.7 /usr/bin/powermetrics -i 2000 --samplers cpu_power gpu_power -a --hide-cpu-duty-cycle
+ 1125   4.2 /Users/mike/Library/Application Support/iStat Menus 7/iStat Menus Menubar.app/Contents/MacOS/iStat Menus Menubar
+ 1055   4.0 /Applications/Grok Bot.app/Contents/Frameworks/Grok Bot Helper.app/Contents/MacOS/Grok Bot Helper --type=utility --utility-sub-type=node.mojom.NodeS
+ 1136   2.2 /Applications/Plex Media Server.app/Contents/MacOS/Plex Media Server
