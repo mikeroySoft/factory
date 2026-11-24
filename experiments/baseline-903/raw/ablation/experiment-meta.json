@@ -1,0 +1,11 @@
+{
+  "experiment": "903-ablation",
+  "sequence": ["control-1", "ram", "control-2", "git-cache", "control-3", "scratch-throttle", "control-4"],
+  "source_sha": "408ff2a751f776d215253bad9674a3624d9c0b37",
+  "matched_gap_source": "69b50b7de964e09ab429cb68b067299ad06c3cec",
+  "config_hash_expected": "e071ebe909c9b2c1fea62bad01545406307952ae664416029dea9361444f026b",
+  "uvlock_hash_expected": "ac6661ba52ea87d7bf27c9b8d2c5c167eb7c4f73573b35b402d6e367775a7651",
+  "python": "factory-installed",
+  "host": "ultron",
+  "method": "single-factor ablation, A/B/A bracketed controls"
+}
