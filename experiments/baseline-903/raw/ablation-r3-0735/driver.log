@@ -1,0 +1,27 @@
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 23: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/gen: No such file or directory
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 23: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/gen: No such file or directory
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 23: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/gen: No such file or directory
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 23: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/gen: No such file or directory
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 34: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/8bf3ce2184210232f6e540456d3f1013.out.20640: No such file or directory
+mv: rename /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/8bf3ce2184210232f6e540456d3f1013.out.20640 to /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/8bf3ce2184210232f6e540456d3f1013.out: No such file or directory
+mv: rename /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/8bf3ce2184210232f6e540456d3f1013.err.20640 to /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/8bf3ce2184210232f6e540456d3f1013.err: No such file or directory
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 39: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/8bf3ce2184210232f6e540456d3f1013.rc: No such file or directory
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 23: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/gen: No such file or directory
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 23: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/gen: No such file or directory
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 34: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/fad26210bea1ec3fc11cd2e219ead256.out.20654: No such file or directory
+mv: rename /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/fad26210bea1ec3fc11cd2e219ead256.out.20654 to /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/fad26210bea1ec3fc11cd2e219ead256.out: No such file or directory
+mv: rename /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/fad26210bea1ec3fc11cd2e219ead256.err.20654 to /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/fad26210bea1ec3fc11cd2e219ead256.err: No such file or directory
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 39: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/fad26210bea1ec3fc11cd2e219ead256.rc: No such file or directory
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 34: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/1d3dde023a707779f4a6f19e9d06f67b.out.20661: No such file or directory
+mv: rename /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/1d3dde023a707779f4a6f19e9d06f67b.out.20661 to /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/1d3dde023a707779f4a6f19e9d06f67b.out: No such file or directory
+mv: rename /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/1d3dde023a707779f4a6f19e9d06f67b.err.20661 to /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/1d3dde023a707779f4a6f19e9d06f67b.err: No such file or directory
+/Users/mike/tmp/r3-0735/harness/gitbin/git: line 39: /Users/mike/tmp/r3-0735/scratch-gitcheck/cache/1d3dde023a707779f4a6f19e9d06f67b.rc: No such file or directory
+2026-11-24T07:35:14-0800 NOT fast-forward: origin  not ancestor of ; not pushed
+2026-11-24T07:35:14-0800 driver start pid 20628; budget 18000s
+2026-11-24T07:35:14-0800 start control-1 (control)
+2026-11-24T08:02:08-0800 end control-1 rc=1 wall=1614s
+To https://github.com/mikeroySoft/factory.git
+   4c1c734d..ef400e0d  ef400e0d132a5f267d763a6510e09b691c86533b -> agent/903
+2026-11-24T08:02:10-0800 pushed ef400e0d132a5f267d763a6510e09b691c86533b (control-1-try1)
+2026-11-24T08:02:11-0800 factory resumed (pause file removed)
+2026-11-24T08:02:11-0800 final config sha e071ebe909c9b2c1fea62bad01545406307952ae664416029dea9361444f026b (expect e071ebe909c9b2c1fea62bad01545406307952ae664416029dea9361444f026b) uv.lock ac6661ba52ea87d7bf27c9b8d2c5c167eb7c4f73573b35b402d6e367775a7651 (expect ac6661ba52ea87d7bf27c9b8d2c5c167eb7c4f73573b35b402d6e367775a7651)

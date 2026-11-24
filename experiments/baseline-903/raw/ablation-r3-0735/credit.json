@@ -1,0 +1,20 @@
+{
+  "seconds": {},
+  "spread": 0.0,
+  "arms": {
+    "ram": {
+      "measured": false,
+      "credited": 0.0
+    },
+    "git-cache": {
+      "measured": false,
+      "credited": 0.0
+    },
+    "scratch-throttle": {
+      "measured": false,
+      "credited": 0.0
+    }
+  },
+  "total_credited": 0.0,
+  "verdict": "INCONCLUSIVE"
+}
