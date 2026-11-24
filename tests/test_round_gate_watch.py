@@ -71,6 +71,13 @@ class ActiveWorkerGateWatchTest(unittest.TestCase):
                     lambda worker, event=event: [self.row(worker, event=event)]
                 )
 
+    def test_non_lifecycle_row_does_not_hide_a_later_live_gate(self):
+        fired, waits = self.watch_at_budget(
+            lambda worker: [{"event": "round-budget", "ticket": 7}, self.row(worker)]
+        )
+        self.assertIsNone(fired)
+        self.assertEqual(waits, 2)
+
     def test_only_enter_events_extend_nested_gate_ancestry(self):
         def rows(worker, kind):
             return [
@@ -91,6 +98,7 @@ class ActiveWorkerGateWatchTest(unittest.TestCase):
         self.assertIsNone(fired)
         self.assertEqual(waits, 2)
         self.assert_budget_not_deferred(lambda worker: rows(worker, "exit"))
+        self.assert_budget_not_deferred(lambda worker: rows(worker, "child_start"))
 
     def test_non_gate_stage_cannot_defer_the_budget_timeout(self):
         self.assert_budget_not_deferred(

@@ -714,6 +714,13 @@ class RoundGateBudgetTest(unittest.TestCase):
         self.assertFalse(row["admitted"])
         self.assertEqual(row["remaining_seconds"], 50)
         self.assertEqual(row["work_seconds"], 0)
+        self.assertEqual(row["gate_reserve_seconds"], 30)
+        timeout, = [r for r in lifecycle.read_events(self.events)
+                    if r.get("event") == "lifecycle" and r.get("stage") == "worker" and r.get("kind") == "timeout"]
+        self.assertEqual(timeout["timeout"], "budget_min")
+        terminal, = [r for r in lifecycle.read_events(self.events)
+                     if r.get("event") == "lifecycle" and r.get("stage") == "worker" and r.get("kind") == "exit"]
+        self.assertEqual((terminal["outcome"], terminal["reason"]), ("interrupted", "budget_exceeded"))
 
     def test_round_journals_positive_remaining_wall_time(self):
         with chdir(self.repo), mock.patch.dict(os.environ, self.env):
@@ -745,7 +752,7 @@ class RoundGateBudgetTest(unittest.TestCase):
         with chdir(self.repo), mock.patch.dict(os.environ, self.env):
             wt = self.configure_round()
             with mock.patch.object(dispatch.time, "monotonic", return_value=0), \
-                    mock.patch.object(dispatch, "run_worker", return_value=(143, "idle_timeout")), \
+                    mock.patch.object(dispatch, "run_worker", return_value=(143, json.loads('"idle_timeout"'))), \
                     mock.patch.object(dispatch, "run_gate") as gate:
                 ok, report, _, _ = dispatch.worker_round(7, wt, set(), "fix", "", 1, 100)
             self.assertFalse(ok)
@@ -787,6 +794,7 @@ class RoundGateBudgetTest(unittest.TestCase):
                     timing(100, stage="review")
                     timing(100, inputs=[{"kind": "gate_log", "ref": report + "-pr"}])
                     timing(100, inputs=[{"kind": "worker_log", "ref": report}])
+                    timing(100, inputs=[{"kind": "diff", "ref": report}])
                     for invalid in (-0.5, True, "20", None):
                         timing(invalid)
                     self.assertEqual(dispatch.round_gate_reserve(wt, ticket), (seconds, "last_gate"))
@@ -881,6 +889,7 @@ class RoundGateBudgetTest(unittest.TestCase):
             self.configure_round()
             for code, extra, visible in (
                 (json.loads('"protected_paths"'), "Human-only clearing guidance\n\ndiff detail", True),
+                ("worker_stuck", "packet detail\n\nprivate diff", False),
                 ("gate_failed", "packet detail\n\nprivate diff", False),
             ):
                 with self.subTest(code=code), mock.patch.object(dispatch, "run", wraps=dispatch.run) as run:

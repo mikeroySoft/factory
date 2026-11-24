@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import unittest
 from contextlib import chdir
 from unittest import mock
@@ -44,7 +45,7 @@ class RoundGateFixupsTest(unittest.TestCase):
                             mock.patch.object(dispatch, "commit_leftovers") as commit, \
                             mock.patch.object(dispatch, "run_gate", return_value=(True, "PASS")) as gate:
                         ok, report, candidate = dispatch.retry_gate_fixups(
-                            wt, 7, self.REPORT, head, work_deadline=10.0,
+                            wt=wt, n=7, report=self.REPORT, head=head, work_deadline=10.0,
                         )
 
                     self.assertFalse(ok)
@@ -103,6 +104,26 @@ class RoundGateFixupsTest(unittest.TestCase):
 
     def test_last_fixup_finishing_after_cutoff_is_not_committed_or_regated(self):
         self.exercise_successful_fixup_cutoff([["repair"]], ended_at=11.0)
+
+    def test_nonzero_repair_retains_both_output_streams_without_raising(self):
+        command = [sys.executable, "-c",
+                   "import sys; print('repair stdout'); print('repair stderr', file=sys.stderr); raise SystemExit(2)"]
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+            wt, head = self.configure_round()
+            with mock.patch.object(dispatch.cfg, "fixups", [command]), \
+                    mock.patch.object(dispatch.time, "monotonic", return_value=5), \
+                    mock.patch.object(dispatch, "commit_leftovers") as commit, \
+                    mock.patch.object(dispatch, "run_gate") as gate:
+                ok, report, candidate = dispatch.retry_gate_fixups(wt, 7, self.REPORT, head, work_deadline=10)
+            self.assertFalse(ok)
+            self.assertEqual(candidate, head)
+            self.assertIn(self.REPORT, report)
+            self.assertIn("repair stdout", report)
+            self.assertIn("repair stderr", report)
+            self.assertIn("exit 2", report)
+            self.assertEqual(self.budget_events(), [])
+            commit.assert_not_called()
+            gate.assert_not_called()
 
     def exercise_exception(self, exception, moment):
         clock = [5.0]
