@@ -1304,7 +1304,7 @@ def execute(args: argparse.Namespace, execution) -> int:
             entry = next((i for i in range(2, len(cmd)) if cmd[i] not in {
                 "--frozen", "--no-managed-python", "--no-project", "--offline",
             }), entry)
-        if not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(cmd[entry]).name):
+        if cmd[entry].startswith("-") or not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(cmd[entry]).name):
             return cmd
         for index in range(entry + 1, len(cmd)):
             if cmd[index:index + 2] == ["-m", "unittest"]:
