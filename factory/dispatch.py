@@ -869,6 +869,19 @@ def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
     return None
 
 
+def publish_claim_release(
+    n: int, claim: dict, *, context: str | None, preserve: bool, takeover: bool,
+) -> None:
+    """Make preservation durable before a requeue can open cross-host admission."""
+    if preserve and not claim.get("released"):
+        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
+                 "-f", f"body=Factory claim released: nonce={claim['nonce']}"])
+    if context is not None:
+        retained = "Factory claim history: retained\n" if takeover else ""
+        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
+                 "-f", f"body=Factory requeue: nonce={claim['nonce']}\n{retained}{context}"])
+
+
 def unclaim(
     n: int, *label_args: str, check: bool = False, assignee_last: bool = False,
 ) -> None:
@@ -877,14 +890,15 @@ def unclaim(
     owned = owned_host_claim(n, claims)
     local = _HOST_CLAIMS.get(n)
     preserve_claims = bool(local and local.preserve_history) or bool(owned and owned.get("preserve_history"))
-    if cfg.host_name and any(
-        flag == "--add-label" and label == LABEL_AGENT
-        for flag, label in zip(label_args[::2], label_args[1::2])
-    ) and (elected := elected_host_claim(claims)):
-        context = refresh_requeue_context(n)
-        retained = "Factory claim history: retained\n" if preserve_claims else ""
-        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{retained}{context}"])
+    if elected := elected_host_claim(claims):
+        requeue = any(
+            flag == "--add-label" and label == LABEL_AGENT
+            for flag, label in zip(label_args[::2], label_args[1::2])
+        )
+        publish_claim_release(
+            n, elected, context=refresh_requeue_context(n) if requeue else None,
+            preserve=preserve_claims, takeover=preserve_claims,
+        )
     if owned is not None:
         if not preserve_claims:
             fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,assignees"])
@@ -942,14 +956,12 @@ def release_expired_claim(
         if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
             raise ValueError("ticket has a human assignee")
         takeover = reason == "land-host takeover"
-        if "requeue" not in elected or (takeover and not elected.get("preserve_history")):
-            retained = "Factory claim history: retained\n" if takeover else ""
-            gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                     "-f", (f"body=Factory requeue: nonce={elected['nonce']}\n"
-                            f"{retained}{context}")])
-        if not takeover and not elected.get("released"):
-            gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                     "-f", f"body=Factory claim released: nonce={elected['nonce']}"])
+        publish_claim_release(
+            n, elected, preserve=True, takeover=takeover,
+            context=context if "requeue" not in elected or (
+                takeover and not elected.get("preserve_history")
+            ) else None,
+        )
         run(["gh", "issue", "edit", str(n), "--repo", REPO,
              "--remove-label", f"host:{elected['host']}"])
         record("claim-released", ticket=n, host=elected["host"], nonce=elected["nonce"],

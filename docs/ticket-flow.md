@@ -226,9 +226,13 @@ and generation budgets, including upstream-sync routing. It refuses live claims
 and does not delete comments or grant approval. Releasing a held ticket does not
 authorize its requeue. Refresh still requires re-gating and re-review at the new
 head before re-approval and landing.
-Ordinary releases also publish an authenticated `Factory claim released: nonce=…`
-receipt. Unlike a requeue alone, it preserves that nonce's comment during cleanup
-on every host, without a takeover-retention marker or retention of future workers.
+Explicit releases also publish an authenticated `Factory claim released: nonce=…`
+receipt. The shared release publisher writes it before any requeue comment or
+label edit that enables another host's admission. Retained takeover requeues use
+the same ordering, including conflicting refresh and worker recovery. Receipt
+failure leaves the open-PR hold intact. Cleanup on any host preserves that nonce's
+comment; ordinary ephemeral worker claims still clean up normally. Dashboard
+release of a retained takeover never renews it or publishes a new retained marker.
 
 ### Label transition index
 

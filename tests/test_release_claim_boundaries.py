@@ -95,7 +95,8 @@ class ReleaseClaimBoundaryTest(unittest.TestCase):
         self.assertEqual(self.github.issue, expected)
         self.assertEqual(self.github.comments[0], self.claim)
         self.assertEqual(
-            self.github.comments[1]["body"],
+            next(row["body"] for row in self.github.comments
+                 if row["body"].startswith("Factory requeue:")),
             f"Factory requeue: nonce={self.nonce}\n",
         )
         self.assertFalse(any("DELETE" in command for _, command in self.github.calls))

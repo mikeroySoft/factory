@@ -8,7 +8,6 @@ from unittest import mock
 from tests import test_land_claim_takeover as takeover_fixture
 from tests import test_land_host as land_fixture
 
-
 git = land_fixture.git
 
 

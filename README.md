@@ -1684,7 +1684,10 @@ first; once CI is green, foreign-only approval evidence still requires a fresh l
 gate and independent review. Ordinary owned claims keep their normal release behavior,
 including workers admitted after a dashboard claim release. Retaining an old release
 record does not retain later ordinary claims. Takeover history survives conflict
-requeue and subsequent worker recovery.
+requeue and subsequent worker recovery. Explicit releases and retained-claim requeues
+share one publisher: the authenticated preservation receipt is durable before the
+requeue comment opens another host's admission. A failed receipt write leaves that
+hold intact. Ordinary ephemeral worker claims still follow normal deletion cleanup.
 
 Before any GitHub mutation, dispatch reads `gh api rate_limit` and requires at
 least **100 remaining** in both GraphQL and REST (`core`). Below either floor,
@@ -3302,7 +3305,8 @@ Releasing a claim is not a ticket requeue: upstream-sync routing and human
 escalation holds remain intact. A held ticket still needs the separate authorized
 `requeue_agent` action to open a new generation. Before publishing a release
 marker, the dispatcher rechecks the elected nonce, heartbeat, and ticket's
-open state and shared assignment.
+open state and shared assignment. It publishes the preservation receipt before
+the matching requeue marker, including when releasing a retained takeover claim.
 
 Preconditions run against the exact target the proposal binds to, so `apply`'s
 stale-target check guarantees they still held when the effect ran. Refusals are
