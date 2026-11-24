@@ -580,10 +580,10 @@ def host_claim_login() -> str:
     return gh_json(["api", "user"])["login"].casefold()
 
 
-def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
-    """Require lifecycle interruption proof, including any launched descendants."""
+def host_claim_owner(n: int, claim: dict, rows: list[dict]) -> dict | None:
+    """Resolve nonce-bound or conservatively corroborated legacy ownership."""
     if claim["host"] != cfg.host_name:
-        return False
+        return None
     lock_path = str(ticket_lock(n).resolve())
     owner = next((row for row in reversed(rows)
                   if row.get("event") == "host-claim-started" and row.get("ticket") == n
@@ -611,8 +611,12 @@ def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
         owners = {row.get("execution_id"): row for at, row in acquisitions
                   if preceding is None or at >= preceding}
         if len(owners) != 1:
-            return False  # Ambiguous ownership cannot justify removing a lease.
+            return None  # Ambiguous ownership cannot justify removing a lease.
         owner = next(iter(owners.values()))
+        if any(row.get("event") == "host-claim-started"
+               and row.get("execution_id") == owner.get("execution_id")
+               and row.get("nonce") != claim["nonce"] for row in rows):
+            return None  # A known nonce cannot own a different unjournaled claim.
         # Closed lifecycle rows expire; durable claim receipts do not. A later
         # different owner makes this surviving acquisition insufficient proof.
         acquired = datetime.fromisoformat(owner["at"]).replace(microsecond=0)
@@ -625,7 +629,13 @@ def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
                     continue
             except (KeyError, TypeError, ValueError):
                 pass
-            return False
+            return None
+    return owner
+
+
+def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
+    """Require lifecycle interruption proof, including any launched descendants."""
+    owner = host_claim_owner(n, claim, rows)
     if owner is None or not owner.get("execution_id"):
         return False
     events = [row for row in rows if lifecycle._lifecycle(row)]
@@ -658,6 +668,7 @@ def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
         descendants["launched"] = True
     # host_claim_hold checks the ticket lock separately, including admission's own
     # newly acquired lock. Other recorded locks still require lifecycle evidence.
+    lock_path = str(ticket_lock(n).resolve())
     related[-1] = {**related[-1], "locks": [
         lock for lock in owned[-1]["locks"] if lock["path"] != lock_path
     ]}
@@ -751,7 +762,16 @@ def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
                     if row.get("ticket") == n and row.get("event") == "claimed"
                     and row.get("claim_nonce") in (None, elected["nonce"])), None)
     if attempt is None or not (execution := attempt.get("execution_id")):
+        # Reboot recovery already excludes proven interrupted owners. A missing
+        # claimed receipt must not discard a retained completed/unknown owner.
+        if host_claim_owner(n, elected, events) is not None:
+            return None
         return elected
+    if attempt.get("claim_nonce") is None and not any(
+        row.get("event") == "lifecycle" and row.get("execution_id") == execution
+        for row in events
+    ):
+        return None  # Retention may prune completion but preserve its legacy receipt.
     for row in events:
         if row.get("execution_id") != execution:
             continue
