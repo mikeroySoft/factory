@@ -1913,7 +1913,7 @@ def _active_worker_gate() -> bool:
             gates[row["execution_id"]] = row
         elif row.get("kind") == "exit":
             gates.pop(row["execution_id"], None)
-    return any(lifecycle._process_state(row.get("process")) == "alive" for row in gates.values())
+    return "alive" in (lifecycle._process_state(row.get("process")) for row in gates.values())
 
 
 def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadline: float,
