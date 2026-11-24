@@ -259,6 +259,58 @@ class RoundGateBudgetTest(unittest.TestCase):
         self.assertIn("prior gate failed", (dispatch.FACTORY / "escalations/7.md").read_text())
         self.assertFalse(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout)
 
+    def assert_pr_failure_survives_bounce_budget(self, cutoff):
+        self.write_config(extra=(
+            '[[gate.check]]\nname = "pr-code"\nwhen = "pr"\nrun = '
+            + json.dumps([sys.executable, "-c", "print('retained PR failure'); raise SystemExit(1)"])
+            + "\n"
+        ))
+        fixtures.LocalCLI.commit_config(self)
+        clock = [0]
+        original_gate = dispatch.run_gate
+
+        def gate(*args, **kwargs):
+            result = original_gate(*args, **kwargs)
+            if kwargs.get("tier") == "pr":
+                clock[0] = cutoff
+            return result
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(dispatch, "run_gate", side_effect=gate) as check, \
+                mock.patch.object(dispatch, "run_worker", wraps=dispatch.run_worker) as worker, \
+                mock.patch.object(dispatch, "push_agent", wraps=dispatch.push_agent) as push, \
+                mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])):
+            dispatch.configure(config.load(self.repo))
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            dispatch.process_ticket(issue, 1, False, forced=True)
+        worker.assert_called_once()
+        self.assertEqual(check.call_count, 2)
+        push.assert_called_once()  # only the attempt-validated head, before the PR failure
+        rows = lifecycle.read_events(self.events)
+        self.assertEqual(
+            [r["admitted"] for r in rows if r.get("event") == "round-budget"],
+            [True, False] if cutoff < 60 else [True],
+        )
+        escalation, = [r for r in rows if r.get("event") == "escalate"]
+        self.assertEqual(escalation["code"], "pr_checks_failed")
+        self.assertEqual(escalation["reason"], "pr checks failed")
+        packet = (dispatch.FACTORY / "escalations/7.md").read_text()
+        self.assertIn("## PR-tier gate report", packet)
+        self.assertIn("- pr-code: FAIL", packet)
+        self.assertIn("retained PR failure", packet)
+        self.assertNotIn("budget_min / budget_exceeded", packet)
+        self.assertFalse(any(r.get("event") in {"review", "approved"} for r in rows))
+        attempt, = [r for r in rows if r.get("event") == "attempt" and r.get("gate") == "PASS"]
+        remote = self.git("ls-remote", "origin", "refs/heads/agent/7").stdout.split()[0]
+        self.assertEqual(remote, attempt["head"])
+
+    def test_pr_gate_failure_precedes_bounce_admission_refusal(self):
+        self.assert_pr_failure_survives_bounce_budget(50)
+
+    def test_pr_gate_failure_precedes_expired_bounce_budget(self):
+        self.assert_pr_failure_survives_bounce_budget(61)
+
     def test_active_gate_extension_has_a_hard_cap(self):
         with chdir(self.repo), mock.patch.dict(os.environ, self.env):
             wt = self.configure_round()
