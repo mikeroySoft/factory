@@ -5434,11 +5434,14 @@ def worker_round(
             log=str(logfile), transcript=transcript, head=head, handoff=handoff,
             **identity, **timeout,
         )
-        report = (
-            f"worker stuck: idle_timeout fired ({cfg.idle_timeout:g} min without worker "
-            "log output or worktree change); worker killed before the gate"
-            if fired == "idle_timeout" else "worker gate exceeded its hard cap"
-        )
+        match fired:
+            case "idle_timeout":
+                report = (
+                    f"worker stuck: idle_timeout fired ({cfg.idle_timeout:g} min without worker "
+                    "log output or worktree change); worker killed before the gate"
+                )
+            case "gate_timeout":
+                report = "worker gate exceeded its hard cap"
         return False, report, logfile, head
     if time.monotonic() > deadline and not finished:
         record(
