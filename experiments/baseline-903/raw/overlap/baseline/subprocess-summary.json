@@ -1,0 +1,97 @@
+{
+  "env": {
+    "count": 28,
+    "launch_seconds": 0.10882157884771004,
+    "inclusive_lifetime_seconds": 12.726761163852643
+  },
+  "failed-runner": {
+    "count": 2,
+    "launch_seconds": 0.005009250016883016,
+    "inclusive_lifetime_seconds": 0.12947891699150205
+  },
+  "gh": {
+    "count": 432,
+    "launch_seconds": 1.420565482287202,
+    "inclusive_lifetime_seconds": 16.3518622223055
+  },
+  "git": {
+    "count": 21944,
+    "launch_seconds": 73.55191257991828,
+    "inclusive_lifetime_seconds": 445.65257174969884
+  },
+  "journalctl": {
+    "count": 1,
+    "launch_seconds": 0.0028372500091791153,
+    "inclusive_lifetime_seconds": 0.11240575002739206
+  },
+  "lsof": {
+    "count": 514,
+    "launch_seconds": 1.8407876213314012,
+    "inclusive_lifetime_seconds": 76.50429118634202
+  },
+  "node": {
+    "count": 25,
+    "launch_seconds": 0.10213162400759757,
+    "inclusive_lifetime_seconds": 0.8684625431196764
+  },
+  "omp": {
+    "count": 4,
+    "launch_seconds": 0.014279416005592793,
+    "inclusive_lifetime_seconds": 0.3285544569953345
+  },
+  "printf": {
+    "count": 3,
+    "launch_seconds": 0.011523708933964372,
+    "inclusive_lifetime_seconds": 0.019783709023613483
+  },
+  "ps": {
+    "count": 551,
+    "launch_seconds": 2.04851750517264,
+    "inclusive_lifetime_seconds": 26.831172623089515
+  },
+  "python": {
+    "count": 1362,
+    "launch_seconds": 4.317867502919398,
+    "inclusive_lifetime_seconds": 1226.3703453090275
+  },
+  "reviewer": {
+    "count": 3,
+    "launch_seconds": 0.008545958960894495,
+    "inclusive_lifetime_seconds": 0.18594441696768627
+  },
+  "sh": {
+    "count": 4,
+    "launch_seconds": 0.01356941694393754,
+    "inclusive_lifetime_seconds": 0.05062712403014302
+  },
+  "shell": {
+    "count": 1,
+    "launch_seconds": 0.0025754579692147672,
+    "inclusive_lifetime_seconds": 0.03422416700050235
+  },
+  "sysctl": {
+    "count": 1,
+    "launch_seconds": 0.0031350839999504387,
+    "inclusive_lifetime_seconds": 0.004730416985694319
+  },
+  "systemctl": {
+    "count": 2,
+    "launch_seconds": 0.007347207982093096,
+    "inclusive_lifetime_seconds": 0.2630215829703957
+  },
+  "tar": {
+    "count": 125,
+    "launch_seconds": 0.4449559672502801,
+    "inclusive_lifetime_seconds": 0.8555854251026176
+  },
+  "true": {
+    "count": 1,
+    "launch_seconds": 0.0035893750027753413,
+    "inclusive_lifetime_seconds": 0.011175833002198488
+  },
+  "uv": {
+    "count": 11,
+    "launch_seconds": 0.04085379408206791,
+    "inclusive_lifetime_seconds": 3.694941085006576
+  }
+}

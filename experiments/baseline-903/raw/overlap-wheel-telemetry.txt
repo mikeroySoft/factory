@@ -1,0 +1,86 @@
+Tue Nov 24 03:44:54 UTC 2026
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                  1287921.
+Pages active:                                3252604.
+Pages inactive:                              3389726.
+Pages speculative:                             26025.
+Pages throttled:                                   0.
+Pages wired down:                             242305.
+Pages purgeable:                              106757.
+"Translation faults":                    46426462792.
+Pages copy-on-write:                      6946102116.
+Pages zero filled:                       11352761411.
+Pages reactivated:                           2910566.
+Pages purged:                                1738135.
+File-backed pages:                           1435022.
+Anonymous pages:                             5233333.
+Pages stored in compressor:                   230427.
+Pages occupied by compressor:                 135864.
+Decompressions:                              1130252.
+Compressions:                                3788682.
+Pageins:                                   301140582.
+Pageouts:                                         19.
+Swapins:                                           0.
+Swapouts:                                          0.
+vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)
+              disk0              disk10              disk12       cpu    load average
+    KB/t  tps  MB/s     KB/t  tps  MB/s     KB/t  tps  MB/s  us sy id   1m   5m   15m
+    8.61  407  3.42     5.60    0  0.00     6.58    0  0.00   7  9 84  2.01 2.63 3.03
+    7.42  263  1.90     0.00    0  0.00     0.00    0  0.00   5  5 90  2.20 2.58 2.98
+    7.14  233  1.62     0.00    0  0.00     0.00    0  0.00   5  5 90  1.79 2.39 2.88
+    6.33  268  1.66     0.00    0  0.00     0.00    0  0.00   6  6 89  2.10 2.36 2.83
+    8.78  525  4.50     0.00    0  0.00     0.00    0  0.00   7  8 85  3.04 2.58 2.88
+   14.80  413  5.98     0.00    0  0.00     0.00    0  0.00   7  6 87  2.85 2.60 2.86
+    7.39  306  2.21     0.00    0  0.00     0.00    0  0.00   6  7 87  3.13 2.68 2.87
+    5.94  373  2.16     0.00    0  0.00     0.00    0  0.00   7  8 85  3.63 2.89 2.93
+    7.14  379  2.64     0.00    0  0.00     0.00    0  0.00   7  8 85  3.28 2.96 2.96
+    6.85  460  3.07     0.00    0  0.00     0.00    0  0.00   7  8 84  3.54 3.06 2.99
+   10.44  367  3.74     0.00    0  0.00     0.00    0  0.00   6  6 88  2.71 2.91 2.94
+   40.10  105  4.10     0.00    0  0.00     0.00    0  0.00   4  4 92  2.07 2.71 2.86
+Tue Nov 24 03:55:55 UTC 2026
+The system has 137438953472 (8388608 pages with a page size of 16384).
+System-wide memory free percentage: 95%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                  1270436.
+Pages active:                                3268431.
+Pages inactive:                              3398344.
+Pages speculative:                             26448.
+Pages throttled:                                   0.
+Pages wired down:                             234926.
+Pages purgeable:                              106784.
+"Translation faults":                    46482904822.
+Pages copy-on-write:                      6954780155.
+Pages zero filled:                       11365870629.
+Pages reactivated:                           2911453.
+Pages purged:                                1741556.
+File-backed pages:                           1444777.
+Anonymous pages:                             5248446.
+Pages stored in compressor:                   230409.
+Pages occupied by compressor:                 135860.
+Decompressions:                              1130256.
+Compressions:                                3788682.
+Pageins:                                   301429046.
+Pageouts:                                         19.
+Swapins:                                           0.
+Swapouts:                                          0.
+vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)
+=== pass Mon Nov 23 19:16:37 PST 2026
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+=== end rc=0 Mon Nov 23 19:16:52 PST 2026
+=== pass Mon Nov 23 19:26:52 PST 2026
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+=== end rc=0 Mon Nov 23 19:27:06 PST 2026
+=== pass Mon Nov 23 19:37:06 PST 2026
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+=== end rc=0 Mon Nov 23 19:37:20 PST 2026
+=== pass Mon Nov 23 19:47:20 PST 2026
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+=== end rc=0 Mon Nov 23 19:47:34 PST 2026

@@ -22,6 +22,7 @@ def main():
                          UV_CACHE_DIR='/Users/mike/.cache/uv',
                          UV_PYTHON='/Users/mike/.local/share/uv/tools/factory/bin/python'))
     envs[1]['UV_PROJECT_ENVIRONMENT'] = str(gate_tree / '.venv')
+    envs[1]['UV_NO_EDITABLE'] = '1'
     started = time.monotonic()
     with (output / 'baseline.log').open('w') as log:
         child = subprocess.Popen([python, '-I', '-B', str(script), str(baseline), packages,
