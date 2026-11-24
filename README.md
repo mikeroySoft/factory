@@ -1177,6 +1177,19 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    runs only pr checks (release ones SKIP) and `--tier release` only release
    checks, with no built-ins. This attempt gate is what the worker and the
    dispatcher run after each attempt, and what the merge-stage refresh re-runs.
+   Attempt-tier reports record the starting `Head SHA` and retain a `## <check>
+   test evidence` section for passing unittest checks: the `Ran N tests` summary
+   and skipped-test identities with reasons, without the failure-output tail
+   limit. Direct Python and `uv run` Python invocations with only the recognized uv
+   flags (`--frozen`, `--no-managed-python`, `--no-project`, `--offline`) use an
+   injected unittest result class. Its `addSkip` callback records each test identity
+   and reason; `stopTestRun` records `testsRun` in a gate-created temporary JSON file
+   passed through `FACTORY_UNITTEST_RESULT`. The report reads this file, never
+   stdout diagnostics or progress text. Other commands (including coverage, pytest,
+   and uv commands with value-taking or unknown options) are left unchanged.
+   PR creation preserves bodies up to 60,000 characters; larger
+   bodies carry that prefix and a truncation notice. The full gate report remains
+   in the worktree.
    Repositories may opt into mechanical repairs with `[gate].fixups`, an array of
    argv arrays (for example `fixups = [["cargo", "xtask", "manifest"]]`). Factory
    never infers commands. Before escalating the last failed worker gate (including

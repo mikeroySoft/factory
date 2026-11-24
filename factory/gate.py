@@ -73,7 +73,7 @@ def mutation_duration(value: str) -> float:
 def timed(
     cmd: list[str], cwd: Path | None = None, pythonpath: Path | None = None,
     proof_path: Path | None = None, proof_base: str | None = None,
-    timeout: float | None = None,
+    timeout: float | None = None, unittest_path: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a command with the per-check timeout (`timeout`, when given, for this call only).
 
@@ -90,6 +90,9 @@ def timed(
     # Only the gate names a completion-record path, and only for the opted-in check.
     env.pop(MUTATION_PROOF_ENV, None)
     env.pop(MUTATION_PROOF_BASE_ENV, None)
+    env.pop("FACTORY_UNITTEST_RESULT", None)
+    if unittest_path is not None:
+        env["FACTORY_UNITTEST_RESULT"] = str(unittest_path)
     if proof_path is not None:
         env[MUTATION_PROOF_ENV] = str(proof_path)
         if proof_base is not None:
@@ -128,9 +131,9 @@ def timed(
             execution.child_done(proc.pid)
 
 
-def run(cmd: list[str]) -> tuple[bool, str]:
+def run(cmd: list[str], unittest_path: Path | None = None) -> tuple[bool, str]:
     """Run a command, return (passed, combined output)."""
-    proc = timed(cmd)
+    proc = timed(cmd, unittest_path=unittest_path)
     execution = lifecycle.current()
     if execution and proc.returncode != 0 and execution.outcome == "completed":
         execution.outcome = "product_feedback"
@@ -1230,6 +1233,7 @@ def toolchain() -> dict[str, str]:
 
 def execute(args: argparse.Namespace, execution) -> int:
     global CHECK_TIMEOUT
+    head = None
     host = toolchain()
     execution.emit("toolchain", **host)
     if args.base is None:
@@ -1242,6 +1246,7 @@ def execute(args: argparse.Namespace, execution) -> int:
     audit = []  # the reviewed protected transition this run actually verified and exempted
 
     if args.tier == "attempt":
+        head = timed(["git", "rev-parse", "--verify", "-q", "HEAD"]).stdout.strip() or "unavailable"
         if not args.protected_override:
             passed, reason, detail = check_protected_paths(
                 args.base, args.upstream, args.add_only_override,
@@ -1282,13 +1287,48 @@ def execute(args: argparse.Namespace, execution) -> int:
     listed = [check for check in cfg.checks if config.CHECK_TIERS.index(check.when) >= rank]
     proofs: dict[str, tuple[str, str]] = {}  # check name -> (record-decided status, binding)
     slot_waits: dict[str, float] = {}
+    test_evidence: dict[str, dict] = {}
+    unittest_checks: set[str] = set()
 
     def proved(check: config.Check) -> bool:
         return args.mutation_proof and check.proof == config.MUTATION_PROOF
 
     def command(check: config.Check) -> list[str]:
         blocking = args.blocking_mutation and (check.name == "mutation" or proved(check))
-        return [*check.run, *(["--blocking"] if blocking else [])]
+        cmd = [*check.run, *(["--blocking"] if blocking else [])]
+        if rank:
+            return cmd
+        entry = 0
+        if (Path(cmd[0]).name, *cmd[1:2]) == ("uv", "run"):
+            # Leave unknown wrappers/options alone rather than rewrite their arguments.
+            entry = next((i for i in range(2, len(cmd)) if cmd[i] not in {
+                "--frozen", "--no-managed-python", "--no-project", "--offline",
+            }), entry)
+        if cmd[entry].startswith("-") or not re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", Path(cmd[entry]).name):
+            return cmd
+        for index in range(entry + 1, len(cmd)):
+            if cmd[index:index + 2] == ["-m", "unittest"]:
+                unittest_checks.add(check.name)
+                cmd[index:index + 2] = ["-c", (
+                    "import json, os, unittest\n"
+                    "class Result(unittest.TextTestResult):\n"
+                    "    def addSkip(self, test, reason):\n"
+                    "        super().addSkip(test, reason)\n"
+                    "        self.records.append({'id': test.id(), 'name': str(test), 'reason': reason})\n"
+                    "    def startTestRun(self):\n"
+                    "        self.records = []\n"
+                    "    def stopTestRun(self):\n"
+                    "        with open(os.environ['FACTORY_UNITTEST_RESULT'], 'w') as stream:\n"
+                    "            json.dump({'testsRun': self.testsRun, 'skipped': self.records}, stream)\n"
+                    "class Runner(unittest.TextTestRunner):\n"
+                    "    def __init__(self, **kwargs):\n"
+                    "        super().__init__(resultclass=Result, **kwargs)\n"
+                    "unittest.main(module=None, testRunner=Runner)\n"
+                )]
+                return cmd
+            if not re.fullmatch(r"-[bBdEiIOPqRsSuvx]+|-(?:W|X).+", cmd[index]):
+                return cmd  # a script, another module, or unsupported interpreter option
+        return cmd
 
     def run_proved(check: config.Check) -> tuple[bool, str]:
         duration = args.mutation_duration
@@ -1298,6 +1338,29 @@ def execute(args: argparse.Namespace, execution) -> int:
         return passed, output
 
     def run_configured(check: config.Check) -> tuple[bool, str]:
+        cmd = command(check)
+        if check.name in unittest_checks:
+            with tempfile.TemporaryDirectory(prefix="factory-unittest-") as directory:
+                record = Path(directory) / "result.json"
+                record.touch()
+                passed, output = run(cmd, unittest_path=record)
+                try:
+                    evidence = json.loads(record.read_text())
+                    if (
+                        not isinstance(evidence["testsRun"], int)
+                        or isinstance(evidence["testsRun"], bool)
+                        or evidence["testsRun"] < 0
+                        or not isinstance(evidence["skipped"], list)
+                        or not all(
+                            isinstance(skip["name"], str) and isinstance(skip["reason"], str)
+                            for skip in evidence["skipped"]
+                        )
+                    ):
+                        raise ValueError("invalid unittest result record fields")
+                    test_evidence[check.name] = evidence
+                except (ValueError, OSError, KeyError, TypeError) as error:
+                    return False, output + f"\nunittest result record unavailable: {error}"
+                return passed, output
         fn = (lambda: run_proved(check)) if proved(check) else (lambda: run(command(check)))
         mutation = (check.name == "mutation" or check.proof == config.MUTATION_PROOF
                     or "scripts/mutation.py" in check.run)
@@ -1367,6 +1430,7 @@ def execute(args: argparse.Namespace, execution) -> int:
                    for name, (status, binding) in proofs.items()]
     lines = [
         "# Gate report" if args.tier == "attempt" else f"# Gate report ({args.tier} tier)", "",
+        *([f"Head SHA: {head}", ""] if head is not None else []),
         *([*proof_lines, ""] if proof_lines else []),
         *[f"Mutation slot wait: {name} {waited:.3f}s" for name, waited in slot_waits.items()],
         "## Host toolchain",
@@ -1376,6 +1440,13 @@ def execute(args: argparse.Namespace, execution) -> int:
     for name, status, _ in results:
         lines.append(f"- {name}: {status}")
     for name, status, output in results:
+        if not rank and status == "PASS" and name in test_evidence:
+            record = test_evidence[name]
+            evidence = [
+                f"{skip['name']} ... skipped {skip['reason']!r}" for skip in record["skipped"]
+            ]
+            evidence.append(f"Ran {record['testsRun']} tests")
+            lines += ["", f"## {name} test evidence", "```", *evidence, "```"]
         # pr-tier checks may be report-only (exit 0, findings on stdout); the reviewer sees
         # them only through this report, so keep their output when they pass too.
         if status == "FAIL" or (args.tier == "pr" and status == "PASS" and output.strip()):
