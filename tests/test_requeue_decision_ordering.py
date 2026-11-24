@@ -266,5 +266,13 @@ class RequeueDecisionOrderingTest(unittest.TestCase):
         self.assertEqual({row["name"] for row in self.issue["labels"]},
                          {config.LABEL_AGENT, config.LABEL_INFO, config.LABEL_HUMAN, "host:tank"})
 
+        # Equal request contents still represent two distinct actions.
+        repeated = decisions.prepare(self.cfg, [requests[0], requests[0]], caller="mcp", action=action)
+        withdrawals = [
+            step for step in self.proposal(repeated)["steps"]
+            if step["action"] == "requeue_withdraw_ready"
+        ]
+        self.assertEqual([step["request"] for step in withdrawals], [0])
+
 
 del ActionHarness, ClaimHarness
