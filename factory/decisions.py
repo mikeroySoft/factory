@@ -695,6 +695,7 @@ def _effect(request: dict, actor: str, target: dict) -> dict:
         changes.extend([
             f"remove label host:{target['claim']['host']}",
             "post a nonce-bound dispatcher release marker carrying recovery context; retain claim comments",
+            "post an authenticated nonce-bound release receipt for cross-host comment preservation",
             "preserve pipeline labels, assignees and generation budgets; held tickets require a separate authorized requeue_agent",
         ])
     if LABEL_APPROVED in request.get("add", []):

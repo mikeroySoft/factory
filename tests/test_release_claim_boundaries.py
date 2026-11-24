@@ -209,7 +209,8 @@ class ReleaseClaimBoundaryTest(unittest.TestCase):
         self.assertIn(self.claim, self.github.comments)
         self.assertIn(old_marker, self.github.comments)
         self.assertEqual(
-            self.github.comments[-1]["body"],
+            [row["body"] for row in self.github.comments
+             if row["body"].startswith("Factory requeue:")][-1],
             f"Factory requeue: nonce={self.nonce}\n{context}",
         )
 

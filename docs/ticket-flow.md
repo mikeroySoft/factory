@@ -226,6 +226,9 @@ and generation budgets, including upstream-sync routing. It refuses live claims
 and does not delete comments or grant approval. Releasing a held ticket does not
 authorize its requeue. Refresh still requires re-gating and re-review at the new
 head before re-approval and landing.
+Ordinary releases also publish an authenticated `Factory claim released: nonce=…`
+receipt. Unlike a requeue alone, it preserves that nonce's comment during cleanup
+on every host, without a takeover-retention marker or retention of future workers.
 
 ### Label transition index
 

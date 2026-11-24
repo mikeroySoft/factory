@@ -750,6 +750,11 @@ class LandingClaimLifetimeTest(unittest.TestCase):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
         original = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3)).copy()
         tank.release_expired_claim(7, reason="dashboard release_claim")
+        tank.release_expired_claim(7, reason="dashboard release_claim")
+        [receipt] = [row["body"] for row in self.github.comments
+                     if row["body"].startswith("Factory claim released:")]
+        nonce = original["body"].split("nonce=", 1)[1].split()[0]
+        self.assertEqual(receipt, f"Factory claim released: nonce={nonce}")
         self.assertFalse(ultron.EVENTS.exists())
 
         [ready] = ultron.frontier()
@@ -770,6 +775,22 @@ class LandingClaimLifetimeTest(unittest.TestCase):
             "DELETE" in cmd and cmd[2].endswith(f"/{original['id']}")
             for _, cmd in self.github.calls
         ))
+
+
+    def test_only_authenticated_matching_release_receipt_preserves_claim_comment(self):
+        tank = self.dispatcher("tank")
+        original = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3)).copy()
+        nonce = original["body"].split("nonce=", 1)[1].split()[0]
+        for login, released_nonce in (("outsider", nonce), ("@me", "different-nonce")):
+            self.github.json("tank", [
+                "api", "repos/local/claims/issues/7/comments", "--method", "POST",
+                "-f", f"body=Factory claim released: nonce={released_nonce}",
+            ])["user"] = {"login": login}
+        [claim] = tank.host_claims(7)
+        self.assertFalse(claim.get("released"))
+        tank.delete_host_claim(7, claim)
+        self.assertNotIn(original, self.github.comments)
+        self.assertTrue(any("DELETE" in cmd for _, cmd in self.github.calls))
 
 
 if __name__ == "__main__":

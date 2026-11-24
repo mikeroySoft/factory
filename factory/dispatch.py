@@ -590,12 +590,16 @@ def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[lis
     claims = []
     requeues = {}
     retained_nonces = set()
+    released_nonces = set()
     context = ""
     for page in pages:
         for comment in page:
             if (comment.get("user") or {}).get("login", "").casefold() != host_claim_login():
                 continue
             first = (comment.get("body") or "").split("\n", 1)[0]
+            if match := re.fullmatch(r"Factory claim released: nonce=(\S+)", first):
+                released_nonces.add(match[1])
+                continue
             escalated = first.startswith("Factory dispatcher escalating:")
             if escalated:
                 first = comment["body"].split("\n", 2)[1] if "\n" in comment["body"] else ""
@@ -625,6 +629,8 @@ def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[lis
             claim["requeue"] = requeues[claim["nonce"]]
         if claim["nonce"] in retained_nonces:
             claim["preserve_history"] = True
+        if claim["nonce"] in released_nonces:
+            claim["released"] = True
     claims.sort(key=lambda row: (row["created"], row["id"]))
     elected = elected_host_claim(claims)
     return claims, elected.get("requeue", "") if elected else context
@@ -704,6 +710,9 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
 
 
 def delete_host_claim(n: int, claim: dict) -> None:
+    # Authenticated shared releases survive cleanup on hosts without the local receipt.
+    if claim.get("released"):
+        return
     remove_label = not any(row["host"] == claim["host"] and row["id"] != claim["id"]
                            for row in host_claims(n))
     if remove_label:
@@ -938,6 +947,9 @@ def release_expired_claim(
             gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                      "-f", (f"body=Factory requeue: nonce={elected['nonce']}\n"
                             f"{retained}{context}")])
+        if not takeover and not elected.get("released"):
+            gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
+                     "-f", f"body=Factory claim released: nonce={elected['nonce']}"])
         run(["gh", "issue", "edit", str(n), "--repo", REPO,
              "--remove-label", f"host:{elected['host']}"])
         record("claim-released", ticket=n, host=elected["host"], nonce=elected["nonce"],
