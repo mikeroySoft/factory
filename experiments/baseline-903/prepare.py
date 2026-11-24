@@ -1,13 +1,13 @@
 """Time the producer's shared-clone/copytree preparation outside baseline timing."""
 import importlib.util
 import json
-from pathlib import Path
 import resource
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 root = Path(sys.argv[1])
 spec = importlib.util.spec_from_file_location('preparation_measurement', root / 'scripts/mutation.py')

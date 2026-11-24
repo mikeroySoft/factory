@@ -37,7 +37,7 @@ not fixes or completed acceptance.
    Initial digest: `e071ebe909c9b2c1fea62bad01545406307952ae664416029dea9361444f026b`.
    No config or auth files were opened for content inspection or edited.
 4. Recovered Tank via existing trusted `rocm-tank` SSH alias at `100.98.172.98`;
-   neither `tank` nor `tank.lan` resolves. Tank has 32 available cores; its config
+   neither short-host nor LAN DNS names resolved. Tank has 32 available cores; its config
    hash is `8c275d1b92b178dd38d8250a308861216d3867bc7dc32ee5db95999e79c83389`.
 5. Verified actual Ultron runtime/test/script/lock blobs against the source tree
    (`raw/source-verification.json`). The retained shared clone's empty index
@@ -364,4 +364,11 @@ Tank before/after and cleanup SHA256:
 `8c275d1b92b178dd38d8250a308861216d3867bc7dc32ee5db95999e79c83389`.
 No host config/auth content inspection, host edits, service changes, timeout
 changes, pushes or merges. Harness digests: `raw/harness-sha256.txt`.
+
+The required attempt gate on `03b80fd5b8c6c68ef7a04019d62d2960a86718b0`
+completed in 1644.18 s: full test PASS; import-order lint and the report's LAN
+hostname spelling failed policy checks. Subsequent edits only sort experimental
+imports and remove that prohibited spelling. The recorded harness digests bind
+the actually measured scripts at that revision, before import sorting; measurements
+are not relabelled as new-head runs.
 

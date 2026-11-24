@@ -1,8 +1,8 @@
 """Summarize captured subprocess observations without adding overlapping lifetimes."""
 import collections
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 for directory in map(Path, sys.argv[1:]):
     groups = collections.defaultdict(list)

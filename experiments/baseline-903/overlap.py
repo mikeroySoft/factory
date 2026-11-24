@@ -1,11 +1,11 @@
 """Compare a profiled mutation baseline with a real concurrent full-suite gate."""
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 
 def main():
