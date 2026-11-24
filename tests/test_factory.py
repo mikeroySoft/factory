@@ -766,6 +766,7 @@ class HostConfigTest(unittest.TestCase):
             self.assertEqual(launchers, [
                 f'ExecStart=-"{escaped}" -P -m factory triage',
                 f'ExecStart="{escaped}" -P -m factory dispatch',
+                f'ExecStart="{escaped}" -P -m factory dispatch --land-only',
                 (f'ExecStart="{escaped}" -P -m factory dashboard'
                  ' --host 127.0.0.1 --port 8765 --no-open'),
             ])
