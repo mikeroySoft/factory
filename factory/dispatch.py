@@ -4726,8 +4726,11 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         defer_mutation_proof(n, head, "refresh")
         return False
     pending = _PENDING_REVIEWS.get(n)
-    unavailable = verdict is None or pending is not None and pending.get("verdict") is None
     failure_code = _PENDING_RISK.get(n, {}).get("failure_code", "reviewer_unavailable")
+    unavailable = (
+        pending is not None and pending.get("verdict") is None
+        or failure_code == "missing_worker_provenance"
+    )
     pr_comment(n, findings)
     if unavailable:
         withdraw(
