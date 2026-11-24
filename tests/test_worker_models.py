@@ -10,7 +10,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch, lifecycle, onboard
+from factory import config, dispatch, onboard
 from tests import test_refresh_conflict as refresh_suite
 from tests import test_worker_health as health_suite
 
@@ -91,7 +91,7 @@ class WorkerModelJournalTest(unittest.TestCase):
         for profile in self.cfg.workers:
             for fired, deadline in ((None, float("inf")), ("idle_timeout", float("inf")), (None, 0)):
                 with self.subTest(profile=profile, fired=fired, deadline=deadline):
-                    def worker(argv, cwd, logfile, *_args):
+                    def worker(argv, cwd, logfile, *_args, fired=fired):
                         logfile.write_text("")
                         return 1, fired
 
@@ -105,6 +105,7 @@ class WorkerModelJournalTest(unittest.TestCase):
                     for row in (attempt, usage):
                         self.assertEqual((row["worker"], row["worker_model"]),
                                          (profile, self.cfg.worker_model(profile)))
+                    self.assertEqual(self.events("worker-model-mismatch"), [])
 
     def test_reported_model_is_only_a_cross_check_and_preserves_provider_locality(self) -> None:
         self.ticket()
@@ -115,11 +116,12 @@ class WorkerModelJournalTest(unittest.TestCase):
         wt = dispatch.FACTORY / "wt-9"
         cases = [("qwen3:30b", "ollama", False), ("qwen3:30b", "other", True),
                  ("different", "ollama", True), ("qwen3:30b", None, False),
+                 ("qwen3:30b", "", False), ("qwen3:30b", 7, False),
                  ("ollama/qwen3:30b", None, False)]
         for model, provider, mismatch in cases:
             with self.subTest(model=model, provider=provider):
                 before = len(self.events("worker-model-mismatch"))
-                def worker(argv, cwd, logfile, *_args):
+                def worker(argv, cwd, logfile, *_args, model=model, provider=provider):
                     logfile.write_text("")
                     session = Path(argv[argv.index("--session-dir") + 1])
                     message = {"role": "assistant", "model": model,
@@ -138,6 +140,12 @@ class WorkerModelJournalTest(unittest.TestCase):
                 self.assertEqual((usage["worker_model"], usage["model"], usage["prompt_tokens"]),
                                  ("ollama/qwen3:30b", model, 4))
                 self.assertIs(usage["local"], model == self.cfg.llm_model)
+                if not isinstance(provider, str) or not provider:
+                    self.assertNotIn("provider", usage)
+                if mismatch:
+                    event = self.events("worker-model-mismatch")[-1]
+                    self.assertEqual((event["worker_model"], event["reported_model"], event["reported_provider"]),
+                                     ("ollama/qwen3:30b", model, provider))
                 self.assertEqual(len(self.events("worker-model-mismatch")) - before, int(mismatch))
                 self.assertEqual(self.events("attempt")[-1]["worker_model"], "ollama/qwen3:30b")
 
