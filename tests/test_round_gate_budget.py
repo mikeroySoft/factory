@@ -689,8 +689,8 @@ class RoundGateBudgetTest(unittest.TestCase):
             report = str(wt / ".factory" / f"gate-report-{ticket}.md")
 
             def timing(seconds, **overrides):
-                row = dict(event="decision", stage="gate", ticket=ticket, cost={"seconds": seconds},
-                           inputs=[{"kind": "gate_log", "ref": report}])
+                row = {"event": "decision", "stage": "gate", "ticket": ticket, "cost": {"seconds": seconds},
+                       "inputs": [{"kind": "gate_log", "ref": report}]}
                 row.update(overrides)
                 lifecycle.append(self.events, row)
 
@@ -799,7 +799,7 @@ class RoundGateBudgetTest(unittest.TestCase):
         with chdir(self.repo), mock.patch.dict(os.environ, self.env):
             self.configure_round()
             for code, extra, visible in (
-                ("".join(["protected", "_paths"]), "Human-only clearing guidance\n\ndiff detail", True),
+                (json.loads('"protected_paths"'), "Human-only clearing guidance\n\ndiff detail", True),
                 ("gate_failed", "packet detail\n\nprivate diff", False),
             ):
                 with self.subTest(code=code), mock.patch.object(dispatch, "run", wraps=dispatch.run) as run:
