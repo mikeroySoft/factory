@@ -18,9 +18,9 @@ def bench_cpu_pystone(loops=500000, repeats=5):
         str_2 = 'DHRYSTONE PROGRAM, 2ND STRING'
         for i in range(loops):
             int_glob = (int_glob + i) % 65536
-            _ = str_1 == str_2  # noqa: F841
-            _ = str_1 < str_2   # noqa: F841
-            _ = str_1[10:16]    # noqa: F841
+            _ = str_1 == str_2
+            _ = str_1 < str_2
+            _ = str_1[10:16]
         elapsed = time.perf_counter() - t0
         results.append({'duration': elapsed, 'loops': loops,
                         'loops_per_sec': loops / elapsed})
