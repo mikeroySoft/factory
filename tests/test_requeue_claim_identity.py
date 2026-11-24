@@ -1,8 +1,8 @@
 """Explicit requeue authenticates retained claims as the dispatcher, not the human."""
 import copy
 import json
-import subprocess
 import shutil
+import subprocess
 import unittest
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
