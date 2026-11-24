@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,8 +80,7 @@ class MutationRunnerTrustRevisionTest(unittest.TestCase):
                 mock.patch.object(gate.lifecycle, "current", return_value=None):
             return gate.run_mutation_proof(UV_COMMAND, base)
 
-    def test_untracked_worktree_venv_startup_cannot_forge_pass(self) -> None:
-        base = self.repository(WEAK_TEST)
+    def sync_worktree_venv(self) -> None:
         environment = {key: value for key, value in os.environ.items()
                        if key not in {"UV_NO_SYNC", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT"}}
         environment.update(UV_PROJECT_ENVIRONMENT=str(self.root / ".venv"), UV_OFFLINE="1")
@@ -88,6 +89,59 @@ class MutationRunnerTrustRevisionTest(unittest.TestCase):
              "--group", "mutation"],
             cwd=self.root, env=environment, check=True, capture_output=True, text=True,
         )
+
+    def test_setup_sync_uses_running_python_with_cold_cache(self) -> None:
+        self.root.mkdir()
+        (self.root / "pyproject.toml").write_text(
+            '[project]\nname = "startup-sync-probe"\nversion = "0.0.0"\n'
+            'requires-python = ">=3.11"\n[dependency-groups]\nmutation = []\n'
+        )
+        binaries = self.root.parent / "bin"
+        binaries.mkdir()
+        (binaries / "uv").symlink_to(shutil.which("uv"))
+        foreign_python = shutil.which("python3")
+        python = binaries / "python3"
+        if foreign_python and Path(foreign_python).resolve() != Path(sys._base_executable).resolve():
+            python.symlink_to(foreign_python)
+        else:
+            # Single-interpreter hosts must also reject accidental PATH discovery.
+            python.write_text("#!/bin/sh\necho 'unexpected PATH Python' >&2\nexit 1\n")
+            python.chmod(0o755)
+        with self.uv_environment(), mock.patch.dict(os.environ, {
+            "PATH": str(binaries),
+            "UV_CACHE_DIR": str(self.root.parent / "empty-cache"),
+        }):
+            subprocess.run(
+                ["uv", "lock", "--project", str(self.root), "--offline",
+                 "--no-managed-python", "--python", sys.executable],
+                check=True, capture_output=True, text=True,
+            )
+            self.sync_worktree_venv()
+        result = subprocess.run(
+            [str(self.root / ".venv" / "bin" / "python"), "-I", "-c",
+             "import sys; print(sys._base_executable)"],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(Path(result.stdout.strip()).resolve(), Path(sys._base_executable).resolve())
+
+    def test_setup_sync_failure_reports_uv_stderr(self) -> None:
+        self.root.mkdir()
+        (self.root / "pyproject.toml").write_text(
+            '[project]\nname = "startup-sync-probe"\nversion = "0.0.0"\n'
+            '[dependency-groups]\nmutation = []\n'
+        )
+        (self.root / "uv.lock").write_text("invalid lockfile")
+        case = unittest.FunctionTestCase(self.sync_worktree_venv)
+        result = unittest.TestResult()
+        case.run(result)
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.errors) + len(result.failures), 1)
+        output = "\n".join(traceback for _, traceback in result.errors + result.failures)
+        self.assertIn("Failed to parse `uv.lock`", output)
+
+    def test_untracked_worktree_venv_startup_cannot_forge_pass(self) -> None:
+        base = self.repository(WEAK_TEST)
+        self.sync_worktree_venv()
         site_packages = next((self.root / ".venv" / "lib").glob("python*/site-packages"))
         marker = self.root.parent / "startup-ran"
         attack = f'''import json, os, sys
