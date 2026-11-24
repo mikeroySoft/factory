@@ -4827,7 +4827,7 @@ def land_pass(dry_run: bool) -> None:
 def _land_pr_skip_reason(
     pr: dict, n: int, expected_head: str | None = None,
 ) -> tuple[str, str] | None:
-    if (expected_head is not None or "state" in pr) and pr.get("state") != "OPEN":
+    if expected_head is not None and pr.get("state") != "OPEN":
         return "state_changed", f"state is {pr.get('state')!r}"
     if pr.get("headRefName") != f"agent/{n}":
         return "branch_changed", f"head branch changed to {pr.get('headRefName')!r}"
