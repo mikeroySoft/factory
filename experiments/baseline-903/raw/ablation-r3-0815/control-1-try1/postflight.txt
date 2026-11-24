@@ -1,0 +1,21 @@
+2026-11-24T08:39:13-0800
+vm.loadavg: { 3.58 2.86 2.55 }
+ 8:39  up 5 days, 23:30, 5 users, load averages: 3.58 2.86 2.55
+vm_cpu_mean3=25.36
+--- benito/factory processes
+  533     1 05-23:29:23   0.0 /Users/mike/dev/mikeroysoft/benito-app/.derivedData/BenitoServer/Build/Products/Debug/Benito Server.app/Contents/MacOS/Benito Server
+ 1096     1 05-23:29:07   0.0 /Users/mike/Library/Application Support/Benito/bin/benito-server
+ 1108     1 05-23:29:07   0.0 /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m http.server 8091 --bind 0.0.0.0 --directory /Users/mike/dev/mi
+ 1674  1096 05-23:28:51   0.0 /usr/bin/dns-sd -R Benito _benito._tcp local 8082 version=0.1.0
+55677     1       03:45   0.0 /bin/bash -c echo "=== pass $(date)"; /Users/mike/.local/bin/factory triage; /Users/mike/.local/bin/factory dispatch; rc=$?; /Users/mike/.local/bin/factory watch; echo "=== end rc=$rc $(date
+55858 55677       03:43   0.0 /Users/mike/.local/share/uv/tools/factory/bin/python /Users/mike/.local/bin/factory dispatch
+57018 55858       03:13   0.2 omp --session-dir /Users/mike/factories/benito-app/.factory/transcripts/31 -p --model openai-codex/gpt-6.1-sol --cwd /Users/mike/factories/benito-app/.factory/wt-31 @/Users/mike/factories/be
+--- top cpu
+  PID  %CPU COMMAND
+42612  23.7 /Applications/VMware Fusion.app/Contents/Library/vmware-vmx -E en -s vmx.stdio.keep=TRUE -# product=64;name=VMware Fusion;version=13.6.3;buildnumber
+ 1263  15.4 /Users/mike/.t3/runtime/versions/0.0.45/resource-monitor/darwin-arm64/t3-resource-monitor
+  540  10.0 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder
+ 1120   6.0 /Library/Application Support/Universal Audio/Apollo/UA Mixer Engine.app/Contents/MacOS/UA Mixer Engine -silent
+ 1125   4.8 /Users/mike/Library/Application Support/iStat Menus 7/iStat Menus Menubar.app/Contents/MacOS/iStat Menus Menubar
+  429   2.8 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN com.apple.bcmwlan 0x10000155c com.apple.Driv
+82065   1.8 /Users/mike/Library/Application Support/com.superlogical.rex/RexServer/Versions/2061/Rex Server.app/Contents/MacOS/rex server logs --follow

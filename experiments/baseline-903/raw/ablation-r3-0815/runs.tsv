@@ -1,0 +1,2 @@
+run	arm	seconds	verdict	tests fail err load_before(1/5/15) / load_after	vm_cpu_before/after	ended
+control-1-try1	control	1596	clean	2272 0 0 1.46 1.84 2.22 / 3.58 2.86 2.55	30.96/25.36	08:39

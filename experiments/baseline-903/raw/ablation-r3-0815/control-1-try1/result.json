@@ -1,0 +1,25 @@
+{
+  "arm": "control",
+  "seconds": 1595.9719835830037,
+  "tests_run": 2272,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 12,
+  "success": true,
+  "load_before": [
+    1.4599609375,
+    1.84375,
+    2.224609375
+  ],
+  "load_after": [
+    3.57861328125,
+    2.8642578125,
+    2.55224609375
+  ],
+  "python": "3.12.13 (main, Mar  3 2026, 15:35:03) [Clang 21.1.4 ]",
+  "timestamp_before": 1795536757.201921,
+  "timestamp_after": 1795538353.303099,
+  "hostname": "ultron",
+  "tmpdir": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/",
+  "arm_detail": "no intervention"
+}

@@ -1,0 +1,18 @@
+2026-11-24T08:12:26-0800
+vm.loadavg: { 1.36 1.84 2.23 }
+ 8:12  up 5 days, 23:03, 5 users, load averages: 1.36 1.84 2.23
+vm_cpu_mean3=30.96
+--- benito/factory processes
+  533     1 05-23:02:37   2.9 /Users/mike/dev/mikeroysoft/benito-app/.derivedData/BenitoServer/Build/Products/Debug/Benito Server.app/Contents/MacOS/Benito Server
+ 1096     1 05-23:02:21   0.0 /Users/mike/Library/Application Support/Benito/bin/benito-server
+ 1108     1 05-23:02:21   0.0 /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m http.server 8091 --bind 0.0.0.0 --directory /Users/mike/dev/mi
+ 1674  1096 05-23:02:05   0.0 /usr/bin/dns-sd -R Benito _benito._tcp local 8082 version=0.1.0
+--- top cpu
+  PID  %CPU COMMAND
+42612  39.2 /Applications/VMware Fusion.app/Contents/Library/vmware-vmx -E en -s vmx.stdio.keep=TRUE -# product=64;name=VMware Fusion;version=13.6.3;buildnumber
+ 1125   6.7 /Users/mike/Library/Application Support/iStat Menus 7/iStat Menus Menubar.app/Contents/MacOS/iStat Menus Menubar
+ 1120   6.3 /Library/Application Support/Universal Audio/Apollo/UA Mixer Engine.app/Contents/MacOS/UA Mixer Engine -silent
+42645   3.0 /Applications/VMware Fusion.app/Contents/Library/mksSandbox --pipeInfo 3
+  533   2.9 /Users/mike/dev/mikeroysoft/benito-app/.derivedData/BenitoServer/Build/Products/Debug/Benito Server.app/Contents/MacOS/Benito Server
+82065   2.6 /Users/mike/Library/Application Support/com.superlogical.rex/RexServer/Versions/2061/Rex Server.app/Contents/MacOS/rex server logs --follow
+  188   1.9 /usr/sbin/bluetoothd
