@@ -641,7 +641,7 @@ def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
     events = [row for row in rows if lifecycle._lifecycle(row)]
     owned = [row for row in events if row["execution_id"] == owner["execution_id"]]
     if not owned or owned[0]["kind"] != "enter" or any(
-        row["kind"] == "exit" and row.get("outcome") not in {None, "unknown", "interrupted"}
+        row["kind"] == "exit" and row.get("outcome") not in {None, "unknown", "interrupted", "mechanism_failure"}
         for row in owned
     ):
         return False  # Completed work retains its PR hold, even after the process exits.
@@ -761,13 +761,15 @@ def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
     attempt = next((row for row in reversed(events)
                     if row.get("ticket") == n and row.get("event") == "claimed"
                     and row.get("claim_nonce") in (None, elected["nonce"])), None)
-    if attempt is None or not (execution := attempt.get("execution_id")):
-        # Reboot recovery already excludes proven interrupted owners. A missing
-        # claimed receipt must not discard a retained completed/unknown owner.
-        if host_claim_owner(n, elected, events) is not None:
-            return None
+    legacy = attempt is not None and attempt.get("claim_nonce") is None
+    execution = (attempt or {}).get("execution_id")
+    if not execution:
+        # Publication precedes the claimed receipt. Only a completed owner may
+        # retain the PR hold; unknown and failed owners still need TTL recovery.
+        execution = (host_claim_owner(n, elected, events) or {}).get("execution_id")
+    if not execution:
         return elected
-    if attempt.get("claim_nonce") is None and not any(
+    if legacy and not any(
         row.get("event") == "lifecycle" and row.get("execution_id") == execution
         for row in events
     ):
@@ -777,7 +779,7 @@ def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
             continue
         # Old journals lack the nonce. Only completion after this owner's last
         # heartbeat (both from the owning host's clock) can establish completion.
-        if (attempt.get("claim_nonce") is None
+        if (legacy
                 and datetime.fromisoformat(row["at"]) < elected["heartbeat"].replace(microsecond=0)):
             continue
         if row.get("event") in {"approved", "escalate", "merged"}:

@@ -1758,7 +1758,10 @@ When the elected own-host claim expires without completion or escalation, the
 next pass instead escalates to `ready-for-human` under the ticket lock and posts
 a nonce-bearing `Factory requeue` comment.
 Missing local attempt evidence is recoverable, including a kill before `claimed`
-is journaled. New `claimed` receipts bind to the claim nonce, not GitHub creation
+is journaled: a nonce-bound start alone is not completion. Unknown owners escalate
+after expiry; mechanism failures can be reclaimed immediately when lifecycle
+evidence proves interruption, otherwise they also escalate after expiry.
+New `claimed` receipts bind to the claim nonce, not GitHub creation
 time; legacy completion receipts use the owner's local heartbeat clock.
 Recovery rechecks heartbeat/election, keeps the PR and worktree intact, and reports
 the local HEAD, remote branch head and unpushed commit SHAs when readable (otherwise

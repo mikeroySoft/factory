@@ -1,5 +1,6 @@
 """Expired own-host claims must not strand a PR after an interrupted attempt."""
 import copy
+import os
 import subprocess
 import unittest
 from contextlib import chdir
@@ -202,12 +203,19 @@ class HostClaimInterruptionTest(unittest.TestCase):
 
     def test_dead_mechanism_failure_reclaims_before_ttl(self):
         tank = self.dispatcher("tank")
-        old = self.leave_pre_receipt_claim(tank, "assignment")
+        dead = {**lifecycle._identity(os.getpid()), "pid": 2_000_000_000}
+        with mock.patch.object(lifecycle, "_identity", return_value=dead), \
+                lifecycle.scope(tank.EVENTS, "ticket", ticket=7) as execution:
+            execution.resource("acquired", tank.ticket_lock(7), scope="repository")
+            old = self.github.add_claim("tank", datetime.now(UTC))
+            tank.record("host-claim-started", ticket=7,
+                        nonce=old["body"].split("nonce=", 1)[1].split()[0])
+            execution.outcome = "mechanism_failure"
+            execution.resource("released", tank.ticket_lock(7), scope="repository")
         self.github.open_prs = [{"number": 70}]
-        with mock.patch.object(lifecycle, "_process_state", return_value="dead"):
-            [issue] = tank.frontier()
-            self.assertNotIn("held", issue)
-            tank.process_ticket(issue, 1, False)
+        [issue] = tank.frontier()
+        self.assertNotIn("held", issue)
+        tank.process_ticket(issue, 1, False)
         self.assertEqual(self.launched, ["tank"])
         self.assertFalse(any(row["id"] == old["id"] for row in self.github.comments))
 
