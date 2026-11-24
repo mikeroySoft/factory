@@ -201,6 +201,55 @@ class RequeueClaimIdentityTest(unittest.TestCase):
                             self.assertEqual(self.issue, before)
                             self.assertEqual(self.mutations, [])
 
+    @unittest.skipUnless(shutil.which("gh"), "requires the GitHub CLI")
+    def test_projected_later_page_read_error_fails_closed(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                if self.path == "/0":
+                    self.send_header(
+                        "Link", f'<http://127.0.0.1:{self.server.server_port}/1>; rel="next"',
+                    )
+                self.end_headers()
+                # The first projection succeeds; the next page cannot be projected.
+                self.wfile.write(b"[]" if self.path == "/0" else b'{"broken":')
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        def transport(argv, **kwargs):
+            if argv[:2] == ["gh", "api"] and any("/comments" in arg for arg in argv):
+                argv = [
+                    f"http://127.0.0.1:{server.server_port}/0" if "/comments" in arg else arg
+                    for arg in argv
+                ]
+                return self.provider_run(argv, **{
+                    **kwargs, "env": {**kwargs["env"], "GH_TOKEN": "local-fixture"},
+                })
+            return self.transport(argv, **kwargs)
+
+        for stage in ("prepare", "apply"):
+            with self.subTest(stage=stage):
+                self.reset_action()
+                if stage == "apply":
+                    preview = self.via_mcp("requeue_agent", {"number": 7, "host": "tank"})
+                    self.assertNotIn("error", preview, preview)
+                before = copy.deepcopy(self.issue)
+                with mock.patch.object(decisions, "_run", side_effect=transport):
+                    result = (self.apply_mcp(preview) if stage == "apply" else
+                              self.via_mcp("requeue_agent", {"number": 7, "host": "tank"}))
+                self.assertEqual(result.get("error", {}).get("code"), "provider_unavailable", result)
+                self.assertEqual(self.issue, before)
+                self.assertEqual(self.mutations, [])
+
 
 del ActionHarness
 

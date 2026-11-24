@@ -195,9 +195,8 @@ class RequeueDecisionOrderingTest(unittest.TestCase):
 
         def read(argv, **kwargs):
             if argv[:2] == ["gh", "api"] and any("/comments" in arg for arg in argv):
-                self.assertIn("--paginate", argv)
-                self.assertIn("--slurp", argv)
-                return subprocess.CompletedProcess(argv, int(failed), json.dumps(pages), "")
+                selected = pages if "--paginate" in argv else pages[:1]
+                return subprocess.CompletedProcess(argv, int(failed), json.dumps(selected), "")
             return transport(argv, **kwargs)
 
         return mock.patch.object(decisions, "_run", side_effect=read)

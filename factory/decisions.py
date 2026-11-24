@@ -783,9 +783,18 @@ def _check_requeue_host(
     actor = _actor(cfg, deadline, env={
         **_environment(cfg), **cfg.install.get("dispatch_env", {}),
     })
-    pages = _read_json(cfg, [
-        "gh", "api", "--paginate", "--slurp", f"repos/{cfg.repo}/issues/{number}/comments",
+    result = _checked(cfg, [
+        "gh", "api", "--paginate", f"repos/{cfg.repo}/issues/{number}/comments",
+        # Frame each projected page as one JSON line before the bounded pipe.
+        "--jq", (
+            '[map(select((.body // "") | startswith("Factory claim: ")) | '
+            '{body: ((.body // "") | split("\\n")[0]), user, created_at})] | tojson'
+        ),
     ], deadline)
+    try:
+        pages = [page for line in result.stdout.splitlines() for page in json.loads(line)]
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise DecisionError("provider returned invalid JSON", "provider_unavailable") from exc
     for page in pages:
         for comment in page:
             if (comment.get("user") or {}).get("login", "").casefold() != actor.casefold():
