@@ -84,11 +84,14 @@ class MutationRunnerTrustRevisionTest(unittest.TestCase):
         environment = {key: value for key, value in os.environ.items()
                        if key not in {"UV_NO_SYNC", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT"}}
         environment.update(UV_PROJECT_ENVIRONMENT=str(self.root / ".venv"), UV_OFFLINE="1")
-        subprocess.run(
-            ["uv", "sync", "--project", str(self.root), "--frozen", "--no-managed-python",
-             "--group", "mutation"],
-            cwd=self.root, env=environment, check=True, capture_output=True, text=True,
-        )
+        try:
+            subprocess.run(
+                ["uv", "sync", "--project", str(self.root), "--frozen", "--no-managed-python",
+                 "--python", sys.executable, "--group", "mutation"],
+                cwd=self.root, env=environment, check=True, capture_output=True, text=True,
+            )
+        except subprocess.CalledProcessError as error:
+            self.fail(f"uv sync failed (exit {error.returncode}):\n{error.stderr}")
 
     def test_setup_sync_uses_running_python_with_cold_cache(self) -> None:
         self.root.mkdir()
