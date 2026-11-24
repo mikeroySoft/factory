@@ -1,15 +1,38 @@
-# #903: matched baseline attribution — revised acceptance (r3-2300)
+# #903: matched baseline attribution — evidence and current ablation contract
 
 **Acceptance remains unmet.** The 997.105859 s matched gap requires at least
 797.684687 s of measured causal attribution. The model below is exploratory,
 not causal proof; its fitted 100% must not be used as an acceptance result.
 
-## Contract and provenance
+## Current binding brief and execution blocker
 
-**Revised acceptance (PM decision r3-2300, Nov 23 2026):** attribute ≥80% of
-today's matched gap at `69b50b7d` (Ultron 1662 s − Tank 665 s ≈ 997 s, threshold
-798 s). Report each cause with its own measured seconds and percent. Supersedes
-the historical ~1797 s target.
+PM r3-0350, amended by r3-0340b (Nov 24 2026), replaces the profiling/model
+method with single-factor wall-time ablations. Required order: control, RAM-disk
+tmp, control, git caching, control, scratch throttle, control. Each arm has one
+run bracketed by controls. Credit savings against its surrounding controls;
+credit zero when below the largest spread among all four controls. No fitted
+allocation below earns credit. Passing requires at least 798 s of the
+997.105859 s matched gap; otherwise completed measurements yield INCONCLUSIVE.
+
+The budget remains 210 minutes. Each invocation is bounded; record concurrent
+load before each run, avoid another active factory pass, checkpoint each run,
+and record RAM-disk attachment and detachment, including failure-path cleanup.
+If necessary skip scratch throttle, but finish with a control. Preserve host
+configuration and the uncommitted `uv.lock`; the binding brief supplies its
+expected SHA256 as `ac6661ba52ea87d7bf27c9b8d2c5c167eb7c4f73573b35b402d6e367775a7651`.
+That supplied digest is not a new observation by this session.
+
+This revision session is OpenAI Codex, not the mandated subscription-only
+OMP/Opus runtime. No ablation or gate was launched. The required runs and their
+hygiene receipts remain missing. This is a routing blocker, not a measured
+INCONCLUSIVE outcome or a pass. PR #906 remains evidence only; Factory PM owns
+the verdict and #904 remains blocked.
+
+## Prior contract and provenance
+
+The preceding PM r3-2300 brief replaced the historical ~1797 s target with the
+matched gap at `69b50b7d`. The earlier profiling and microbenchmark evidence
+below is preserved, but its modeled allocations do not satisfy the current brief.
 
 Source: `69b50b7de964e09ab429cb68b067299ad06c3cec`. Ultron: Apple M1 Ultra, 20
 cores, 128 GiB, APFS, macOS 27.2. Tank: Intel i9-14900KF, 32 cores, ext4,
@@ -70,7 +93,7 @@ The normalization forces agreement with the observed gap.
 |---|-------|-----------|----------------:|----------:|
 | 1 | **APFS vs ext4: git operations** | Git work time (lifetime − constructor) across ~22K calls. Microbenchmark confirms 8.6–20× per-operation ratio. | **319.4** | **32.0%** |
 | 2 | **APFS vs ext4: Python child I/O** | Python child filesystem/descendant work. Filesystem benchmark (create 8.3×, delete 12.8×) and test simulation (8.0×) confirm mechanism. See derivation below. | **405.9** | **40.7%** |
-| 3 | **macOS scratch monitoring** | 514 lsof calls (72.5 s) + 514 excess ps calls (24.3 s), exclusive to Ultron `_users()` checks. No descendant scratch checks: only the mutation orchestrator calls `_users()`. | **95.2** | **9.5%** |
+| 3 | **macOS scratch monitoring** | Parent profile: 514 lsof calls (72.5 s) + 514 excess ps calls (24.3 s) associated with Ultron `_users()` checks. Descendant checks are not captured: test-spawned gate and dispatch processes can enter `runner.temp_root`, which calls `_users()`. Any scratch-throttle arm must cover those descendants as well as the parent. | **95.2** | **9.5%** |
 | 4 | **macOS fork/exec overhead** | Constructor-time difference across all 25,013 launches. Benchmark: 2.50 ms vs 0.28 ms per launch (8.9×). | **69.5** | **7.0%** |
 | 5 | **CPU speed (mixed workload)** | Python children CPU portion at ~1.15× (conservative mean of tight-loop 0.96× and pystone 1.55×). | **84.8** | **8.5%** |
 | 6 | **Python interpreter startup** | Post-fork init: (17.3 − 2.5) − (6.2 − 0.28) = 8.88 ms/launch × 1362 launches. | **11.9** | **1.2%** |
