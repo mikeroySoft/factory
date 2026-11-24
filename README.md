@@ -1110,7 +1110,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Initial attempts, review bounces and manager FIX classify actual gate results
    before budget stops, including when mechanical repairs exhaust the work window.
    Protected-path failures retain human-clearing guidance in the comment and packet;
-   other gate failures remain `gate_failed`. `budget` applies only without a gate result.
+   other gate failures remain `gate_failed`. Refusing a bounce for insufficient
+   or expired budget retains the existing PR-tier failure as `pr_checks_failed`
+   with its report. `budget` applies only without a gate result.
 4. **Gate.** The configured `[gate].protected_paths` globs from the base ref's
    `.factory.toml` are checked against the committed worker diff first, before
    any checks; a hit stops the run and immediately escalates the ticket to

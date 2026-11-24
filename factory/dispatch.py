@@ -5924,6 +5924,8 @@ def process_ticket(
                 ):
                     break
                 if time.monotonic() > deadline:
+                    if pr_failed:
+                        break
                     finished = _worker_finished_for_head(n, gate_head)
                     if actionable and finished:
                         _record_rework(n, gate_head, findings, deferred=True)
@@ -5965,6 +5967,8 @@ def process_ticket(
                              code="protected_paths")
                     return
                 if not _gate_has_result(report) and report.startswith("budget exceeded"):
+                    if pr_failed:
+                        break
                     escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
                     return
                 if not ok:
