@@ -259,6 +259,43 @@ class RoundGateBudgetTest(unittest.TestCase):
         self.assertIn("prior gate failed", (dispatch.FACTORY / "escalations/7.md").read_text())
         self.assertFalse(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout)
 
+    def test_expired_attempt_deadline_preserves_previous_gate_failure(self):
+        self.write_config(check=[sys.executable, "-c", "print('retained gate failure'); raise SystemExit(1)"])
+        fixtures.LocalCLI.commit_config(self)
+        clock = [0]
+        original_worker = dispatch.run_worker
+        calls = []
+
+        def worker(*args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                return original_worker(*args, **kwargs)
+            clock[0] = 61
+            return 143, "gate_timeout"
+
+        with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(dispatch, "run_worker", side_effect=worker), \
+                mock.patch.object(dispatch, "run_gate", wraps=dispatch.run_gate) as gate, \
+                mock.patch.object(dispatch, "push_and_pr") as publish:
+            dispatch.configure(config.load(self.repo))
+            issue = dispatch.gh_json(["issue", "view", "7"])
+            dispatch.process_ticket(issue, 1, False, forced=True)
+        self.assertEqual(len(calls), 2)
+        gate.assert_called_once()
+        publish.assert_not_called()
+        rows = lifecycle.read_events(self.events)
+        attempts = [r for r in rows if r.get("event") == "attempt"]
+        self.assertEqual([r["gate"] for r in attempts], ["FAIL", None])
+        self.assertEqual(attempts[-1]["timeout"], "gate_timeout")
+        escalation, = [r for r in rows if r.get("event") == "escalate"]
+        self.assertEqual(escalation["code"], "gate_failed")
+        self.assertEqual(escalation["log"], attempts[0]["log"])
+        self.assertIn("gate failed", escalation["reason"])
+        self.assertNotIn("wall-clock budget", escalation["reason"])
+        self.assertIn("retained gate failure", (dispatch.FACTORY / "escalations/7.md").read_text())
+        self.assertFalse(self.git("ls-remote", "origin", "refs/heads/agent/7").stdout)
+
     def assert_pr_failure_survives_bounce_budget(self, cutoff):
         self.write_config(extra=(
             '[[gate.check]]\nname = "pr-code"\nwhen = "pr"\nrun = '
