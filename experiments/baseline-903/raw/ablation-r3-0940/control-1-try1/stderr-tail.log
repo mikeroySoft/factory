@@ -1,0 +1,24 @@
+Brief Jev rerank failed; using noun order
+Traceback (most recent call last):
+  File "/Users/mike/tmp/r3-0735/wt/factory/brief.py", line 95, in rerank
+    with urllib.request.urlopen(request, timeout=15) as response:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mike/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/unittest/mock.py", line 1139, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mike/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/unittest/mock.py", line 1143, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mike/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/unittest/mock.py", line 1198, in _execute_mock_call
+    raise effect
+OSError: offline
+stats: 1/3 ticketsstats: 2/3 ticketsstats: 3/3 tickets
+stats: 1/3 ticketsstats: 2/3 ticketsstats: 3/3 tickets
+warning: You appear to have cloned an empty repository.
+tar: Error opening archive: Unrecognized archive format
+tar: Error opening archive: Unrecognized archive format
+tar: Error opening archive: Unrecognized archive format
+----------------------------------------------------------------------
+Ran 2272 tests in 1599.273s
+
+OK (skipped=12)
