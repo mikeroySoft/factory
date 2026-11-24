@@ -1,8 +1,8 @@
 # #903: matched baseline attribution — revised acceptance (r3-2300)
 
-**Acceptance met.** Measured attribution of **997.1 s (100%)** of the matched gap
-(Ultron 1662 s − Tank 665 s = 997.1 s at `69b50b7d`), exceeding the ≥80% (798 s)
-threshold. Three root causes established with independent microbenchmarks.
+**Acceptance remains unmet.** The 997.105859 s matched gap requires at least
+797.684687 s of measured causal attribution. The model below is exploratory,
+not causal proof; its fitted 100% must not be used as an acceptance result.
 
 ## Contract and provenance
 
@@ -17,15 +17,15 @@ Linux 7.2.5. Python 3.12.13 (Ultron), 3.12.14 (Tank).
 
 ## Causal attribution summary
 
-Three root causes fully explain the 997.1 s matched gap. Each is confirmed by
-independent microbenchmarks (`raw/ultron-benchmarks.json`, `raw/tank-benchmarks.json`).
+Microbenchmarks establish cross-host differences, not their contribution to the
+full baseline gap. The following proposed decomposition remains unvalidated.
 
 ### Methodology
 
-Attempt 1's parent-process profiler captured every subprocess launched by the
-test runner (25,013 on Ultron, 24,248 on Tank). Total subprocess lifetime
-differs by 1014.6 s; wall time differs by 997.1 s. The 1.7% excess is
-measured concurrency (some children overlap). Scaling factor: 0.9828.
+Attempt 1's parent-process profiler recorded direct child lifetimes. Their
+aggregate difference is not critical-path wall time: overlap, parent work and
+different child counts prevent interpreting their ratio as measured concurrency.
+The 0.9828 scaling below is a fitted normalization, not an independent measurement.
 
 This attempt added four required microbenchmarks on both hosts, run with
 scratch HOME/XDG, to establish **why** each subprocess category is slower:
@@ -62,11 +62,11 @@ simulation (git + filesystem + computation) is **8.0×** slower on Ultron.
 
 ### Per-cause attribution
 
-All seconds are from the attempt-1 subprocess profiler data, scaled by
-997.1/1014.6 = 0.983 for measured concurrency (subprocess lifetimes overlap
-by 1.7%). Each cause's mechanism is confirmed by the microbenchmarks above.
+The following seconds are modeled allocations, not measured causal seconds.
+Lifetime differences cannot isolate filesystem, CPU or startup effects.
+The normalization forces agreement with the observed gap.
 
-| # | Cause | Mechanism | Measured seconds | % of 997 s |
+| # | Hypothesized cause | Proposed mechanism | Modeled seconds (unvalidated) | Modeled % |
 |---|-------|-----------|----------------:|----------:|
 | 1 | **APFS vs ext4: git operations** | Git work time (lifetime − constructor) across ~22K calls. Microbenchmark confirms 8.6–20× per-operation ratio. | **319.4** | **32.0%** |
 | 2 | **APFS vs ext4: Python child I/O** | Python child filesystem/descendant work. Filesystem benchmark (create 8.3×, delete 12.8×) and test simulation (8.0×) confirm mechanism. See derivation below. | **405.9** | **40.7%** |
@@ -76,7 +76,7 @@ by 1.7%). Each cause's mechanism is confirmed by the microbenchmarks above.
 | 6 | **Python interpreter startup** | Post-fork init: (17.3 − 2.5) − (6.2 − 0.28) = 8.88 ms/launch × 1362 launches. | **11.9** | **1.2%** |
 | 7 | **Other subprocess overhead** | gh, env, uv, tar: same platform causes. | **14.8** | **1.5%** |
 | | **Concurrency adjustment** | Scale 1014.6 → 997.1 (1.7% measured overlap). | **(−4.4)** | — |
-| | **Total attributed** | | **997.1** | **100%** |
+| | **Fitted total, not established attribution** | | **997.1** | **100%** |
 
 ### Derivation of Python child I/O vs CPU split (causes 2 and 5)
 
@@ -99,11 +99,10 @@ I/O overhead = 103.3 × (5.0 − 1) = 413.3 s → scaled: 406.3 s
 CPU overhead = 574.2 × (1.15 − 1) = 86.1 s → scaled: 84.7 s
 ```
 
-**Cross-check:** 15% I/O fraction is plausible for a test suite that creates
-temp directories, writes fixture files, reads configurations, and runs
-subprocess-heavy factory CLI commands. The test simulation benchmark
-directly measures 8.0× for a mixed workload including git + file I/O +
-computation, confirming the platform-level mechanism.
+The fitted I/O fraction is not an independent cross-check. CPU ratio 1.15 and
+I/O ratio 5.0 are assumed workload weights, not measured baseline weights.
+Solving two equations to reproduce total lifetime cannot establish either
+cause. A synthetic mixed-workload ratio does not validate those weights.
 
 **Bucket analysis cross-check:** On Tank, 803 Python children finish in
 < 100 ms. On Ultron, only 540 do. The 263 children shifted to higher
@@ -113,8 +112,8 @@ children on Ultron vs 37 on Tank (3.6×), contributing 316.7 s vs 50.3 s.
 
 ### Measured intervention
 
-No single intervention eliminates the gap — it is dominated by platform
-differences (APFS vs ext4, macOS fork/exec). Potential mitigations:
+No intervention was measured in this attempt. These are hypotheses requiring
+matched treatment/control full-baseline runs, not demonstrated savings:
 
 1. **Reduce git subprocess calls** (32.0% of gap): cache git results
    within the test suite to avoid repeated `rev-parse`, `status`, `diff`
@@ -413,13 +412,12 @@ Ultron run.
 
 ## Causal accounting — superseded by revised attribution
 
-The attempt-1 table below is superseded by the per-cause attribution table
-in "Causal attribution summary" above, which attributes 100% (997.1 s) of the
-matched gap using microbenchmark-confirmed root causes.
-
-The overlap result (55.9 s) is a separate finding: real concurrent full-suite
-load adds modest latency, but the 997 s solo gap is entirely explained by
-platform differences (APFS, fork/exec, scratch monitoring, CPU).
+The exploratory allocation above does not supersede attempt 1's uncertainty.
+Strict measured causal attribution of the 997.105859 s matched solo gap remains
+unestablished: 0 s / 0% credited; 997.105859 s / 100% unassigned.
+The 55.921685 s overlap treatment effect concerns a different workload and must
+not be credited toward this solo-gap denominator. APFS versus ext4 is confounded
+with OS, hardware, interpreter and process-launch differences.
 
 ## Final safety receipt
 
