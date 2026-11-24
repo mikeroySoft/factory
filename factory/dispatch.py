@@ -724,7 +724,10 @@ def delete_host_claim(n: int, claim: dict) -> None:
 def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement: int | None = None) -> dict:
     if replacement is None and interrupted_host_claim(n, claims) is not None:
         return issue
-    claims = [row for row in claims if row["id"] != replacement and not row.get("preserve_history")]
+    released = {row["nonce"] for row in lifecycle.read_events(EVENTS)
+                if row.get("event") == "claim-released" and row.get("nonce")}
+    claims = [row for row in claims if row["id"] != replacement
+              and not row.get("preserve_history") and row["nonce"] not in released]
     live_ids = {row["id"] for row in live_host_claims(claims)}
     stale = [row for row in claims if row["id"] not in live_ids]
     if not stale or (replacement is None and host_claim_hold(n, issue, claims)):
@@ -740,7 +743,8 @@ def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement
         owned = owned_host_claim(n, current)
         if owned is None or owned["id"] != replacement:
             return issue
-    current = [row for row in current if row["id"] != replacement and not row.get("preserve_history")]
+    current = [row for row in current if row["id"] != replacement
+               and not row.get("preserve_history") and row["nonce"] not in released]
     if issue.get("assignees") and replacement is None:
         # Keep durable recovery evidence until the elected replacement has assigned.
         # Admission/claim failures must not leave @me with no claim on any host.
@@ -928,10 +932,12 @@ def release_expired_claim(
             raise ValueError("ticket is not open")
         if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
             raise ValueError("ticket has a human assignee")
-        if "requeue" not in elected or not elected.get("preserve_history"):
+        takeover = reason == "land-host takeover"
+        if "requeue" not in elected or (takeover and not elected.get("preserve_history")):
+            retained = "Factory claim history: retained\n" if takeover else ""
             gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                      "-f", (f"body=Factory requeue: nonce={elected['nonce']}\n"
-                            f"Factory claim history: retained\n{context}")])
+                            f"{retained}{context}")])
         run(["gh", "issue", "edit", str(n), "--repo", REPO,
              "--remove-label", f"host:{elected['host']}"])
         record("claim-released", ticket=n, host=elected["host"], nonce=elected["nonce"],
