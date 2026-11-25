@@ -8,6 +8,8 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from factory import pause
+
 DRAIN_MAX_TTL = timedelta(hours=8)  # Shared contract with District.
 
 
@@ -19,6 +21,10 @@ def _timestamp(value: str) -> datetime:
 
 
 def main(argv: list[str]) -> int:
+    paused = pause.read_status()
+    if paused["paused"]:
+        print(f"skipped: factory pause ({pause.describe(paused)})", file=sys.stderr)
+        return 1
     # ExecCondition interprets even an accidental SystemExit as a skip. Fail open.
     try:
         now = _timestamp(os.environ["FACTORY_NOW"]) if "FACTORY_NOW" in os.environ else datetime.now(UTC)
