@@ -30,12 +30,14 @@ class HeartbeatBackoffTest(unittest.TestCase):
             probe = subprocess.CompletedProcess([], 0, json.dumps({"resources": {
                 name: {"remaining": 0, "reset": 4102444800} for name in ("core", "graphql")
             }}), "")
-            with mock.patch("factory.gh_reads.subprocess.run", return_value=probe):
-                with gh_reads.scope(journal, "claim-heartbeat", isolated=True, backoff=False) as state:
-                    with gh_reads.item(7):
-                        gh_reads.run(command, lambda: subprocess.CompletedProcess(
-                            command, 1, "", "API rate limit exceeded (HTTP 403)"))
-                    self.assertTrue(state.stopped)
+            with (
+                mock.patch("factory.gh_reads.subprocess.run", return_value=probe),
+                gh_reads.scope(journal, "claim-heartbeat", isolated=True, backoff=False) as state,
+            ):
+                with gh_reads.item(7):
+                    gh_reads.run(command, lambda: subprocess.CompletedProcess(
+                        command, 1, "", "API rate limit exceeded (HTTP 403)"))
+                self.assertTrue(state.stopped)
             rows = lifecycle.read_events(journal)
             self.assertEqual([row["code"] for row in rows if row["event"] == "gh-read-skipped"],
                              ["rate_limited"])

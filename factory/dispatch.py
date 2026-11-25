@@ -740,16 +740,17 @@ class HostClaim:
             try:
                 if retry_at is not None and time.time() < retry_at:
                     continue
-                with gh_reads.scope(EVENTS, "claim-heartbeat", isolated=True, backoff=False) as reads:
-                    with gh_reads.item(self.n), lifecycle.scope(
-                        EVENTS, "claim-heartbeat", ticket=self.n, lazy=True,
-                    ):
-                        owned = owned_host_claim(self.n)
-                        if owned is None or owned["nonce"] != self.comment["nonce"]:
-                            log(f"#{self.n}: host claim heartbeat stopped (ownership lost)")
-                            return
-                        run(["gh", "api", f"repos/{REPO}/issues/comments/{self.comment['id']}",
-                             "--method", "PATCH", "-f", f"body={self.body()}"])
+                with (
+                    gh_reads.scope(EVENTS, "claim-heartbeat", isolated=True, backoff=False) as reads,
+                    gh_reads.item(self.n),
+                    lifecycle.scope(EVENTS, "claim-heartbeat", ticket=self.n, lazy=True),
+                ):
+                    owned = owned_host_claim(self.n)
+                    if owned is None or owned["nonce"] != self.comment["nonce"]:
+                        log(f"#{self.n}: host claim heartbeat stopped (ownership lost)")
+                        return
+                    run(["gh", "api", f"repos/{REPO}/issues/comments/{self.comment['id']}",
+                         "--method", "PATCH", "-f", f"body={self.body()}"])
                 retry_at = reads.reset
             except (OSError, subprocess.CalledProcessError) as exc:
                 log(f"#{self.n}: host claim heartbeat failed ({exc})")
