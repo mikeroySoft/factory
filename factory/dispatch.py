@@ -4872,7 +4872,7 @@ def merge_pass_locked(dry_run: bool) -> None:
     for pr in prs:
         m = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
         n = int(m.group(1)) if m else None
-        labels = {label["name"] for label in pr["labels"]}
+        labels = {label["name"] for label in pr.get("labels", [])}
         reason = (
             "not_ticket" if not m else
             "draft" if pr["isDraft"] else

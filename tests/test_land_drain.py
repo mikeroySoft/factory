@@ -214,7 +214,7 @@ class LandDrainTest(unittest.TestCase):
                     second["labels"].append({"name": "factory-held"})
                 with mock.patch.object(dispatch, "refresh_pr_branch", return_value=True), \
                         mock.patch.object(dispatch, "escalate"), \
-                        mock.patch.object(dispatch, "pr_checks", side_effect=lambda pr, head: [
+                        mock.patch.object(dispatch, "pr_checks", side_effect=lambda pr, head, failure=failure, second=second: [
                             {"name": "ci", "bucket": "pending" if failure == "ci" and pr == second["number"] else "pass"}
                         ]):
                     dispatch.land_pass(False)
@@ -228,7 +228,7 @@ class LandDrainTest(unittest.TestCase):
                 original_query = self.query
                 views = 0
 
-                def query(args):
+                def query(args, original_query=original_query, pr=pr, stage=stage):
                     nonlocal views
                     result = original_query(args)
                     if args[:3] == ["pr", "view", str(pr["number"])] and "files" in args[-1]:
