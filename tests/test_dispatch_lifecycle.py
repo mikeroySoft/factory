@@ -57,6 +57,11 @@ elif a[:2] == ["issue", "create"]:
     print("https://example.invalid/issues/7")
 elif a[:2] == ["issue", "list"]:
     print(json.dumps([issue]) if s.get("sync") and not s.get("merged") else "[]")
+elif a == ["api", "--paginate", "--slurp", "repos/local/smoke/pulls?state=open&per_page=100"]:
+    rows = []
+    if s.get("pr") and not s.get("merged") and s.get("pr_state", "OPEN") == "OPEN":
+        rows.append({"number": 70, "head": {"ref": "agent/7"}})
+    print(json.dumps([rows]))
 elif a[:2] == ["pr", "list"]:
     state = s.get("pr_state", "OPEN")
     requested = a[a.index("--state") + 1].upper() if "--state" in a else "OPEN"

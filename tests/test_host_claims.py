@@ -63,6 +63,9 @@ class FakeGitHub:
                 result = [copy.deepcopy(self.issue)]
             elif args[:2] == ["pr", "list"]:
                 result = copy.deepcopy(self.open_prs)
+            elif args[-1].endswith("/pulls?state=open&per_page=100"):
+                result = [[{"number": pr["number"], "head": {"ref": "agent/7"}}
+                           for pr in self.open_prs]]
             elif args == ["api", "user"]:
                 result = {"login": "@me"}
             elif args[:2] == ["issue", "view"]:

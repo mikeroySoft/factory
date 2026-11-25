@@ -78,6 +78,15 @@ class FakeGitHub:
     def gh_json(self, args: list[str]) -> object:
         if args == ["api", "user"]:
             return {"login": "factory"}
+        if args == [
+            "api", "--paginate", "--slurp",
+            "repos/acme/widgets/pulls?state=open&per_page=100",
+        ]:
+            rows = (
+                [{"number": 102, "head": {"ref": "agent/9"}}]
+                if self.has_pr and not self.closed and not self.merged else []
+            )
+            return [rows]
         if args[:2] == ["pr", "list"]:
             requested = args[args.index("--state") + 1].upper() if "--state" in args else "OPEN"
             return [self.pr()] if self.has_pr and not self.merged and (requested == "ALL" or not self.closed) else []

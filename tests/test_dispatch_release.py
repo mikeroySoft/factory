@@ -148,6 +148,78 @@ class DispatchRelease(unittest.TestCase):
         self.assertTrue(self.github.comments)  # durable recovery evidence survives failed cleanup
         self.assertFalse(any(row.get("event") == "assignee-cleared" for row in lifecycle.read_events(module.EVENTS)))
 
+    def test_cleanup_failure_preserves_the_original_crash(self):
+        module = self.dispatcher("tank")
+        run = module.run
+
+        def github(cmd, *args, **kwargs):
+            if "--remove-assignee" in cmd:
+                raise subprocess.CalledProcessError(1, cmd, stderr="unassign unavailable")
+            return run(cmd, *args, **kwargs)
+
+        with mock.patch.object(module, "run", side_effect=github), \
+                mock.patch.object(module, "worker_round", side_effect=RuntimeError("original crash")), \
+                mock.patch.object(module, "escalation_packet", return_value=(module.FACTORY / "packet.md", 1)):
+            with self.assertRaisesRegex(RuntimeError, "original crash") as error:
+                module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        self.assertTrue(any("Assignment cleanup also failed" in note for note in error.exception.__notes__))
+        self.assertFalse(module.lock_held(module.ticket_lock(7)))
+        self.assertTrue(self.github.comments)
+
+    def test_replacement_after_cleanup_issue_read_keeps_its_assignment(self):
+        module = self.dispatcher("tank")
+        github = module.gh_json
+        replacement = None
+
+        def read(args):
+            nonlocal replacement
+            result = github(args)
+            if args[:2] == ["issue", "view"] and args[-1] == "labels,assignees" and replacement is None:
+                self.github.comments.clear()
+                self.github.issue["labels"] = [{"name": "ready-for-agent"}]
+                replacement = self.github.add_claim("ultron", module.datetime.now(module.UTC))
+            return result
+
+        with mock.patch.object(module, "gh_json", side_effect=read):
+            module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertEqual(self.github.comments, [replacement])
+        self.assertFalse(any(row.get("event") == "assignee-cleared" for row in lifecycle.read_events(module.EVENTS)))
+
+    def test_pr_hold_reads_later_pages_and_matches_the_exact_branch(self):
+        module = self.dispatcher(None)
+        github = module.gh_json
+
+        def read(args):
+            if args[-1].endswith("/pulls?state=open&per_page=100"):
+                return [[{"number": 700, "head": {"ref": "agent/70"}}],
+                        [{"number": 70, "head": {"ref": "agent/7"}}]]
+            return github(args)
+
+        with mock.patch.object(module, "gh_json", side_effect=read):
+            self.assertEqual(module.frontier()[0]["held"], "open agent PR #70")
+
+    def test_requeue_close_failure_rechecks_whether_the_pr_is_still_open(self):
+        for concurrently_closed in (False, True):
+            with self.subTest(concurrently_closed=concurrently_closed):
+                self.setUp()
+                module = self.dispatcher(None)
+                self.github.open_prs = [{"number": 70}]
+
+                def close(cmd, *args, **kwargs):
+                    if concurrently_closed:
+                        self.github.open_prs.clear()
+                    return subprocess.CompletedProcess(cmd, 1, "", "close failed")
+
+                with mock.patch.object(module, "run", side_effect=close):
+                    if concurrently_closed:
+                        module.close_requeue_pr(7)
+                        self.assertNotIn("held", module.frontier()[0])
+                    else:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            module.close_requeue_pr(7)
+                        self.assertIn("#70", module.frontier()[0]["held"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -383,12 +383,12 @@ class RefreshGenerationTest(unittest.TestCase):
         dispatch.configure(self.cfg)
         self.github.issue_labels, self.github.assignees = {config.LABEL_AGENT}, []
         self.github.closed = True
-        dispatch.record("pr-requeued", ticket=9, pr=102)
         self.process()  # observes the owner's release: generation 2 gets its own review bounces
         self.assertEqual([e["generation"] for e in self.events("generation")], [1, 2])
         rounds = [(e["round"], e["deferred"]) for e in self.events("review-rework")]
         self.assertEqual(rounds, [(1, False), (2, False)] * 2)
         self.assertEqual([e["code"] for e in self.events("escalate")][1:], ["review_revise", "review_revise"])
+        self.assertEqual([e["pr"] for e in self.events("pr-opened")], [102, 102])
 
 
 class HandoffGenerationTest(unittest.TestCase):

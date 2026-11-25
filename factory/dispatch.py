@@ -861,13 +861,17 @@ def unclaim(
         release_stale_claims(n, fresh, claims, replacement=owned["id"])
         if (local := _HOST_CLAIMS.get(n)) is not None:
             local.stop()
+        current = owned_host_claim(n)
+        if current is None or current["nonce"] != owned["nonce"]:
+            owned = None
+            login = None
     clearing = login is not None and any(
         row["login"].casefold() == login for row in fresh["assignees"]
     )
     assignee = ["--remove-assignee", "@me"] if clearing else []
     args = [*label_args, *assignee] if assignee_last else [*assignee, *label_args]
     if args and run(["gh", "issue", "edit", str(n), "--repo", REPO, *args],
-                    check=check or clearing).returncode:
+                    check=check or clearing or requeue).returncode:
         return
     if clearing:
         record("assignee-cleared", ticket=n, login=login, exit_path=exit_path)
@@ -886,7 +890,12 @@ def close_requeue_pr(n: int) -> None:
     prs = gh_json(["pr", "list", "--repo", REPO, "--state", "open",
                    "--head", f"agent/{n}", "--json", "number"])
     for pr in prs:
-        run(["gh", "pr", "close", str(pr["number"]), "--repo", REPO])
+        result = run(["gh", "pr", "close", str(pr["number"]), "--repo", REPO], check=False)
+        if result.returncode and gh_json(
+            ["pr", "list", "--repo", REPO, "--state", "open",
+             "--head", f"agent/{n}", "--json", "number"]
+        ):
+            result.check_returncode()
         record("pr-requeued", ticket=n, pr=pr["number"])
 
 
@@ -909,12 +918,16 @@ def frontier() -> list[dict]:
             "number,title,body,labels,assignees,createdAt",
         ]
     )
+    prs = gh_json(
+        ["api", "--paginate", "--slurp", f"repos/{REPO}/pulls?state=open&per_page=100"]
+    ) if issues else []
+    open_prs = {pr["head"]["ref"]: pr["number"] for page in prs for pr in page}
     for issue in issues:
         n = issue["number"]
         if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
             issue["held"] = "initiative record"
-        elif held := open_agent_pr_hold(n):
-            issue["held"] = held
+        elif pr := open_prs.get(f"agent/{n}"):
+            issue["held"] = f"open agent PR #{pr}"
         elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
             issue["held"] = held
         elif issue["assignees"] and not (cfg.host_name and claims):
@@ -3580,8 +3593,8 @@ def push_and_pr(
     )
     reopen = False
     if not existing and ticket is not None:
-        retained = next((row for row in reversed(_generation_rows(ticket))
-                         if row.get("event") == "pr-requeued"), None)
+        retained = next((row for row in reversed(lifecycle.read_events(EVENTS))
+                         if row.get("ticket") == ticket and row.get("event") == "pr-requeued"), None)
         if retained is not None:
             pr = gh_json(["pr", "view", str(retained["pr"]), "--repo", REPO,
                           "--json", "number,state,headRefName,baseRefName"])
@@ -5963,13 +5976,21 @@ def process_ticket(
             # later pass skips forever; hand it back to a human first, worktree intact, then
             # still surface the crash.
             if claimed:
-                escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error")
+                try:
+                    escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error")
+                except Exception as failure:
+                    exc.add_note(f"Dispatch escalation also failed: {stderr_tail(str(failure))}")
                 execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
             raise
         finally:
+            original = sys.exception()
             try:
                 if n in _ASSIGNMENTS or host_claim is not None:
                     unclaim(n, check=True, exit_path=exit_path)
+            except Exception as failure:
+                if original is None:
+                    raise
+                original.add_note(f"Assignment cleanup also failed: {stderr_tail(str(failure))}")
             finally:
                 _ASSIGNMENTS.pop(n, None)
                 if host_claim is not None:

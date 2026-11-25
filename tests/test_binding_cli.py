@@ -30,6 +30,8 @@ if a[:2] == ['issue', 'view']:
     print(json.dumps(s['tickets'][a[2]]))
 elif a[:2] == ['issue', 'list']:
     print(json.dumps([i for i in s['tickets'].values() if flag('--label') in [v['name'] for v in i['labels']]]))
+elif a == ['api', '--paginate', '--slurp', 'repos/acme/widgets/pulls?state=open&per_page=100']:
+    print('[[]]')
 elif a == ['api', 'user']:
     print(json.dumps({'login': 'runner'}))
 elif a == ['api', 'rate_limit']:

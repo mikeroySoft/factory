@@ -187,6 +187,11 @@ class DispatcherPassTest(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, json.dumps(served), "")
             if args[:2] == ["pr", "list"]:
                 return subprocess.CompletedProcess(cmd, 0, "[]", "")
+            if args == [
+                "api", "--paginate", "--slurp",
+                f"repos/{dispatch.REPO}/pulls?state=open&per_page=100",
+            ]:
+                return subprocess.CompletedProcess(cmd, 0, "[[]]", "")
             if args[0] == "api" and args[1].endswith("/dependencies/blocked_by"):
                 return subprocess.CompletedProcess(cmd, 1, "", "HTTP 404")
             self.fail(f"unexpected gh call: {cmd}")
