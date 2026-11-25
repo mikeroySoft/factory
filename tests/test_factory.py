@@ -5065,6 +5065,7 @@ class InitiativeGuardTest(unittest.TestCase):
         return stub_bin(self.root, gh=f'''
 case "$1 $2" in
   "pr list") echo '[]';;
+  "api --paginate") echo '[[]]';;
   "issue list") echo '[{{"number":9,"title":"Plan","body":"Outcome","labels":[{listed_labels}],"assignees":[]}}]';;
   "issue view") echo '{self.INITIATIVE}';;
   "api repos/acme/widgets/issues/9/timeline") echo '[]';;

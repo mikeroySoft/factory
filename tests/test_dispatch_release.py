@@ -9,6 +9,8 @@ from unittest import mock
 from factory import lifecycle, schedule
 from tests import test_host_claims as host_claims
 
+FakeGitHub = host_claims.FakeGitHub
+
 
 class DispatchRelease(unittest.TestCase):
     setUp = host_claims.HostClaimRaceTest.setUp
@@ -22,7 +24,7 @@ class DispatchRelease(unittest.TestCase):
     def test_approved_open_pr_without_assignee_is_a_hold_at_both_boundaries(self):
         for host in (None, "tank"):
             with self.subTest(host=host):
-                self.setUp()
+                self.github = FakeGitHub()
                 self.github.open_prs = [{"number": 70}]
                 module = self.dispatcher(host)
                 module.record("approved", ticket=7, head="a" * 40)
@@ -59,7 +61,7 @@ class DispatchRelease(unittest.TestCase):
                     module = self.dispatcher(host)
                     run = module.run
 
-                    def github(cmd, *args, **kwargs):
+                    def github(cmd, *args, path=path, run=run, **kwargs):
                         if cmd[:3] == ["gh", "issue", "comment"]:
                             return subprocess.CompletedProcess(cmd, 0, "https://example.invalid/comment/1", "")
                         result = run(cmd, *args, **kwargs)
@@ -68,7 +70,7 @@ class DispatchRelease(unittest.TestCase):
                             raise subprocess.CalledProcessError(1, cmd, stderr="lost response")
                         return result
 
-                    def worker(*args, **kwargs):
+                    def worker(*args, path=path, **kwargs):
                         if {"login": "human"} not in self.github.issue["assignees"]:
                             self.github.issue["assignees"].append({"login": "human"})
                         if path == "dispatcher_error":
@@ -141,9 +143,9 @@ class DispatchRelease(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, cmd, stderr="unassign unavailable")
             return run(cmd, *args, **kwargs)
 
-        with mock.patch.object(module, "run", side_effect=github):
-            with self.assertRaises(subprocess.CalledProcessError):
-                module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        with mock.patch.object(module, "run", side_effect=github), \
+                self.assertRaises(subprocess.CalledProcessError):
+            module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
         self.assertFalse(module.lock_held(module.ticket_lock(7)))
         self.assertTrue(self.github.comments)  # durable recovery evidence survives failed cleanup
         self.assertFalse(any(row.get("event") == "assignee-cleared" for row in lifecycle.read_events(module.EVENTS)))
@@ -159,9 +161,9 @@ class DispatchRelease(unittest.TestCase):
 
         with mock.patch.object(module, "run", side_effect=github), \
                 mock.patch.object(module, "worker_round", side_effect=RuntimeError("original crash")), \
-                mock.patch.object(module, "escalation_packet", return_value=(module.FACTORY / "packet.md", 1)):
-            with self.assertRaisesRegex(RuntimeError, "original crash") as error:
-                module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+                mock.patch.object(module, "escalation_packet", return_value=(module.FACTORY / "packet.md", 1)), \
+                self.assertRaisesRegex(RuntimeError, "original crash") as error:
+            module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
         self.assertTrue(any("Assignment cleanup also failed" in note for note in error.exception.__notes__))
         self.assertFalse(module.lock_held(module.ticket_lock(7)))
         self.assertTrue(self.github.comments)
@@ -206,7 +208,7 @@ class DispatchRelease(unittest.TestCase):
                 module = self.dispatcher(None)
                 self.github.open_prs = [{"number": 70}]
 
-                def close(cmd, *args, **kwargs):
+                def close(cmd, *args, concurrently_closed=concurrently_closed, **kwargs):
                     if concurrently_closed:
                         self.github.open_prs.clear()
                     return subprocess.CompletedProcess(cmd, 1, "", "close failed")

@@ -75,7 +75,7 @@ flowchart TB
   REPORTER -.->|"no watcher re-queues needs-info; a human relabels: decisions.apply"| NT
 
   %% Build
-  RFA -->|"open, unassigned, no open blockers: dispatch.frontier"| CLAIM
+  RFA -->|"open, unassigned, no open agent PR or blockers: dispatch.frontier"| CLAIM
   RFA -->|"its PR's red CI completed before the release: no escalation, waits for a worker: manage.frontier_pass"| CLAIM
   RFA -->|"its PR's CI red after the release, or idle stale_days counted from the release: manage.frontier_pass, manage.released_at"| ESC
   CLAIM -->|"dispatch.process_ticket"| WR
@@ -120,7 +120,7 @@ flowchart TB
   NT -->|"untriaged watch issue, newest evidence 24 hours old, issue closed completed: watch.run_pass"| HUMAN
 
   %% Recovery
-  RFA -->|"expired own-host claim without completion and open PR (including missing local receipt): dispatch.process_ticket"| ESC
+  RFA -->|"open agent PR, even without a live claim: dispatch.frontier holds until merge or close"| RFA
   ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
   UPSTREAM -->|"new sync ticket on a staged agent/N candidate; never moves main: dispatch.sync_pass"| RFA
   EXTPR -->|"review attempts exhausted, new issue: dispatch.review_intake_pass"| RFH
@@ -209,7 +209,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.defer_mutation_proof` | `ready-for-human` | `ready-for-agent` | Mutation-proof base moved during review, refresh or manager FIX: claim released and requeued for the next pass without charging worker or review budget |
 | `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
 | `dispatch.merge_pass_locked` | `factory-approved` | — | CI fail, or cancel after steps ran; missing approval evidence; journaled REQUEST_CHANGES or REVISE |
-| `dispatch.push_and_pr` | — | `*` | Caller's PR label; ticket PRs pass none |
+| `dispatch.push_and_pr` | `factory-approved` | `*` | Caller's PR label; remove stale approval before reopening a retained requeue PR |
 | `dispatch.refresh_pr_branch` | `factory-approved`, `ready-for-human` | `ready-for-agent` | Behind main: approval withdrawn before refresh; eligible conflict and repeated-gate requeues restore agent flow |
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
@@ -245,7 +245,6 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``High-risk machine checks disagreed on two successive heads`` | Non-actionable disagreement → one worker rework; next-head non-actionable disagreement → escalate (`risk_disagreement`) |
 | `dispatch.process_ticket` | ``approval evidence, head, or human review state changed before approval`` | review → escalate |
 | `dispatch.process_ticket` | ``dispatcher error: {}; worktree kept at {}`` | any post-claim exception → escalate (`dispatcher_error`), then re-raised; a `LeaseRefused` from `dispatch.push_agent` escalates as `lease_refused` with its own message |
-| `dispatch.process_ticket` | ``own-host claim expired during an unfinished attempt with an open PR; worktree kept at {}; local HEAD {}; remote agent/{} {}; resume agent/{} after merging {}`` | Elected own-host attempt interrupted before completion, including missing local receipts → escalate (`dispatcher_error`) with a nonce-bearing requeue comment; keep PR/worktree and report retained local history (unpushed SHAs when readable, unavailable otherwise) |
 | `dispatch.merge_pass_locked` | ``PR #{}: CI failed ({}); `{}` label removed`` | CI fail → escalate |
 | `dispatch.runner_unavailable` | ``PR #{}: CI runner unavailable ({}) in run {}; `{}` kept`` | CI no runner after rerun → escalate |
 | `dispatch.merge_pass_locked` | ``PR #{}: missing approval evidence bound to {}; `{}` label removed`` | CI pass, missing evidence → escalate |
