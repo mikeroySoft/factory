@@ -1368,9 +1368,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    **accepted equivalent**, with the argument and reviewer, but do not block.
    Invalid entries fail in both blocking and report-only modes. Before selecting
    mutants, committed registries resolve every entry using its complete `original`
-   text plus the three source lines before and after it, from the registry's last
-   committed revision. That protected registry revision is the review snapshot
-   for all entries; updating it reanchors their contexts. At file boundaries,
+   text plus the three source lines before and after it, from the first commit
+   introducing the registry's exact committed blob. Restoring identical reviewed
+   bytes retains that original snapshot; new registry contents pin a new snapshot.
+   Uncommitted changes cannot select a different history snapshot. At file boundaries,
    missing neighbours must remain BOF/EOF. Exactly one identical window must exist
    in the current file: zero or multiple matches, changed context, rewritten or
    deleted source, unreadable files, and shallow history fail closed. Pure line
