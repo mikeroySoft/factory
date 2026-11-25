@@ -1832,6 +1832,10 @@ Later retries never replace it or fill missing historical models. A new FIX
 leaves an unresolved earlier round pending. Missing-model and no-worker cohorts
 remain separate. This is observational, not controlled: case mix can differ;
 the historical default-worker baseline is 6/35 merged (17%).
+Terminal FIX failures count as re-escalated. On already-human tickets, a
+`decision` receipt (`stage = "manager"`, `chosen = "FIX_FAILED"`) supplies that
+outcome without repeating escalation or spending another manager round.
+Older log-only failures lack this evidence and remain unresolved in the journal.
 
 Each worker attempt journals one `llm-usage` event (`stage = "worker"`) with
 `model`, `prompt_tokens` (cached included), `completion_tokens`,

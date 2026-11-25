@@ -33,6 +33,8 @@ class PostFixBoundaryTest(unittest.TestCase):
 
     def test_event_and_decision_names_are_exact(self) -> None:
         rows = journal([
+            {"at": at(timedelta(hours=-14)), "event": "comment", "ticket": 1,
+             "kind": "manager", "decision": "FIX", "comment": 123},
             {"at": at(timedelta(hours=-12)), "event": "manage ", "ticket": 2, "decision": "FIX"},
             {"at": at(timedelta(hours=-11)), "event": "manage", "ticket": 3, "decision": "FIX "},
             *(
@@ -41,6 +43,8 @@ class PostFixBoundaryTest(unittest.TestCase):
                 for ticket, decision in enumerate(("HUMAN", "CLOSE", "RETRY"), start=4)
             ),
             {"at": at(timedelta(hours=-3)), "event": "manage", "ticket": 1, "decision": "FIX"},
+            {"at": at(timedelta(hours=-2, minutes=-50)), "event": "manage-resume", "ticket": 1,
+             "decision": "FIX"},
             {"at": at(timedelta(hours=-2, minutes=-45)), "event": "merged ", "ticket": 1},
             {"at": at(timedelta(hours=-2, minutes=-30)), "event": "escalate ", "ticket": 1},
             {"at": at(timedelta(hours=-2)), "event": "claimed", "ticket": 1,
@@ -68,6 +72,7 @@ class PostFixBoundaryTest(unittest.TestCase):
              "stage": "triage", "worker_model": "model/not-worker"},
             {"at": at(timedelta(hours=-8, minutes=-20)), "event": "llm-usage", "ticket": 11,
              "stage": "worker ", "worker_model": "model/not-worker-stage"},
+            {"at": at(timedelta(hours=-8, minutes=-10)), "event": "approved", "ticket": 11},
             {"at": at(timedelta(hours=-8)), "event": "attempt", "ticket": 11,
              "worker_model": "model/first-attempt"},
             {"at": at(timedelta(hours=-7)), "event": "attempt", "ticket": 11,
@@ -76,6 +81,8 @@ class PostFixBoundaryTest(unittest.TestCase):
             {"at": at(timedelta(hours=-5)), "event": "manage", "ticket": 12, "decision": "FIX"},
             {"at": at(timedelta(hours=-4)), "event": "claimed", "ticket": 12,
              "worker_model": "model/admission-two"},
+            {"at": at(timedelta(hours=-3, minutes=-30)), "event": "lifecycle", "ticket": 12,
+             "stage": "worker", "kind": "enter"},
             {"at": at(timedelta(hours=-3)), "event": "llm-usage", "ticket": 12,
              "stage": "worker", "worker_model": "model/worker-usage"},
             {"at": at(timedelta(hours=-2)), "event": "attempt", "ticket": 12,

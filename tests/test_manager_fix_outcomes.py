@@ -6,7 +6,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from unittest import mock
 
-from factory import config, dispatch, lifecycle, manage, stats
+from factory import config, dispatch, lifecycle, manage, stats, trace
 from tests import test_refresh_conflict as refresh_suite
 
 
@@ -23,6 +23,7 @@ class ManagerFixOutcomeTest(unittest.TestCase):
         self.github.issue_labels = {config.LABEL_HUMAN}
         self.wt = self.cfg.factory / "wt-9"
         self.cfg.factory.mkdir(exist_ok=True)
+        dispatch.LOGS.mkdir(exist_ok=True)
         refresh_suite.git(self.root, "fetch", "-q", "origin")
         refresh_suite.git(self.root, "worktree", "add", "-b", "agent/9", str(self.wt), "origin/agent/9")
         self.packet = self.cfg.factory / "packet.md"
@@ -48,6 +49,47 @@ class ManagerFixOutcomeTest(unittest.TestCase):
         self.assertEqual(len(self.events("manage")), 1)
         self.assertEqual(self.events("claimed"), [])
         self.assertFalse(any(cmd[1:3] == ["issue", "edit"] for cmd in self.github.calls))
+
+    def test_pre_worker_head_and_lease_failures_resolve_without_model_attribution(self) -> None:
+        self.prepare_fix()
+        (self.wt / "local.txt").write_text("retained local commit")
+        refresh_suite.git(self.wt, "add", "local.txt")
+        refresh_suite.git(self.wt, "commit", "-qm", "retained worker change")
+        head = refresh_suite.git(self.wt, "rev-parse", "HEAD")
+        for own, code in ((False, "refresh_head"), (True, "lease_refused")):
+            with self.subTest(code=code):
+                dispatch.EVENTS.unlink()
+                if own:
+                    dispatch.record("attempt", ticket=9, head=head)
+                dispatch.record("manage", ticket=9, decision="FIX", round=1)
+                with self.patched(), mock.patch.object(dispatch, "push_agent", return_value=None):
+                    self.apply_fix()
+                now = datetime.now(UTC)
+                result = stats.post_fix_metrics(lifecycle.read_events(dispatch.EVENTS), now - timedelta(days=1), now)
+                self.assertEqual(result["by_worker_model"], {
+                    stats.NO_WORKER_CLAIM: {
+                        "merged": 0, "re_escalated": 1, "pending": 0, "resolved": 1, "merge_rate": 0.0,
+                    },
+                })
+                receipt = self.events("decision")[-1]
+                self.assertEqual((receipt["stage"], receipt["chosen"]), ("manager", "FIX_FAILED"))
+                self.assertTrue(receipt["rationale"].startswith(code + ":"))
+                self.assertEqual(self.events("escalate"), [])
+
+    def test_failed_retry_and_unrelated_decisions_are_not_terminal_fix_outcomes(self) -> None:
+        self.prepare_fix()
+        dispatch.record("attempt", ticket=9, gate="FAIL", worker_model="fixture/pinned")
+        for stage, chosen in (("gate", "FIX_FAILED"), ("manager", "FIX")):
+            dispatch.record("decision", **trace.decision(
+                ticket=9, stage=stage, chosen=chosen,
+                inputs=[], options=[{"option": chosen, "eligible": True, "reason": "retry"}],
+                rationale="retry", causes=[], cost=None,
+                actor={"kind": "deterministic", "name": "fixture"},
+            ))
+        dispatch.record("llm-usage", ticket=9, stage="manager", chosen="FIX_FAILED")
+        now = datetime.now(UTC)
+        result = stats.post_fix_metrics(lifecycle.read_events(dispatch.EVENTS), now - timedelta(days=1), now)
+        self.assertEqual((result["pending"], result["re_escalated"], result["resolved"]), (1, 0, 0))
 
     def test_failed_direct_manager_gate_is_resolved_without_re_escalating_the_issue(self) -> None:
         self.prepare_fix()

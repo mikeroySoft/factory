@@ -408,6 +408,26 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         already_human = any(
             label.get("name") == LABEL_HUMAN for label in issue.get("labels", [])
         )
+
+        def fix_failed(code: str, reason: str, logfile: Path | None = None, extra: str = "") -> None:
+            if not already_human:
+                dispatch.escalate(n, reason, logfile, extra=extra, code=code)
+                return
+            # Preserve the no-repeat escalation contract, but retain the terminal FIX outcome.
+            from factory import __version__, trace
+
+            dispatch.log(f"#{n}: manager FIX failed ({code}: {reason}); ticket is already ready-for-human")
+            cause = dispatch._latest_decision_id(n, {"manager"})
+            dispatch.record("decision", **trace.decision(
+                ticket=n, stage="manager", chosen="FIX_FAILED",
+                inputs=[{"kind": "manager_packet", "ref": str(packet), "summary": reason}],
+                options=[{"option": "FIX_FAILED", "eligible": True, "reason": f"{code}: {reason}"}],
+                rationale=f"{code}: {reason}",
+                causes=[{"decision_id": cause, "relation": "follows"}] if cause else [],
+                cost=None,
+                actor={"kind": "deterministic", "name": "manage.apply", "model": None, "version": __version__},
+            ))
+
         pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
                                "--json", "state,headRefName,headRefOid,baseRefName,reviewDecision"])
         if pr.get("baseRefName") != cfg.main:
@@ -429,20 +449,14 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                     f"FIX worktree head {local} is not the PR head {lease} plus the worker's own commits; "
                     f"worktree kept at {wt}"
                 )
-                if already_human:
-                    dispatch.log(f"#{n}: manager FIX failed (refresh_head: {reason}); ticket is already ready-for-human")
-                else:
-                    dispatch.escalate(n, reason, None, code="refresh_head")
+                fix_failed("refresh_head", reason)
                 return
             if dispatch.push_agent(wt, n, lease, check=False) is None:
                 reason = (
                     f"FIX could not push the worker's own commits: origin/agent/{n} moved since {lease}; "
                     f"worktree kept at {wt}"
                 )
-                if already_human:
-                    dispatch.log(f"#{n}: manager FIX failed (lease_refused: {reason}); ticket is already ready-for-human")
-                else:
-                    dispatch.escalate(n, reason, None, code="lease_refused")
+                fix_failed("lease_refused", reason)
                 return
             lease = local
         dispatch.LOGS.mkdir(parents=True, exist_ok=True)
@@ -464,10 +478,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         )
         if not ok:
             reason = "gate failed after manager FIX"
-            if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (gate_failed: {reason}); ticket is already ready-for-human")
-            else:
-                dispatch.escalate(n, reason, logfile, code="gate_failed")
+            fix_failed("gate_failed", reason, logfile)
             return
         fresh = dispatch.gh_json(
             ["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "baseRefName"]
@@ -485,31 +496,16 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         dispatch.pr_comment(n, findings)
         if pr_failed:
             reason = "pr checks failed"
-            if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (pr_checks_failed: {reason}); ticket is already ready-for-human")
-            else:
-                dispatch.escalate(
-                    n, reason, logfile, extra="## PR-tier gate report\n\n" + findings,
-                    code="pr_checks_failed",
-                )
+            fix_failed("pr_checks_failed", reason, logfile, "## PR-tier gate report\n\n" + findings)
         elif verdict is None:
             reason = "reviewer unavailable after manager FIX"
-            if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (reviewer_unavailable: {reason}); ticket is already ready-for-human")
-            else:
-                dispatch.escalate(n, reason, logfile, code="reviewer_unavailable")
+            fix_failed("reviewer_unavailable", reason, logfile)
         elif verdict != "APPROVE":
             reason = "review requested changes after manager FIX"
-            if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (review_revise: {reason}); ticket is already ready-for-human")
-            else:
-                dispatch.escalate(n, reason, logfile, code="review_revise")
+            fix_failed("review_revise", reason, logfile)
         elif not dispatch.approve_pr(n, gate_head):
             reason = "approval evidence, head, or human review state changed before manager FIX approval"
-            if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (approval_drift: {reason}); ticket is already ready-for-human")
-            else:
-                dispatch.escalate(n, reason, logfile, code="approval_drift")
+            fix_failed("approval_drift", reason, logfile)
         return
 
     if decision == "AUTHORIZE":

@@ -180,8 +180,9 @@ def post_fix_metrics(rows: list[dict], start: datetime, end: datetime) -> dict[s
     """Outcomes of manage-FIX cohorts started in the inclusive UTC window.
 
     Each FIX starts a cohort. A later FIX leaves an unresolved earlier cohort pending;
-    the first subsequent merged/escalate resolves the current one. Attribution starts
-    with the first claimed ``worker_model``. The first worker llm-usage or attempt
+    the first subsequent merged/escalate or terminal FIX failure decision resolves it.
+    Already-human FIX failures use a decision receipt without repeating escalation.
+    Attribution starts with the first claimed ``worker_model``. The first worker llm-usage or attempt
     identifies actual execution (including launch fallback), and also covers manager
     FIX rounds that call worker_round without a claim. Later retries do not change
     it or fill in missing historical models. Missing models and cohorts with no
@@ -205,7 +206,7 @@ def post_fix_metrics(rows: list[dict], start: datetime, end: datetime) -> dict[s
     )
     for at, _, row in ordered:
         ticket = row.get("ticket")
-        if type(ticket) is not int:
+        if not isinstance(ticket, int) or isinstance(ticket, bool):
             continue
         event = row.get("event")
         if event == "manage" and row.get("decision") == "FIX":
@@ -217,7 +218,9 @@ def post_fix_metrics(rows: list[dict], start: datetime, end: datetime) -> dict[s
         cohort = active.get(ticket)
         if cohort is None:
             continue
-        if event in {"merged", "escalate"}:
+        if event in {"merged", "escalate"} or (
+            event == "decision" and row.get("stage") == "manager" and row.get("chosen") == "FIX_FAILED"
+        ):
             finish(active.pop(ticket), "merged" if event == "merged" else "re_escalated")
             continue
         model = row.get("worker_model")
