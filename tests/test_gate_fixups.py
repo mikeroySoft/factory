@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import unittest
+from contextlib import chdir
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, manage, results
@@ -241,7 +242,8 @@ class GateFixupsTest(unittest.TestCase):
 
         issue = {"number": 7, "title": "local change", "body": "Acceptance: make the local change",
                  "comments": [], "labels": [{"name": "ready-for-agent"}]}
-        with mock.patch.dict(os.environ, self.f.env), \
+        with chdir(self.f.repo), \
+                mock.patch.dict(os.environ, {**self.f.env, lifecycle.CONTEXT_ENV: ""}), \
                 mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
                 mock.patch.object(dispatch, "review", side_effect=review):
             dispatch.configure(config.load(self.f.repo))

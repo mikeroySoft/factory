@@ -80,7 +80,7 @@ class FrontierTest(unittest.TestCase):
         if args[:2] == ["issue", "view"]:
             return {"id": "I_79", "number": 79, "url": "https://github.com/example/project/issues/79",
                     "title": "Ticket", "body": "Scope", "state": "OPEN",
-                    "labels": [{"name": n} for n in self.issue_labels]}
+                    "labels": [{"name": n} for n in self.issue_labels], "assignees": []}
         if args[:2] == ["api", "user"]:
             return {"login": "factory-bot"}
         if args[-1] == "repos/example/project/issues/79/comments":
