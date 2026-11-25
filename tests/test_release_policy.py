@@ -10,7 +10,7 @@ from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
 from unittest import mock
 
-from factory import config, lifecycle, release, stats, watch
+from factory import config, lifecycle, release, stats
 from tests import test_release as fixtures
 
 
@@ -33,9 +33,10 @@ class ReleasePolicyTest(unittest.TestCase):
         self.pulls = self.enterContext(mock.patch.object(release, "_pulls", return_value=[]))
         self.opened = self.enterContext(mock.patch.object(release, "_open_pull", return_value={"number": 12}))
         self.published = self.enterContext(mock.patch.object(
-            release, "_gh_release", side_effect=lambda *a, **kw: subprocess.CompletedProcess([], 0, "", "")
+            release, "_gh_release", side_effect=lambda *a, **kw: subprocess.CompletedProcess(
+                [], 1 if a[1] == "view" else 0, "", "")
         ))
-        self.filings = self.enterContext(mock.patch.object(watch, "open_filings", return_value={}))
+        self.filings = self.enterContext(mock.patch.object(release, "_gh", return_value=[[]]))
         self.escapes = self.enterContext(mock.patch.object(stats, "escapes", return_value=[]))
         self.enterContext(mock.patch.object(stats, "configure"))
         self.bar = {"human_rate": 0.1, "first_pass": 0.9, "tickets": 20,
@@ -127,9 +128,9 @@ class ReleasePolicyTest(unittest.TestCase):
     def test_promotion_rechecks_watch_bugs_escalations_and_escapes(self) -> None:
         self.baseline()
         self.soak()
-        self.filings.return_value = {"fingerprint": {"number": 99}}
+        self.filings.return_value = [[{"number": 99, "body": "Fingerprint: fingerprint\n"}]]
         self.assertIn("watch-filed", release.run(self.cfg, promote=True))
-        self.filings.return_value = {}
+        self.filings.return_value = [[]]
         self.escapes.return_value = [{"status": "candidates", "closed_at": datetime.now(UTC).isoformat(),
                                       "candidates": [{"ticket": 1}], "bug": 99}]
         self.assertIn("escape", release.run(self.cfg, promote=True))
@@ -186,6 +187,42 @@ class ReleasePolicyTest(unittest.TestCase):
         self.assertIn("release check failed", json.loads(out.getvalue())["verdict"])
         self.assertEqual(self.git(self.origin, "show-ref"), before)
         self.assertFalse((self.cfg.factory / "events.jsonl").exists())
+
+    def test_experimental_can_be_promoted_without_losing_its_release_notes(self) -> None:
+        self.baseline()
+        release.run(self.cfg)
+        self.land("0.0.3")
+        release.run(self.cfg)
+        self.pulls.return_value = []
+        self.soak("v0.0.3")
+        self.assertIn("opened release PR", release.run(self.cfg, promote=True))
+        self.land("0.0.4")
+        self.assertIn("released v0.0.4", release.run(self.cfg, promote=True))
+        self.assertIn("shipped work", release._notes(self.cfg, "v0.0.4"))
+
+    def test_experimental_still_requires_ci_quality_and_release_gate(self) -> None:
+        self.baseline()
+        for symbol, result, expected in (
+            ("ci_passes", False, "CI statuses"),
+            ("gate_passes", False, "release failed"),
+            ("measure", {"tickets": 1, "first_pass": 0.5, "human_rate": 0.0}, "first_pass"),
+        ):
+            with self.subTest(symbol=symbol), mock.patch.object(release, symbol, return_value=result):
+                self.assertIn(expected, release.run(self.cfg))
+        self.opened.assert_not_called()
+
+    def test_even_baseline_automatically_opens_next_odd_release(self) -> None:
+        (self.repo / "factory" / "__init__.py").write_text('__version__ = "0.0.2"\n')
+        self.git(self.repo, "add", "factory/__init__.py")
+        self.git(self.repo, "commit", "-qm", "public baseline")
+        self.git(self.repo, "tag", "-a", "v0.0.2", "-m", f"Release\n```json\n{json.dumps(self.bar)}\n```")
+        self.git(self.repo, "push", "-q", "origin", "main", "v0.0.2")
+        (self.repo / "work.txt").write_text("next change\n")
+        self.git(self.repo, "add", "work.txt")
+        self.git(self.repo, "commit", "-qm", "work")
+        self.git(self.repo, "push", "-q", "origin", "main")
+        self.events()
+        self.assertIn("for v0.0.3", release.run(self.cfg))
 
 
 if __name__ == "__main__":

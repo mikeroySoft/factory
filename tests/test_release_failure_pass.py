@@ -66,8 +66,9 @@ class ReleaseFailurePassTest(unittest.TestCase):
             release_run.call_args_list,
             [mock.call(self.cfg, open_pr=False), mock.call(self.cfg, open_pr=True)],
         )
-        for scheduled in (land, review, manage_pass, ticket, learn_pass):
+        for scheduled in (land, review, manage_pass, learn_pass):
             scheduled.assert_called_once_with(False)
+        ticket.assert_called_once_with(self.cfg.budget_min, False)
         stage_success.assert_not_called()
         self.assert_failed_lifecycle()
 
@@ -78,8 +79,9 @@ class ReleaseFailurePassTest(unittest.TestCase):
 
         self.assertEqual(result, 1)
         self.assertEqual(release_run.call_count, 2)
-        for scheduled in (land, review, manage_pass, ticket, learn_pass):
+        for scheduled in (land, review, manage_pass, learn_pass):
             scheduled.assert_called_once_with(False)
+        ticket.assert_called_once_with(self.cfg.budget_min, False)
         stage_success.assert_not_called()
         self.assert_failed_lifecycle()
 
@@ -123,8 +125,9 @@ class ReleaseFailurePassTest(unittest.TestCase):
         self.assertEqual(result, 0)
         release_run.assert_not_called()
         stage_success.assert_not_called()
-        for scheduled in (land, review, manage_pass, ticket, learn_pass):
+        for scheduled in (land, review, manage_pass, learn_pass):
             scheduled.assert_called_once_with(True)
+        ticket.assert_called_once_with(self.cfg.budget_min, True)
 
 
 if __name__ == "__main__":

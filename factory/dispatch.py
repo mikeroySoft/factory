@@ -6139,10 +6139,11 @@ def main(argv: list[str]) -> int:
     yield_for_update = stale and cfg.engine_yield_for_update
 
     # Lazy: an idle pass (nothing claimed, merged, waited on or failed) journals no lifecycle rows.
-    with nullcontext() if args.dry_run else lifecycle.scope(
+    with nullcontext(None) if args.dry_run else lifecycle.scope(
         EVENTS, "dispatcher", dispatcher=True, lazy=True,
         engine_version=__version__, engine_commit=installed,
-    ):
+    ) as execution:
+        release_failed = False
         if (preflight := github_preflight(args.dry_run)) is not None:
             return preflight
         if stale:
@@ -6179,6 +6180,7 @@ def main(argv: list[str]) -> int:
             return result
 
         def release_step(open_pr: bool) -> None:
+            nonlocal release_failed
             if not cfg.release_auto or args.dry_run:
                 return
             if cfg.host_name is not None and cfg.release_host is not None and cfg.host_name != cfg.release_host:
@@ -6188,7 +6190,9 @@ def main(argv: list[str]) -> int:
                 from factory import release
 
                 log(f"release: {release.run(cfg, open_pr=open_pr)}")
-            except Exception as exc:  # noqa: BLE001 - release failure never fails the dispatcher pass
+            except Exception as exc:  # noqa: BLE001 - finish the pass, but report its release failure
+                release_failed = True
+                execution.outcome, execution.reason = "mechanism_failure", "release_failed"
                 log(f"release: failed ({type(exc).__name__}: {exc})")
 
         # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
@@ -6198,9 +6202,9 @@ def main(argv: list[str]) -> int:
         review_intake_pass(args.dry_run)
         if yield_for_update:
             log("engine-stale: yielding after land and review intake; no new tickets")
-            if not args.dry_run:
+            if not args.dry_run and not release_failed:
                 lifecycle.record_stage_success(EVENTS, "dispatch")
-            return 0
+            return int(release_failed)
         from factory.learn import learn_pass
         from factory.manage import manage_pass
 
@@ -6208,6 +6212,6 @@ def main(argv: list[str]) -> int:
         ticket_pass(args.budget_min, args.dry_run)
         learn_pass(args.dry_run)
         release_step(open_pr=True)
-        if not args.dry_run:
+        if not args.dry_run and not release_failed:
             lifecycle.record_stage_success(EVENTS, "dispatch")
-        return 0
+        return int(release_failed)

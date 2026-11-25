@@ -1,4 +1,4 @@
-"""Quality-ratcheted patch releases from the CI-green main branch."""
+"""Quality-ratcheted odd experimental releases and soaked even public promotions."""
 
 from __future__ import annotations
 
@@ -22,6 +22,10 @@ JSON_BAR = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 BAR = (("human_rate", "lower"), ("first_pass", "higher"))
 WORST = {"human_rate": 1.0, "first_pass": 0.0}
 PENDING = ("pending_tickets", "pending_human_touches", "pending_first_passes", "pending_attempts")
+
+
+class ReleaseError(RuntimeError):
+    """A failed release check, not a normal quality/CI hold."""
 
 
 def wilson(k: int, n: int) -> tuple[float, float] | None:
@@ -152,10 +156,10 @@ def _latest(cfg: config.Config) -> dict[str, Any] | None:
     }
 
 
-def _bar(message: str) -> dict[str, float | int] | None:
+def _bar(message: str) -> dict[str, float | int]:
     match = JSON_BAR.search(message)
     if not match:
-        return None
+        raise ValueError("release baseline tag has no parseable JSON bar")
     value = json.loads(match.group(1))
     required = {"human_rate", "first_pass", "tickets"}
     allowed = required | set(PENDING) | {"human_ticket_rate"}
@@ -171,6 +175,13 @@ def _bar(message: str) -> dict[str, float | int] | None:
             or ("human_ticket_rate" in value
                 and type(value["human_ticket_rate"]) not in (int, float))):
         raise ValueError("release tag JSON bar has invalid metric types")
+    if (any(not math.isfinite(value[key]) or not 0 <= value[key] <= 1
+            for key in ("human_rate", "first_pass"))
+            or value["tickets"] < 0 or any(value[key] < 0 for key in pending)
+            or ("human_ticket_rate" in value and (
+                not math.isfinite(value["human_ticket_rate"])
+                or not 0 <= value["human_ticket_rate"] <= 1))):
+        raise ValueError("release tag JSON bar has invalid metric ranges")
     result: dict[str, float | int] = {
         "human_rate": float(value["human_rate"]),
         "first_pass": float(value["first_pass"]),
@@ -201,10 +212,10 @@ def _gh(cfg: config.Config, endpoint: str, *args: str) -> Any:
     return json.loads(proc.stdout) if proc.stdout.strip() else None
 
 
-def _pulls(cfg: config.Config, branch: str) -> list[dict[str, Any]]:
+def _pulls(cfg: config.Config, branch: str, state: str = "open") -> list[dict[str, Any]]:
     return _gh(
         cfg,
-        f"repos/{cfg.repo}/pulls?state=open&base={cfg.main}&head={cfg.repo.split('/')[0]}:{branch}",
+        f"repos/{cfg.repo}/pulls?state={state}&base={cfg.main}&head={cfg.repo.split('/')[0]}:{branch}",
     )
 
 def _pull(cfg: config.Config, number: int) -> dict[str, Any]:
@@ -324,7 +335,8 @@ def _publish(cfg: config.Config, tag: str) -> str:
         if _gh_release(cfg, "view", tag).returncode == 0:
             reason = f"GitHub Release {tag} already exists"
         else:
-            proc = _gh_release(cfg, "create", tag, "--verify-tag", "--latest", "--title", tag,
+            channel = ("--prerelease", "--latest=false") if int(tag.rsplit(".", 1)[1]) % 2 else ("--latest",)
+            proc = _gh_release(cfg, "create", tag, "--verify-tag", *channel, "--title", tag,
                                "--notes-file", "-", notes=_notes(cfg, tag))
             if proc.returncode:
                 raise RuntimeError(proc.stderr.strip() or f"gh release create {tag} failed")
@@ -354,14 +366,27 @@ def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str
 
     released = datetime.now(UTC).date()
     changelog = worktree / "CHANGELOG.md"
+    original_changelog = changelog.read_text()
+    previous = ""
+    if int(new.rsplit(".", 1)[1]) % 2 == 0:
+        section = re.search(
+            rf"(?ms)^## {re.escape(old)} — [^\n]+\n\n(.*?)(?=^## |\Z)", original_changelog,
+        )
+        if section:
+            previous = section.group(1).strip() + "\n\n"
     changelog_text, count = re.subn(
         r"(?m)^## Unreleased[ \t]*\n(?:\n)?",
-        f"## Unreleased\n\n## {new} — {released.isoformat()}\n\n",
-        changelog.read_text(),
+        f"## Unreleased\n\n## {new} — {released.isoformat()}\n\n{previous}",
+        original_changelog,
         count=1,
     )
     if count != 1:
         raise ValueError("CHANGELOG.md has no ## Unreleased heading")
+
+    if int(new.rsplit(".", 1)[1]) % 2:
+        version.write_text(version_text)
+        changelog.write_text(changelog_text)
+        return
 
     readme = worktree / "README.md"
     page = worktree / "docs" / "index.html"
@@ -430,9 +455,80 @@ def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str
     page.write_text(page_text)
 
 
-def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
-    """Advance the release PR, merge, tag, and stable branch from remote state. With
-    `open_pr=False` (the dispatcher's start-of-pass call) a new release PR is never opened."""
+def _soak(cfg: config.Config, latest: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    """Only completed, exact-revision dispatcher passes on the local Tank count."""
+    from factory import stats, watch
+
+    proof: dict[str, Any] = {"experimental_tag": latest["tag"], "commit": latest["sha"]}
+    if cfg.host_name != "tank":
+        return "promotion requires real passes on Tank", proof
+    now = datetime.now(UTC)
+    since = _at(latest["date"])
+    rows = [row for row in lifecycle.read_events(cfg.factory / "events.jsonl")
+            if isinstance(row.get("at"), str) and since < _at(row["at"]) <= now]
+    host = lifecycle._host_id()
+    entries = {
+        row["execution_id"]: row for row in rows
+        if row.get("event") == "lifecycle" and row.get("kind") == "enter"
+        and row.get("stage") == "dispatcher" and row.get("schema_version") == 1
+        and host is not None and row.get("host_id") == host
+        and row.get("engine_version") == latest["tag"].removeprefix("v")
+        and row.get("engine_commit") == latest["sha"] and row.get("execution_id")
+    }
+    passes = {
+        row["execution_id"]: row for row in rows
+        if row.get("event") == "lifecycle" and row.get("kind") == "exit"
+        and row.get("stage") == "dispatcher" and row.get("outcome") == "completed"
+        and row.get("host_id") == host and row.get("execution_id") in entries
+    }
+    dates = sorted(_at(row["at"]) for row in passes.values())
+    hours = (dates[-1] - dates[0]).total_seconds() / 3600 if dates else 0
+    proof.update(host="tank", host_id=host, passes=len(passes), hours=hours,
+                 checked_at=now.isoformat())
+    if hours < 24:
+        return "promotion needs 24h of real passes on Tank at the experimental revision", proof
+    proof.update(first_pass=dates[0].isoformat(), last_pass=dates[-1].isoformat())
+    pages = _gh(cfg, f"repos/{cfg.watch_engine_repo}/issues?state=open&labels=bug&per_page=100",
+                "--paginate", "--slurp")
+    filings = [issue for page in pages for issue in page
+               if not issue.get("pull_request") and watch.FINGERPRINT.match(issue.get("body") or "")]
+    if filings:
+        return "promotion blocked by open watch-filed engine bug", proof
+    escalations = sum(row.get("event") == "escalate" for row in rows)
+    stats.configure(cfg)
+    escaped = stats.escapes()
+    if any(row.get("status") == "skipped" for row in escaped):
+        raise ValueError("promotion escape evidence is incomplete")
+    escapes = {row["ticket"] for row in stats.escape_events(escaped)
+               if since < _at(row["at"]) <= now}
+    tickets = {row["ticket"] for row in rows if row.get("event") == "merged"}
+    proof.update(escalation_rate=escalations / max(len(tickets), 1),
+                 escape_rate=len(escapes) / max(len(tickets), 1), open_watch_bugs=0)
+    if escalations:
+        return "promotion blocked by escalations during soak", proof
+    if escapes:
+        return "promotion blocked by escaped defects during soak", proof
+    return None, proof
+
+
+def _promotion_source(cfg: config.Config, latest: dict[str, Any], ref: str) -> bool:
+    """Version/changelog/public pins may change; no unsoaked source may be promoted."""
+    changed = _git(cfg.root, "diff", "--name-only", latest["sha"], ref).stdout.splitlines()
+    if not set(changed) <= {cfg.release_version_file, "CHANGELOG.md", "README.md", "docs/index.html"}:
+        return False
+    before = _git(cfg.root, "show", f"{latest['sha']}:{cfg.release_version_file}").stdout
+    after = _git(cfg.root, "show", f"{ref}:{cfg.release_version_file}").stdout
+    if before == after:
+        return True
+    old = ".".join(map(str, latest["version"]))
+    new = ".".join(map(str, (*latest["version"][:2], latest["version"][2] + 1)))
+    expected, count = re.subn(rf"(?<![0-9.]){re.escape(old)}(?![0-9.])", new, before, count=1)
+    return count == 1 and expected == after
+
+
+def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True,
+        promote: bool = False) -> str:
+    """Converge an odd experimental PR/tag, or explicitly promote it to an even release."""
     metrics: dict[str, float | int | None] | None = None
     bar: dict[str, float | int] | None = None
     comparison_bar: dict[str, float | int] | None = None
@@ -442,29 +538,84 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
         _git(cfg.root, "fetch", "--quiet", "--tags", "origin")
         latest = _latest(cfg)
         if latest is None:
-            return _finish(cfg, dry_run, _reason("no semver release tag reachable from origin/main", None, None),
-                           None, None, None)
+            raise ValueError("no semver release baseline tag reachable from origin/main")
         latest_tag = latest["tag"]
-        if not dry_run and _unpublished(cfg, latest_tag):
-            _publish(cfg, latest_tag)
+        # Validate before retrying publication: an invalid baseline must never publish.
         bar = _bar(latest["message"])
         comparison_bar, bar_reset = _reset_legacy_bar(bar, cfg)
+        if _version_at(cfg, latest["sha"]) != latest["version"]:
+            raise ValueError(f"baseline {latest_tag} does not match its version file")
+        patch = latest["version"][2] + (1 if promote or latest["version"][2] % 2 == 0 else 2)
+        expected = (*latest["version"][:2], patch)
+        next_version = ".".join(map(str, expected))
+        branch = f"release/v{next_version}"
         current = _version_at(cfg, f"origin/{cfg.main}")
+        if current not in (latest["version"], expected):
+            raise ValueError(f"version mismatch: baseline {latest_tag}, main {current}, expected {expected}")
+        commit = None
         if current > latest["version"]:
             version = ".".join(map(str, current))
-            tag = f"v{version}"
-            metrics = measure(cfg, latest["date"])
             commits = _git(
                 cfg.root, "log", "--reverse", "--format=%H",
                 f"{latest_tag}..origin/{cfg.main}", f"-G{re.escape(version)}",
                 "--", cfg.release_version_file,
             ).stdout.splitlines()
             commit = commits[0] if commits else ""
-            if not commit:
-                raise ValueError(f"cannot find commit that set version {version}")
+            merged = _pulls(cfg, branch, state="closed")
+            if not commit or not any(
+                pull.get("merged_at") and pull.get("merge_commit_sha") == commit for pull in merged
+            ):
+                raise ValueError(f"version {version} has no matching merged release PR")
+            if _version_at(cfg, commit) != expected:
+                raise ValueError(f"version mismatch at release commit {commit}")
+        if promote and latest["version"][2] % 2 == 0:
+            return _finish(cfg, dry_run, "latest release is already public", None, bar, latest_tag)
+        metrics = measure(cfg, latest["date"])
+        head = _git(cfg.root, "rev-parse", f"origin/{cfg.main}").stdout.strip()
+        if not dry_run and _unpublished(cfg, latest_tag):
+            _publish(cfg, latest_tag)
+        if not promote and current == latest["version"] and head == latest["sha"]:
+            return _finish(cfg, dry_run, _reason(f"no changes since {latest_tag}", metrics, bar),
+                           metrics, bar, latest_tag)
+        if metrics["tickets"] < cfg.release_min_tickets:
+            return _finish(cfg, dry_run, _reason(
+                f"tickets {metrics['tickets']} below min_tickets {cfg.release_min_tickets}", metrics, bar),
+                metrics, bar, latest_tag)
+        if metrics["first_pass"] is None:
+            return _finish(cfg, dry_run, _reason(
+                f"no first-attempt evidence since {latest_tag}", metrics, bar), metrics, bar, latest_tag)
+        for metric, direction in BAR:
+            worse = (metrics[metric] > comparison_bar[metric] if direction == "lower"
+                     else metrics[metric] < comparison_bar[metric])
+            if worse:
+                reason = _reason(
+                    f"{metric} {metrics[metric]} is worse than "
+                    f"{comparison_bar[metric]} ({direction} is better)",
+                    metrics, comparison_bar)
+                if not dry_run:
+                    _record_hold(cfg, reason, metrics, comparison_bar)
+                return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
+        soak: dict[str, Any] | None = None
+        if promote:
+            hold, soak = _soak(cfg, latest)
+            if hold:
+                return _finish(cfg, dry_run, _reason(hold, metrics, bar), metrics, bar, latest_tag)
+            if not _promotion_source(cfg, latest, f"origin/{cfg.main}"):
+                return _finish(cfg, dry_run, _reason(
+                    "promotion blocked by unsoaked changes on main; cut an experimental release first",
+                    metrics, bar), metrics, bar, latest_tag)
+        if current > latest["version"]:
+            version = ".".join(map(str, current))
+            tag = f"v{version}"
+            assert commit is not None
+            if not ci_passes(cfg, commit):
+                return _finish(cfg, dry_run, _reason("waiting for release commit CI", metrics, bar),
+                               metrics, bar, latest_tag)
+            if promote and not _promotion_source(cfg, latest, commit):
+                raise ValueError("release commit contains unsoaked source changes")
             reason = _reason(
-                f"would tag {tag} and advance stable" if dry_run else f"released {tag}",
-                metrics, comparison_bar)
+                f"would tag {tag}" + (" and advance stable" if promote else " as experimental")
+                if dry_run else f"released {tag}", metrics, comparison_bar)
             if dry_run:
                 return _finish(cfg, True, reason, metrics, bar, latest_tag)
             reset_note = (
@@ -482,12 +633,14 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             message = (f"Release {version}: {metrics['tickets']} tickets, human rate "
                        f"{metrics['human_rate']}, first pass {metrics['first_pass']}.\n\n"
                        f"{reset_note}```json\n{json.dumps(updated_bar, separators=(',', ':'))}\n```")
+            if soak is not None:
+                message += f"\n\n```soak\n{json.dumps(soak, separators=(',', ':'))}\n```"
             _git(cfg.root, "tag", "-d", tag, check=False)
             _git(cfg.root, "tag", "-a", tag, commit, "-m", message)
             pushed = False
             try:
-                result = _git(cfg.root, "push", "--atomic", "origin", tag,
-                              f"{commit}:refs/heads/stable", check=False)
+                refs = (tag, f"{commit}:refs/heads/stable") if promote else (tag,)
+                result = _git(cfg.root, "push", "--atomic", "origin", *refs, check=False)
                 pushed = result.returncode == 0
                 if not pushed:
                     detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "git push failed"
@@ -499,20 +652,16 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
                 if not pushed:
                     _git(cfg.root, "tag", "-d", tag, check=False)
 
-        metrics = measure(cfg, latest["date"])
-        head = _git(cfg.root, "rev-parse", f"origin/{cfg.main}").stdout.strip()
-        if head == latest["sha"] or not _git(
-                cfg.root, "rev-list", "--count", f"{latest_tag}..origin/{cfg.main}").stdout.strip().lstrip("0"):
-            return _finish(cfg, dry_run, _reason(f"no changes since {latest_tag}", metrics, bar),
-                           metrics, bar, latest_tag)
-        next_version = ".".join(map(str, (*latest["version"][:2], latest["version"][2] + 1)))
-        branch = f"release/v{next_version}"
         pulls = _pulls(cfg, branch)
         if pulls:
             pull = _pull(cfg, pulls[0]["number"])
             number = pull["number"]
             state = pull.get("mergeable_state")
             mergeable = pull.get("mergeable")
+            if _version_at(cfg, pull["head"]["sha"]) != expected:
+                raise ValueError(f"version mismatch in release PR #{number}")
+            if promote and not _promotion_source(cfg, latest, pull["head"]["sha"]):
+                raise ValueError("promotion PR contains unsoaked source changes")
             if state == "behind":
                 action = f"updated release PR #{number} from main"
             elif state == "dirty" or mergeable is False:
@@ -555,25 +704,6 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
         if not open_pr:
             return _finish(cfg, dry_run, _reason("no release PR open", metrics, bar), metrics, bar, latest_tag)
 
-        if metrics["tickets"] < cfg.release_min_tickets:
-            return _finish(cfg, dry_run, _reason(
-                f"tickets {metrics['tickets']} below min_tickets {cfg.release_min_tickets}", metrics, bar),
-                metrics, bar, latest_tag)
-        if metrics["first_pass"] is None:
-            return _finish(cfg, dry_run, _reason(
-                f"no first-attempt evidence since {latest_tag}", metrics, bar), metrics, bar, latest_tag)
-        if comparison_bar:
-            for metric, direction in BAR:
-                worse = (metrics[metric] > comparison_bar[metric] if direction == "lower"
-                         else metrics[metric] < comparison_bar[metric])
-                if worse:
-                    reason = _reason(
-                        f"{metric} {metrics[metric]} is worse than "
-                        f"{comparison_bar[metric]} ({direction} is better)",
-                        metrics, comparison_bar)
-                    if not dry_run:
-                        _record_hold(cfg, reason, metrics, comparison_bar)
-                    return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
         if not ci_passes(cfg, head):
             return _finish(cfg, dry_run, _reason(
                 f"CI statuses/check-runs are not all successful for {head}", metrics, bar),
@@ -620,17 +750,26 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True) -> str:
             if added:
                 _git(cfg.root, "worktree", "remove", "--force", str(worktree), check=False)
             shutil.rmtree(temporary, ignore_errors=True)
-    except Exception as exc:  # noqa: BLE001 - the dispatcher must hold, journal, and retry next pass
+    except Exception as exc:  # Fail the CLI and dispatcher, with journal evidence.
         reason = _reason(f"release check failed: {type(exc).__name__}: {exc}", metrics, bar)
-        return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
+        _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
+        if not dry_run:
+            _record(cfg, "failed", reason, metrics, bar, tag=latest_tag)
+        raise ReleaseError(reason) from exc
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory release", description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="print metrics, bar, and verdict as JSON; change nothing")
+    parser.add_argument("--promote", action="store_true", help="promote the soaked odd tag to an even public release")
     args = parser.parse_args(argv)
     cfg = config.load()
-    reason = run(cfg, args.dry_run)
+    try:
+        reason = run(cfg, args.dry_run, promote=args.promote)
+    except ReleaseError as exc:
+        if not args.dry_run:
+            print(exc)
+        return 1
     if not args.dry_run:
         print(reason)
     return 0
