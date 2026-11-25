@@ -227,13 +227,14 @@ def run(
     stderr=subprocess.PIPE,
     env: dict[str, str] | None = None,
     timeout: float | None = None,
+    stdin=None,
 ) -> subprocess.CompletedProcess:
     """`env` replaces the inherited environment (lifecycle context is still added).
 
     A failed checked command logs its redacted stderr tail, then raises as before.
     """
     try:
-        return _run(cmd, cwd, check, stdout, stderr, env, timeout)
+        return _run(cmd, cwd, check, stdout, stderr, env, timeout, stdin)
     except subprocess.CalledProcessError as exc:
         tail = stderr_tail(exc.stderr)
         if tail:
@@ -253,19 +254,19 @@ def raise_if_interrupted() -> None:
         raise KeyboardInterrupt("dispatcher interrupted")
 
 
-def _run(cmd, cwd, check, stdout, stderr, env, timeout) -> subprocess.CompletedProcess:
+def _run(cmd, cwd, check, stdout, stderr, env, timeout, stdin=None) -> subprocess.CompletedProcess:
     raise_if_interrupted()
     execution = lifecycle.current()
     if execution is None:
         return subprocess.run(
-            cmd, cwd=cwd, check=check, stdout=stdout, stderr=stderr,
+            cmd, cwd=cwd, check=check, stdin=stdin, stdout=stdout, stderr=stderr,
             encoding="utf-8", errors="replace", env=env, timeout=timeout,
         )
     launch = execution.env()
     if env is not None:
         launch = {**env, lifecycle.CONTEXT_ENV: launch[lifecycle.CONTEXT_ENV]}
     with subprocess.Popen(
-        cmd, cwd=cwd, stdout=stdout, stderr=stderr,
+        cmd, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr,
         encoding="utf-8", errors="replace", env=launch,
     ) as proc:
         try:
@@ -359,6 +360,7 @@ def _run_reviewer(
     source: Path | None = None,
     rev: str = "HEAD",
     diff: str = "",
+    prompt: str = "",
     *,
     env_overrides: dict[str, str] | None = None,
     timeout: float | None = None,
@@ -384,6 +386,17 @@ def _run_reviewer(
                     if not path.is_symlink():
                         path.chmod(path.stat().st_mode & ~0o222)
                 (review_dir / "review.diff").write_text(diff)
+            # OMP reads stdin as prompt text. Open in the parent so file failures
+            # retain their errno and enter the normal reviewer-unavailable path.
+            prompt_args = [arg for arg in command[1:] if prompt and prompt in arg]
+            if prompt_args and (Path(command[0]).name == "omp" or cfg.reviewer_json_mode is True):
+                command = [command[0], *(arg for arg in command[1:] if prompt not in arg)]
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=review_dir) as file:
+                    file.write(" ".join(prompt_args))
+                    file.flush()
+                    with open(file.name, "rb") as stdin:
+                        return run(command, cwd=review_dir, check=False, env=env,
+                                   timeout=timeout, stdin=stdin)
             return run(command, cwd=review_dir, check=False, env=env, timeout=timeout)
         finally:
             _make_tree_writable(review_dir)
@@ -1104,14 +1117,8 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "", author: s
                 f"{policy_prompt}\n"
                 f"--- BEGIN UNTRUSTED DIFF ---\n{diff}\n--- END UNTRUSTED DIFF ---"
             )
-            # ponytail: cap inline prompts below Linux's 128 KiB argv limit; use files for larger diffs.
-            if len(prompt.encode()) > 120 * 1024:
-                execution.outcome = "unknown"
-                execution.reason = "prompt_too_large"
-                log(f"PR #{n}: diff too large to review at {head}")
-                return
             command, structured = _review_command(prompt)
-            proc = _run_reviewer(command)
+            proc = _run_reviewer(command, prompt=prompt)
         except (OSError, subprocess.CalledProcessError) as exc:
             execution.outcome = "unknown"
             execution.reason = f"{type(exc).__name__}: {exc}"
@@ -2951,7 +2958,7 @@ def run_reviewer(
                     kwargs["env_overrides"] = env
                 if deadline is not None:
                     kwargs["timeout"] = max(0.001, deadline - time.monotonic())
-                proc = _run_reviewer(command, wt, expected_head, diff, **kwargs)
+                proc = _run_reviewer(command, wt, expected_head, diff, prompt, **kwargs)
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                 launch_error = f"{type(exc).__name__}: {exc}"
                 log(f"{subject}: reviewer launch failed ({exc}); fix PATH or [review] (`factory doctor`)")

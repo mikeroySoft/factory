@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- OMP reviewer prompts now travel intact through mode-0600 temporary-file stdin instead of argv, including both High-risk reviewers, learning reviews, and PR intake with multi-MB diffs. File I/O failures preserve errno and fail closed as `reviewer_unavailable`; files are removed after success or failure. PR intake no longer refuses large prompts (#911).
 - Mutation trust-test setup pins offline `uv sync` to the running Python interpreter rather than PATH discovery, and includes uv stderr in setup failures. Real-uv regressions cover cold-cache interpreter drift and visible failure diagnostics; the untracked-venv startup forgery check is unchanged (#905).
 - Expired own-host claims interrupted during an open PR attempt now escalate to `ready-for-human` with a nonce-bearing `Factory requeue` comment rather than holding as `open PR` forever, including kills before the local `claimed` receipt. New receipts bind to the claim nonce instead of comparing GitHub and host clocks. Recovery rechecks heartbeat/ownership, preserves the PR and worktree, and reports retained local HEAD and unpushed commit SHAs; live, foreign, completed and already-escalated claims retain their existing behavior (#886).
 - Host-only `gate.mutation_slots` caps concurrent PR-tier mutation checks using independent host-wide slot flocks inherited by mutation children, retaining admission after gate interruption. Gate reports record slot waits outside check timeouts and mutation durations; unset settings preserve uncapped execution (#884).

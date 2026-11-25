@@ -104,10 +104,14 @@ def review(contract: str, case: str, sample: int, model: str) -> dict:
         (root / "review.diff").write_text(diff)
         prompt = capture(contract, case, wt)
         started = time.monotonic()
-        proc = subprocess.run(["omp", "-p", "--mode", "json", "--no-session", "--no-title",
-                               "--auto-approve", "--max-time", "600", "--model", model, prompt],
-                              cwd=root, capture_output=True, text=True, timeout=TIMEOUT,
-                              stdin=subprocess.DEVNULL, check=False)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root) as file:
+            file.write(prompt)
+            file.flush()
+            with open(file.name, "rb") as stdin:
+                proc = subprocess.run(["omp", "-p", "--mode", "json", "--no-session", "--no-title",
+                                       "--auto-approve", "--max-time", "600", "--model", model],
+                                      cwd=root, capture_output=True, text=True, timeout=TIMEOUT,
+                                      stdin=stdin, check=False)
         output, usage = _omp_output(proc.stdout)
         elapsed = round(time.monotonic() - started, 1)
         dirty = subprocess.run(["git", "status", "--porcelain"], cwd=wt,

@@ -655,10 +655,15 @@ inside one of its worktrees. A dispatch pass first pins that checkout to
 uncommitted edit; keep the root clean and land config through PRs.
 
 Worker and manager commands receive `{prompt}` as a prompt-file path and `{cwd}`
-as the worktree (or repository root); reviewers receive `{prompt}` as inline
-text. OMP loads a prompt file only when it is prefixed with `@`, so use
-`@{prompt}`: bare `omp {prompt}` passes the path as prompt text. Factory rejects
-that bare argument for manager commands, not worker commands.
+as the worktree (or repository root); reviewer templates receive `{prompt}` as
+text. For `omp` (including reviewers declared with `json_mode = true`), Factory
+removes that text from argv and supplies it intact through a mode-0600 temporary
+file opened as stdin. The file is removed after the run, including failures.
+Prompt file creation, write, or open failures retain their errno in
+`reviewer_unavailable` diagnostics; no verdict is accepted. Other reviewer CLIs
+retain their inline-argv contract. OMP worker and manager commands load prompt
+files only with `@{prompt}`; bare `omp {prompt}` passes the path as text.
+Factory rejects that bare argument for manager commands, not worker commands.
 
 Reviewers never start in a checkout: both review lanes launch the command in a fresh
 temporary directory, so project config written by a worker or PR author (OMP
