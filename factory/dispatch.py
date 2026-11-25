@@ -1694,8 +1694,8 @@ def record_merge_decision(
         "execution_id": "00000000-0000-4000-8000-000000000000",
         "dispatcher_run_id": "00000000-0000-4000-8000-000000000000",
     }
-    if len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()) + 1 \
-            > runtime_events.ROW_LIMIT:
+    if len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()) \
+            >= runtime_events.ROW_LIMIT:
         data = json.dumps(payload.pop("checks"), ensure_ascii=False, separators=(",", ":")).encode()
         artifact = FACTORY / "merge-checks" / f"{payload['decision_id']}.json"
         artifact.parent.mkdir(parents=True, exist_ok=True)

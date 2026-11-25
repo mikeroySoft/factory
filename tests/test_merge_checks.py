@@ -447,5 +447,109 @@ class MergeChecksTest(unittest.TestCase):
         self.assertNotIn(secret, data.decode())
         self.assertIn(evidence["path"], {value["ref"] for value in decision["inputs"]})
 
+    def test_merge_decision_at_reader_byte_limit_stays_inline_with_utf8_and_execution_ids(self):
+        from factory import dashboard
+
+        check = {"name": "unicode-boundary", "bucket": "pass", "detail": ""}
+        with lifecycle.scope(
+            dispatch.EVENTS, "merge-eligibility", ticket=7, dispatcher=True,
+        ) as execution:
+            with mock.patch.object(dispatch, "record") as captured:
+                dispatch.record_merge_decision(
+                    7, 70, "merge now", "eligible", "head", "head", [check],
+                )
+            baseline = {
+                "event": "decision",
+                **captured.call_args.kwargs,
+                "execution_id": execution.execution_id,
+                "dispatcher_run_id": execution.dispatcher_run_id,
+            }
+            baseline_bytes = json.dumps(
+                baseline, ensure_ascii=False, separators=(",", ":"),
+            ).encode()
+            padding_bytes = runtime_events.ROW_LIMIT - 1 - len(baseline_bytes)
+            self.assertGreater(padding_bytes, 3)
+            detail = "界" * (padding_bytes // 3) + "x" * (padding_bytes % 3)
+            check["detail"] = detail
+            decision_id = dispatch.record_merge_decision(
+                7, 70, "merge now", "eligible", "head", "head", [check],
+            )
+            oversized_decision_id = dispatch.record_merge_decision(
+                7, 70, "merge now", "eligible", "head", "head",
+                [{**check, "detail": detail + "x"}],
+            )
+
+        decision_line = next(
+            line for line in dispatch.EVENTS.read_bytes().splitlines(keepends=True)
+            if json.loads(line).get("decision_id") == decision_id
+        )
+        self.assertTrue(decision_line.endswith(b"\n"))
+        self.assertEqual(len(decision_line), runtime_events.ROW_LIMIT)
+        with mock.patch.object(dashboard, "FACTORY", dispatch.FACTORY, create=True):
+            rows, coverage = dashboard.bounded_journal_rows()
+        self.assertNotIn("row_limit", coverage["gaps"])
+        [decision] = [row for row in rows if row.get("decision_id") == decision_id]
+        [oversized_decision] = [
+            row for row in rows if row.get("decision_id") == oversized_decision_id
+        ]
+        self.assertIn("checks_ref", oversized_decision)
+        self.assertNotIn("checks", oversized_decision)
+        self.assertEqual(decision["checks"], [{**check}])
+        self.assertNotIn("checks_ref", decision)
+        self.assertEqual(decision["execution_id"], execution.execution_id)
+        self.assertEqual(decision["dispatcher_run_id"], execution.dispatcher_run_id)
+
+    def test_oversized_merge_decision_artifact_is_utf8_and_preserves_non_ci_inputs(self):
+        from factory import dashboard
+
+        head, approval_head, merge_sha = "h" * 40, "a" * 40, "m" * 40
+        checks = [{
+            "name": "界" * 6000,
+            "bucket": "pass",
+            "link": "https://github.com/acme/widgets/actions/runs/123",
+        }]
+        decision_id = dispatch.record_merge_decision(
+            7, 70, "merge now", "eligible", head, approval_head, checks,
+            merge_sha=merge_sha,
+        )
+
+        with mock.patch.object(dashboard, "FACTORY", dispatch.FACTORY, create=True):
+            rows, coverage = dashboard.bounded_journal_rows()
+        self.assertNotIn("row_limit", coverage["gaps"])
+        [decision] = [row for row in rows if row.get("decision_id") == decision_id]
+        evidence = decision["checks_ref"]
+        data = (dispatch.ROOT / evidence["path"]).read_bytes()
+        self.assertEqual(
+            data,
+            json.dumps(checks, ensure_ascii=False, separators=(",", ":")).encode(),
+        )
+        self.assertIn("界".encode(), data)
+        self.assertNotIn(b"\\u754c", data)
+        self.assertEqual(evidence["count"], len(checks))
+        self.assertEqual(evidence["sha256"], hashlib.sha256(data).hexdigest())
+        self.assertEqual(decision["inputs"][:3], [
+            {
+                "kind": "head",
+                "ref": f"https://github.com/acme/widgets/commit/{head}",
+                "summary": f"PR head {head}",
+            },
+            {
+                "kind": "approval_head",
+                "ref": ".factory/events.jsonl",
+                "summary": f"approval head {approval_head}",
+            },
+            {
+                "kind": "merge_sha",
+                "ref": f"https://github.com/acme/widgets/commit/{merge_sha}",
+                "summary": f"merge SHA {merge_sha}",
+            },
+        ])
+        self.assertEqual(len(decision["inputs"]), 4)
+        self.assertEqual(decision["inputs"][3], {
+            "kind": "ci_checks",
+            "ref": evidence["path"],
+            "summary": f"All {len(checks)} checks; SHA-256 {evidence['sha256']}",
+        })
+
 if __name__ == "__main__":
     unittest.main()
