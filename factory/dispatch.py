@@ -4248,9 +4248,9 @@ def _unrunnable_job(check: dict) -> dict | None:
         if proc.returncode:
             return None
         job = json.loads(proc.stdout)
-        if job["status"] not in ("queued", "completed") or (
-            job["status"] == "completed" and job["conclusion"] != "cancelled"
-        ):
+        if not (job["status"] == "queued" or (
+            job["status"] == "completed" and job["conclusion"] == "cancelled"
+        )):
             return None
         if job["runner_id"] or job["runner_name"] or any(
             step.get("started_at") or step.get("conclusion") not in (None, "skipped")

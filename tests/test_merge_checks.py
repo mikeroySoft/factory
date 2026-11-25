@@ -583,6 +583,28 @@ class MergeChecksTest(unittest.TestCase):
             )
         self.assertEqual(len(paths), 2)
 
+    def test_only_queued_or_completed_cancelled_job_states_can_skip_ci(self):
+        for status in ("queued", "completed", "in_progress", "waiting", "pending",
+                       "requested", "", None):
+            for conclusion in (None, "cancelled", "success", "failure",
+                               "action_required", "timed_out"):
+                with self.subTest(status=status, conclusion=conclusion):
+                    self.commands.clear()
+                    self.job.update(status=status, conclusion=conclusion)
+                    dispatch.merge_pass_locked(False)
+                    skippable = status == "queued" or (
+                        status == "completed" and conclusion == "cancelled"
+                    )
+                    self.assertEqual(self.merged(), skippable)
+                    if skippable:
+                        self.assertEqual(self.decision()["checks"][1]["bucket"], "skipped-infra")
+                    else:
+                        waits = [row["wait"] for row in lifecycle.read_events(dispatch.EVENTS)
+                                 if row.get("kind") == "wait"]
+                        self.assertEqual(waits[-1]["reason"], "ci_pending")
+                    self.escalate.assert_not_called()
+                    self.assertFalse(any("--remove-label" in cmd for cmd in self.commands))
+
 
 if __name__ == "__main__":
     unittest.main()

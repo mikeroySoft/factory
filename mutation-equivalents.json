@@ -19,7 +19,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 157,
+  "line": 147,
   "operator": "core/ReplaceComparisonOperator_IsNot_NotEq",
   "original": "    if any(type(value) is not int or value < 0 for value in counts.values()):",
   "mutated": "    if any(type(value) != int or value < 0 for value in counts.values()):",
@@ -28,7 +28,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 217,
+  "line": 207,
   "operator": "core/ReplaceComparisonOperator_Eq_Is",
   "original": "        and counts[\"not_started\"] == counts[\"cut_short\"] == counts[\"broken\"] == 0",
   "mutated": "        and counts[\"not_started\"] == counts[\"cut_short\"] is counts[\"broken\"] == 0",
@@ -37,7 +37,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 226,
+  "line": 216,
   "operator": "core/ReplaceComparisonOperator_Eq_LtE",
   "original": "    if counts[\"planned\"] == 0:",
   "mutated": "    if counts[\"planned\"] <= 0:",
@@ -55,7 +55,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 237,
+  "line": 227,
   "operator": "core/ReplaceBinaryOperator_BitOr_Add",
   "original": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)",
   "mutated": "        fd = os.open(path, os.O_RDONLY + os.O_NOFOLLOW | os.O_NONBLOCK)",
@@ -64,7 +64,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 237,
+  "line": 227,
   "operator": "core/ReplaceBinaryOperator_BitOr_BitXor",
   "original": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)",
   "mutated": "        fd = os.open(path, os.O_RDONLY ^ os.O_NOFOLLOW | os.O_NONBLOCK)",
@@ -73,7 +73,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 237,
+  "line": 227,
   "operator": "core/ReplaceBinaryOperator_BitOr_BitXor",
   "original": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)",
   "mutated": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW ^ os.O_NONBLOCK)",
@@ -82,7 +82,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 237,
+  "line": 227,
   "operator": "core/ReplaceBinaryOperator_BitOr_Add",
   "original": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)",
   "mutated": "        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW + os.O_NONBLOCK)",
@@ -91,7 +91,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 246,
+  "line": 236,
   "operator": "core/ReplaceBinaryOperator_Add_BitXor",
   "original": "        return os.read(fd, MUTATION_PROOF_MAX_BYTES + 1)",
   "mutated": "        return os.read(fd, MUTATION_PROOF_MAX_BYTES ^ 1)",
@@ -100,7 +100,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 246,
+  "line": 236,
   "operator": "core/ReplaceBinaryOperator_Add_BitOr",
   "original": "        return os.read(fd, MUTATION_PROOF_MAX_BYTES + 1)",
   "mutated": "        return os.read(fd, MUTATION_PROOF_MAX_BYTES | 1)",
@@ -109,7 +109,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 358,
+  "line": 348,
   "operator": "core/ReplaceTrueWithFalse",
   "original": "        target.parent.mkdir(parents=True, exist_ok=True)",
   "mutated": "        target.parent.mkdir(parents=False, exist_ok=True)",
@@ -118,7 +118,7 @@
  },
  {
   "file": "factory/dispatch.py",
-  "line": 3352,
+  "line": 3277,
   "operator": "core/ReplaceComparisonOperator_NotEq_IsNot",
   "original": "                if current_base != base_commit and _moved_main_proof(",
   "mutated": "                if current_base is not base_commit and _moved_main_proof(",
@@ -127,7 +127,7 @@
  },
  {
   "file": "factory/dispatch.py",
-  "line": 3366,
+  "line": 3291,
   "operator": "core/ReplaceComparisonOperator_Eq_GtE",
   "original": "                        verdict == \"STALE\" and ok and current_base != base_commit",
   "mutated": "                        verdict >= \"STALE\" and ok and current_base != base_commit",
@@ -136,7 +136,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 361,
+  "line": 351,
   "operator": "core/ReplaceComparisonOperator_Gt_GtE",
   "original": "    uv = len(cmd) > 2 and Path(cmd[0]).name == \"uv\" and cmd[1] == \"run\"",
   "mutated": "    uv = len(cmd) >= 2 and Path(cmd[0]).name == \"uv\" and cmd[1] == \"run\"",
@@ -145,7 +145,7 @@
  },
  {
   "file": "factory/gate.py",
-  "line": 361,
+  "line": 351,
   "operator": "core/NumberReplacer",
   "original": "    uv = len(cmd) > 2 and Path(cmd[0]).name == \"uv\" and cmd[1] == \"run\"",
   "mutated": "    uv = len(cmd) > 1 and Path(cmd[0]).name == \"uv\" and cmd[1] == \"run\"",
@@ -169,14 +169,5 @@
   "mutated": "        return timestamp.tzinfo is not None or timestamp.utcoffset() is not None",
   "argument": "The only producer of timestamp is `timestamp = datetime.fromisoformat(match[3])` (claims.py:26), with datetime the stdlib class (`from datetime import datetime`, claims.py:8; no test patches claims.datetime). fromisoformat returns either a naive datetime (tzinfo None, so utcoffset() is None) or one whose tzinfo is a fixed-offset datetime.timezone, whose utcoffset() is never None. So `timestamp.tzinfo is not None` and `timestamp.utcoffset() is not None` are always equal, neither raises, and A and B == A or B when A == B: _valid_claim returns the same bool for every comment body. Only a custom tzinfo whose utcoffset() returns None could differ, and fromisoformat never constructs one.",
   "reviewer": "Factory PM ruling r3-1710 accepted Nov 12 2026 (equivalent: fromisoformat yields tzinfo None or fixed-offset timezone, so both clauses always agree)"
- },
- {
-  "file": "factory/dispatch.py",
-  "line": 4252,
-  "operator": "core/ReplaceComparisonOperator_Eq_LtE",
-  "original": "            job[\"status\"] == \"completed\" and job[\"conclusion\"] != \"cancelled\"",
-  "mutated": "            job[\"status\"] <= \"completed\" and job[\"conclusion\"] != \"cancelled\"",
-  "argument": "_unrunnable_job reads job from json.loads; the preceding or operand at dispatch.py:4251 rejects every status except the strings queued and completed before this operand is evaluated. For that domain, queued sorts after completed, so status <= completed is true exactly when status == completed. Both forms evaluate the conclusion check for completed only, with identical return and exception behavior. Widening the preceding status guard invalidates this equivalence.",
-  "reviewer": "Factory manager, issue #369 continuation, Nov 25 2026: equivalent under the preceding queued/completed guard"
  }
 ]
