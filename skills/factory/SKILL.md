@@ -161,7 +161,9 @@ the cause and the evidence path.
 
 - Only the merge stage moves `main`; workers only commit, and the dispatcher pushes `agent/<n>`.
 - A merge needs all four: gate PASS, `factory-approved`, green CI, head contains
-  `main`. One PR per pass; behind-main PRs are rebased and re-gated first.
+  `main`. Each land stage drains all listed eligible PRs; behind-main PRs are
+  rebased and re-gated without ending the stage. Every candidate rechecks current
+  `main` freshness, since an earlier merge can make the next branch stale.
 - `wontfix` is proposed by triage, never applied.
 - Viability processes PRs before issues, retains the shared `needs-review` label,
   and consumes only issue triggers. Only issue BUILD can add `needs-triage`;

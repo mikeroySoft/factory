@@ -2,8 +2,8 @@
 
 One pass per invocation: first the upstream sync stages any new upstream main
 commits as a `ready-for-agent` sync ticket on an `agent/<issue>` candidate
-(never moving main), then the merge stage lands at most one approved, green,
-up-to-date factory PR on main; then pick
+(never moving main), then the merge stage drains approved, green,
+up-to-date factory PRs on main; then pick
 claimable issues (or --ticket N), run a worker agent in a git worktree, gate,
 open a PR, review with the reviewer model, and bounce once. Approval and merge
 require the gate, review, durable approval event, CI, and remote PR to agree on
@@ -4788,14 +4788,14 @@ def cleanup_after_merge(n: int, head: str) -> None:
 
 def land_pass(dry_run: bool) -> None:
     """Under one lock: upstream sync (stages a sync ticket, never moves main), then
-    the merge stage (at most ONE approved, green, up-to-date factory PR per pass).
+    the merge stage (every listed approved, green, up-to-date factory PR).
 
     A merge requires independently produced gate and reviewer evidence bound
     to the same head, a matching durable approval plus `factory-approved`,
     green GitHub CI for that unchanged head, a head containing the current
-    main tip, and no human requested-changes veto. One merge per pass is the
-    merge queue: landing one PR makes the others stale, and the refresh path
-    re-earns gate and fresh review evidence before they land.
+    main tip, and no human requested-changes veto. Each candidate rechecks
+    freshness against current main: a preceding merge can make it stale,
+    requiring refresh, gate, fresh review, and exact-head CI before it lands.
     """
     if cfg.host_name is not None and cfg.land_host is not None and cfg.host_name != cfg.land_host:
         log(f"land: skipped, land host is {cfg.land_host}")
@@ -4849,25 +4849,49 @@ def merge_pass_locked(dry_run: bool) -> None:
         promote_pass(prs, dry_run)
     except Exception as exc:  # noqa: BLE001 - a lessons merge failure never blocks ticket merges
         log(f"promotion: failed ({type(exc).__name__}: {exc})")
+
+    def skip(n: int | None, pr: int, head: str | None, reason: str) -> None:
+        log(f"PR #{pr}: skipped ({reason})")
+        if not dry_run:
+            record("merge-skip", ticket=n, pr=pr, head=head, reason=reason)
+
+    # Audit known approvals omitted by the bounded listing without expanding it
+    # or assuming that an absent PR is still open.
+    listed = {pr["number"] for pr in prs}
+    outside = {}
+    for event in lifecycle.read_events(EVENTS):
+        pr_num = event.get("pr")
+        if event.get("event") == "approved" and pr_num and pr_num not in listed:
+            outside[pr_num] = event
+        elif event.get("event") == "merged":
+            outside.pop(pr_num, None)
+    for pr_num, approval in sorted(outside.items()):
+        skip(approval.get("ticket"), pr_num, approval.get("head"), "outside_listing")
+
     candidates = []
     for pr in prs:
         m = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
-        if not m or pr["isDraft"]:
+        n = int(m.group(1)) if m else None
+        labels = {label["name"] for label in pr.get("labels", [])}
+        reason = (
+            "not_ticket" if not m else
+            "draft" if pr["isDraft"] else
+            "held" if "factory-held" in labels else
+            "wrong_base" if pr.get("baseRefName") != cfg.main else
+            "not_approved" if FACTORY_APPROVED not in labels else
+            "human_veto" if pr["reviewDecision"] == "CHANGES_REQUESTED" else
+            None
+        )
+        if reason:
+            skip(n, pr["number"], pr.get("headRefOid"), reason)
             continue
-        if pr.get("baseRefName") != cfg.main:
-            log(f"PR #{pr['number']}: targets {pr.get('baseRefName')!r}, not {cfg.main!r}; not merging")
-            continue
-        if FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}:
-            continue
-        if pr["reviewDecision"] == "CHANGES_REQUESTED":
-            log(f"PR #{pr['number']}: human requested changes; not merging")
-            continue
-        candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
+        candidates.append((pr["number"], n, pr.get("headRefOid")))
     for pr_num, n, listed_head in sorted(candidates):
         if cfg.host_name is not None:
             elected = elected_host_claim(host_claims(n))
             if elected is not None and elected["host"] != cfg.host_name:
                 log(f"PR #{pr_num}: skipped, elected claim belongs to host {elected['host']}")
+                skip(n, pr_num, listed_head, "foreign_host_claim")
                 continue
         with nullcontext() if dry_run else lifecycle.scope(
             EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
@@ -4975,12 +4999,15 @@ def merge_pass_locked(dry_run: bool) -> None:
                 or fresh.get("baseRefName") != cfg.main
                 or fresh.get("isDraft")
                 or FACTORY_APPROVED not in labels
+                or "factory-held" in labels
                 or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
             ):
                 log(f"PR #{pr_num}: state changed during eligibility check; not merging")
+                skip(n, pr_num, head, "held" if "factory-held" in labels else "state_changed")
                 continue
             if not head or head != listed_head:
                 log(f"PR #{pr_num}: head changed during CI check; retrying next pass")
+                skip(n, pr_num, head, "head_changed")
                 continue
             behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]
             from factory import eval as eval_suite
@@ -5029,7 +5056,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                         f"PR #{pr_num}: would "
                         f"{'merge' if approved else 'refuse (missing SHA-bound approval evidence)'}"
                     )
-                return
+                continue
             run(["git", "fetch", "origin", cfg.main, f"agent/{n}"], cwd=ROOT)
             if UPSTREAM is None:
                 carries_upstream = False
@@ -5048,6 +5075,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                     != 0
                 )
             if behind:
+                skip(n, pr_num, head, "behind")
                 record_merge_decision(
                     n, pr_num, "refresh branch",
                     f"approval head {head} is stale because the branch is behind {cfg.main}",
@@ -5055,7 +5083,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 if refresh_pr_branch(n, pr_num, carries_upstream):
                     execution.outcome = "refreshed"
-                return
+                continue
             events = lifecycle.read_events(EVENTS)
             if (
                 cfg.eval_schedule
@@ -5144,6 +5172,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
                 continue
             if gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]:
+                skip(n, pr_num, head, "behind")
                 record_merge_decision(
                     n, pr_num, "refresh branch",
                     f"approval head {head} became stale because the branch moved behind {cfg.main}",
@@ -5151,7 +5180,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 if refresh_pr_branch(n, pr_num, carries_upstream):
                     execution.outcome = "refreshed"
-                return
+                continue
             final = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
             final_labels = {label["name"] for label in final.get("labels", [])}
             if (
@@ -5161,9 +5190,11 @@ def merge_pass_locked(dry_run: bool) -> None:
                 or final.get("baseRefName") != cfg.main
                 or final.get("isDraft")
                 or FACTORY_APPROVED not in final_labels
+                or "factory-held" in final_labels
                 or final.get("reviewDecision") == "CHANGES_REQUESTED"
             ):
                 log(f"PR #{pr_num}: head, label, or human review changed before merge; not merging")
+                skip(n, pr_num, head, "held" if "factory-held" in final_labels else "state_changed")
                 continue
             method = "--merge" if carries_upstream else "--squash"
             body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
@@ -5204,7 +5235,6 @@ def merge_pass_locked(dry_run: bool) -> None:
             execution.outcome = "merged"
             log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
             cleanup_after_merge(n, head)
-            return
 
 
 def _handoff_done(path: Path) -> bool:

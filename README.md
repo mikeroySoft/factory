@@ -372,7 +372,7 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory claims --supported` | Prints exactly `host-claims 1` and exits 0 for District's multi-host capability check. Works offline outside a repository; bare or other arguments exit 2. |
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or `wontfix-proposal` (proposal comment and label; a human closes). An issue unchanged since its last triage comment is skipped. After two consecutive unparseable model decisions, it comments once, records `triage_stalled`, and keeps the issue for retry. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory triage-probe` | Sends `GET <triage base>/models` with a three-second timeout. A 503 `Loading model` response is alive. After three consecutive failures it restarts `[triage].service` at most once per 15 minutes; failures and restarts are lifecycle-journaled. With no service configured it reports only. |
-| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets, worked concurrently → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
+| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (drain eligible listed PRs) → review-only PR intake → manager → claim up to `max_active` tickets, worked concurrently → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
 | `factory explain N [--json] [--since ISO]` | Reads the live `.factory/events.jsonl` and retained `events.jsonl.N.gz` segments without writing. JSON mode returns `{ticket,nodes,edges,loops,cost,frontier,frontier_stage,coverage}`; `cost` totals the ticket and each retry loop has its own total. `frontier_stage` distinguishes gate, review, manager, human, merge eligibility, and blocker waits; merged and wontfix tickets have a null frontier. Text mode prints a compact decision tree. Legacy `claimed`, `attempt`, `review`, `approved`, `merged`, and `escalate` rows become `synthesized: true` nodes, while `coverage` names part-1 stages with no structured record. Output is bounded to the runtime projection's 1 MiB limit. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
@@ -1371,14 +1371,23 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    `factory stats --by-risk` and the dashboard report human interventions,
    human-wait minutes, rounds, disagreement rate, and escape rate per tier.
 
-6. **Merge stage** (start of the next pass). One PR per pass requires green
-   GitHub checks, a current-main head, no human requested-changes veto, the
+6. **Merge stage** (start of the next pass). Every eligible listed PR is considered,
+   continuing after merges and refreshes. Each requires green
+   GitHub checks, a current-main head, no hold or human requested-changes veto, the
    `factory-approved` label, and a matching successful journal approval whose
    gate, review, approval, and current PR head SHAs are identical. Checks are
    associated with that head and rechecked after evidence evaluation; the PR
    head, target branch, label, and veto are then re-read immediately before
    `gh pr merge --match-head-commit <sha>`. Missing,
    unbound, legacy, or stale approval evidence never merges.
+   A merge can make later candidates stale; each rechecks current-main freshness
+   before acting. A refreshed head waits for its own exact-head CI and a later
+   landing stage. Skips are journaled with reasons in `merge-skip` rows or the
+   existing merge decisions and eligibility waits, including drafts, holds,
+   missing approval, human vetoes, behind-main heads, and foreign host claims.
+   Journaled approvals absent from the bounded PR listing receive an
+   `outside_listing` skip (not a claim that the PR remains open); approvals
+   already journaled as merged are excluded. Listing pagination is unchanged.
    With `[eval] schedule = true`, a PR changing worker configuration/routing,
    standing prompts, lessons, or skills also needs an `eval-summary` `keep`
    verdict bound to that exact head; a missing or `revert` claim waits without
