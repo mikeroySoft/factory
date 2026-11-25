@@ -212,6 +212,26 @@ class MergeFeedbackTest(unittest.TestCase):
         self.assertEqual(self.events("manage"), [])
         self.assertFalse(any("--add-label" in cmd and "factory-approved" in cmd for cmd in self.mutations))
 
+    def test_required_runner_starvation_holds_manager_approval(self) -> None:
+        self.quiet_humans()
+        self.provider.checks = []
+        self.provider.statuses = []
+        self.checks.return_value = [
+            {"name": "unit", "bucket": "pass", "required": True},
+            {"name": "required GPU", "bucket": "infra", "required": True,
+             "disposition": "no matching runner"},
+        ]
+        self.approved_head()
+
+        manage.frontier_pass()
+
+        self.assertEqual(self.events("manage"), [])
+        self.assertEqual(self.events("escalate"), [])
+        self.assertFalse(any("--add-label" in cmd and "factory-approved" in cmd for cmd in self.mutations))
+        waits = [row["wait"] for row in lifecycle.read_events(dispatch.EVENTS)
+                 if row.get("kind") == "wait"]
+        self.assertEqual((waits[-1]["reason"], waits[-1]["mode"]), ("ci_pending", "eligibility"))
+
 
 if __name__ == "__main__":
     unittest.main()
