@@ -1,6 +1,7 @@
 """Merge admission with required/advisory checks and unavailable self-hosted runners."""
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -414,6 +415,37 @@ class MergeChecksTest(unittest.TestCase):
         waits = [row["wait"] for row in lifecycle.read_events(dispatch.EVENTS)
                  if row.get("kind") == "wait"]
         self.assertEqual(waits[-1]["reason"], "ci_pending")
+
+    def test_large_merge_decision_preserves_complete_evidence_within_reader_limit(self):
+        from factory import dashboard
+
+        dispatch.cfg.advisory_checks = ["E2E tests (*"]
+        secret = "ghp_" + "x" * 20
+        self.all_checks = [self.passing] + [
+            {**self.gpu, "name": f"E2E tests ({index} {'界' * 100})",
+             "link": self.gpu["link"] + "?token=" + secret}
+            for index in range(200)
+        ]
+        dispatch.merge_pass_locked(False)
+        self.assertTrue(self.merged())
+        with mock.patch.object(dashboard, "FACTORY", dispatch.FACTORY, create=True):
+            rows, coverage = dashboard.bounded_journal_rows()
+        self.assertNotIn("row_limit", coverage["gaps"])
+        [decision] = [row for row in rows
+                      if row.get("event") == "decision" and row.get("stage") == "merge"]
+        self.assertEqual(decision["chosen"], "merge now")
+        evidence = decision["checks_ref"]
+        data = (dispatch.ROOT / evidence["path"]).read_bytes()
+        self.assertEqual(evidence["sha256"], hashlib.sha256(data).hexdigest())
+        checks = json.loads(data)
+        self.assertEqual(evidence["count"], len(self.all_checks))
+        self.assertEqual(checks, [self.passing] + [
+            {**check, "link": check["link"].replace(secret, "[credential withheld]"),
+             "bucket": "skipping", "disposition": "advisory", "original_bucket": "pending"}
+            for check in self.all_checks[1:]
+        ])
+        self.assertNotIn(secret, data.decode())
+        self.assertIn(evidence["path"], {value["ref"] for value in decision["inputs"]})
 
 if __name__ == "__main__":
     unittest.main()
