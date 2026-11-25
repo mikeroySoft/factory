@@ -975,6 +975,12 @@ def frontier_pass(dry_run: bool = False) -> None:
                 checks = dispatch.pr_checks(number, head)
                 red = [c for c in checks if c["bucket"] in ("fail", "cancel")]
                 late = undelivered(observation, events, n)
+                # A nonempty result is the selected CI policy; empty is unavailable/unknown,
+                # so retain all CI feedback and fail closed.
+                if checks:
+                    selected_failures = {c["name"] for c in red}
+                    late = [i for i in late if i["kind"] not in CI_KINDS
+                            or not i["summary"] or i["summary"] in selected_failures]
                 if ticket_generation.awaiting_attempt:
                     late = after_watermark(n, ticket_generation.rows, observation, late, head, dry_run)
                 # A release to ready-for-agent (owner decision or manager RETRY) answers the red CI
