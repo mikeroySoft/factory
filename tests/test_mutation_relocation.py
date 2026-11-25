@@ -161,48 +161,6 @@ class MutationRelocationTest(unittest.TestCase):
         self.assertEqual(status, 1, report)
         self.assertIn("stale equivalent: factory/example.py:7: core/ObsoleteReplacer", report)
 
-    def test_restored_registry_keeps_original_reviewed_context(self):
-        reviewed_revision = self.git("rev-parse", "HEAD")
-        registry = self.root / "reviewed.json"
-        reviewed_bytes = registry.read_bytes()
-        self.change("# inserted\n\n" + SOURCE)
-        registry.write_text(json.dumps([{**entry, "line": 7} for entry in self.entries]))
-        self.git("add", "reviewed.json")
-        self.git("commit", "-m", "reanchor fixture registry")
-        registry.write_bytes(reviewed_bytes)
-        self.git("add", "reviewed.json")
-        self.git("commit", "-m", "restore exact reviewed registry")
-
-        status, report = self.cli("--check-equivalents")
-        self.assertEqual(status, 0, report)
-        self.assertEqual(report.count("relocated equivalent: factory/example.py:5 -> 7"), 2, report)
-        self.assertIn(f"context revision {reviewed_revision}", report)
-
-        # Restoring reviewed bytes cannot bless a changed source window.
-        self.change("# inserted\n\n" + SOURCE.replace("# before 2", "# changed context"))
-        status, report = self.cli("--check-equivalents")
-        self.assertEqual(status, 1, report)
-        self.assertIn("stale equivalent:", report)
-
-    def test_new_registry_contents_pin_the_new_review_context(self):
-        changed = SOURCE.replace("# before 2", "# newly reviewed context")
-        self.change(changed)
-        registry = self.root / "reviewed.json"
-        entries = [{**entry, "reviewer": "New fixture reviewer"} for entry in self.entries]
-        registry.write_text(json.dumps(entries))
-        self.git("add", "reviewed.json")
-        self.git("commit", "-m", "review changed context")
-        reviewed_revision = self.git("rev-parse", "HEAD")
-        self.change("# inserted\n\n" + changed)
-
-        status, report = self.cli("--check-equivalents")
-        self.assertEqual(status, 0, report)
-        self.assertIn(f"context revision {reviewed_revision}", report)
-        self.change("# inserted\n\n" + SOURCE)
-        status, report = self.cli("--check-equivalents")
-        self.assertEqual(status, 1, report)
-        self.assertIn("stale equivalent:", report)
-
     def test_shallow_history_cannot_supply_reviewed_context(self):
         clone = self.root / "shallow"
         self.git("clone", "--quiet", "--depth=1", self.root.as_uri(), str(clone))

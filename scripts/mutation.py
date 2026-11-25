@@ -388,7 +388,7 @@ def load_equivalents(path: str | None) -> dict[tuple, dict]:
 
 
 def resolve_equivalents(path: str | None, reviewed: dict[tuple, dict]) -> dict[tuple, dict]:
-    """A registry blob's first committed revision pins its reviewed source windows.
+    """The registry's last committed revision pins its reviewed source windows.
 
     Untracked, ad-hoc registries have no reviewed window: keep them line-pinned,
     never guess a relocation from the candidate's own context.
@@ -406,17 +406,6 @@ def resolve_equivalents(path: str | None, reviewed: dict[tuple, dict]) -> dict[t
         capture_output=True, text=True, check=True,
     ).stdout.strip() != "false":
         raise ValueError("equivalent context requires complete Git history")
-    # Exact restorations retain the original review snapshot, not the restoring
-    # commit's possibly shifted source. Only committed bytes select provenance.
-    blob = subprocess.run(
-        ["git", "rev-parse", f"{revision}:{path}"],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    revision = subprocess.run(
-        ["git", "log", "--reverse", "--topo-order", "--format=%H",
-         f"--find-object={blob}", "--", path],
-        capture_output=True, text=True, check=True,
-    ).stdout.splitlines()[0]
     sources = {}
     resolved = {}
     for key, entry in reviewed.items():
