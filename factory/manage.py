@@ -409,10 +409,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             label.get("name") == LABEL_HUMAN for label in issue.get("labels", [])
         )
 
-        def fix_failed(code: str, reason: str, logfile: Path | None = None, extra: str = "") -> None:
-            if not already_human:
-                dispatch.escalate(n, reason, logfile, extra=extra, code=code)
-                return
+        def record_fix_failure(code: str, reason: str) -> None:
             # Preserve the no-repeat escalation contract, but retain the terminal FIX outcome.
             from factory import __version__, trace
 
@@ -449,14 +446,20 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                     f"FIX worktree head {local} is not the PR head {lease} plus the worker's own commits; "
                     f"worktree kept at {wt}"
                 )
-                fix_failed("refresh_head", reason)
+                if already_human:
+                    record_fix_failure("refresh_head", reason)
+                else:
+                    dispatch.escalate(n, reason, None, code="refresh_head")
                 return
             if dispatch.push_agent(wt, n, lease, check=False) is None:
                 reason = (
                     f"FIX could not push the worker's own commits: origin/agent/{n} moved since {lease}; "
                     f"worktree kept at {wt}"
                 )
-                fix_failed("lease_refused", reason)
+                if already_human:
+                    record_fix_failure("lease_refused", reason)
+                else:
+                    dispatch.escalate(n, reason, None, code="lease_refused")
                 return
             lease = local
         dispatch.LOGS.mkdir(parents=True, exist_ok=True)
@@ -478,7 +481,10 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         )
         if not ok:
             reason = "gate failed after manager FIX"
-            fix_failed("gate_failed", reason, logfile)
+            if already_human:
+                record_fix_failure("gate_failed", reason)
+            else:
+                dispatch.escalate(n, reason, logfile, code="gate_failed")
             return
         fresh = dispatch.gh_json(
             ["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "baseRefName"]
@@ -496,16 +502,31 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         dispatch.pr_comment(n, findings)
         if pr_failed:
             reason = "pr checks failed"
-            fix_failed("pr_checks_failed", reason, logfile, "## PR-tier gate report\n\n" + findings)
+            if already_human:
+                record_fix_failure("pr_checks_failed", reason)
+            else:
+                dispatch.escalate(
+                    n, reason, logfile, extra="## PR-tier gate report\n\n" + findings,
+                    code="pr_checks_failed",
+                )
         elif verdict is None:
             reason = "reviewer unavailable after manager FIX"
-            fix_failed("reviewer_unavailable", reason, logfile)
+            if already_human:
+                record_fix_failure("reviewer_unavailable", reason)
+            else:
+                dispatch.escalate(n, reason, logfile, code="reviewer_unavailable")
         elif verdict != "APPROVE":
             reason = "review requested changes after manager FIX"
-            fix_failed("review_revise", reason, logfile)
+            if already_human:
+                record_fix_failure("review_revise", reason)
+            else:
+                dispatch.escalate(n, reason, logfile, code="review_revise")
         elif not dispatch.approve_pr(n, gate_head):
             reason = "approval evidence, head, or human review state changed before manager FIX approval"
-            fix_failed("approval_drift", reason, logfile)
+            if already_human:
+                record_fix_failure("approval_drift", reason)
+            else:
+                dispatch.escalate(n, reason, logfile, code="approval_drift")
         return
 
     if decision == "AUTHORIZE":
