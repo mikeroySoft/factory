@@ -1,10 +1,10 @@
 import errno
 import json
 import os
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from factory import dispatch
@@ -34,9 +34,11 @@ class ReviewerPromptTransportTest(unittest.TestCase):
             self.assertEqual(received['argv'], ['-p'])
 
     def test_prompt_creation_errno_propagates(self):
-        with mock.patch.object(dispatch.tempfile, 'mkstemp', side_effect=OSError(errno.ENOSPC, 'full')):
-            with self.assertRaises(OSError) as caught:
-                dispatch._run_reviewer(['omp', '-p', 'review'], prompt='review')
+        with (
+            mock.patch.object(dispatch.tempfile, 'mkstemp', side_effect=OSError(errno.ENOSPC, 'full')),
+            self.assertRaises(OSError) as caught,
+        ):
+            dispatch._run_reviewer(['omp', '-p', 'review'], prompt='review')
         self.assertEqual(caught.exception.errno, errno.ENOSPC)
 
     def test_launch_failure_removes_prompt(self):
@@ -48,8 +50,10 @@ class ReviewerPromptTransportTest(unittest.TestCase):
             created.append(path)
             return fd, path
 
-        with mock.patch.object(dispatch.tempfile, 'mkstemp', side_effect=capture):
-            with self.assertRaises(FileNotFoundError):
-                dispatch._run_reviewer(['/missing/omp', '-p', 'review'], prompt='review')
+        with (
+            mock.patch.object(dispatch.tempfile, 'mkstemp', side_effect=capture),
+            self.assertRaises(FileNotFoundError),
+        ):
+            dispatch._run_reviewer(['/missing/omp', '-p', 'review'], prompt='review')
         self.assertTrue(created)
         self.assertTrue(all(not os.path.exists(path) for path in created))
