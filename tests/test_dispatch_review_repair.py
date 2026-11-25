@@ -79,6 +79,22 @@ class RetainedPublicationRepair(unittest.TestCase):
                     if row.get("event") == "pr-opened"]
         self.assertEqual((opened["ticket"], opened["pr"]), (7, 42))
 
+    def test_remote_retained_pr_wins_over_this_hosts_obsolete_merged_receipt(self):
+        remote = self.remote()
+        remote.prs[41] = {
+            "number": 41, "state": "MERGED", "headRefName": "agent/7", "baseRefName": "main",
+        }
+        remote.labels[41] = set()
+        self.module.record("pr-requeued", ticket=7, pr=41)
+
+        self.assertTrue(self.publish(remote))
+
+        self.assertEqual(remote.remote_head, remote.head)
+        self.assertEqual(set(remote.prs), {41, 42})
+        self.assertEqual(remote.prs[41]["state"], "MERGED")
+        self.assertEqual(remote.prs[42]["state"], "OPEN")
+        self.assertEqual(remote.prs[42]["reviewDecision"], "CHANGES_REQUESTED")
+
     def test_higher_sorting_retained_branch_is_not_published_as_this_ticket(self):
         remote = publication.PublicationRemote([
             {"number": 42, "state": "CLOSED", "headRefName": "agent/8",
