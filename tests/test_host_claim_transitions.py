@@ -57,7 +57,7 @@ class HostClaimTransitionTest(unittest.TestCase):
 
     def test_failed_unassignment_retains_claim_for_ttl_recovery(self):
         tank = self.dispatcher("tank")
-        claim = self.github.add_claim("tank", datetime.now(UTC))
+        claim = self.github.add_claim("tank", datetime.now(UTC) - timedelta(hours=3))
         before = copy.deepcopy((self.github.issue, self.github.comments))
         run = tank.run
 
@@ -71,14 +71,13 @@ class HostClaimTransitionTest(unittest.TestCase):
 
         for assignee_last in (False, True):
             with self.subTest(assignee_last=assignee_last), \
-                    mock.patch.object(tank, "run", side_effect=refuse_unassignment):
-                tank.unclaim(7, "--remove-label", "ready-for-agent", "--add-label", "ready-for-human",
-                             assignee_last=assignee_last)
-                self.assertEqual((self.github.issue, self.github.comments), before)
-        with mock.patch.object(tank, "run", side_effect=refuse_unassignment), \
-                self.assertRaises(subprocess.CalledProcessError):
-            tank.unclaim(7, check=True)
-        self.assertEqual((self.github.issue, self.github.comments), before)
+                    mock.patch.object(tank, "run", side_effect=refuse_unassignment), \
+                    self.assertRaises(subprocess.CalledProcessError):
+                tank.unclaim(
+                    7, "--remove-label", "ready-for-agent", "--add-label", "ready-for-human",
+                    assignee_last=assignee_last,
+                )
+            self.assertEqual((self.github.issue, self.github.comments), before)
 
         ultron = self.dispatcher("ultron")
         with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
@@ -88,9 +87,9 @@ class HostClaimTransitionTest(unittest.TestCase):
             ultron.process_ticket(issue, 1, False)
         self.assertEqual(self.launched, ["ultron"])
         self.assertNotIn(claim, self.github.comments)
-        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
-        self.assertEqual(self.github.issue["labels"],
-                         [{"name": "ready-for-agent"}, {"name": "host:ultron"}])
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertEqual(ultron.host_claims(7), [])
 
     def test_owner_escalation_reaches_manager_after_host_cleanup(self):
         self.github = TimelineGitHub()

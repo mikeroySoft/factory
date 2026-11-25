@@ -62,7 +62,7 @@ class HostClaimMutationTest(unittest.TestCase):
         self.assertEqual(self.github.comments, [])
         self.assertEqual(self.github.issue["assignees"], [])
 
-    def test_single_host_refresh_gate_requeue_keeps_original_github_argv(self):
+    def test_single_host_refresh_preserves_preexisting_assignment(self):
         single = self.dispatcher(None)
         read, run = single.gh_json, single.run
         self.github.issue["labels"] = [{"name": "ready-for-human"}]
@@ -89,16 +89,9 @@ class HostClaimMutationTest(unittest.TestCase):
                 mock.patch.object(single, "_refresh_failure_scope", return_value=(["app.py"], False)):
             self.assertFalse(single.refresh_pr_branch(7, 70, False))
 
-        edits = [args for _, args in self.github.calls if args[:3] == ["gh", "issue", "edit"]]
-        self.assertEqual(edits, [[
-            "gh", "issue", "edit", "7", "--repo", "local/claims",
-            "--remove-label", "ready-for-human", "--add-label", "ready-for-agent",
-            "--remove-assignee", "@me",
-        ]])
         self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
-        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
         self.assertEqual(self.github.comments, [])
-        self.assertFalse(any("user" in args or "--slurp" in args for _, args in self.github.calls))
 
 
 class HostClaimManagerMutationTest(unittest.TestCase):

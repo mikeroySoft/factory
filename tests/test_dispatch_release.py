@@ -103,12 +103,23 @@ class DispatchRelease(unittest.TestCase):
                     self.assertEqual([(row["ticket"], row["login"], row["exit_path"]) for row in cleared],
                                      [(7, "@me", path)])
 
+    def test_requeue_context_cannot_bypass_an_unapproved_open_pr(self):
+        module = self.dispatcher("tank")
+        self.github.open_prs = [{"number": 70}]
+        with mock.patch.object(module, "refresh_requeue_context", return_value="retry work"), \
+                mock.patch.object(module, "worker_round") as worker:
+            [issue] = module.frontier()
+            self.assertIn("#70", issue.get("held", ""))
+            module.process_ticket(issue, 1, False, forced=True)
+            worker.assert_not_called()
+        self.assertEqual(self.github.issue["assignees"], [])
+
     def test_preexisting_human_assignments_including_own_login_are_never_cleared(self):
-        for login in ("human", "@me"):
-            with self.subTest(login=login):
+        for host, login in ((None, "human"), (None, "@me"), ("tank", "human"), ("tank", "@me")):
+            with self.subTest(host=host, login=login):
                 self.setUp()
                 self.github.issue["assignees"] = [{"login": login}]
-                module = self.dispatcher(None)
+                module = self.dispatcher(host)
                 [issue] = module.frontier()
                 self.assertEqual(issue.get("held"), "assigned")
                 with mock.patch.object(module, "worker_round") as worker:

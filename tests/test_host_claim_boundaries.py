@@ -31,6 +31,18 @@ class HostClaimFrontierBoundaryTest(unittest.TestCase):
         self.assertEqual(self.launched, [])
         self.assertEqual((self.github.issue, self.github.comments), before)
 
+    def test_open_agent_pr_precedes_assignment_and_host_claim_holds(self):
+        tank = self.dispatcher("tank")
+        self.github.add_claim("ultron", datetime.now(UTC))
+        self.github.issue["assignees"].append({"login": "human"})
+        self.github.open_prs = [{"number": 70}]
+
+        [issue] = tank.frontier()
+        self.assertEqual(issue.get("held"), "open agent PR #70")
+        tank.process_ticket(issue, 1, False, forced=True)
+
+        self.assertEqual(self.launched, [])
+
 
 class TriageHostBoundaryTest(unittest.TestCase):
     def test_equal_dynamic_host_names_run_triage_while_unequal_names_skip(self):
