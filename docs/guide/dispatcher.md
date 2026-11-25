@@ -13,9 +13,9 @@ When `factory dispatch` is invoked without `--ticket` (`factory/dispatch.py` `ma
 1. **Landing.** `land_pass` takes `.factory/locks/merge.lock` or skips. Under that lock: upstream sync if `[repo].upstream` is set, then the merge stage. Upstream sync never moves `main`: when upstream moved and no `upstream sync:` issue is open, it stages the merge (or the conflict-free prefix) in a detached worktree, gates it, files one `ready-for-agent` sync ticket with that evidence, and hands the candidate to `agent/<n>`; the ticket then runs the claim, worker, gate, review, PR, and merge steps like any other. At most one pull request merges. A refresh of a behind pull request also returns after that one PR.
 2. **Review intake.** `review_intake_pass` reviews opted-in pull requests. It does not merge them.
 3. **Manager.** `manage_pass` from `factory/manage.py`. Viability, pull-request frontier, and escalation recovery run only when `manager.command` is set. Terminal human handoffs run either way.
-4. **Claim.** Count held ticket locks. Capacity is `dispatch.max_active` minus that count (default `max_active` is 2). Claim that many open, unassigned, unblocked `ready-for-agent` issues that are not initiatives.
+4. **Claim.** Count held ticket locks. Capacity is `dispatch.max_active` minus that count (default `max_active` is 2). Claim that many open, unassigned, unblocked `ready-for-agent` issues that are not initiatives and have no open `agent/<n>` PR.
 
-`--ticket N` skips landing, review intake, and manage. It processes that open issue even if it is assigned or missing `ready-for-agent`. It still refuses an initiative and a bad plan binding.
+`--ticket N` skips landing, review intake, and manage. It processes that open issue even if it is assigned or missing `ready-for-agent`. It still refuses an initiative, an open agent PR and a bad plan binding.
 
 `--dry-run` prints planned actions and does not take the merge lock or claim.
 
@@ -23,9 +23,13 @@ When `factory dispatch` is invoked without `--ticket` (`factory/dispatch.py` `ma
 
 ## Claim rules
 
-`frontier` lists open issues with `ready-for-agent`. It skips initiatives, issues with assignees, and issues with open blockers. Blockers come from the GitHub blocked-by API when present, and from `Blocked by: #N` lines in the body.
+`frontier` lists open issues with `ready-for-agent`. It skips initiatives, human assignments, open agent PRs (reason names the PR), and open blockers. Blockers come from the GitHub blocked-by API when present, and from `Blocked by: #N` lines in the body.
 
-`process_ticket` re-reads the issue before `gh issue edit --add-assignee @me`. A stale list must not reclaim an issue that was just escalated.
+`process_ticket` re-reads the issue and open PRs before `gh issue edit --add-assignee @me`. A stale list must not reclaim an issue that was just escalated or published.
+
+Every exit releases the assignment this dispatch set, including success and `--ticket`, and records `assignee-cleared` with ticket, login and exit path. Pre-existing human assignments are preserved, even when assigned to the dispatcher login. Approved tickets wait on their named PR hold, not an assignee. Filing never assigns.
+
+Automatic requeues close the PR before restoring eligibility. Publication reopens the retained PR after removing stale approval; human reviews remain on that PR.
 
 ## Where the worker runs
 

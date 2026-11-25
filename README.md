@@ -1020,8 +1020,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    A failed GitHub login lookup instead refuses with outcome `mechanism_failure`
    and reason `github_command_failed`; connection failures are not identity mismatches.
 2. **Schedule and claim.** Eligibility first: open `ready-for-agent` issues that
-   are not initiatives, not assigned and have no open `Blocked by` edge; then
-   capacity (`max_active` minus held ticket locks) and the experiment slot (at
+   are not initiatives, not assigned, have no open `agent/<ticket>` PR and have
+   no open `Blocked by` edge; then capacity (`max_active` minus held ticket locks) and the experiment slot (at
    most one `experiment`-labelled ticket active; production delivery gets the
    rest). A ticket whose Plan binding admission would refuse (ambiguous or
    malformed, or linked without a baseline) is held with that reason, never
@@ -1063,6 +1063,14 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    its lock is released, then the pass exits. Ticket `git fetch` and `git push`
    commands run one at a time, and every dispatcher log line from a ticket is
    tagged `#<n>` after the `[dispatch]` prefix.
+   Every open agent PR is an explicit hold naming its number, even without an
+   assignee, live process or host claim. `--ticket` cannot bypass this hold.
+   Closing or merging the PR lifts it. All exits, including approval and hand
+   runs, release the assignment this run set and journal `assignee-cleared`
+   with `ticket`, authenticated `login` and `exit_path`. Human assignments,
+   including pre-existing assignments to the dispatcher login without host
+   ownership evidence, are preserved. Failed cleanup surfaces an error; local
+   locks and heartbeat threads are still released. Filing issues never assigns.
 3. **Work.** The worker gets the issue, its comments, standing instructions
    (commit incrementally, never touch `main`, never `git stash`, finish with
    `factory gate`), and — on retries — the previous gate report or the
@@ -1725,8 +1733,8 @@ and removes its own comment and label without assigning or launching a worker.
 The winner assigns `@me` and refreshes its comment every TTL/4 while the ticket
 pipeline runs. Unclaim always applies escalation/requeue labels; only the owning
 host can remove an existing claim's `@me`, host label and comment, even after expiry.
-An in-process claim must also match the elected nonce before cleanup. Tickets
-assigned before host claims were enabled retain the original `@me` release path.
+An in-process claim must also match the elected nonce before cleanup. A
+pre-existing assignment without run/host ownership evidence is never cleared.
 If the label/assignee edit fails, unclaim retains its comment and host label so
 another host can recover the assignment after TTL expiry. Successful host-label
 removals journal `claim-label-removed` receipts. The manager ignores those exact
@@ -1734,30 +1742,26 @@ labels from the authenticated dispatcher only before the recorded escalation
 comment; human removals and later edits still hold automatic management.
 
 Expired claims are admitted through the frontier only when no other hold exists.
-A human assignee remains a hold. An open `agent/<ticket>` PR also remains a hold
-for foreign claims or completed attempts. When the elected own-host claim expires
-without completion or escalation, the next pass instead escalates to `ready-for-human`
-under the ticket lock and posts a nonce-bearing `Factory requeue` comment.
-Missing local attempt evidence is recoverable, including a kill before `claimed`
-is journaled. New `claimed` receipts bind to the claim nonce, not GitHub creation
-time; legacy completion receipts use the owner's local heartbeat clock.
-Recovery rechecks heartbeat/election, keeps the PR and worktree intact, and reports
-the local HEAD, remote branch head and unpushed commit SHAs when readable (otherwise
-explicitly unavailable). It never resets or recreates the worktree. The next owner
-must merge main before resuming gate/review and publishing the retained commits.
+A human assignee remains a hold. Every open `agent/<ticket>` PR is a named hold,
+including an unfinished or approved PR with no live claim or lock; no requeue
+marker bypasses that rule. To keep automatic retries automatic, refresh conflicts,
+repeated refresh gate failures, risk disagreements, deferred review rework and
+stale mutation proof close the PR before restoring worker eligibility. Publication
+reopens that same retained PR after removing stale approval, preserving its human
+reviews. Each close records `pr-requeued`; a failed close prevents release.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
 issue comment with the refresh instructions, including when the owner releases
 its claim. The next host can consume that context even after the claim is deleted.
 Deferred actionable review rework uses the same ownership-aware release and shares
-its findings, so another host can resume the existing PR after the lease expires.
+its findings, so another host can resume the retained branch and reopen its PR.
 Shared instructions take precedence over this host's local requeue journal. Local
 risk-disagreement history carries forward only when its instructions match the
 selected context; an intervening foreign requeue cannot trigger early escalation.
 Escalation comments carry the same nonce marker on their second line, preserving
 the escalation prefix. A later manager/human `ready-for-agent` relabel can resume
-the expired claim's existing PR; its live heartbeat still holds admission.
+the expired claim only after any open PR closes; a live heartbeat still holds admission.
 Neither transition can release a later worker's claim or its completed-PR hold.
 Expired ownership follows election order, not the newest raw comment: a contender
 created during the winner's last live lease cannot supersede its requeue marker

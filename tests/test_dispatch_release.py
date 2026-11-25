@@ -7,18 +7,22 @@ import unittest
 from unittest import mock
 
 from factory import lifecycle, schedule
-from tests.test_host_claims import FakeGitHub, HostClaimRaceTest
+from tests import test_host_claims as host_claims
 
 
 class DispatchRelease(unittest.TestCase):
-    setUp = HostClaimRaceTest.setUp
-    dispatcher = HostClaimRaceTest.dispatcher
-    launch = HostClaimRaceTest.launch
+    setUp = host_claims.HostClaimRaceTest.setUp
+    dispatcher = host_claims.HostClaimRaceTest.dispatcher
+    launch = host_claims.HostClaimRaceTest.launch
+
+    def publish(self):
+        self.github.open_prs = [{"number": 70}]
+        return True
 
     def test_approved_open_pr_without_assignee_is_a_hold_at_both_boundaries(self):
         for host in (None, "tank"):
             with self.subTest(host=host):
-                self.github = FakeGitHub()
+                self.setUp()
                 self.github.open_prs = [{"number": 70}]
                 module = self.dispatcher(host)
                 module.record("approved", ticket=7, head="a" * 40)
@@ -51,8 +55,7 @@ class DispatchRelease(unittest.TestCase):
         for host in (None, "tank"):
             for path in cases:
                 with self.subTest(host=host, exit_path=path):
-                    self.github = FakeGitHub()
-                    self.launched = []
+                    self.setUp()
                     module = self.dispatcher(host)
                     run = module.run
 
@@ -66,7 +69,8 @@ class DispatchRelease(unittest.TestCase):
                         return result
 
                     def worker(*args, **kwargs):
-                        self.github.issue["assignees"].append({"login": "human"})
+                        if {"login": "human"} not in self.github.issue["assignees"]:
+                            self.github.issue["assignees"].append({"login": "human"})
                         if path == "dispatcher_error":
                             raise RuntimeError("worker crash")
                         if path == "worker_unavailable":
@@ -98,12 +102,11 @@ class DispatchRelease(unittest.TestCase):
                                if row.get("event") == "assignee-cleared"]
                     self.assertEqual([(row["ticket"], row["login"], row["exit_path"]) for row in cleared],
                                      [(7, "@me", path)])
-                    module.EVENTS.unlink()  # each subcase is a separate pass
 
     def test_preexisting_human_assignments_including_own_login_are_never_cleared(self):
         for login in ("human", "@me"):
             with self.subTest(login=login):
-                self.github = FakeGitHub()
+                self.setUp()
                 self.github.issue["assignees"] = [{"login": login}]
                 module = self.dispatcher(None)
                 [issue] = module.frontier()
@@ -117,7 +120,6 @@ class DispatchRelease(unittest.TestCase):
                 self.assertEqual(self.github.issue["assignees"], [{"login": login}])
                 self.assertFalse(any(row.get("event") == "assignee-cleared" and row.get("login") == login
                                      for row in lifecycle.read_events(module.EVENTS)))
-                module.EVENTS.unlink()
 
     def test_cleanup_failure_surfaces_but_releases_local_lock(self):
         module = self.dispatcher("tank")
