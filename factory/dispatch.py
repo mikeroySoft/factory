@@ -4737,7 +4737,7 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     pr_comment(n, findings)
     if unavailable:
         withdraw(
-            failure["packet"] if "packet" in failure else f"reviewer unavailable after {verb} onto moved main",
+            failure["packet"] if failure else f"reviewer unavailable after {verb} onto moved main",
             failure_code,
             extra=findings,
         )
@@ -5829,7 +5829,7 @@ def process_ticket(
                     f"{cfg.review_rounds} review round(s)"
                 )
                 escalate(
-                    n, current_risk["packet"] if "packet" in current_risk else "reviewer unavailable after retries",
+                    n, current_risk["packet"] if current_risk else "reviewer unavailable after retries",
                     logfile, extra=findings, code=failure_code,
                 )
                 return
@@ -5924,7 +5924,7 @@ def process_ticket(
                 if verdict is None:
                     failure_code = current_risk.get("failure_code", "reviewer_unavailable")
                     escalate(
-                        n, current_risk["packet"] if "packet" in current_risk else "reviewer unavailable after retries",
+                        n, current_risk["packet"] if current_risk else "reviewer unavailable after retries",
                         logfile, extra=findings, code=failure_code,
                     )
                     return
