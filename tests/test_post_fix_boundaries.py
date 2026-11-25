@@ -83,22 +83,31 @@ class PostFixBoundaryTest(unittest.TestCase):
              "worker_model": "model/admission-two"},
             {"at": at(timedelta(hours=-3, minutes=-30)), "event": "lifecycle", "ticket": 12,
              "stage": "worker", "kind": "enter"},
+            {"at": at(timedelta(hours=-3, minutes=-20)), "event": "llm-usage ", "ticket": 12,
+             "stage": "worker", "worker_model": "model/not-usage"},
             {"at": at(timedelta(hours=-3)), "event": "llm-usage", "ticket": 12,
              "stage": "worker", "worker_model": "model/worker-usage"},
             {"at": at(timedelta(hours=-2)), "event": "attempt", "ticket": 12,
              "worker_model": "model/later-attempt"},
             {"at": at(timedelta(hours=-1)), "event": "merged", "ticket": 12},
+            {"at": at(timedelta(hours=-5)), "event": "manage", "ticket": 13, "decision": "FIX"},
+            {"at": at(timedelta(hours=-4)), "event": "attempt", "ticket": 13,
+             "worker_model": "model/direct-first"},
+            {"at": at(timedelta(hours=-3)), "event": "attempt", "ticket": 13,
+             "worker_model": "model/direct-retry"},
+            {"at": at(timedelta(hours=-2)), "event": "merged", "ticket": 13},
         ])
 
         result = stats.post_fix_metrics(rows, START, NOW)
 
-        self.assertEqual(result["cohorts"], 3)
+        self.assertEqual(result["cohorts"], 4)
         self.assertEqual(
             {model: counts["merged"] for model, counts in result["by_worker_model"].items()},
             {
                 stats.NO_WORKER_CLAIM: 1,
                 "model/first-attempt": 1,
                 "model/worker-usage": 1,
+                "model/direct-first": 1,
             },
         )
 
