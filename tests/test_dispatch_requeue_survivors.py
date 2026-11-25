@@ -131,7 +131,7 @@ class DispatchRequeuePublicationTest(unittest.TestCase):
         self.assertEqual(opened["pr"], 41)
 
     def test_matching_noninterned_ticket_reopens_the_closed_pr_without_stale_approval(self) -> None:
-        ticket = int("1000")
+        ticket = int("987654321")
         branch = f"agent/{ticket}"
         remote = PublicationRemote([
             {"number": 42, "state": "CLOSED", "headRefName": branch, "baseRefName": "main",
