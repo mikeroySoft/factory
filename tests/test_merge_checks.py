@@ -439,8 +439,8 @@ class MergeChecksTest(unittest.TestCase):
         self.assertEqual(evidence["sha256"], hashlib.sha256(data).hexdigest())
         checks = json.loads(data)
         self.assertEqual(evidence["count"], len(self.all_checks))
-        self.assertEqual(checks, [self.passing] + [
-            {**check, "link": check["link"].replace(secret, "[credential withheld]"),
+        self.assertEqual(checks, [{**self.passing, "required": False}] + [
+            {**check, "required": False, "link": check["link"].replace(secret, "[credential withheld]"),
              "bucket": "skipping", "disposition": "advisory", "original_bucket": "pending"}
             for check in self.all_checks[1:]
         ])

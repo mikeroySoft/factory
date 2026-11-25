@@ -437,8 +437,12 @@ Such jobs are not rerun. Required jobs are never waived: runner starvation
 escalates as `ci_runner` with an explicit merge-blocking message and eligibility
 wait on later passes. Other cancelled-job recovery remains unchanged.
 Merge decisions retain all selected checks, including advisory original buckets
-and skipped-infra runner/queue evidence, in their `checks` field even when bounded
-trace inputs omit them. At least one non-advisory check must still pass.
+and skipped-infra runner/queue evidence, in their `checks` field. If the complete
+decision would exceed the 16 KiB journal-row limit, the redacted list is saved in
+`.factory/merge-checks/<decision_id>.json` instead; `checks_ref` records its
+repository-relative path, count and SHA-256, and a trace input points to it.
+Keep these artifacts with the journal; no checks are truncated.
+At least one non-advisory check must still pass.
 The manager frontier and lessons promotion reuse this eligibility policy, so they
 do not reintroduce ignored checks as CI-failure handoffs or merge blockers.
 

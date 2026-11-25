@@ -1635,7 +1635,7 @@ def record_merge_decision(
     n: int, pr: int, chosen: str, rationale: str, head: str | None,
     approval_head: str | None, checks: list[dict], merge_sha: str | None = None,
 ) -> str:
-    from factory import trace
+    from factory import runtime_events, trace
 
     reasons = {
         "merge now": (
@@ -1687,8 +1687,29 @@ def record_merge_decision(
         cost=None,
         actor=_decision_actor("deterministic", "dispatch.merge_pass_locked"),
     )
-    record("decision", **payload,
-           checks=json.loads(trace._SECRET.sub("[credential withheld]", json.dumps(checks))))
+    payload["checks"] = json.loads(trace._SECRET.sub("[credential withheld]", json.dumps(checks)))
+    # Budget the final record, including the execution envelope added by record().
+    envelope = {
+        "event": "decision", **payload,
+        "execution_id": "00000000-0000-4000-8000-000000000000",
+        "dispatcher_run_id": "00000000-0000-4000-8000-000000000000",
+    }
+    if len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()) + 1 \
+            > runtime_events.ROW_LIMIT:
+        data = json.dumps(payload.pop("checks"), ensure_ascii=False, separators=(",", ":")).encode()
+        artifact = FACTORY / "merge-checks" / f"{payload['decision_id']}.json"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        with artifact.open("xb") as handle:
+            handle.write(data)
+        path = str(artifact.relative_to(ROOT))
+        payload["checks_ref"] = {
+            "path": path, "count": len(checks), "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        payload["inputs"] = [value for value in payload["inputs"] if value["kind"] != "ci_run"] + [{
+            "kind": "ci_checks", "ref": path,
+            "summary": f"All {len(checks)} checks; SHA-256 {payload['checks_ref']['sha256']}",
+        }]
+    record("decision", **payload)
     return payload["decision_id"]
 
 
