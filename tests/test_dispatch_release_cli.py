@@ -19,7 +19,7 @@ class DispatchReleaseCLI(unittest.TestCase):
     cli = support.LocalCLI.cli
 
     def test_sync_issue_files_an_unassigned_issue(self):
-        with chdir(self.repo), mock.patch.dict(os.environ, self.env):
+        with chdir(self.repo), mock.patch.dict(os.environ, {**self.env, lifecycle.CONTEXT_ENV: ""}):
             dispatch.configure(config.load(self.repo))
             dispatch.FACTORY.mkdir(exist_ok=True)
             self.assertEqual(dispatch.sync_issue("a" * 40, "1", "is staged", "evidence"), 7)
@@ -34,6 +34,14 @@ class DispatchReleaseCLI(unittest.TestCase):
         )
 
     def test_approval_releases_assignment_and_open_pr_holds_the_next_forced_pass(self):
+        self.worker.write_text(self.worker.read_text() + (
+            '\np = Path(".factory/handoff-7.md")\n'
+            'p.parent.mkdir(exist_ok=True)\n'
+            'p.write_text("## Changed\\nDone.\\n## Still unverified\\nNone.\\n")\n'
+            'import subprocess\n'
+            'subprocess.run(["git", "add", "change.txt"], check=True)\n'
+            'subprocess.run(["git", "commit", "-qm", "local change"], check=True)\n'
+        ))
         clock = [0]
         original_review = dispatch.review
 
@@ -42,7 +50,7 @@ class DispatchReleaseCLI(unittest.TestCase):
             clock[0] = 120
             return result
 
-        with chdir(self.repo), mock.patch.dict(os.environ, self.env), \
+        with chdir(self.repo), mock.patch.dict(os.environ, {**self.env, lifecycle.CONTEXT_ENV: ""}), \
                 mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
                 mock.patch.object(dispatch, "review", side_effect=expire_after_review), \
                 mock.patch.object(dispatch.risk, "classify", return_value=("Medium", ["medium:fixture"])):

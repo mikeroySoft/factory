@@ -696,7 +696,8 @@ class HighPipelineBoundaryTest(unittest.TestCase):
         self.patch(dispatch, "refresh_requeue_context", return_value="")
         self.patch(dispatch, "pending_risk_requeue_head", return_value=None)
         self.patch(dispatch, "sync_staged", return_value=None)
-        self.patch(dispatch, "push_and_pr", side_effect=self.publish)
+        self.patch(dispatch, "push_and_pr",
+                   side_effect=lambda *a, **kw: HighPipelineBoundaryTest.publish(self, *a, **kw))
         self.patch(dispatch, "push_agent", return_value=NEW_HEAD)
         self.patch(dispatch, "pr_comment")
         self.patch(dispatch, "retain_handoff", return_value=True)
