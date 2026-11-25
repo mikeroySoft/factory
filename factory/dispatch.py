@@ -2958,7 +2958,7 @@ def run_reviewer(
                     kwargs["env_overrides"] = env
                 if deadline is not None:
                     kwargs["timeout"] = max(0.001, deadline - time.monotonic())
-                proc = _run_reviewer(command, wt, expected_head, diff, **kwargs)
+                proc = _run_reviewer(command, wt, expected_head, diff, prompt, **kwargs)
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                 launch_error = f"{type(exc).__name__}: {exc}"
                 log(f"{subject}: reviewer launch failed ({exc}); fix PATH or [review] (`factory doctor`)")
