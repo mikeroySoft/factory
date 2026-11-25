@@ -20,6 +20,7 @@ import fcntl
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -1870,8 +1871,10 @@ def comment_receipt(n: int, kind: str, stdout: str, **fields: object) -> bool:
 
 
 WATCH_POLL = 5.0  # seconds between worker activity checks
+WORKER_STOP_GRACE = 10.0  # SIGTERM grace before killing the worker's process group
 # Which timeout stopped a worker -> the journal reason it records.
-TIMEOUT_REASONS = {"idle_timeout": "stuck", "exit_grace": "hung_after_done", "budget_min": "budget_exceeded"}
+TIMEOUT_REASONS = {"idle_timeout": "stuck", "exit_grace": "hung_after_done", "budget_min": "budget_exceeded",
+                   "gate_timeout": "gate_hard_cap"}
 
 
 def _activity(wt: Path, logfile: Path, handoff: Path) -> tuple:
@@ -1892,12 +1895,35 @@ def _activity(wt: Path, logfile: Path, handoff: Path) -> tuple:
             git("status", "--porcelain", "--untracked-files=all"), stat(handoff))
 
 
+def _active_worker_gate() -> bool:
+    """Only a live gate descended from this worker can defer its watchdog."""
+    worker = lifecycle.current()
+    if worker is None:
+        return False
+    gates = {}
+    descendants = {worker.execution_id}
+    for row in lifecycle.read_events(worker.path):
+        if row.get("event") != "lifecycle":
+            continue
+        if row.get("kind") == "enter" and row.get("parent_execution_id") in descendants:
+            descendants.add(row["execution_id"])
+        if row.get("stage") != "gate" or row.get("execution_id") not in descendants:
+            continue
+        match row.get("kind"):
+            case "enter":
+                gates[row["execution_id"]] = row
+            case "exit":
+                gates.pop(row["execution_id"], None)
+    return "alive" in (lifecycle._process_state(row.get("process")) for row in gates.values())
+
+
 def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadline: float,
            start: tuple) -> str | None:
     """Wait for the worker to exit; None if it did, else the timeout that fired first.
     Raises KeyboardInterrupt within WATCH_POLL of the dispatcher's interrupt; the caller
     stops the worker."""
     state, changed = start, time.monotonic()
+    gate_hard_deadline = None
     while True:
         try:
             proc.wait(timeout=WATCH_POLL)
@@ -1910,6 +1936,16 @@ def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadl
         quiet = now - changed
         # Done: committed or wrote its handoff during this run. A done worker is never "stuck".
         done = current[1] != start[1] or current[3] != start[3]
+        # Gate checks keep their own full per-check timeout. Bound the extra wall time too,
+        # including a gate waiting for the exclusive lock; never renew it on another gate.
+        timed_out = (now >= deadline or done and cfg.exit_grace and quiet >= cfg.exit_grace
+                     or not done and cfg.idle_timeout and quiet >= cfg.idle_timeout * 60)
+        if timed_out and _active_worker_gate():
+            if gate_hard_deadline is None:
+                gate_hard_deadline = min(now, deadline) + cfg.check_timeout * (len(cfg.checks) + 3)
+            if now >= gate_hard_deadline:
+                return "gate_timeout"
+            continue
         if now >= deadline:
             return "budget_min"
         if done and cfg.exit_grace and quiet >= cfg.exit_grace:
@@ -1923,7 +1959,7 @@ def _stop(proc: subprocess.Popen) -> None:
     with suppress(ProcessLookupError):
         os.killpg(proc.pid, signal.SIGTERM)
     with suppress(subprocess.TimeoutExpired):
-        proc.wait(timeout=10)
+        proc.wait(timeout=WORKER_STOP_GRACE)
     with suppress(ProcessLookupError):
         os.killpg(proc.pid, signal.SIGKILL)
     proc.wait()
@@ -1940,13 +1976,15 @@ def run_worker(
     worker: str | None = None,
     worker_version: str | None = None,
     journal: bool = True,
-) -> tuple[int, str | None]:
+) -> tuple[int | None, str | None]:
     """Run the worker; return its exit code and the timeout that stopped it, if any.
 
     `idle_timeout`: no log output and no worktree change (stuck mid-work).
     `exit_grace`: committed or wrote `handoff`, then stayed quiet without exiting.
-    `budget_min`: the ticket's overall wall-clock deadline passed.
+    `budget_min`: the worker's allotted work deadline passed.
+    `gate_timeout`: an active worker gate exhausted its bounded watchdog extension.
     Evaluation replays set `journal=False`; their aggregate result is the durable evidence.
+    A None exit code means setup exhausted the work window before process launch.
     """
     log(f"worker: {' '.join(cmd)} -> {logfile}")
     started = time.monotonic()
@@ -1963,6 +2001,11 @@ def run_worker(
                 launch[lifecycle.CONTEXT_ENV] = context
         with without_github(launch) as isolated:
             raise_if_interrupted()
+            if time.monotonic() >= deadline:
+                if execution is not None:
+                    execution.emit("timeout", timeout="budget_min")
+                    execution.outcome, execution.reason = "interrupted", TIMEOUT_REASONS["budget_min"]
+                return None, "budget_min"
             proc = subprocess.Popen(cmd, cwd=wt, stdout=out, stderr=subprocess.STDOUT,
                                     env=isolated, start_new_session=True)
             try:
@@ -2360,7 +2403,8 @@ def run_gate(
 
 
 def retry_gate_fixups(
-    wt: Path, n: int | str, report: str, head: str, **flags,
+    wt: Path, n: int | str, report: str, head: str, *,
+    work_deadline: float = float("inf"), **flags,
 ) -> tuple[bool, str, str]:
     """One configured repair pass; only a new, clean, re-gated commit can pass."""
     if not cfg.fixups or "Gate evidence rejected:" in report:
@@ -2376,19 +2420,35 @@ def retry_gate_fixups(
         (wt / ".factory" / f"gate-report-{n}.md").write_text(text)
         return ok, text, candidate
 
+    def budget_stop(detail: str) -> tuple[bool, str, str]:
+        notes.append(f"Mechanical fixups {detail}: work cutoff reached; gate reservation preserved.")
+        record("gate-fixup-budget", ticket=n, head=head, reason="budget_exceeded",
+               work_deadline=work_deadline, seconds_remaining=max(0, work_deadline - time.monotonic()))
+        return finish(False, "budget exceeded during mechanical fixups\n\n" + report, head)
+
     if run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip() != head or run(status, cwd=wt).stdout.strip():
         notes.append("Mechanical fixups not run: HEAD changed or worktree is not clean.")
         return finish(False, report, head)
+    progress = "not run"
     for argv in cfg.fixups:
+        remaining = work_deadline - time.monotonic()
+        if remaining <= 0:
+            return budget_stop(progress)
+        progress = "stopped"
+        timeout = min(cfg.check_timeout, remaining)
         try:
-            proc = run(argv, cwd=wt, check=False, timeout=cfg.check_timeout)
+            proc = run(argv, cwd=wt, check=False, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
             notes.append(f"- `{shlex.join(argv)}` ran: {stderr_tail(str(exc))}")
+            if isinstance(exc, subprocess.TimeoutExpired) and time.monotonic() >= work_deadline:
+                return budget_stop("stopped")
             return finish(False, report, head)
         notes.append(f"- `{shlex.join(argv)}` ran: exit {proc.returncode}")
         if proc.returncode:
             notes.append(stderr_tail(proc.stdout + proc.stderr))
             return finish(False, report, head)
+    if time.monotonic() >= work_deadline:
+        return budget_stop("stopped")
     actual = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     if actual != head:
         notes.append("Mechanical fixups rejected: command changed HEAD instead of files.")
@@ -2555,6 +2615,8 @@ def escalate(
         body = f"{first}\nFactory requeue: nonce={elected['nonce']}\n{rest}"
     if log_path:
         body += f"\n\nWorker logs: `{log_path}`"
+    if code == "protected_paths" and extra:
+        body += "\n\n" + extra.partition("\n\n")[0]
     handoff = wt / ".factory" / f"handoff-{n}.md"
     if handoff.exists():
         body += f"\n\nWorker handoff notes:\n\n{handoff.read_text().strip()[-4000:]}"
@@ -5226,6 +5288,21 @@ def _handoff_done(path: Path) -> bool:
     )
 
 
+def round_gate_reserve(wt: Path, n: int) -> tuple[float, str]:
+    """Use the last measured attempt gate for this worktree, not a PR/other-tree gate."""
+    report = str(wt / ".factory" / f"gate-report-{n}.md")
+    for row in reversed(lifecycle.read_events(EVENTS)):
+        if (row.get("event") != "decision" or row.get("stage") != "gate"
+                or row.get("ticket") != n
+                or not any(item.get("kind") == "gate_log" and item.get("ref") == report
+                           for item in row.get("inputs", []))):
+            continue
+        seconds = (row.get("cost") or {}).get("seconds")
+        if type(seconds) in (int, float) and math.isfinite(seconds) and seconds >= 0:
+            return seconds, "last_gate"
+    return cfg.gate_reserve_seconds, "floor"
+
+
 def worker_round(
     n: int,
     wt: Path,
@@ -5244,12 +5321,32 @@ def worker_round(
 
     if lifecycle.current() is not None:
         lifecycle.current().attempt = attempt
+    started = time.monotonic()
+    reserve, reserve_source = round_gate_reserve(wt, n)
+    # Cover a late watchdog poll, the full stop grace, then one poll's worth of finalization.
+    stop_reserve = 2 * WATCH_POLL + WORKER_STOP_GRACE
+    work_deadline = deadline - reserve - stop_reserve
+    logfile = LOGS / f"{n}-attempt-{attempt}.log"
+    admitted = started < work_deadline
+    record("round-budget", ticket=n, attempt=attempt, worktree=str(wt),
+           gate_reserve_seconds=reserve, gate_reserve_source=reserve_source,
+           stop_reserve_seconds=stop_reserve,
+           remaining_seconds=max(0, deadline - started) if math.isfinite(deadline) else None,
+           work_seconds=max(0, work_deadline - started) if math.isfinite(deadline) else None, admitted=admitted)
+
+    def budget_stop() -> tuple[bool, str, Path, str]:
+        head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        record("attempt", ticket=n, attempt=attempt, worker_exit=None, gate=None,
+               log=str(logfile), head=head, timeout="budget_min", reason="budget_exceeded")
+        report = f"budget exceeded before work: {reserve:g}s reserved for gate ({reserve_source})"
+        return False, report, logfile, head
+
+    if not admitted:
+        return budget_stop()
     plan_dir = attempt_plan_dir(wt, attempt)
     shutil.rmtree(plan_dir, ignore_errors=True)
     promptfile = wt / ".factory-prompt.md"
     promptfile.write_text(build_prompt(n, wt, extra, attempt=attempt, labels=labels))
-    logfile = LOGS / f"{n}-attempt-{attempt}.log"
-    started = time.monotonic()
     wall = time.time()
     if selected_worker is None:
         profile = cfg.worker_key(labels)
@@ -5277,7 +5374,7 @@ def worker_round(
         launch_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         offset = logfile.stat().st_size if logfile.exists() else 0
         try:
-            code, fired = run_worker(argv, wt, logfile, handoff_path, deadline, **run_options)
+            code, fired = run_worker(argv, wt, logfile, handoff_path, work_deadline, **run_options)
         except FileNotFoundError as exc:
             # The executable vanished after the pre-pass check (#260): a host defect, so the same
             # attempt falls back when it can; with no fallback the claim goes back as before.
@@ -5287,6 +5384,8 @@ def worker_round(
             if fallback_worker(profile) is None:
                 raise
             continue
+        if code is None:
+            return budget_stop()
         failure = None if code == 0 or fired else _launch_failure(wt, logfile, offset, launch_head, code)
         if failure is None:
             break
@@ -5328,17 +5427,22 @@ def worker_round(
         ":(exclude).factory-prompt.md", ":(exclude).factory",
     ]
     before_status = run(status_cmd, cwd=wt).stdout.strip()
-    if fired == "idle_timeout":
-        # Stuck mid-work: a failed attempt for the normal retry path; the gate never ran.
+    if fired in {"idle_timeout", "gate_timeout"}:
+        # Neither a stuck worker nor a gate past its hard cap can supply validation evidence.
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
             log=str(logfile), transcript=transcript, head=head, handoff=handoff,
             **identity, **timeout,
         )
-        return False, (
-            f"worker stuck: idle_timeout fired ({cfg.idle_timeout:g} min without worker "
-            "log output or worktree change); worker killed before the gate"
-        ), logfile, head
+        match fired:
+            case "idle_timeout":
+                report = (
+                    f"worker stuck: idle_timeout fired ({cfg.idle_timeout:g} min without worker "
+                    "log output or worktree change); worker killed before the gate"
+                )
+            case "gate_timeout":
+                report = "worker gate exceeded its hard cap"
+        return False, report, logfile, head
     if time.monotonic() > deadline and not finished:
         record(
             "attempt", ticket=n, attempt=attempt, worker_exit=code, gate=None,
@@ -5359,8 +5463,8 @@ def worker_round(
     if before_status or after_status:
         ok = False
         report += "\n\nGate evidence rejected: worktree was not clean for the gated commit."
-    if not ok and cfg.fixups and (fixups or _protected_gate_guidance(report, labels)):
-        ok, report, head = retry_gate_fixups(wt, n, report, head, **flags)
+    if (not ok and cfg.fixups and (fixups or _protected_gate_guidance(report, labels))):
+        ok, report, head = retry_gate_fixups(wt, n, report, head, work_deadline=work_deadline, **flags)
         actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
         after_status = run(status_cmd, cwd=wt).stdout.strip()
     if ok and tip and run(["git", "merge-base", "--is-ancestor", tip, head], cwd=wt, check=False).returncode:
@@ -5455,6 +5559,13 @@ def transcript_usage(path: Path) -> dict:
         if isinstance(message.get("model"), str):
             usage["model"] = message["model"]
     return usage
+
+
+def _gate_has_result(report: str) -> bool:
+    return bool(re.search(
+        r"(?m)^(?:- [^:\n]+: (?:PASS|FAIL|SKIP)\b|gate runner did not write )",
+        report.partition("```")[0],
+    ))
 
 
 def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
@@ -5710,6 +5821,7 @@ def process_ticket(
                 pending_risk_requeue_head(n) if resolve == local_context else None
             )
             extra, logfile, report = resolve, None, ""
+            failed_gate_log = None
             staged = None if resolve else sync_staged(n, wt)
             if staged is not None:
                 report, gate_head = staged
@@ -5727,14 +5839,24 @@ def process_ticket(
                         "worker removed or changed existing tests"
                         if tests else "worker edited protected paths"
                     )
-                    escalate(
-                        n, reason, logfile,
-                        extra=f"{guidance}\n\n## Offending diff\n\n{report}",
-                        code="protected_paths",
-                    )
+                    escalate(n, reason, logfile,
+                             extra=f"{guidance}\n\n## Offending diff\n\n{report[:6000]}",
+                             code="protected_paths")
+                    return
+                has_gate = _gate_has_result(report)
+                if has_gate:
+                    failed_gate_log = logfile
+                if not has_gate and report.startswith("budget exceeded"):
+                    if failed_gate_log is not None:
+                        escalate(n, f"gate failed; worktree kept at {wt}", failed_gate_log, code="gate_failed")
+                    else:
+                        escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
                     return
                 if time.monotonic() > deadline:
-                    escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
+                    if failed_gate_log is not None:
+                        escalate(n, f"gate failed; worktree kept at {wt}", failed_gate_log, code="gate_failed")
+                    else:
+                        escalate(n, f"wall-clock budget ({budget_min} min) exceeded", logfile, code="budget")
                     return
                 extra = f"{resolve}## Previous gate report (attempt {attempt} failed)\n\n{report}"
             else:
@@ -5813,6 +5935,8 @@ def process_ticket(
                 ):
                     break
                 if time.monotonic() > deadline:
+                    if pr_failed:
+                        break
                     finished = _worker_finished_for_head(n, gate_head)
                     if actionable and finished:
                         _record_rework(n, gate_head, findings, deferred=True)
@@ -5849,11 +5973,14 @@ def process_ticket(
                         "worker removed or changed existing tests"
                         if tests else "worker edited protected paths"
                     )
-                    escalate(
-                        n, reason, logfile,
-                        extra=f"{guidance}\n\n## Offending diff\n\n{report}",
-                        code="protected_paths",
-                    )
+                    escalate(n, reason, logfile,
+                             extra=f"{guidance}\n\n## Offending diff\n\n{report[:6000]}",
+                             code="protected_paths")
+                    return
+                if not _gate_has_result(report) and report.startswith("budget exceeded"):
+                    if pr_failed:
+                        break
+                    escalate(n, f"{report.splitlines()[0]}; budget_min / budget_exceeded", logfile, code="budget")
                     return
                 if not ok:
                     stuck = report.startswith("worker stuck")

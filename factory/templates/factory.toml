@@ -15,7 +15,9 @@
 # max_active = 2       # tickets in flight at once
 # max_attempts = 3     # worker+gate rounds before escalating
 # review_rounds = 1    # REVISE -> worker -> re-review cycles before escalating
-# budget_min = 90      # wall-clock budget per ticket; overall ceiling, kills a running worker
+# budget_min = 90      # ticket work budget; an already-running gate may finish (hard caps remain)
+# gate_reserve_seconds = 30  # fallback gate estimate without worktree history; finite positive seconds
+# Each round reserves its last measured attempt-gate duration, or this floor, before launching work.
 # idle_timeout = 30    # minutes with no worker log output and no worktree change = stuck:
 #                      # killed, attempt fails (reason `stuck`) and retries; 0 disables
 # exit_grace = 300     # seconds a worker may stay quiet after committing or writing its
