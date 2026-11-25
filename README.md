@@ -445,8 +445,9 @@ Keep these artifacts with the journal; no checks are truncated.
 At least one non-advisory check must still pass.
 The manager frontier and lessons promotion reuse this eligibility policy, including
 the frontier's check-run and commit-status feedback. Ignored CI failures do not
-become handoffs or block manager approval; required failures and human review
-feedback remain blocking.
+become handoffs or block manager approval; required failures, runner outages and
+human review feedback remain blocking. Pending and infrastructure-blocked checks
+hold manager approval with an explicit eligibility wait.
 
 Merge CI and advisory review readiness verify each active base-branch ruleset's
 required context against check runs on the caller's captured PR head, including

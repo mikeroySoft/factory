@@ -1018,8 +1018,8 @@ def frontier_pass(dry_run: bool = False) -> None:
                 if red and not failed:
                     dispatch.log(f"PR #{number}: red CI predates ticket #{n}'s release to {LABEL_AGENT}; waiting for a worker")
                     continue
-                if any(c["bucket"] == "pending" for c in checks):
-                    dispatch.log(f"PR #{number}: CI pending; waiting")
+                if any(c["bucket"] in ("pending", "infra") for c in checks):
+                    dispatch.log(f"PR #{number}: CI pending or runner unavailable; waiting")
                     if execution:
                         execution.wait("ci_pending", mode="eligibility", pr=number)
                     continue
