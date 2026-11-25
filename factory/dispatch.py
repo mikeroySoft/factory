@@ -1046,7 +1046,7 @@ def review_readiness(n: int, head: str, history: list[dict]) -> None:
         for row in rows
     )
     if valid:
-        rows = triage_cancelled(n, rows)
+        rows = triage_cancelled(n, _skip_unrunnable([{**row, "required": True} for row in rows]))
     review = next((e for e in reversed(history)
                    if e.get("event") == "review-result" and e.get("pr") == n
                    and e.get("head") == head), {})
@@ -1635,7 +1635,7 @@ def record_merge_decision(
     n: int, pr: int, chosen: str, rationale: str, head: str | None,
     approval_head: str | None, checks: list[dict], merge_sha: str | None = None,
 ) -> str:
-    from factory import trace
+    from factory import runtime_events, trace
 
     reasons = {
         "merge now": (
@@ -1666,7 +1666,9 @@ def record_merge_decision(
     inputs += [
         {"kind": "ci_run",
          "ref": str(check.get("link") or check.get("run") or check.get("id") or ".factory/events.jsonl"),
-         "summary": f"{check.get('name', 'check')}: {check.get('bucket', 'unknown')}"}
+         "summary": f"{check.get('name', 'check')}: {check.get('bucket', 'unknown')}"
+                    + (f" ({check['disposition']}, originally {check['original_bucket']})"
+                       if check.get("disposition") else "")}
         for check in checks[:14]
     ]
     cause = _latest_decision_id(n, {"manager", "review", "gate"})
@@ -1685,6 +1687,28 @@ def record_merge_decision(
         cost=None,
         actor=_decision_actor("deterministic", "dispatch.merge_pass_locked"),
     )
+    payload["checks"] = json.loads(trace._SECRET.sub("[credential withheld]", json.dumps(checks)))
+    # Budget the final record, including the execution envelope added by record().
+    envelope = {
+        "event": "decision", **payload,
+        "execution_id": "00000000-0000-4000-8000-000000000000",
+        "dispatcher_run_id": "00000000-0000-4000-8000-000000000000",
+    }
+    if len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()) \
+            >= runtime_events.ROW_LIMIT:
+        data = json.dumps(payload.pop("checks"), ensure_ascii=False, separators=(",", ":")).encode()
+        artifact = FACTORY / "merge-checks" / f"{payload['decision_id']}.json"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        with artifact.open("xb") as handle:
+            handle.write(data)
+        path = str(artifact.relative_to(ROOT))
+        payload["checks_ref"] = {
+            "path": path, "count": len(checks), "sha256": hashlib.sha256(data).hexdigest(),
+        }
+        payload["inputs"] = [value for value in payload["inputs"] if value["kind"] != "ci_run"] + [{
+            "kind": "ci_checks", "ref": path,
+            "summary": f"All {len(checks)} checks; SHA-256 {payload['checks_ref']['sha256']}",
+        }]
     record("decision", **payload)
     return payload["decision_id"]
 
@@ -4169,29 +4193,102 @@ def _required_ci(pr: int, expected: str | None = None, *, allow_behind: bool = F
 
 
 def pr_checks(pr: int, head: str) -> list[dict]:
-    """Display CI plus ruleset checks bound to the caller's head; missing evidence blocks merging.
+    """Required checks, or all non-advisory checks when none are required.
 
-    Behind-main and conflicting heads remain eligible for the callers' existing
-    refresh path, never a merge; other policy vetoes and unknown states fail closed.
+    Unknown check policy fails closed. Green eligibility retains exact-head
+    ruleset/app provenance and GitHub's merge-policy veto.
     """
-    proc = run(
-        ["gh", "pr", "checks", str(pr), "--repo", REPO, "--json", "name,bucket,link,completedAt"],
-        check=False,
-    )
+    command = ["gh", "pr", "checks", str(pr), "--repo", REPO,
+               "--json", "name,bucket,link,completedAt"]
+    proc = run([*command, "--required"], check=False)
     try:
-        rows = json.loads(proc.stdout)
+        # gh emits no JSON when the branch has no required checks.
+        no_required = proc.returncode == 1 and "no required checks" in (proc.stderr or "").lower()
+        rows = [] if no_required else json.loads(proc.stdout)
+        if not isinstance(rows, list) or proc.returncode not in (0, 1, 8) or (
+            proc.returncode == 1 and not rows and not no_required
+        ):
+            return []
+        required = bool(rows)
+        if not required:
+            proc = run(command, check=False)
+            rows = json.loads(proc.stdout)
+            if proc.returncode not in (0, 1, 8):
+                return []
         if not isinstance(rows, list) or not all(
-            isinstance(row, dict) and row.get("bucket") in
-            ("pass", "fail", "pending", "skipping", "cancel") for row in rows
+            isinstance(row, dict) and isinstance(row.get("name"), str)
+            and row.get("bucket") in ("pass", "fail", "pending", "skipping", "cancel")
+            for row in rows
         ):
             return []
     except (ValueError, TypeError):
         return []
+    rows = _skip_unrunnable([
+        {**row, "required": required, **(
+            {"bucket": "skipping", "disposition": "advisory", "original_bucket": row["bucket"]}
+            if not required and any(fnmatch.fnmatchcase(row["name"], pattern)
+                                    for pattern in cfg.advisory_checks) else {}
+        )}
+        for row in rows
+    ])
     if not any(row["bucket"] == "pass" for row in rows) or any(
-        row["bucket"] not in ("pass", "skipping") for row in rows
+        row["bucket"] not in ("pass", "skipping", "skipped-infra") for row in rows
     ):
         return rows
     return rows + _required_ci(pr, expected=head, allow_behind=True)
+
+
+def _unrunnable_job(check: dict) -> dict | None:
+    """Only stale, never-assigned self-hosted jobs with no matching registered runner."""
+    match = re.search(r"/actions/runs/(\d+)/job/(\d+)", check.get("link") or "")
+    if not match:
+        return None
+    try:
+        proc = run(["gh", "api", f"repos/{REPO}/actions/jobs/{match[2]}"], check=False)
+        if proc.returncode:
+            return None
+        job = json.loads(proc.stdout)
+        if not (job["status"] == "queued" or (
+            job["status"] == "completed" and job["conclusion"] == "cancelled"
+        )):
+            return None
+        if job["runner_id"] or job["runner_name"] or any(
+            step.get("started_at") or step.get("conclusion") not in (None, "skipped")
+            for step in job.get("steps", [])
+        ):
+            return None
+        labels = {label.casefold() for label in job["labels"]}
+        if "self-hosted" not in labels:
+            return None
+        created = datetime.fromisoformat(job["created_at"])
+        age = (datetime.now(UTC) - created).total_seconds()
+        if age < cfg.queued_check_timeout_seconds:
+            return None
+        proc = run(["gh", "api", f"repos/{REPO}/actions/runners?per_page=100",
+                    "--paginate", "--slurp"], check=False)
+        if proc.returncode:
+            return None
+        pages = json.loads(proc.stdout)
+        if not isinstance(pages, list) or not pages:
+            return None
+        runners = [runner for page in pages for runner in page["runners"]]
+        if any(labels <= {label["name"].casefold() for label in runner["labels"]}
+               for runner in runners):
+            return None
+        return {"run": int(match[1]), "job": int(match[2]), "labels": sorted(labels),
+                "queued_seconds": age, "registered_runners": len(runners)}
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return None
+
+
+def _skip_unrunnable(checks: list[dict]) -> list[dict]:
+    return [
+        {**check, "bucket": "infra" if check.get("required") else "skipped-infra",
+         "original_bucket": check["bucket"], "disposition": "no matching runner", **evidence}
+        if check.get("bucket") in ("pending", "cancel")
+        and (evidence := _unrunnable_job(check)) else check
+        for check in checks
+    ]
 
 
 def _infra_cancel(check: dict) -> dict | None:
@@ -4306,7 +4403,7 @@ def runner_unavailable(n: int, pr: int, starved: list[dict], dry_run: bool) -> b
     """
     runs = ", ".join(sorted({str(c["run"]) for c in starved}))
     reason = (f"PR #{pr}: CI runner unavailable ({', '.join(c['name'] for c in starved)}) "
-              f"in run {runs}; `{FACTORY_APPROVED}` kept")
+              f"in run {runs}; blocks merge; `{FACTORY_APPROVED}` kept")
     if any(e.get("event") == "escalate" and e.get("ticket") == n and e.get("reason") == reason
            for e in lifecycle.read_events(EVENTS)):
         return False
@@ -4946,7 +5043,11 @@ def merge_pass_locked(dry_run: bool) -> None:
                 )
                 continue
             starved = [c for c in checks if c["bucket"] == "infra"]
-            if starved and runner_unavailable(n, pr_num, starved, dry_run):
+            escalated = starved and runner_unavailable(n, pr_num, starved, dry_run)
+            if starved and execution and not escalated:
+                execution.outcome, execution.reason = "not_eligible", "ci_runner"
+                execution.wait("ci_runner", mode="eligibility", pr=pr_num)
+            if escalated:
                 if not dry_run:
                     record_merge_decision(
                         n, pr_num, "ci-infra", "CI runner infrastructure is unavailable",
@@ -4955,7 +5056,7 @@ def merge_pass_locked(dry_run: bool) -> None:
                 continue
             if buckets.get("pending") or starved:
                 log(f"PR #{pr_num}: CI pending {buckets}; waiting")
-                if execution:
+                if execution and not starved:
                     execution.outcome, execution.reason = "not_eligible", "ci_pending"
                     execution.wait("ci_pending", mode="eligibility", pr=pr_num)
                 continue
@@ -5129,15 +5230,20 @@ def merge_pass_locked(dry_run: bool) -> None:
                     None, code="ci_failed",
                 )
                 continue
-            if latest_starved and runner_unavailable(n, pr_num, latest_starved, False):
+            escalated = latest_starved and runner_unavailable(n, pr_num, latest_starved, False)
+            if latest_starved and not escalated:
+                execution.outcome, execution.reason = "not_eligible", "ci_runner"
+                execution.wait("ci_runner", mode="eligibility", pr=pr_num)
+            if escalated:
                 record_merge_decision(
                     n, pr_num, "ci-infra", "CI runner infrastructure became unavailable",
                     head, head, latest_checks,
                 )
                 continue
             if any(c["bucket"] in ("pending", "infra") for c in latest_checks):
-                execution.outcome, execution.reason = "not_eligible", "ci_pending"
-                execution.wait("ci_pending", mode="eligibility", pr=pr_num)
+                if not latest_starved:
+                    execution.outcome, execution.reason = "not_eligible", "ci_pending"
+                    execution.wait("ci_pending", mode="eligibility", pr=pr_num)
                 continue
             if not any(c["bucket"] == "pass" for c in latest_checks):
                 execution.outcome, execution.reason = "not_eligible", "no_passing_ci"

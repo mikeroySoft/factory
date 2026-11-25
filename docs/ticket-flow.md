@@ -247,7 +247,7 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``dispatcher error: {}; worktree kept at {}`` | any post-claim exception → escalate (`dispatcher_error`), then re-raised; a `LeaseRefused` from `dispatch.push_agent` escalates as `lease_refused` with its own message |
 | `dispatch.process_ticket` | ``own-host claim expired during an unfinished attempt with an open PR; worktree kept at {}; local HEAD {}; remote agent/{} {}; resume agent/{} after merging {}`` | Elected own-host attempt interrupted before completion, including missing local receipts → escalate (`dispatcher_error`) with a nonce-bearing requeue comment; keep PR/worktree and report retained local history (unpushed SHAs when readable, unavailable otherwise) |
 | `dispatch.merge_pass_locked` | ``PR #{}: CI failed ({}); `{}` label removed`` | CI fail → escalate |
-| `dispatch.runner_unavailable` | ``PR #{}: CI runner unavailable ({}) in run {}; `{}` kept`` | CI no runner after rerun → escalate |
+| `dispatch.runner_unavailable` | ``PR #{}: CI runner unavailable ({}) in run {}; blocks merge; `{}` kept`` | CI no runner after rerun, or required runner starvation → merge-blocking escalation |
 | `dispatch.merge_pass_locked` | ``PR #{}: missing approval evidence bound to {}; `{}` label removed`` | CI pass, missing evidence → escalate |
 | `dispatch.merge_pass_locked` | ``PR #{}: journaled {} at {}; `{}` label removed`` | Journaled REQUEST_CHANGES or REVISE at the listed head (including COMMENT-posted reviews) → escalate (`review_revise`); `factory-approved` removed |
 | `dispatch.refresh_pr_branch` | ``PR #{}: could not remove stale `{}` approval`` | refresh → escalate |

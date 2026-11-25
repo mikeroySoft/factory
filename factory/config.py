@@ -95,6 +95,7 @@ KNOWN_KEYS = {
     "worker_wrap": ("command",),
     "review": ("command", "second_command", "json_mode", "policy"),
     "manager": ("model", "command", "rounds", "review", "stale_days", "max_active_cap", "budget_min_cap"),
+    "merge": ("advisory_checks", "queued_check_timeout"),
     "learn": ("evaluate", "max_tickets", "max_tokens", "budget_min"),
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
@@ -247,6 +248,8 @@ class Config:
     release_bar_min_tickets: int = 20
     release_bar_floor_human_rate: float = 0.10
     release_bar_floor_first_pass: float = 0.90
+    advisory_checks: list[str] = field(default_factory=list)
+    queued_check_timeout: str = "6h"
     checks: list[Check] = field(default_factory=list)
     fixups: list[list[str]] = field(default_factory=list)
     protected_paths: list[str] = field(default_factory=list)
@@ -291,6 +294,25 @@ class Config:
                       for value, unit in re.findall(r"(\d+)([smhd])", self.claim_ttl))
         if seconds <= 0:
             raise ConfigError("claim_ttl must be a positive duration")
+        return seconds
+
+    @property
+    def queued_check_timeout_seconds(self) -> int:
+        if (
+            not isinstance(self.queued_check_timeout, str)
+            or re.fullmatch(r"(?:\d+[smhd])+", self.queued_check_timeout) is None
+        ):
+            raise ConfigError(
+                "merge.queued_check_timeout must be a duration using s, m, h, or d "
+                "(for example, 6h)"
+            )
+        multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+        seconds = sum(
+            int(value) * multipliers[unit]
+            for value, unit in re.findall(r"(\d+)([smhd])", self.queued_check_timeout)
+        )
+        if not seconds:
+            raise ConfigError("merge.queued_check_timeout must be a positive duration")
         return seconds
 
     @property
@@ -726,6 +748,9 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     release = raw.get("release", {})
     learn = raw.get("learn", {})
     evaluation = raw.get("eval", {})
+    merge_t = raw.get("merge", {})
+    if not isinstance(merge_t, dict):
+        raise ConfigError("[merge] must be a table")
     if not isinstance(learn, dict):
         raise ConfigError("[learn] must be a table")
     if not isinstance(release, dict):
@@ -742,6 +767,14 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
             raise ConfigError(f"{key} must start with an ASCII letter or digit, contain only "
                               "ASCII letters, digits, '.', '_' or '-', and be at most 45 characters")
         setattr(cfg, key, value)
+    advisory_checks = merge_t.get("advisory_checks", cfg.advisory_checks)
+    if not isinstance(advisory_checks, list) or any(
+        not isinstance(pattern, str) or not pattern for pattern in advisory_checks
+    ):
+        raise ConfigError("merge.advisory_checks must be an array of nonempty fnmatch globs")
+    cfg.advisory_checks = advisory_checks
+    cfg.queued_check_timeout = merge_t.get("queued_check_timeout", cfg.queued_check_timeout)
+    _ = cfg.queued_check_timeout_seconds
     cfg.claim_ttl = layered.get("claim_ttl", cfg.claim_ttl)
     _ = cfg.claim_ttl_seconds
     cfg.watch_bands = band_settings(root / BANDS_NAME)

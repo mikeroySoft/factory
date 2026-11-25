@@ -4003,6 +4003,41 @@ class DispatchTest(unittest.TestCase):
             refresh.assert_not_called()
             escalate.assert_not_called()
 
+    def test_merge_uses_required_checks_and_ignores_pending_nonrequired(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            root, origin, _ = build_fork(Path(d))
+            git(origin, "checkout", "-qb", "agent/7")
+            (origin / "feature.txt").write_text("feature")
+            git(origin, "add", "feature.txt")
+            git(origin, "commit", "-qm", "feature")
+            git(origin, "checkout", "-q", "main")
+            dispatch.configure(config.Config(root=root, repo="acme/widgets", signoff=False))
+            query, merge = merge_stage_mocks(origin, 70, "agent/7", "feature", dispatch.run)
+            passing = {"name": "unit", "bucket": "pass", "link": ""}
+            pending = {"name": "GPU", "bucket": "pending", "link": ""}
+
+            def run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "checks"]:
+                    rows = [passing] if "--required" in cmd else [passing, pending]
+                    return subprocess.CompletedProcess(cmd, 0 if "--required" in cmd else 8,
+                                                       json.dumps(rows), "")
+                return merge(cmd, *args, **kwargs)
+
+            with mock.patch.object(dispatch, "gh_json", side_effect=query), \
+                    mock.patch.object(dispatch, "run", side_effect=run), \
+                    mock.patch.object(dispatch, "_required_ci", return_value=[]), \
+                    mock.patch.object(dispatch, "cleanup_after_merge"), \
+                    mock.patch.object(dispatch, "escalate") as escalate:
+                dispatch.merge_pass_locked(False)
+            self.assertTrue(any(e.get("event") == "merged"
+                                for e in lifecycle.read_events(dispatch.EVENTS)))
+            self.assertEqual((origin / "feature.txt").read_text(), "feature")
+            escalate.assert_not_called()
+
     def cancelled_ci_pass(self, checks, jobs, annotations=()):
         """One merge pass over PR #70 (ticket 7) with stubbed CI, job, and annotation reads."""
         from unittest import mock
