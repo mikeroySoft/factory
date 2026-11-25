@@ -844,12 +844,8 @@ def unclaim(
         flag == "--add-label" and label == LABEL_AGENT
         for flag, label in zip(label_args[::2], label_args[1::2])
     )
-    if requeue:
-        close_requeue_pr(n)
-    if cfg.host_name and requeue and (elected := elected_host_claim(claims)):
-        context = refresh_requeue_context(n)
-        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
+    if requeue and n in _HOST_CLAIMS and owned is None:
+        return  # A displaced pipeline cannot release its replacement's PR or labels.
     login = _ASSIGNMENTS.get(n) if n in _ASSIGNMENTS else host_claim_login() if owned else None
     if claims and owned is None:
         login = None  # A replacement host owns the shared login now.
@@ -864,6 +860,14 @@ def unclaim(
         if current is None or current["nonce"] != owned["nonce"]:
             owned = None
             login = None
+            if requeue:
+                return
+    if requeue:
+        close_requeue_pr(n)
+    if cfg.host_name and requeue and (elected := elected_host_claim(claims)):
+        context = refresh_requeue_context(n)
+        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
+                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
     clearing = login is not None and any(
         row["login"].casefold() == login for row in fresh["assignees"]
     )
@@ -874,9 +878,9 @@ def unclaim(
         return
     if clearing:
         record("assignee-cleared", ticket=n, login=login, exit_path=exit_path)
-    _ASSIGNMENTS.pop(n, None)
     if owned is not None:
         delete_host_claim(n, owned)
+    _ASSIGNMENTS.pop(n, None)
 
 
 def open_agent_pr_hold(n: int) -> str | None:
@@ -3595,27 +3599,35 @@ def push_and_pr(
         retained = next((row for row in reversed(lifecycle.read_events(EVENTS))
                          if row.get("ticket") == ticket and row.get("event") == "pr-requeued"), None)
         if retained is not None:
-            pr = gh_json(["pr", "view", str(retained["pr"]), "--repo", REPO,
-                          "--json", "number,state,headRefName,baseRefName"])
+            candidates = [gh_json(["pr", "view", str(retained["pr"]), "--repo", REPO,
+                                   "--json", "number,state,headRefName,baseRefName"])]
+        else:
+            # A retry may publish on a host without the closing host's journal.
+            candidates = gh_json([
+                "pr", "list", "--repo", REPO, "--state", "closed", "--head", branch,
+                "--limit", "1000", "--json", "number,state,headRefName,baseRefName",
+            ])
+        for pr in candidates:
             if pr["state"] == "CLOSED" and pr["headRefName"] == branch:
                 existing = [pr]
                 reopen = True
+                break
     if existing and existing[0].get("baseRefName") != cfg.main:
         log(
             f"{branch}: existing PR #{existing[0]['number']} targets "
             f"{existing[0].get('baseRefName')!r}, not {cfg.main!r}; not pushing"
         )
         return False
+    if reopen:
+        # Withdraw the old head's approval and reopen before publishing rewritten history.
+        run(["gh", "pr", "edit", str(existing[0]["number"]), "--repo", REPO,
+             "--remove-label", LABEL_APPROVED])
+        run(["gh", "pr", "reopen", str(existing[0]["number"]), "--repo", REPO])
     if ticket is None or lease is None:
         with _REMOTE_REFS:
             run(["git", "push", "-u", "origin", branch], cwd=wt)
     else:
         push_agent(wt, ticket, lease)
-    if reopen:
-        # A closed PR can retain approval from the head that was sent back for work.
-        run(["gh", "pr", "edit", str(existing[0]["number"]), "--repo", REPO,
-             "--remove-label", LABEL_APPROVED])
-        run(["gh", "pr", "reopen", str(existing[0]["number"]), "--repo", REPO])
     if existing:
         log(f"{branch}: PR already exists (#{existing[0]['number']})")
         if ticket is not None:

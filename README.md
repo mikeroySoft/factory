@@ -1744,11 +1744,13 @@ comment; human removals and later edits still hold automatic management.
 Expired claims are admitted through the frontier only when no other hold exists.
 A human assignee remains a hold. Every open `agent/<ticket>` PR is a named hold,
 including an unfinished or approved PR with no live claim or lock; no requeue
-marker bypasses that rule. To keep automatic retries automatic, refresh conflicts,
-repeated refresh gate failures, risk disagreements, deferred review rework and
-stale mutation proof close the PR before restoring worker eligibility. Publication
-reopens that same retained PR after removing stale approval, preserving its human
-reviews. Each close records `pr-requeued`; a failed close prevents release.
+marker bypasses that rule. To keep retries automatic, refresh conflicts,
+repeated refresh gate failures, risk disagreements, deferred review rework,
+stale mutation proof, manager releases and confirmed `requeue_agent` actions
+close the PR before restoring worker eligibility. Publication removes stale
+approval and reopens the retained PR before pushing, preserving its human
+reviews even when history is rewritten. A host without a local `pr-requeued`
+receipt discovers the closed PR from GitHub. A failed close prevents release.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
@@ -1760,9 +1762,11 @@ Shared instructions take precedence over this host's local requeue journal. Loca
 risk-disagreement history carries forward only when its instructions match the
 selected context; an intervening foreign requeue cannot trigger early escalation.
 Escalation comments carry the same nonce marker on their second line, preserving
-the escalation prefix. A later manager/human `ready-for-agent` relabel can resume
-the expired claim only after any open PR closes; a live heartbeat still holds admission.
-Neither transition can release a later worker's claim or its completed-PR hold.
+the escalation prefix. A manager release or confirmed human requeue closes the
+retained PR; a bare label edit does not bypass the open-PR hold. A live heartbeat
+still holds admission. Displaced pipelines cannot close their replacement's PR
+or publish requeue instructions. Assignment provenance survives failed host-claim
+cleanup so its retry cannot erase a pre-existing human assignment.
 Expired ownership follows election order, not the newest raw comment: a contender
 created during the winner's last live lease cannot supersede its requeue marker
 just because loser cleanup failed. A claim created at or after that lease expires
