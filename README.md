@@ -443,8 +443,10 @@ decision would exceed the 16 KiB journal-row limit, the redacted list is saved i
 repository-relative path, count and SHA-256, and a trace input points to it.
 Keep these artifacts with the journal; no checks are truncated.
 At least one non-advisory check must still pass.
-The manager frontier and lessons promotion reuse this eligibility policy, so they
-do not reintroduce ignored checks as CI-failure handoffs or merge blockers.
+The manager frontier and lessons promotion reuse this eligibility policy, including
+the frontier's check-run and commit-status feedback. Ignored CI failures do not
+become handoffs or block manager approval; required failures and human review
+feedback remain blocking.
 
 Merge CI and advisory review readiness verify each active base-branch ruleset's
 required context against check runs on the caller's captured PR head, including

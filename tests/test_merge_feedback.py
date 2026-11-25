@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from factory import config, dispatch, feedback, lifecycle, manage
+from factory import config, dispatch, lifecycle, manage
 from tests.test_feedback import H, Provider
 from tests.test_frontier import pr_row
 
