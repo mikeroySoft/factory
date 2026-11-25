@@ -735,11 +735,12 @@ class HostClaim:
                 f"at={datetime.now(UTC).isoformat()}")
 
     def heartbeat(self) -> None:
+        retry_at = None
         while not self.stopped.wait(cfg.claim_ttl_seconds / 4):
             try:
-                with gh_reads.scope(EVENTS, "claim-heartbeat", isolated=True) as reads:
-                    if reads.stopped:
-                        continue
+                if retry_at is not None and time.time() < retry_at:
+                    continue
+                with gh_reads.scope(EVENTS, "claim-heartbeat", isolated=True, backoff=False) as reads:
                     with gh_reads.item(self.n), lifecycle.scope(
                         EVENTS, "claim-heartbeat", ticket=self.n, lazy=True,
                     ):
@@ -749,6 +750,7 @@ class HostClaim:
                             return
                         run(["gh", "api", f"repos/{REPO}/issues/comments/{self.comment['id']}",
                              "--method", "PATCH", "-f", f"body={self.body()}"])
+                retry_at = reads.reset
             except (OSError, subprocess.CalledProcessError) as exc:
                 log(f"#{self.n}: host claim heartbeat failed ({exc})")
 
@@ -913,6 +915,9 @@ def frontier() -> list[dict]:
         with gh_reads.item(n):
             if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
                 issue["held"] = "initiative record"
+            elif _pending_escalation(n):
+                del issue["held"]
+                continue
             elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
                 issue["held"] = held
             elif issue["assignees"] and not (
@@ -2564,6 +2569,14 @@ def escalate(
     claims = host_claims(n) if cfg.host_name else []
     elected = elected_host_claim(claims)
     unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
+    _publish_escalation(n, reason, log_path, packet, round_number, elected)
+
+
+def _publish_escalation(
+    n: int, reason: str, log_path: Path | None, packet: Path, round_number: int,
+    elected: dict | None,
+) -> None:
+    wt = FACTORY / f"wt-{n}"
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if elected:
         first, _, rest = body.partition("\n")
@@ -2579,6 +2592,44 @@ def escalate(
             body += "\n\n" + text[text.index("## Mechanical fixups"):][-2000:]
     posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
     comment_receipt(n, "escalation", posted.stdout if posted.returncode == 0 else "", round=round_number)
+
+
+def _pending_escalation(n: int) -> dict | None:
+    rows = generation.current(lifecycle.read_events(EVENTS), n).rows
+    at = next((index for index in range(len(rows) - 1, -1, -1)
+               if rows[index].get("event") == "escalate"), None)
+    if at is None:
+        return None
+    escalation = rows[at]
+    execution_id = escalation.get("execution_id")
+    if not execution_id:
+        return None
+    after = rows[at + 1:]
+    deferred = any(row.get("event") == "ticket-read-deferred"
+                   and row.get("execution_id") == execution_id for row in after)
+    completed = any(
+        (row.get("event") == "escalation-recovered"
+         and row.get("escalation_execution_id") == execution_id)
+        or row.get("event") in {"manage", "human-decision"}
+        for row in after
+    )
+    return escalation if deferred and not completed else None
+
+
+def _recover_escalation(n: int, escalation: dict, claims: list[dict]) -> None:
+    elected = elected_host_claim(claims)
+    if elected and owned_host_claim(n, claims) is None:
+        log(f"#{n}: escalation cleanup deferred (claim owned by another host)")
+        return
+    unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN, check=True)
+    rows = generation.current(lifecycle.read_events(EVENTS), n).rows
+    if not any(row.get("event") == "comment" and row.get("kind") == "escalation"
+               and row.get("round") == escalation["round"] for row in rows):
+        _publish_escalation(
+            n, escalation["reason"], Path(escalation["log"]) if escalation.get("log") else None,
+            Path(escalation["packet"]), escalation["round"], elected,
+        )
+    record("escalation-recovered", ticket=n, escalation_execution_id=escalation["execution_id"])
 
 
 def _review_plan(n: int) -> str:
@@ -5591,6 +5642,29 @@ def process_ticket(
             shared_context = ""
             if cfg.host_name:
                 claims, shared_context = host_claim_state(n, require_shared_login=True)
+            if pending := _pending_escalation(n):
+                fresh_labels = {label["name"] for label in fresh["labels"]}
+                recoverable = (
+                    fresh["state"].upper() == "OPEN"
+                    and LABEL_AGENT in fresh_labels
+                    and LABEL_HUMAN not in fresh_labels
+                    and not issue.get("held")
+                )
+                if recoverable and fresh["assignees"]:
+                    if cfg.host_name:
+                        recoverable = all(
+                            assignee.get("login", "").casefold() == host_claim_login()
+                            for assignee in fresh["assignees"]
+                        )
+                    else:
+                        recoverable = recoverable_single_host_assignment(n, fresh)
+                if not recoverable:
+                    execution.outcome, execution.reason = "not_admitted", "state_changed"
+                    return
+                _recover_escalation(n, pending, claims)
+                execution.outcome, execution.reason = "project_escalation", pending["code"]
+                return
+            if cfg.host_name:
                 fresh = release_stale_claims(n, fresh, claims)
             recovering_assignment = (
                 not forced and recoverable_single_host_assignment(n, fresh)
@@ -5895,9 +5969,7 @@ def process_ticket(
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
         except gh_reads.ReadFailed as exc:
-            if claimed:
-                execution.outcome, execution.reason = "mechanism_failure", exc.code
-                record("ticket-read-deferred", ticket=n, code=exc.code)
+            execution.outcome, execution.reason = "mechanism_failure", exc.code
             raise
         except HostSetupError as exc:
             log(f"#{n}: refused ({exc})")
@@ -5928,6 +6000,10 @@ def process_ticket(
                 execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
             raise
         finally:
+            failure = sys.exception()
+            if claimed and isinstance(failure, gh_reads.ReadFailed):
+                execution.outcome, execution.reason = "mechanism_failure", failure.code
+                record("ticket-read-deferred", ticket=n, code=failure.code)
             if host_claim is not None:
                 host_claim.stop()
                 _HOST_CLAIMS.pop(n, None)

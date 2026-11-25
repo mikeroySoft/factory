@@ -50,7 +50,7 @@ def current():
 
 
 class Pass:
-    def __init__(self, journal, stage, *, persistent=True):
+    def __init__(self, journal, stage, *, persistent=True, backoff=True):
         self.journal, self.stage, self.persistent = journal, stage, persistent
         self.lock = threading.Lock()
         self.reads = self.failed_reads = self.skipped = 0
@@ -59,7 +59,7 @@ class Pass:
         self.reason = None
         self.failed_tickets = set()
         self.reset = None
-        for row in lifecycle.read_events(journal) if persistent else ():
+        for row in lifecycle.read_events(journal) if persistent and backoff else ():
             if row.get("event") == "gh-read-backoff" and row.get("reset", 0) > time.time():
                 self.reset = max(self.reset or 0, row["reset"])
                 self.reason = "rate_limited"
@@ -239,11 +239,11 @@ def items(rows):
 
 
 @contextmanager
-def scope(journal, stage, *, persistent=True, isolated=False):
+def scope(journal, stage, *, persistent=True, isolated=False, backoff=True):
     if current() is not None and not isolated:
         yield current()
         return
-    state = Pass(journal, stage, persistent=persistent)
+    state = Pass(journal, stage, persistent=persistent, backoff=backoff)
     token = _CURRENT.set(state)
     try:
         yield state

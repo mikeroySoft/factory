@@ -35,7 +35,10 @@ class ClaimReadLifecycleTest(unittest.TestCase):
                 failure = self.failure(cmd)
                 if failure:
                     raise subprocess.CalledProcessError(1, cmd, "", failure)
-            if gh_reads.is_read(cmd):
+            if gh_reads.is_read(cmd) or (
+                cmd[:2] == ["gh", "api"] and "--method" in cmd
+                and cmd[cmd.index("--method") + 1] == "POST"
+            ):
                 return subprocess.CompletedProcess(cmd, 0, json.dumps(self.github.json(host, cmd[1:])), "")
             if cmd[:3] == ["gh", "issue", "comment"]:
                 return subprocess.CompletedProcess(cmd, 0, "https://github.com/local/claims/issues/7#issuecomment-99", "")
@@ -188,11 +191,13 @@ class ClaimReadLifecycleTest(unittest.TestCase):
             module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
         self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
         self.assertIn({"name": "ready-for-agent"}, self.github.issue["labels"])
-        module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        [retry] = module.frontier()
+        self.assertNotIn("held", retry, "pending escalation cleanup must not wait for claim expiry")
+        module.process_ticket(retry, 1, False)
         module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
         self.assertEqual(self.launched, [])
         self.assertEqual(self.github.issue["assignees"], [])
-        self.assertEqual(self.github.issue["labels"], [{"name": "needs-human"}])
+        self.assertEqual(self.github.issue["labels"], [{"name": module.LABEL_HUMAN}])
         self.assertEqual(self.github.comments, [])
         rows = lifecycle.read_events(module.EVENTS)
         self.assertEqual(len([row for row in rows if row["event"] == "escalate"]), 1)
@@ -200,3 +205,53 @@ class ClaimReadLifecycleTest(unittest.TestCase):
         posted = [cmd for cmd in self.commands if cmd[:3] == ["gh", "issue", "comment"]]
         self.assertEqual(len(posted), 1)
         self.assertIn("dispatcher crashed", posted[0][-1])
+
+    def pending_escalation(self, host):
+        module = self.connected_dispatcher(host)
+        if host:
+            self.github.add_claim(host, datetime.now(UTC))
+        else:
+            self.github.issue["assignees"] = [{"login": "@me"}]
+        with lifecycle.scope(module.EVENTS, "ticket", ticket=7):
+            module.record(
+                "escalate", ticket=7, code="dispatcher_error", reason="dispatcher crashed",
+                packet=str(module.FACTORY / "escalations" / "7.md"), round=1, log=None,
+            )
+            module.record("ticket-read-deferred", ticket=7, code="gh_read_failed")
+        return module
+
+    def assert_pending_refused(self, module, *, held=None):
+        before = copy.deepcopy((self.github.issue, self.github.comments))
+        issue = copy.deepcopy(self.github.issue)
+        if held:
+            issue["held"] = held
+        module.process_ticket(issue, 1, False, forced=True)
+        self.assertEqual((self.github.issue, self.github.comments), before)
+        self.assertEqual(self.launched, [])
+        self.assertFalse(any(cmd[:3] == ["gh", "issue", "comment"] for cmd in self.commands))
+        self.assertFalse(any(row["event"] == "escalation-recovered"
+                             for row in lifecycle.read_events(module.EVENTS)))
+
+    def test_pending_escalation_preserves_single_host_human_reassignment(self):
+        module = self.pending_escalation(None)
+        self.github.issue["assignees"] = [{"login": "human-owner"}]
+        self.assert_pending_refused(module)
+
+    def test_pending_escalation_preserves_named_host_human_reassignment(self):
+        module = self.pending_escalation("tank")
+        self.github.issue["assignees"] = [{"login": "human-owner"}]
+        self.assert_pending_refused(module)
+
+    def test_pending_escalation_does_not_mutate_closed_ticket(self):
+        module = self.pending_escalation("tank")
+        self.github.issue["state"] = "CLOSED"
+        self.assert_pending_refused(module)
+
+    def test_pending_escalation_does_not_override_held_ticket(self):
+        module = self.pending_escalation("tank")
+        self.assert_pending_refused(module, held="blocked by #8")
+
+    def test_pending_escalation_preserves_removed_ready_label(self):
+        module = self.pending_escalation("tank")
+        self.github.issue["labels"] = [{"name": "host:tank"}, {"name": module.LABEL_HUMAN}]
+        self.assert_pending_refused(module)
