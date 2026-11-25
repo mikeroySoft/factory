@@ -144,8 +144,16 @@ class RunnerRuntimeTest(unittest.TestCase):
         for resource, low in (("bytes", {"f_bavail": 0}), ("inodes", {"f_favail": 0})):
             with self.subTest(resource=resource):
                 stats = SimpleNamespace(**(vars(healthy) | low))
+
+                def github(args):
+                    if args[:2] == ["pr", "list"]:
+                        return []
+                    if args[:2] == ["issue", "view"]:
+                        return issue
+                    raise AssertionError(args)
+
                 with mock.patch.object(os, "statvfs", return_value=stats), \
-                        mock.patch.object(dispatch, "gh_json", return_value=issue), \
+                        mock.patch.object(dispatch, "gh_json", side_effect=github), \
                         mock.patch.object(dispatch, "run") as commands:
                     dispatch.process_ticket(issue, 1, False, forced=True)
                 self.assertFalse(any("--add-assignee" in call.args[0] for call in commands.call_args_list))

@@ -239,6 +239,8 @@ class RefreshGenerationTest(unittest.TestCase):
                     {"event": "human-decision", "ticket": 9, "status": "success", "actor": "alice",
                      "action": {"name": "requeue_agent", "args": {"number": 9, "intent": "fresh"}}}):
             lifecycle.append(dispatch.EVENTS, row)
+        self.github.closed = True
+        dispatch.record("pr-requeued", ticket=9, pr=102)
         with self.patched(), mock.patch.object(dispatch, "run_gate", return_value=(True, "gate ok")):
             [ready] = dispatch.frontier()
             dispatch.process_ticket(ready, 30, False)
@@ -262,6 +264,8 @@ class RefreshGenerationTest(unittest.TestCase):
                     {"event": "human-decision", "ticket": 9, "status": "success", "actor": "alice",
                      "action": {"name": "requeue_agent", "args": {"number": 9, "intent": "fresh"}}}):
             lifecycle.append(dispatch.EVENTS, row)
+        self.github.closed = True
+        dispatch.record("pr-requeued", ticket=9, pr=102)
         return self.github.head()
 
     def committing_worker(self) -> list[str]:
@@ -370,12 +374,16 @@ class RefreshGenerationTest(unittest.TestCase):
         self.cfg.workers["default"] = self.committing_worker()
         self.github.assignees, self.github.pr_labels = [], set()
         lifecycle.append(dispatch.EVENTS, {"event": "escalate", "ticket": 9, "code": "gate_failed", "reason": "x", "round": 1})
+        self.github.closed = True
+        dispatch.record("pr-requeued", ticket=9, pr=102)
         self.process()
         rounds = [(e["round"], e["deferred"]) for e in self.events("review-rework")]
         self.assertEqual(rounds, [(1, False), (2, False)])
         self.assertEqual([e["code"] for e in self.events("escalate")][1:], ["review_revise"])
         dispatch.configure(self.cfg)
         self.github.issue_labels, self.github.assignees = {config.LABEL_AGENT}, []
+        self.github.closed = True
+        dispatch.record("pr-requeued", ticket=9, pr=102)
         self.process()  # observes the owner's release: generation 2 gets its own review bounces
         self.assertEqual([e["generation"] for e in self.events("generation")], [1, 2])
         rounds = [(e["round"], e["deferred"]) for e in self.events("review-rework")]

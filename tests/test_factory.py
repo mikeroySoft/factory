@@ -2162,8 +2162,17 @@ PY
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 return original_run(cmd, *args, **kwargs)
 
+            def github(args):
+                if args == ["api", "user"]:
+                    return {"login": "runner"}
+                if args[:2] == ["pr", "list"]:
+                    return []
+                if args[:2] == ["issue", "view"]:
+                    return issue
+                raise AssertionError(args)
+
             with mock.patch.dict(os.environ, {"PYTHONPATH": str(ROOT)}), \
-                    mock.patch.object(dispatch, "gh_json", return_value=issue), \
+                    mock.patch.object(dispatch, "gh_json", side_effect=github), \
                     mock.patch.object(dispatch, "run", side_effect=fake_run), \
                     mock.patch.object(dispatch, "escalate") as escalate:
                 dispatch.process_ticket(issue, 5, False)
@@ -4737,6 +4746,7 @@ class DispatchTest(unittest.TestCase):
             self.assertEqual(git(origin, "rev-parse", "main"), fork_main, "a clean tip must not move main")
             create = next(c for c in gh_calls if c[:3] == ["gh", "issue", "create"])
             self.assertEqual(create[create.index("--label") + 1], "ready-for-agent")
+            self.assertNotIn("--assignee", create)
             body = Path(create[create.index("--body-file") + 1]).read_text()
             self.assertIn(u1, body)
             self.assertIn("gate on it passed", body)

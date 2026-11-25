@@ -18,14 +18,6 @@ class GateFixupsTest(unittest.TestCase):
         self.addCleanup(self.f.doCleanups)
         self.f.state.write_text(json.dumps({"reviews": 1}))
         self.count = self.f.base / "fixup-runs"
-        gh = self.f.bin / "gh"
-        gh.write_text(gh.read_text().replace(
-            'elif a[0] == "api"',
-            'elif a[:2] == ["issue", "comment"]:\n'
-            '    s.setdefault("comments", []).append(a[a.index("--body") + 1])\n'
-            '    p.write_text(json.dumps(s))\n'
-            'elif a[0] == "api"',
-        ))
         self.checks = self.f.base / "gate-heads"
 
     def configure(self, script=None, *, pr=False, attempts=1):
