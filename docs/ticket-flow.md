@@ -121,6 +121,7 @@ flowchart TB
 
   %% Recovery
   ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
+  ESC -->|"resume interrupted escalation cleanup on a healthy pass: dispatch._recover_escalation"| RFH
   UPSTREAM -->|"new sync ticket on a staged agent/N candidate; never moves main: dispatch.sync_pass"| RFA
   EXTPR -->|"review attempts exhausted, new issue: dispatch.review_intake_pass"| RFH
   EXTPR -->|"agent/lessons-*, agent/curate-*, agent/revert-lessons-* (same repository) admitted without a label: dispatch.review_intake_pass"| EXTPR
@@ -204,6 +205,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.acquire_host_claim` | — | `*` | Add this host's `host:<name>` label before the comment election |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
 | `dispatch.delete_host_claim` | `*` | `*` | Remove the host label before deleting its last claim; restore it if comment deletion fails and the claim remains |
+| `dispatch._recover_escalation` | `ready-for-agent` | `ready-for-human` | Resume journaled escalation after a read failure; release the owned claim and publish any missing escalation comment without another worker attempt |
 | `dispatch._record_rework` | `ready-for-human` | `ready-for-agent` | Deferred actionable findings: durable round charged, packet retained, owner queue cleared and assignee removed for the next pass |
 | `dispatch.defer_mutation_proof` | `ready-for-human` | `ready-for-agent` | Mutation-proof base moved during review, refresh or manager FIX: claim released and requeued for the next pass without charging worker or review budget |
 | `dispatch.escalate` | `ready-for-agent` | `ready-for-human` | Every escalation |
