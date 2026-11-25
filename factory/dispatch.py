@@ -580,6 +580,101 @@ def host_claim_login() -> str:
     return gh_json(["api", "user"])["login"].casefold()
 
 
+def host_claim_owner(n: int, claim: dict, rows: list[dict]) -> dict | None:
+    """Resolve nonce-bound or conservatively corroborated legacy ownership."""
+    if claim["host"] != cfg.host_name:
+        return None
+    lock_path = str(ticket_lock(n).resolve())
+    owner = next((row for row in reversed(rows)
+                  if row.get("event") == "host-claim-started" and row.get("ticket") == n
+                  and row.get("nonce") == claim["nonce"]), None)
+    if owner is None:
+        acquisitions = []
+        created = claim["created"]
+        # GitHub truncates created_at to seconds; local acquisition keeps microseconds.
+        latest = created if created.microsecond else created.replace(microsecond=999_999)
+        for row in rows:
+            if (row.get("event") != "lifecycle" or row.get("kind") != "lock_acquired"
+                    or row.get("stage") != "ticket" or row.get("ticket") != n
+                    or row.get("lock") != lock_path):
+                continue
+            try:
+                entered = datetime.fromisoformat(row["at"])
+                if entered.utcoffset() is None or entered > latest:
+                    continue
+            except (KeyError, TypeError, ValueError):
+                continue
+            acquisitions.append((entered, row))
+        # Archive placement is not ownership order. Retain every possible owner
+        # within the creation second, plus the latest acquisition before it.
+        preceding = max((at for at, _ in acquisitions if at <= created), default=None)
+        owners = {row.get("execution_id"): row for at, row in acquisitions
+                  if preceding is None or at >= preceding}
+        if len(owners) != 1:
+            return None  # Ambiguous ownership cannot justify removing a lease.
+        owner = next(iter(owners.values()))
+        if any(row.get("event") == "host-claim-started"
+               and row.get("execution_id") == owner.get("execution_id")
+               and row.get("nonce") != claim["nonce"] for row in rows):
+            return None  # A known nonce cannot own a different unjournaled claim.
+        # Closed lifecycle rows expire; durable claim receipts do not. A later
+        # different owner makes this surviving acquisition insufficient proof.
+        acquired = datetime.fromisoformat(owner["at"]).replace(microsecond=0)
+        for row in rows:
+            if (row.get("event") != "claimed" or row.get("ticket") != n
+                    or row.get("execution_id") == owner.get("execution_id")):
+                continue
+            try:
+                if datetime.fromisoformat(row["at"]) < acquired:
+                    continue
+            except (KeyError, TypeError, ValueError):
+                pass
+            return None
+    return owner
+
+
+def abandoned_host_claim(n: int, claim: dict, rows: list[dict]) -> bool:
+    """Require lifecycle interruption proof, including any launched descendants."""
+    owner = host_claim_owner(n, claim, rows)
+    if owner is None or not owner.get("execution_id"):
+        return False
+    events = [row for row in rows if lifecycle._lifecycle(row)]
+    owned = [row for row in events if row["execution_id"] == owner["execution_id"]]
+    if not owned or owned[0]["kind"] != "enter" or any(
+        row["kind"] == "exit" and row.get("outcome") not in {None, "unknown", "interrupted", "mechanism_failure"}
+        for row in owned
+    ):
+        return False  # Completed work retains its PR hold, even after the process exits.
+    # Closed descendants may be archived before their still-open ancestors.
+    children = {}
+    for row in events:
+        if row["kind"] == "enter":
+            children.setdefault(row.get("parent_execution_id"), []).append(row["execution_id"])
+    pending = [owner["execution_id"]]
+    execution_ids = set()
+    while pending:
+        execution_id = pending.pop()
+        if execution_id not in execution_ids:
+            execution_ids.add(execution_id)
+            pending.extend(children.get(execution_id, ()))
+    related = [owned[0]] + [
+        row for row in events if row["execution_id"] in execution_ids and row is not owned[0]
+    ]
+    descendants = {"processes": [], "complete": True}
+    if any(row["kind"] in {"handoff", "child_start"} for row in related):
+        descendants = lifecycle._descendants(
+            [owned[0]], {owner["execution_id"]: lifecycle._open_children(related)},
+        )[owner["execution_id"]]
+        descendants["launched"] = True
+    # host_claim_hold checks the ticket lock separately, including admission's own
+    # newly acquired lock. Other recorded locks still require lifecycle evidence.
+    lock_path = str(ticket_lock(n).resolve())
+    related[-1] = {**related[-1], "locks": [
+        lock for lock in owned[-1]["locks"] if lock["path"] != lock_path
+    ]}
+    return lifecycle._evidence(related, descendants)[0] == "interrupted"
+
+
 def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[list[dict], str]:
     """Read authenticated claims and transition context, including released claims."""
     pages = gh_json(["api", "--paginate", "--slurp", f"repos/{REPO}/issues/{n}/comments"])
@@ -615,6 +710,12 @@ def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[lis
                 continue
             claims.append({**comment, "host": host, "nonce": nonce, "at": at,
                            "heartbeat": heartbeat, "created": created})
+    local_rows = lifecycle.read_events(EVENTS) if any(
+        claim["host"] == cfg.host_name for claim in claims
+    ) else []
+    for claim in claims:
+        if abandoned_host_claim(n, claim, local_rows):
+            claim["abandoned"] = True
     for claim in claims:
         if claim["nonce"] in requeues:
             claim["requeue"] = requeues[claim["nonce"]]
@@ -631,11 +732,13 @@ def host_claims(n: int) -> list[dict]:
 def live_host_claims(claims: list[dict]) -> list[dict]:
     now = datetime.now(UTC)
     return [claim for claim in claims
-            if (now - claim["heartbeat"]).total_seconds() < cfg.claim_ttl_seconds]
+            if not claim.get("abandoned")
+            and (now - claim["heartbeat"]).total_seconds() < cfg.claim_ttl_seconds]
 
 
 def elected_host_claim(claims: list[dict]) -> dict | None:
     """Recover election ownership after expiry, ignoring overlapping losing comments."""
+    claims = [claim for claim in claims if not claim.get("abandoned")]
     if live := live_host_claims(claims):
         return live[0]
     elected = None
@@ -658,14 +761,25 @@ def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
     attempt = next((row for row in reversed(events)
                     if row.get("ticket") == n and row.get("event") == "claimed"
                     and row.get("claim_nonce") in (None, elected["nonce"])), None)
-    if attempt is None or not (execution := attempt.get("execution_id")):
+    legacy = attempt is not None and attempt.get("claim_nonce") is None
+    execution = (attempt or {}).get("execution_id")
+    if not execution:
+        # Publication precedes the claimed receipt. Only a completed owner may
+        # retain the PR hold; unknown and failed owners still need TTL recovery.
+        execution = (host_claim_owner(n, elected, events) or {}).get("execution_id")
+    if not execution:
         return elected
+    if legacy and not any(
+        row.get("event") == "lifecycle" and row.get("execution_id") == execution
+        for row in events
+    ):
+        return None  # Retention may prune completion but preserve its legacy receipt.
     for row in events:
         if row.get("execution_id") != execution:
             continue
         # Old journals lack the nonce. Only completion after this owner's last
         # heartbeat (both from the owning host's clock) can establish completion.
-        if (attempt.get("claim_nonce") is None
+        if (legacy
                 and datetime.fromisoformat(row["at"]) < elected["heartbeat"].replace(microsecond=0)):
             continue
         if row.get("event") in {"approved", "escalate", "merged"}:
@@ -676,7 +790,11 @@ def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
     return elected
 
 
-def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
+def host_claim_hold(
+    n: int, issue: dict, claims: list[dict], *, lock_owned: bool = False,
+) -> str | None:
+    if not lock_owned and any(row.get("abandoned") for row in claims) and lock_held(ticket_lock(n)):
+        return "ticket lock held"
     if live := live_host_claims(claims):
         return f"host claim ({live[0]['host']})"
     stale_hosts = {claim["host"] for claim in claims}
@@ -688,7 +806,8 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
         if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
             return "assigned"
         # Only a later election can supersede the expired owner's transition.
-        if "requeue" not in elected_host_claim(claims) and gh_json(
+        elected = elected_host_claim(claims)
+        if elected is not None and "requeue" not in elected and gh_json(
             ["pr", "list", "--repo", REPO, "--state", "open",
              "--head", f"agent/{n}", "--json", "number"]
         ) and interrupted_host_claim(n, claims) is None:
@@ -714,19 +833,22 @@ def delete_host_claim(n: int, claim: dict) -> None:
         record("claim-label-removed", ticket=n, label=f"host:{claim['host']}")
 
 
-def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement: int | None = None) -> dict:
+def release_stale_claims(
+    n: int, issue: dict, claims: list[dict], *, replacement: int | None = None,
+    lock_owned: bool = False,
+) -> dict:
     if replacement is None and interrupted_host_claim(n, claims) is not None:
         # Keep the elected nonce for escalation, including when @me was already removed.
         return issue
     claims = [row for row in claims if row["id"] != replacement]
     live_ids = {row["id"] for row in live_host_claims(claims)}
     stale = [row for row in claims if row["id"] not in live_ids]
-    if not stale or (replacement is None and host_claim_hold(n, issue, claims)):
+    if not stale or (replacement is None and host_claim_hold(n, issue, claims, lock_owned=lock_owned)):
         return issue
     # Re-read before deleting: a heartbeat may have landed since the admission read.
     current = host_claims(n)
     if replacement is None:
-        if host_claim_hold(n, issue, current):
+        if host_claim_hold(n, issue, current, lock_owned=lock_owned):
             return issue
     else:
         # A losing contender may still be live. Only the elected owner may
@@ -789,8 +911,10 @@ class HostClaim:
                  "--remove-label", f"host:{cfg.host_name}"])
 
 
-def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool = False) -> HostClaim | None:
-    if held := host_claim_hold(n, issue, claims):
+def acquire_host_claim(
+    n: int, issue: dict, claims: list[dict], *, forced: bool = False, lock_owned: bool = False,
+) -> HostClaim | None:
+    if held := host_claim_hold(n, issue, claims, lock_owned=lock_owned):
         record("claim_lost", ticket=n, host=cfg.host_name, reason=held)
         log(f"#{n}: skipped ({held})")
         return None
@@ -798,6 +922,8 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
     run(["gh", "label", "create", label, "--repo", REPO, "--color", "ededed", "--force"])
     run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-label", label])
     claim = HostClaim(n, {"nonce": str(uuid.uuid4())})
+    record("host-claim-started", ticket=n, host=cfg.host_name, nonce=claim.comment["nonce"],
+           process=lifecycle._identity(os.getpid()))
     try:
         comment = gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                            "-f", f"body={claim.body()}"])
@@ -5581,7 +5707,7 @@ def process_ticket(
             shared_context = ""
             if cfg.host_name:
                 claims, shared_context = host_claim_state(n, require_shared_login=True)
-                fresh = release_stale_claims(n, fresh, claims)
+                fresh = release_stale_claims(n, fresh, claims, lock_owned=True)
             if not forced and (
                 fresh["state"].upper() != "OPEN"
                 # Authenticated claims arbitrate a shared bot assignment below;
@@ -5653,7 +5779,7 @@ def process_ticket(
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
             if cfg.host_name:
-                host_claim = acquire_host_claim(n, fresh, claims, forced=forced)
+                host_claim = acquire_host_claim(n, fresh, claims, forced=forced, lock_owned=True)
                 if host_claim is None:
                     execution.outcome, execution.reason = "not_admitted", "claim_lost"
                     return
@@ -5671,7 +5797,9 @@ def process_ticket(
                 return
             claimed = True
             if host_claim is not None:
-                fresh = release_stale_claims(n, fresh, claims, replacement=host_claim.comment["id"])
+                fresh = release_stale_claims(
+                    n, fresh, claims, replacement=host_claim.comment["id"], lock_owned=True,
+                )
             record_claim_decision(n, True, admission_id)
             from factory import schedule
 

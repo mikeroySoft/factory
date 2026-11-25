@@ -1,5 +1,6 @@
 """Expired own-host claims must not strand a PR after an interrupted attempt."""
 import copy
+import os
 import subprocess
 import unittest
 from contextlib import chdir
@@ -158,6 +159,65 @@ class HostClaimInterruptionTest(unittest.TestCase):
                             and "Factory requeue:" in row["body"]
                             for row in self.github.comments))
         self.assertEqual(self.launched, [])
+
+    def leave_pre_receipt_claim(self, module, stage):
+        run = module.run
+
+        def denied(cmd, *args, **kwargs):
+            if "--add-assignee" in cmd:
+                raise PermissionError("cannot launch assignment command")
+            return run(cmd, *args, **kwargs)
+
+        if stage == "assignment":
+            with mock.patch.object(module, "run", side_effect=denied), self.assertRaises(PermissionError):
+                module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        else:
+            with mock.patch.object(module, "ensure_worktree", side_effect=KeyboardInterrupt), \
+                    self.assertRaises(KeyboardInterrupt):
+                module.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        self.assertFalse(any(row.get("event") == "claimed"
+                             for row in lifecycle.read_events(module.EVENTS)))
+        return module.host_claims(7)[0]
+
+    def assert_pre_receipt_escalates(self, stage):
+        tank = self.dispatcher("tank")
+        claim = self.leave_pre_receipt_claim(tank, stage)
+        self.github.open_prs = [{"number": 70}]
+        self.expire(tank)
+        with mock.patch.object(lifecycle, "_process_state", return_value="unknown"), \
+                self.post_escalations(tank):
+            [issue] = tank.frontier()
+            self.assertNotIn("held", issue)
+            tank.process_ticket(issue, 1, False)
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-human"}])
+        self.assertEqual(self.github.open_prs, [{"number": 70}])
+        self.assertEqual(self.launched, [])
+        self.assertTrue(any(f"Factory requeue: nonce={claim['nonce']}" in row["body"]
+                            for row in self.github.comments))
+
+    def test_expired_nonce_owner_without_claimed_receipt_escalates(self):
+        self.assert_pre_receipt_escalates("worktree")
+
+    def test_expired_mechanism_failure_without_claimed_receipt_escalates(self):
+        self.assert_pre_receipt_escalates("assignment")
+
+    def test_dead_mechanism_failure_reclaims_before_ttl(self):
+        tank = self.dispatcher("tank")
+        dead = {**lifecycle._identity(os.getpid()), "pid": 2_000_000_000}
+        with mock.patch.object(lifecycle, "_identity", return_value=dead), \
+                lifecycle.scope(tank.EVENTS, "ticket", ticket=7) as execution:
+            execution.resource("acquired", tank.ticket_lock(7), scope="repository")
+            old = self.github.add_claim("tank", datetime.now(UTC))
+            tank.record("host-claim-started", ticket=7,
+                        nonce=old["body"].split("nonce=", 1)[1].split()[0])
+            execution.outcome = "mechanism_failure"
+            execution.resource("released", tank.ticket_lock(7), scope="repository")
+        self.github.open_prs = [{"number": 70}]
+        [issue] = tank.frontier()
+        self.assertNotIn("held", issue)
+        tank.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, ["tank"])
+        self.assertFalse(any(row["id"] == old["id"] for row in self.github.comments))
 
     def test_github_clock_ahead_of_local_journal_does_not_hold(self):
         tank = self.dispatcher("tank")

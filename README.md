@@ -1735,11 +1735,33 @@ comment; human removals and later edits still hold automatic management.
 
 Expired claims are admitted through the frontier only when no other hold exists.
 A human assignee remains a hold. An open `agent/<ticket>` PR also remains a hold
-for foreign claims or completed attempts. When the elected own-host claim expires
-without completion or escalation, the next pass instead escalates to `ready-for-human`
-under the ticket lock and posts a nonce-bearing `Factory requeue` comment.
+for foreign claims or completed attempts.
+Same-host claims from interrupted ticket executions are excluded from live leases
+and expired elections as soon as lifecycle evidence proves the execution interrupted
+(including an earlier boot) and the ticket lock is free. A dead dispatcher alone
+does not prove interruption: live children and unproven current-boot descendants
+retain the lease. Unknown exits are re-evaluated using the same evidence.
+New claims journal their nonce before publication; older claims match resolved
+ticket-lock paths and the latest acquisition before creation, independently of
+journal archive placement. GitHub creation timestamps have second precision;
+acquisitions within that second are also possible owners, and ambiguous ownership
+retains the hold. Closed lifecycle rows can expire while older interrupted runs
+survive; a later durable `claimed` receipt from another execution rules out
+legacy ownership inference and retains the hold even after that owner's lifecycle
+rows are pruned.
+Missing/unknown evidence, live owners, foreign claims and completed PR owners retain
+the usual holds. Admission rechecks
+under its own ticket lock, preserves the shared assignment until a replacement
+wins, then retires abandoned claims even when their old lease or PR would hold.
+This lets an owner resume requeue reuse its open PR on the first post-reboot pass.
+When the elected own-host claim expires without completion or escalation, the
+next pass instead escalates to `ready-for-human` under the ticket lock and posts
+a nonce-bearing `Factory requeue` comment.
 Missing local attempt evidence is recoverable, including a kill before `claimed`
-is journaled. New `claimed` receipts bind to the claim nonce, not GitHub creation
+is journaled: a nonce-bound start alone is not completion. Unknown owners escalate
+after expiry; mechanism failures can be reclaimed immediately when lifecycle
+evidence proves interruption, otherwise they also escalate after expiry.
+New `claimed` receipts bind to the claim nonce, not GitHub creation
 time; legacy completion receipts use the owner's local heartbeat clock.
 Recovery rechecks heartbeat/election, keeps the PR and worktree intact, and reports
 the local HEAD, remote branch head and unpushed commit SHAs when readable (otherwise
