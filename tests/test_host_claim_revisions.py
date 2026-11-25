@@ -76,18 +76,17 @@ class HostClaimRevisionTest(unittest.TestCase):
                 self.assertEqual(self.github.issue["labels"],
                                  [{"name": "host:tank"}, {"name": "ready-for-human"}])
 
-    def test_single_host_unclaim_keeps_original_argument_order(self):
+    def test_single_host_unclaim_preserves_preexisting_assignment(self):
         single = self.dispatcher(None)
-        transition = ["--remove-label", "ready-for-agent", "--add-label", "ready-for-human"]
-        for assignee_last in (False, True):
-            with self.subTest(assignee_last=assignee_last):
-                self.github.calls.clear()
-                single.unclaim(7, *transition, check=True, assignee_last=assignee_last)
-                assignment = ["--remove-assignee", "@me"]
-                args = transition + assignment if assignee_last else assignment + transition
-                self.assertEqual(self.github.calls, [
-                    (None, ["gh", "issue", "edit", "7", "--repo", "local/claims", *args]),
-                ])
+        self.github.issue["assignees"] = [{"login": "@me"}]
+
+        single.unclaim(
+            7, "--remove-label", "ready-for-agent", "--add-label", "ready-for-human",
+            check=True,
+        )
+
+        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-human"}])
 
     def test_expired_local_owner_with_matching_nonce_can_unclaim(self):
         tank = self.dispatcher("tank")
@@ -128,43 +127,52 @@ class HostClaimRevisionTest(unittest.TestCase):
             tank.unclaim(7)
         self.assertEqual((self.github.issue["labels"], self.github.comments), before)
 
-    def test_stale_releaser_cannot_unassign_replacement_after_empty_claim_read(self):
+    def test_stale_releaser_cannot_disturb_live_replacement(self):
         now = datetime(2026, 11, 2, tzinfo=UTC)
         self.github.add_claim("old", now - timedelta(hours=3))
-        # An abandoned claim can already be unassigned. The replacement must
-        # remain assigned even if another stale releaser is still in flight.
         self.github.issue["assignees"] = []
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
         for module in (tank, ultron):
             clock = self.enterContext(mock.patch.object(module, "datetime", wraps=datetime))
             clock.now.return_value = now
         read = tank.gh_json
-        replaced = False
+        started, release = threading.Event(), threading.Event()
+        pool = self.enterContext(ThreadPoolExecutor(max_workers=1))
+        replacement = None
+
+        def blocked_worker(*args, **kwargs):
+            started.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("replacement was not released")
+            return self.launch("ultron")
 
         def replace_after_read(args):
-            nonlocal replaced
+            nonlocal replacement
             result = read(args)
-            if not replaced and not self.github.comments and \
+            if replacement is None and not self.github.comments and \
                     {"name": "host:old"} not in self.github.issue["labels"]:
-                # The response was captured before the replacement claimed.
-                # On the broken code this is the final empty live-claim read,
-                # immediately before its shared-assignee removal.
-                replaced = True
-                ultron.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+                replacement = pool.submit(
+                    ultron.process_ticket, copy.deepcopy(self.github.issue), 1, False,
+                )
+                self.assertTrue(started.wait(timeout=2))
             return result
 
-        with mock.patch.object(tank, "gh_json", side_effect=replace_after_read):
-            tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        try:
+            with mock.patch.object(ultron, "worker_round", side_effect=blocked_worker), \
+                    mock.patch.object(tank, "gh_json", side_effect=replace_after_read):
+                tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+            self.assertTrue(started.is_set())
+            self.assertEqual([row["host"] for row in ultron.host_claims(7)], ["ultron"])
+            self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        finally:
+            release.set()
+        replacement.result(timeout=5)
 
-        self.assertTrue(replaced)
         self.assertEqual(self.launched, ["ultron"])
-        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
-        self.assertEqual(self.github.issue["labels"],
-                         [{"name": "ready-for-agent"}, {"name": "host:ultron"}])
-        self.assertEqual(len(self.github.comments), 1)
-        self.assertIn("host=ultron ", self.github.comments[0]["body"])
-        self.assertFalse(any("--remove-assignee" in args
-                             for host, args in self.github.calls if host == "tank"))
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertEqual(self.github.comments, [])
+        self.assertEqual(self.github.open_prs, [{"number": 70}])
 
     def test_expired_claim_with_unassigned_open_pr_remains_held(self):
         now = datetime(2026, 11, 2, tzinfo=UTC)
@@ -176,13 +184,13 @@ class HostClaimRevisionTest(unittest.TestCase):
         clock.now.return_value = now
 
         [issue] = tank.frontier()
-        self.assertEqual(issue.get("held"), "open PR")
+        self.assertEqual(issue.get("held"), "open agent PR #70")
         before = copy.deepcopy((self.github.issue, self.github.comments))
         tank.process_ticket(issue, 1, False)
         self.assertEqual((self.github.issue, self.github.comments), before)
         self.assertEqual(self.launched, [])
 
-    def test_two_stale_releasers_keep_replacement_assigned_and_dispatch_once(self):
+    def test_two_stale_releasers_dispatch_live_replacement_once(self):
         now = datetime(2026, 11, 2, tzinfo=UTC)
         self.github.add_claim("old", now - timedelta(hours=3))
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
@@ -191,40 +199,51 @@ class HostClaimRevisionTest(unittest.TestCase):
             clock.now.return_value = now
         read = tank.gh_json
         claim_reads = 0
+        started, release = threading.Event(), threading.Event()
+        pool = self.enterContext(ThreadPoolExecutor(max_workers=1))
+        replacement = None
+
+        def blocked_worker(*args, **kwargs):
+            started.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("replacement was not released")
+            return self.launch("ultron")
 
         def replace_after_stale_recheck(args):
-            nonlocal claim_reads
+            nonlocal claim_reads, replacement
             result = read(args)
             if "--slurp" in args:
                 claim_reads += 1
                 if claim_reads == 2:
-                    # Both releasers saw the same stale claim; ultron completes
-                    # its reclaim while tank still holds that old snapshot.
-                    ultron.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+                    replacement = pool.submit(
+                        ultron.process_ticket, copy.deepcopy(self.github.issue), 1, False,
+                    )
+                    self.assertTrue(started.wait(timeout=2))
             return result
 
-        with mock.patch.object(tank, "gh_json", side_effect=replace_after_stale_recheck):
-            tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+        try:
+            with mock.patch.object(ultron, "worker_round", side_effect=blocked_worker), \
+                    mock.patch.object(tank, "gh_json", side_effect=replace_after_stale_recheck):
+                tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
+            self.assertEqual([row["host"] for row in ultron.host_claims(7)], ["ultron"])
+        finally:
+            release.set()
+        replacement.result(timeout=5)
 
         self.assertEqual(self.launched, ["ultron"])
-        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
-        self.assertEqual(self.github.issue["labels"],
-                         [{"name": "ready-for-agent"}, {"name": "host:ultron"}])
-        self.assertEqual(len(self.github.comments), 1)
-        self.assertIn("host=ultron ", self.github.comments[0]["body"])
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertEqual(self.github.comments, [])
+        self.assertEqual(self.github.open_prs, [{"number": 70}])
 
-    def test_completed_worker_with_open_pr_remains_held_after_ttl(self):
+    def test_completed_worker_with_open_pr_remains_held(self):
         tank = self.dispatcher("tank", claim_ttl="1s")
         tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
-        self.github.open_prs = [{"number": 70}]
         ultron = self.dispatcher("ultron", claim_ttl="1s")
-        after_ttl = datetime.now(UTC) + timedelta(seconds=5)
         for module in (tank, ultron):
-            with self.subTest(host=module.cfg.host_name), \
-                    mock.patch.object(module, "datetime", wraps=datetime) as clock:
-                clock.now.return_value = after_ttl
+            with self.subTest(host=module.cfg.host_name):
                 [issue] = module.frontier()
-                self.assertIn("held", issue)
+                self.assertEqual(issue.get("held"), "open agent PR #70")
                 before = copy.deepcopy((self.github.issue, self.github.comments))
                 module.process_ticket(issue, 1, False)
                 self.assertEqual((self.github.issue, self.github.comments), before)
@@ -285,8 +304,8 @@ class HostClaimRevisionTest(unittest.TestCase):
                 self.assertNotIn("held", tank.frontier()[0])
         tank.process_ticket(tank.frontier()[0], 1, False)
         self.assertEqual(self.launched, ["tank"])
-        self.assertEqual([row["name"] for row in self.github.issue["labels"]],
-                         ["ready-for-agent", "host:tank"])
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
 
     def test_stale_assignment_remains_recoverable_when_claim_creation_or_assignment_fails(self):
         tank = self.dispatcher("tank")
@@ -306,52 +325,30 @@ class HostClaimRevisionTest(unittest.TestCase):
                     else:
                         tank.process_ticket(tank.frontier()[0], 1, False)
                 self.assertEqual(self.launched, [])
-                self.assertEqual(self.github.comments, [old])
+                self.assertEqual(self.github.comments, [old] if failing_arg == "--color" else [])
                 self.assertNotIn("held", tank.frontier()[0])
         tank.process_ticket(tank.frontier()[0], 1, False)
         self.assertEqual(self.launched, ["tank"])
 
-    def test_foreign_host_requeue_resumes_open_pr_after_ttl(self):
-        from factory import dispatch, lifecycle
-
-        tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
-        # Use the real context reader with each host's separate journal.
-        for module in (tank, ultron):
-            self.enterContext(mock.patch.object(
-                module, "refresh_requeue_context",
-                type(dispatch.refresh_requeue_context)(
-                    dispatch.refresh_requeue_context.__code__, module.__dict__),
-            ))
-        old = self.github.add_claim("tank", datetime.now(UTC))
+    def test_requeue_marker_does_not_bypass_open_pr_hold(self):
+        tank = self.dispatcher("tank")
+        old = self.github.add_claim("tank", datetime.now(UTC) - timedelta(hours=3))
+        nonce = old["body"].split("nonce=", 1)[1].split()[0]
+        self.github.comments.append({
+            "id": 100,
+            "body": f"Factory requeue: nonce={nonce}\nRebase PR #70 and resolve shared.py",
+            "created_at": datetime.now(UTC).isoformat(),
+            "user": {"login": "@me"},
+        })
         self.github.open_prs = [{"number": 70}]
-        ultron.record("conflict-requeue", ticket=7, pr=70, head="a" * 40,
-                      verb="rebase", files=["shared.py"], round=1)
-        # This is the transition shared by all refresh requeue paths.
-        ultron.unclaim(7, "--remove-label", "ready-for-human",
-                       "--add-label", "ready-for-agent", assignee_last=True)
-        self.assertIn(old, self.github.comments)
-        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
-        self.assertIn("held", tank.frontier()[0])
 
-        clock = self.enterContext(mock.patch.object(tank, "datetime", wraps=datetime))
-        clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
         [issue] = tank.frontier()
-        self.assertNotIn("held", issue)
-        context = []
-        def worker(*args, **kwargs):
-            context.append(args[4])
-            return self.launch("tank")
+        self.assertEqual(issue.get("held"), "open agent PR #70")
+        before = copy.deepcopy((self.github.issue, self.github.comments))
+        tank.process_ticket(issue, 1, False)
 
-        with mock.patch.object(tank, "worker_round", side_effect=worker):
-            tank.process_ticket(issue, 1, False)
-        self.assertEqual(self.launched, ["tank"])
-        self.assertIn("shared.py", context[0])
-        self.assertIn("PR #70", context[0])
-        self.assertTrue(any(row.get("event") == "claim-released"
-                            for row in lifecycle.read_events(tank.EVENTS)))
-        # The previous requeue must not authorize another run after this worker finishes.
-        clock.now.return_value += timedelta(hours=3)
-        self.assertEqual(tank.frontier()[0].get("held"), "open PR")
+        self.assertEqual((self.github.issue, self.github.comments), before)
+        self.assertEqual(self.launched, [])
 
     def test_untrusted_requeue_cannot_release_expired_open_pr_hold(self):
         old = self.github.add_claim("tank", datetime.now(UTC) - timedelta(hours=3))
@@ -365,7 +362,7 @@ class HostClaimRevisionTest(unittest.TestCase):
         tank = self.dispatcher("tank")
 
         [issue] = tank.frontier()
-        self.assertEqual(issue.get("held"), "open PR")
+        self.assertEqual(issue.get("held"), "open agent PR #70")
         before = copy.deepcopy((self.github.issue, self.github.comments))
         tank.process_ticket(issue, 1, False)
         self.assertEqual((self.github.issue, self.github.comments), before)
@@ -383,7 +380,7 @@ class HostClaimRevisionTest(unittest.TestCase):
         tank = self.dispatcher("tank")
 
         [issue] = tank.frontier()
-        self.assertEqual(issue.get("held"), "open PR")
+        self.assertEqual(issue.get("held"), "open agent PR #70")
         before = copy.deepcopy((self.github.issue, self.github.comments))
         tank.process_ticket(issue, 1, False)
         self.assertEqual((self.github.issue, self.github.comments), before)
@@ -404,61 +401,36 @@ class HostClaimRevisionTest(unittest.TestCase):
         with mock.patch.object(module, "run", side_effect=post_comment):
             module.escalate(7, "CI failed on PR #70", None, code="ci_failed")
 
-    def test_foreign_escalation_then_human_relabel_resumes_existing_pr(self):
+    def test_human_relabel_does_not_bypass_open_pr_hold(self):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
-        old = self.github.add_claim("tank", datetime.now(UTC))
+        self.github.add_claim("tank", datetime.now(UTC))
         self.github.open_prs = [{"number": 70}]
         self.escalate_with_fake_github(ultron)
-        self.assertIn(old, self.github.comments)
-        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
-        self.assertIn({"name": "ready-for-human"}, self.github.issue["labels"])
-        # Manager and human relabels do not call dispatch.unclaim.
         self.github.run("human", [
             "gh", "issue", "edit", "7", "--remove-label", "ready-for-human",
             "--add-label", "ready-for-agent",
         ])
-        self.assertIn("host claim", ultron.frontier()[0]["held"])
         after_ttl = datetime.now(UTC) + timedelta(hours=3)
         for module in (tank, ultron):
-            clock = self.enterContext(mock.patch.object(module, "datetime", wraps=datetime))
-            clock.now.return_value = after_ttl
-            self.assertNotIn("held", module.frontier()[0])
-        context = []
+            with mock.patch.object(module, "datetime", wraps=datetime) as clock:
+                clock.now.return_value = after_ttl
+                [issue] = module.frontier()
+                self.assertEqual(issue.get("held"), "open agent PR #70")
+                module.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, [])
 
-        def worker(*args, **kwargs):
-            context.append(args[4])
-            return self.launch("ultron")
-
-        with mock.patch.object(ultron, "worker_round", side_effect=worker):
-            ultron.process_ticket(ultron.frontier()[0], 1, False)
-        tank.process_ticket(tank.frontier()[0], 1, False)
-        self.assertEqual(self.launched, ["ultron"])
-        self.assertIn("CI failed on PR #70", context[0])
-        for module in (tank, ultron):
-            module.datetime.now.return_value += timedelta(hours=3)
-            self.assertEqual(module.frontier()[0].get("held"), "open PR")
-
-    def test_pre_host_assignment_can_be_released_and_redispatched(self):
+    def test_preexisting_authenticated_assignment_is_preserved_without_owned_claim(self):
         tank = self.dispatcher("tank")
-        self.github.open_prs = [{"number": 70}]
-        for target in ("ready-for-agent", "ready-for-human"):
-            with self.subTest(target=target):
-                self.github.comments.clear()
-                tank._HOST_CLAIMS.clear()
-                source = "ready-for-human" if target == "ready-for-agent" else "ready-for-agent"
-                self.github.issue["labels"] = [{"name": source}]
-                self.github.issue["assignees"] = [{"login": "@me"}]
-                tank.unclaim(7, "--remove-label", source, "--add-label", target)
-                self.assertEqual(self.github.issue["assignees"], [])
-                if target == "ready-for-human":
-                    self.github.run("human", [
-                        "gh", "issue", "edit", "7", "--remove-label", target,
-                        "--add-label", "ready-for-agent",
-                    ])
-                [issue] = tank.frontier()
-                self.assertNotIn("held", issue)
-                tank.process_ticket(issue, 1, False)
-        self.assertEqual(self.launched, ["tank", "tank"])
+        self.github.issue["assignees"] = [{"login": "@me"}]
+        before = copy.deepcopy((self.github.issue, self.github.comments))
+
+        tank.unclaim(7, "--add-label", "ready-for-agent")
+
+        self.assertEqual((self.github.issue, self.github.comments), before)
+        [issue] = tank.frontier()
+        self.assertEqual(issue.get("held"), "assigned")
+        tank.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, [])
 
     def test_owner_refresh_requeue_shares_reports_after_claim_deletion(self):
         from factory import dispatch
@@ -491,9 +463,7 @@ class HostClaimRevisionTest(unittest.TestCase):
         self.assertIn("test: FAIL first", context[0])
         self.assertIn("test: FAIL again", context[0])
         self.assertIn("unrelated", context[0])
-        with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
-            clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
-            self.assertEqual(ultron.frontier()[0].get("held"), "open PR")
+        self.assertEqual(ultron.frontier()[0].get("held"), "open agent PR #70")
 
     def test_expired_transition_context_targets_latest_claim(self):
         from factory import dispatch
@@ -504,10 +474,8 @@ class HostClaimRevisionTest(unittest.TestCase):
             type(dispatch.refresh_requeue_context)(
                 dispatch.refresh_requeue_context.__code__, tank.__dict__),
         ))
-        for transition, prior_claim in (
-            ("refresh", False), ("refresh", True), ("escalation", False), ("escalation", True),
-        ):
-            with self.subTest(transition=transition, prior_claim=prior_claim):
+        for prior_claim in (False, True):
+            with self.subTest(prior_claim=prior_claim):
                 self.github.comments.clear()
                 self.github.issue["labels"] = [{"name": "ready-for-agent"}]
                 if prior_claim:
@@ -519,18 +487,10 @@ class HostClaimRevisionTest(unittest.TestCase):
                     ])
                 self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3))
                 self.github.open_prs = [{"number": 70}]
-                if transition == "refresh":
-                    tank.record("conflict-requeue", ticket=7, pr=70, head="a" * 40,
-                                verb="rebase", files=["latest.py"], round=1)
-                    tank.unclaim(7, "--add-label", "ready-for-agent")
-                    expected = "latest.py"
-                else:
-                    self.escalate_with_fake_github(tank)
-                    self.github.run("human", [
-                        "gh", "issue", "edit", "7", "--remove-label", "ready-for-human",
-                        "--add-label", "ready-for-agent",
-                    ])
-                    expected = "CI failed on PR #70"
+                tank.record("conflict-requeue", ticket=7, pr=70, head="a" * 40,
+                            verb="rebase", files=["latest.py"], round=1)
+                tank.unclaim(7, "--add-label", "ready-for-agent")
+                expected = "latest.py"
                 [issue] = ultron.frontier()
                 self.assertNotIn("held", issue)
                 context = []
@@ -543,9 +503,9 @@ class HostClaimRevisionTest(unittest.TestCase):
                     ultron.process_ticket(issue, 1, False)
                 self.assertIn(expected, context[0])
                 self.assertNotIn("Obsolete refresh instructions", context[0])
-        self.assertEqual(self.launched, ["ultron", "ultron", "ultron", "ultron"])
+        self.assertEqual(self.launched, ["ultron", "ultron"])
 
-    def test_overlapping_stale_recovery_cleans_old_claim_before_owner_requeue(self):
+    def test_overlapping_stale_recovery_cleans_old_claim_before_winner_launch(self):
         from factory import lifecycle
 
         old = self.github.add_claim("old", datetime.now(UTC) - timedelta(hours=3))
@@ -613,19 +573,13 @@ class HostClaimRevisionTest(unittest.TestCase):
                          [("old", old["created_at"])])
         self.assertTrue(any(row.get("event") == "claim_lost"
                             for row in lifecycle.read_events(ultron.EVENTS)))
-        self.assertEqual([row["name"] for row in self.github.issue["labels"]],
-                         ["ready-for-agent", "host:tank"])
-        self.assertEqual(len(self.github.comments), 1)
-
-        self.github.open_prs = [{"number": 70}]
-        tank.unclaim(7, "--add-label", "ready-for-agent")
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
         self.assertEqual(self.github.issue["assignees"], [])
-        self.assertNotIn("held", ultron.frontier()[0])
-        ultron.process_ticket(ultron.frontier()[0], 1, False)
-        self.assertEqual(self.launched, ["tank", "ultron"])
-        with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
-            clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
-            self.assertEqual(ultron.frontier()[0].get("held"), "open PR")
+        self.assertEqual(self.github.comments, [])
+        [issue] = ultron.frontier()
+        self.assertEqual(issue.get("held"), "open agent PR #70")
+        ultron.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, ["tank"])
 
     def test_owner_transitions_remove_older_stale_claim_without_releasing_newer_work(self):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
@@ -648,12 +602,14 @@ class HostClaimRevisionTest(unittest.TestCase):
                 self.assertNotIn(old, self.github.comments)
                 self.assertEqual(self.github.issue["assignees"], [])
                 self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
-                self.assertNotIn("held", ultron.frontier()[0])
-                ultron.process_ticket(ultron.frontier()[0], 1, False)
-                with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
-                    clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
-                    self.assertEqual(ultron.frontier()[0].get("held"), "open PR")
-        self.assertEqual(self.launched, ["ultron", "ultron"])
+                [issue] = ultron.frontier()
+                if transition == "requeue":
+                    self.assertNotIn("held", issue)
+                    ultron.process_ticket(issue, 1, False)
+                else:
+                    self.assertEqual(issue.get("held"), "open agent PR #70")
+                    ultron.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, ["ultron"])
 
 
 class HostClaimOwnershipTest(unittest.TestCase):
@@ -724,10 +680,10 @@ class HostClaimOwnershipTest(unittest.TestCase):
             tank.process_ticket(copy.deepcopy(self.github.issue), 1, False)
 
         self.assertEqual(self.launched, ["tank"])
-        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
-        self.assertEqual(self.github.issue["labels"],
-                         [{"name": "ready-for-agent"}, {"name": "host:tank"}])
-        self.assertEqual([row["id"] for row in self.github.comments], [1000])
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertEqual(self.github.comments, [])
+        self.assertEqual(self.github.open_prs, [{"number": 70}])
         releases = [row["host"] for row in lifecycle.read_events(tank.EVENTS)
                     if row.get("event") == "claim-released"]
         self.assertEqual(releases, ["old", "ultron", "old"])

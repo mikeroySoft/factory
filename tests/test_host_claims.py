@@ -63,6 +63,9 @@ class FakeGitHub:
                 result = [copy.deepcopy(self.issue)]
             elif args[:2] == ["pr", "list"]:
                 result = copy.deepcopy(self.open_prs)
+            elif args[-1].endswith("/pulls?state=open&per_page=100"):
+                result = [[{"number": pr["number"], "head": {"ref": "agent/7"}}
+                           for pr in self.open_prs]]
             elif args == ["api", "user"]:
                 result = {"login": "@me"}
             elif args[:2] == ["issue", "view"]:
@@ -119,6 +122,13 @@ class FakeGitHub:
                     self.comment_patched.set()
                 else:
                     raise AssertionError(cmd)
+            elif cmd[:3] == ["gh", "pr", "close"]:
+                number = int(cmd[3])
+                self.open_prs = [row for row in self.open_prs if row["number"] != number]
+            elif cmd[:3] == ["gh", "pr", "reopen"]:
+                number = int(cmd[3])
+                if not any(row["number"] == number for row in self.open_prs):
+                    self.open_prs.append({"number": number})
             elif cmd[:3] == ["gh", "label", "create"]:
                 pass
             elif cmd[0] != "git":
@@ -149,6 +159,11 @@ class HostClaimRaceTest(unittest.TestCase):
         module.configure(cfg)
         wt = cfg.factory / "wt-7"
         wt.mkdir(parents=True)
+
+        def publish(*args, **kwargs):
+            self.github.open_prs = [{"number": 70}]
+            return True
+
         patches = {
             "gh_json": lambda args: self.github.json(host, args),
             "run": lambda cmd, *a, **kw: self.github.run(host, cmd, *a, **kw),
@@ -160,7 +175,7 @@ class HostClaimRaceTest(unittest.TestCase):
             "pending_risk_requeue_head": lambda *a: None,
             "sync_staged": lambda *a: None,
             "worker_round": lambda *a, **kw: self.launch(host),
-            "push_and_pr": lambda *a, **kw: True,
+            "push_and_pr": publish,
             "record_risk": lambda *a: None,
             "pr_gate_and_review": lambda *a: ("APPROVE", "", False),
             "pr_comment": lambda *a: None,
@@ -168,18 +183,12 @@ class HostClaimRaceTest(unittest.TestCase):
         }
         for name, value in patches.items():
             self.enterContext(mock.patch.object(module, name, value))
-        # Pre-existing PRs in this harness represent completed attempts. Tests
-        # of interruption publish their claim/PR after constructing the dispatcher.
-        if self.github.open_prs and (owner := module.elected_host_claim(module.host_claims(7))) \
-                and owner["host"] == host:
-            execution = f"fixture-completed-{owner['nonce']}"
-            module.record("claimed", ticket=7, claim_nonce=owner["nonce"], execution_id=execution)
-            module.record("approved", ticket=7, execution_id=execution)
         return module
 
     def launch(self, host):
         self.launched.append(host)
         return True, "gate passed", None, "a" * 40
+
 
     def test_two_hosts_race_one_ticket_exactly_one_dispatches(self):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
@@ -198,10 +207,11 @@ class HostClaimRaceTest(unittest.TestCase):
         loser = "ultron" if winner == "tank" else "tank"
         rows = lifecycle.read_events((tank if loser == "tank" else ultron).EVENTS)
         self.assertTrue(any(row.get("event") == "claim_lost" for row in rows), rows)
-        self.assertEqual([row["name"] for row in self.github.issue["labels"]
-                          if row["name"].startswith("host:")], [f"host:{winner}"])
-        self.assertEqual(len(self.github.comments), 1)
-        self.assertTrue(self.github.comments[0]["body"].startswith(f"Factory claim: host={winner} "))
+        self.assertFalse(any(row["name"].startswith("host:")
+                             for row in self.github.issue["labels"]))
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.comments, [])
+        self.assertEqual(self.github.open_prs, [{"number": 70}])
 
     def test_stale_claim_past_ttl_is_released_and_reclaimed(self):
         now = datetime(2026, 11, 2, tzinfo=UTC)
@@ -215,25 +225,20 @@ class HostClaimRaceTest(unittest.TestCase):
         tank.process_ticket(stale, 1, False)
 
         self.assertEqual(self.launched, ["tank"])
-        self.assertEqual(
-            [row["name"] for row in self.github.issue["labels"]
-             if row["name"].startswith("host:")],
-            ["host:tank"],
-        )
-        self.assertEqual(len(self.github.comments), 1)
-        self.assertTrue(self.github.comments[0]["body"].startswith("Factory claim: host=tank "))
-        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
+        self.assertFalse(any(row["name"].startswith("host:")
+                             for row in self.github.issue["labels"]))
+        self.assertEqual(self.github.comments, [])
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.open_prs, [{"number": 70}])
         released = [row for row in lifecycle.read_events(tank.EVENTS)
                     if row.get("event") == "claim-released"]
         self.assertEqual([(row["host"], row["last_heartbeat"]) for row in released],
                          [("ultron", old["created_at"])])
 
         thor = self.dispatcher("thor", claim_ttl="1s")
-        clock = self.enterContext(mock.patch.object(thor, "datetime", wraps=datetime))
-        clock.now.return_value = now
-        [live] = thor.frontier()
-        self.assertIn("tank", live["held"])
-        thor.process_ticket(live, 1, False)
+        [held] = thor.frontier()
+        self.assertEqual(held.get("held"), "open agent PR #70")
+        thor.process_ticket(held, 1, False)
         self.assertEqual(self.launched, ["tank"])
 
     def test_claim_at_ttl_boundary_is_released(self):
@@ -314,13 +319,11 @@ class HostClaimRaceTest(unittest.TestCase):
                 release.set()
             future.result(timeout=5)
 
-        self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
-        self.assertEqual(
-            [row["name"] for row in self.github.issue["labels"]
-             if row["name"].startswith("host:")],
-            ["host:tank"],
-        )
-        self.assertEqual(len(self.github.comments), 1)
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertFalse(any(row["name"].startswith("host:")
+                             for row in self.github.issue["labels"]))
+        self.assertEqual(self.github.comments, [])
+        self.assertEqual(self.github.open_prs, [{"number": 70}])
 
     def test_worker_launch_failure_releases_host_claim(self):
         tank = self.dispatcher("tank")
@@ -393,33 +396,17 @@ class SingleHostTest(unittest.TestCase):
     dispatcher = HostClaimRaceTest.dispatcher
     launch = HostClaimRaceTest.launch
 
-    def test_single_host_claim_path_unchanged(self):
+    def test_single_host_success_releases_assignment_and_next_pass_holds_on_pr(self):
         single = self.dispatcher(None)
 
         single.process_ticket(copy.deepcopy(self.github.issue), 1, False)
 
-        github_calls = [
-            args for _, args in self.github.calls
-            if args[0] in {"issue", "api", "gh"}
-        ]
-        self.assertEqual(github_calls, [
-            [
-                "issue", "view", "7", "--repo", "local/claims", "--json",
-                "state,labels,assignees,title,body,comments",
-            ],
-            [
-                "gh", "issue", "edit", "7", "--repo", "local/claims",
-                "--add-assignee", "@me",
-            ],
-        ])
-        self.assertFalse(any(
-            arg in {"--add-label", "--remove-label"}
-            for call in github_calls for arg in call
-        ))
-        self.assertFalse(any(
-            call[0] == "api" or call[:3] == ["gh", "issue", "comment"]
-            for call in github_calls
-        ))
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.open_prs, [{"number": 70}])
+        [issue] = single.frontier()
+        self.assertEqual(issue.get("held"), "open agent PR #70")
+        single.process_ticket(issue, 1, False)
+        self.assertEqual(self.launched, [None])
 
 
 if __name__ == "__main__":

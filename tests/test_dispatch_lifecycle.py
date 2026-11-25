@@ -18,36 +18,85 @@ from pathlib import Path
 p = Path(os.environ["SMOKE_STATE"])
 s = json.loads(p.read_text())
 a = sys.argv[1:]
+login = s.get("login", "runner")
+if a[:2] == ["api", "user"]:
+    print(login if "--jq" in a else json.dumps({"login": login}))
+    sys.exit(0)
 if a == ["api", "rate_limit"]:
     print(json.dumps({"resources": {"core": {"remaining": 5000}, "graphql": {"remaining": 5000}}}))
     sys.exit(0)
 if a[:3] == ["api", "--paginate", "--slurp"] and a[-1].endswith(("/labels?per_page=100", "/issues/comments?per_page=100")):
     print("[[]]")
     sys.exit(0)
-issue = {"number": 7, "title": "local change", "body": "Acceptance: make the local change", "comments": [], "labels": [{"name": "ready-for-agent"}], "assignees": [], "state": "OPEN"}
+issue = {"number": 7, "title": "local change", "body": "Acceptance: make the local change", "comments": [], "labels": [{"name": "ready-for-agent"}], "assignees": [{"login": login} for login in s.get("assignees", [])], "state": "OPEN"}
 if s.get("sync"):  # the dispatcher filed a sync ticket; the only open issue until its PR merges
     issue = {**issue, "title": "upstream sync: 1 commit(s) at local", "body": s["sync"], "state": "CLOSED" if s.get("merged") else "OPEN"}
 if a[:2] == ["issue", "view"]:
     print(json.dumps(issue))
+elif a[:2] == ["issue", "edit"]:
+    s.setdefault("gh", []).append(a)
+    if "--add-assignee" in a:
+        s["assignees"] = [login]
+    if "--remove-assignee" in a:
+        s["assignees"] = []
+    p.write_text(json.dumps(s))
+elif a[:2] == ["issue", "comment"]:
+    if "--body" in a:
+        s.setdefault("comments", []).append(a[a.index("--body") + 1])
+    s.setdefault("gh", []).append(a)
+    p.write_text(json.dumps(s))
+    print("https://example.invalid/issues/7#issuecomment-100")
 elif a[:2] == ["issue", "create"]:
     s["sync"] = Path(a[a.index("--body-file") + 1]).read_text()
+    assignees = [a[a.index("--assignee") + 1]] if "--assignee" in a else []
+    s["created_issue"] = {
+        "number": 7,
+        "assignees": [{"login": assignee} for assignee in assignees],
+    }
     p.write_text(json.dumps(s))
     print("https://example.invalid/issues/7")
 elif a[:2] == ["issue", "list"]:
     print(json.dumps([issue]) if s.get("sync") and not s.get("merged") else "[]")
+elif a == ["api", "--paginate", "--slurp", "repos/local/smoke/pulls?state=open&per_page=100"]:
+    rows = []
+    if s.get("pr") and not s.get("merged") and s.get("pr_state", "OPEN") == "OPEN":
+        rows.append({"number": 70, "head": {"ref": "agent/7"}})
+    print(json.dumps([rows]))
 elif a[:2] == ["pr", "list"]:
-    if s.get("pr") and not s.get("merged"):
+    state = s.get("pr_state", "OPEN")
+    requested = a[a.index("--state") + 1].upper() if "--state" in a else "OPEN"
+    if s.get("pr") and not s.get("merged") and requested in (state, "ALL"):
         head = subprocess.run(["git", "-C", ".factory/wt-7", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-        print(json.dumps([{"number": 70, "state": "OPEN", "headRefName": "agent/7", "headRefOid": head, "baseRefName": "main", "isDraft": False, "labels": [{"name": "factory-approved"}], "reviewRequests": [], "reviewDecision": "APPROVED"}]))
+        labels = [{"name": "factory-approved"}] if s.get("approved") else []
+        print(json.dumps([{"number": 70, "state": state, "headRefName": "agent/7", "headRefOid": head, "baseRefName": "main", "isDraft": False, "labels": labels, "reviewRequests": [], "reviewDecision": "APPROVED"}]))
     else:
         print("[]")
 elif a[:2] == ["pr", "create"]:
     s["pr"] = True
+    s["pr_state"] = "OPEN"
+    s["approved"] = False
+    s.setdefault("gh", []).append(a)
     p.write_text(json.dumps(s))
     print("https://example.invalid/pull/70")
 elif a[:2] == ["pr", "view"]:
     head = subprocess.run(["git", "-C", ".factory/wt-7", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-    print(json.dumps({"number": 70, "headRefName": "agent/7", "headRefOid": head, "baseRefName": "main", "state": "OPEN", "reviewDecision": "", "isDraft": False, "labels": [{"name": "factory-approved"}], "title": "local change"}))
+    labels = [{"name": "factory-approved"}] if s.get("approved") else []
+    print(json.dumps({"number": 70, "headRefName": "agent/7", "headRefOid": head, "baseRefName": "main", "state": s.get("pr_state", "OPEN"), "reviewDecision": "APPROVED", "isDraft": False, "labels": labels, "title": "local change"}))
+elif a[:2] == ["pr", "edit"]:
+    s.setdefault("gh", []).append(a)
+    if "--remove-label" in a and a[a.index("--remove-label") + 1] == "factory-approved":
+        s["approved"] = False
+    if "--add-label" in a and a[a.index("--add-label") + 1] == "factory-approved":
+        s["approved"] = True
+    p.write_text(json.dumps(s))
+elif a[:2] == ["pr", "close"]:
+    s["pr_state"] = "CLOSED"
+    s.setdefault("gh", []).append(a)
+    p.write_text(json.dumps(s))
+elif a[:2] == ["pr", "reopen"]:
+    s["pr_state"] = "OPEN"
+    s.setdefault("gh", []).append(a)
+    p.write_text(json.dumps(s))
 elif a[:2] == ["pr", "checks"]:
     print(json.dumps([{"name": "ci", "bucket": "pass" if s.get("merge_ready") else "pending"}]))
 elif a[:2] == ["pr", "merge"]:
@@ -60,7 +109,7 @@ elif a[0] == "api" and "/rules/branches/" in a[1]:
     print("[[]]")
 elif a[0] == "api" and "/compare/" in a[1]:
     print(json.dumps({"behind_by": 0}))
-elif a[:2] not in (["issue", "edit"], ["issue", "comment"], ["pr", "edit"], ["pr", "comment"]):
+elif a[:2] != ["pr", "comment"]:
     raise SystemExit("Unexpected external operation: " + repr(a))
 '''
 
@@ -1131,13 +1180,6 @@ class LeaseRefusedCLI(unittest.TestCase):
 
     def setUp(self):
         LocalCLI.setUp(self)
-        gh = self.bin / "gh"
-        gh.write_text(GH.replace(
-            'elif a[:2] not in (["issue", "edit"]',
-            'elif a[:2] in (["issue", "edit"], ["issue", "comment"]):\n'
-            '    s.setdefault("gh", []).append(a)\n'
-            '    p.write_text(json.dumps(s))\n'
-            'elif a[:2] not in (["issue", "edit"]'))
         wt = self.repo / ".factory" / "wt-7"
         wt.parent.mkdir(exist_ok=True)
         self.git("worktree", "add", str(wt), "-b", "agent/7")
@@ -1262,11 +1304,8 @@ class TriageExemptionLifecycleTest(unittest.TestCase):
             'issue["comments"] = [{"author": {"login": ' + repr(author) + '}, '
             '"body": "Triage: investigate hardware failure\\n\\n'
             'Agent brief: fix it\\nNo repro test: requires unavailable hardware"}]\n'
-            'if a[:2] == ["api", "user"]:\n'
-            '    print("factory-bot")\n'
-            '    raise SystemExit(0)\n'
             'if s.get("sync"):',
-        ))
+        ).replace('s.get("login", "runner")', 's.get("login", "factory-bot")'))
 
     def test_trusted_triage_exemption_survives_retry_and_review_bounce(self):
         self.configure_bug()

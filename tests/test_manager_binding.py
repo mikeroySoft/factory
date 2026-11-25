@@ -146,11 +146,12 @@ class ManagerBindingTest(unittest.TestCase):
         self.accept()
         live_body = self.bound("Latest live scope")
         replacement = self.bound("Manager-refined scope")
+        refresh = mock.Mock(return_value={"title": "Bounded slice", "body": live_body})
         with mock.patch.object(
             dispatch,
             "gh_json",
-            return_value={"title": "Bounded slice", "body": live_body},
-        ) as refresh, mock.patch.object(dispatch, "run", side_effect=self.run_command):
+            side_effect=lambda args: [] if args[:2] == ["pr", "list"] else refresh(args),
+        ), mock.patch.object(dispatch, "run", side_effect=self.run_command):
             manage.apply(
                 7,
                 {"title": "Bounded slice", "body": self.bound("Stale list scope")},

@@ -706,6 +706,7 @@ def _command_step(action: str, argv: list[str], *, cwd: Path | None = None) -> d
 
 def _plan_request(
     cfg: Config, request: dict, actor: str, target: dict, raw: dict | None,
+    deadline: float, *, requeue: bool = False,
 ) -> list[dict]:
     number, op = request["number"], request["op"]
     steps = []
@@ -715,6 +716,25 @@ def _plan_request(
                 f"{op}_comment",
                 ["gh", op, "comment", str(number), "--repo", cfg.repo, "--body", request["comment"]],
             ))
+        if requeue:
+            prs = _read_json(
+                cfg,
+                ["gh", "pr", "list", "--repo", cfg.repo, "--state", "open",
+                 "--head", f"agent/{number}", "--json", "number"],
+                deadline,
+            )
+            if not isinstance(prs, list) or any(
+                not isinstance(pr, dict) or type(pr.get("number")) is not int or pr["number"] <= 0
+                for pr in prs
+            ):
+                raise DecisionError("provider returned invalid agent PRs", "provider_unavailable")
+            steps.extend(
+                _command_step(
+                    "pr_close",
+                    ["gh", "pr", "close", str(pr["number"]), "--repo", cfg.repo],
+                )
+                for pr in prs
+            )
         add = [label for label in request.get("add", []) if label != LABEL_APPROVED]
         remove = request.get("remove", [])
         edit = []
@@ -826,9 +846,19 @@ def prepare(
                 merge_lock = True
         if op == "issue":
             _sync_routing(request, raw)
-        planned = _plan_request(cfg, request, actor, target, raw)
+        requeue = (
+            isinstance(action, dict)
+            and action.get("name") == "requeue_agent"
+            and op == "issue"
+        )
+        planned = _plan_request(
+            cfg, request, actor, target, raw, deadline, requeue=requeue,
+        )
         steps.extend({**step, "request": index} for step in planned)
-        effects.append({"request": index, **_effect(request, actor, target)})
+        effect = {"request": index, **_effect(request, actor, target)}
+        if requeue:
+            effect["changes"].insert(0, "close any open agent PR while retaining its reviews")
+        effects.append(effect)
 
     if merge_lock:
         locks.add(("merge", None))
@@ -1053,6 +1083,8 @@ def _mutation(cfg: Config, step: dict, deadline: float) -> dict:
         "ok": True,
         "output": output,
     }
+
+
 
 
 def _withdraw_approval(cfg: Config, target: dict, deadline: float) -> None:

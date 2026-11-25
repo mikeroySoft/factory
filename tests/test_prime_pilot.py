@@ -108,7 +108,15 @@ class PrimePilotLifecycleTest(unittest.TestCase):
                 "body": "",
                 "comments": [],
             }
-            with mock.patch.object(dispatch, "gh_json", return_value=fresh), \
+
+            def github(args):
+                if args[:2] == ["pr", "list"]:
+                    return []
+                if args[:2] == ["issue", "view"]:
+                    return fresh
+                raise AssertionError(args)
+
+            with mock.patch.object(dispatch, "gh_json", side_effect=github), \
                     mock.patch.object(dispatch, "run") as run:
                 dispatch.process_ticket(issue, 1, False)
 

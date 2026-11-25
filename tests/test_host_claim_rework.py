@@ -15,6 +15,7 @@ class HostClaimReworkTest(unittest.TestCase):
     def configure(self, host):
         dispatch.configure(config.Config(self.root / host, "local/claims", host_name=host))
         self.enterContext(mock.patch.object(dispatch, "_HOST_CLAIMS", {}))
+        self.enterContext(mock.patch.object(dispatch, "_ASSIGNMENTS", {}))
         self.enterContext(mock.patch.object(dispatch, "gh_json",
                                            side_effect=lambda args: self.github.json(host, args)))
         self.enterContext(mock.patch.object(dispatch, "run",

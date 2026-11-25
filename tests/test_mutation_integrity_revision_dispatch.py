@@ -36,8 +36,10 @@ class MutationProofWaitCallerTest(unittest.TestCase):
         self.escalate.assert_not_called()
         self.assertEqual(len(self.events("mutation-proof-wait")), 1)
         commands = [call.args[0] for call in self.command.call_args_list]
+        self.assertEqual(self.issue["assignees"], [])
         self.assertTrue(any(command[:3] == ["gh", "issue", "edit"]
-                            and "--remove-assignee" in command for command in commands))
+                            and "--add-label" in command
+                            and config.LABEL_AGENT in command for command in commands))
         self.assertEqual(self.events("review-rework"), [])
 
     def resume(self, worker_calls: int) -> None:

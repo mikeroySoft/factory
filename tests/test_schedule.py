@@ -123,6 +123,8 @@ class PolicyTest(unittest.TestCase):
 
 class DispatcherPassTest(unittest.TestCase):
     def setUp(self):
+        dispatch.host_claim_login.cache_clear()
+        self.addCleanup(dispatch.host_claim_login.cache_clear)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.enterContext(patch.dict(os.environ, {lifecycle.CONTEXT_ENV: ""}))
@@ -183,6 +185,13 @@ class DispatcherPassTest(unittest.TestCase):
                 self.assertGreaterEqual(limit, 1000, "frontier() must pass an explicit --limit >= 1000")
                 served = sorted(issues, key=lambda row: row["createdAt"], reverse=True)[:limit]
                 return subprocess.CompletedProcess(cmd, 0, json.dumps(served), "")
+            if args[:2] == ["pr", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, "[]", "")
+            if args == [
+                "api", "--paginate", "--slurp",
+                f"repos/{dispatch.REPO}/pulls?state=open&per_page=100",
+            ]:
+                return subprocess.CompletedProcess(cmd, 0, "[[]]", "")
             if args[0] == "api" and args[1].endswith("/dependencies/blocked_by"):
                 return subprocess.CompletedProcess(cmd, 1, "", "HTTP 404")
             self.fail(f"unexpected gh call: {cmd}")
@@ -303,12 +312,22 @@ class DispatcherPassTest(unittest.TestCase):
         ):
             admitted = threading.Event()
             issue = {**ticket(7, "2026-01-01T00:00:00Z"), "_factory_admitted": admitted}
-            with patch.object(dispatch, "gh_json", return_value={**fresh, "state": "CLOSED"}):
+            def github(args, *, state="CLOSED"):
+                if args[:2] == ["pr", "list"]:
+                    return []
+                if args == ["api", "user"]:
+                    return {"login": "runner"}
+                if args[:2] == ["issue", "view"]:
+                    return {**fresh, "state": state}
+                raise AssertionError(args)
+
+            with patch.object(dispatch, "gh_json", side_effect=github):
                 dispatch.process_ticket(issue, 30, False)
             self.assertFalse(admitted.is_set(), "a ticket skipped before its claim must not signal admission")
             self.assertEqual(claimed(), [])
 
-            with patch.object(dispatch, "gh_json", return_value=fresh), self.assertRaises(Stop):
+            with patch.object(dispatch, "gh_json", side_effect=lambda args: github(args, state="OPEN")), \
+                    self.assertRaises(Stop):
                 dispatch.process_ticket(issue, 30, False)
         self.assertEqual(seen, {"worktree": False, "lease": True, "round": (True, [7])})
 

@@ -32,6 +32,7 @@ class HostClaimContextTest(unittest.TestCase):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
         self.requeue(tank, "conflict-requeue", verb="rebase", files=["already-resolved.py"])
         ultron.process_ticket(ultron.frontier()[0], 1, False)
+        self.github.add_claim("ultron", datetime.now(UTC))
         ultron.record("gate-requeue", ticket=7, pr=70, head="a" * 40, round=1,
                       reports=["new gate failure", "new gate failure again"])
         ultron.unclaim(7, "--add-label", "ready-for-agent", assignee_last=True)

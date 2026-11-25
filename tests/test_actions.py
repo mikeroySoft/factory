@@ -40,6 +40,8 @@ class ActionPathsTest(unittest.TestCase):
         if argv[:3] == ["gh", "issue", "view"]:
             fields = {key: self.issue[key] for key in argv[-1].split(",")}
             return subprocess.CompletedProcess(argv, 0, json.dumps(fields), "")
+        if argv[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(argv, 0, "[]", "")
         self.mutations.append(list(argv))
         self.issue["updatedAt"] = f"2026-10-09T00:00:{len(self.mutations) + 1:02d}Z"
         if argv[:3] == ["gh", "issue", "close"]:

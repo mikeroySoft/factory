@@ -54,16 +54,19 @@ class FakeGitHub:
     def __init__(self, origin: Path, real_run) -> None:
         self.origin, self.real_run = origin, real_run
         self.issue_labels = {config.LABEL_AGENT}
-        self.assignees = ["factory"]
+        self.assignees = []
         self.pr_labels = {config.LABEL_APPROVED}
         self.calls: list[list[str]] = []
         self.merged = False
+        self.has_pr = True
+        self.closed = False
 
     def head(self) -> str:
         return git(self.origin, "rev-parse", "agent/9")
 
     def pr(self) -> dict:
-        return {"number": 102, "state": "MERGED" if self.merged else "OPEN", "headRefName": "agent/9",
+        state = "MERGED" if self.merged else "CLOSED" if self.closed else "OPEN"
+        return {"number": 102, "state": state, "headRefName": "agent/9",
                 "headRefOid": self.head(), "baseRefName": "main", "isDraft": False, "reviewDecision": "",
                 "labels": [{"name": label} for label in sorted(self.pr_labels)], "title": "agent/9: change"}
 
@@ -73,8 +76,20 @@ class FakeGitHub:
                 "labels": [{"name": label} for label in sorted(self.issue_labels)]}
 
     def gh_json(self, args: list[str]) -> object:
+        if args == ["api", "user"]:
+            return {"login": "factory"}
+        if args == [
+            "api", "--paginate", "--slurp",
+            "repos/acme/widgets/pulls?state=open&per_page=100",
+        ]:
+            rows = (
+                [{"number": 102, "head": {"ref": "agent/9"}}]
+                if self.has_pr and not self.closed and not self.merged else []
+            )
+            return [rows]
         if args[:2] == ["pr", "list"]:
-            return [] if self.merged else [self.pr()]
+            requested = args[args.index("--state") + 1].upper() if "--state" in args else "OPEN"
+            return [self.pr()] if self.has_pr and not self.merged and (requested == "ALL" or not self.closed) else []
         if args[:2] == ["pr", "view"]:
             return self.pr()
         if args[:2] == ["issue", "view"]:
@@ -108,9 +123,19 @@ class FakeGitHub:
                 self.assignees = ["factory"]
             self.issue_labels -= {flags["--remove-label"]} if "--remove-label" in cmd else set()
             self.issue_labels |= {flags["--add-label"]} if "--add-label" in cmd else set()
+        elif cmd[1:3] == ["pr", "create"]:
+            self.has_pr = True
+            self.closed = False
+            return subprocess.CompletedProcess(
+                cmd, 0, "https://github.com/acme/widgets/pull/102\n", "",
+            )
         elif cmd[1:3] == ["pr", "edit"]:
             self.pr_labels -= {flags["--remove-label"]} if "--remove-label" in cmd else set()
             self.pr_labels |= {flags["--add-label"]} if "--add-label" in cmd else set()
+        elif cmd[1:3] == ["pr", "close"]:
+            self.closed = True
+        elif cmd[1:3] == ["pr", "reopen"]:
+            self.closed = False
         elif cmd[1:3] == ["pr", "checks"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps([{"name": "ci", "bucket": "pass"}]), "")
         elif cmd[1:3] == ["pr", "merge"]:
@@ -164,6 +189,7 @@ class RefreshConflictTest(unittest.TestCase):
             self.assertEqual(self.github.assignees, [])
             self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
             self.assertFalse(any(cmd[1:3] == ["issue", "comment"] for cmd in self.github.calls))
+            self.assertTrue(self.github.closed)
             [requeue] = self.events("conflict-requeue")
             self.assertEqual((requeue["pr"], requeue["files"], requeue["round"]), (102, ["shared.txt"], 1))
             [decision] = [
@@ -187,6 +213,17 @@ class RefreshConflictTest(unittest.TestCase):
             [review] = self.events("review")
             self.assertEqual((review["head"], review["verdict"]), (resolved, "APPROVE"))
             self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+            self.assertFalse(self.github.closed)
+            operations = [cmd[1:3] for cmd in self.github.calls]
+            close = operations.index(["pr", "close"])
+            reopen = operations.index(["pr", "reopen"])
+            self.assertNotIn(["pr", "create"], operations)
+            self.assertTrue(any(
+                close < i < reopen
+                and cmd[1:3] == ["pr", "edit"]
+                and cmd[-2:] == ["--remove-label", config.LABEL_APPROVED]
+                for i, cmd in enumerate(self.github.calls)
+            ))
 
             dispatch.merge_pass_locked(False)
 

@@ -26,6 +26,8 @@ def failed(cmd, *args, **kwargs):
 
 class ClaimFailure(unittest.TestCase):
     def setUp(self):
+        dispatch.host_claim_login.cache_clear()
+        self.addCleanup(dispatch.host_claim_login.cache_clear)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
@@ -101,7 +103,17 @@ class ClaimFailure(unittest.TestCase):
 
     def test_claim_failure_skips_ticket_and_waits_for_next_pass(self):
         output = io.StringIO()
-        with mock.patch.object(dispatch, "gh_json", return_value=self.fresh), \
+
+        def github(args):
+            if args == ["api", "user"]:
+                return {"login": "runner"}
+            if args[:2] == ["pr", "list"]:
+                return []
+            if args[:2] == ["issue", "view"]:
+                return self.fresh
+            raise AssertionError(args)
+
+        with mock.patch.object(dispatch, "gh_json", side_effect=github), \
                 mock.patch.object(dispatch, "admit_plan", return_value=None), \
                 mock.patch.object(dispatch, "ensure_worktree") as worktree, \
                 redirect_stdout(output):

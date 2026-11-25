@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import unittest
+from contextlib import chdir
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, manage, results
@@ -18,14 +19,6 @@ class GateFixupsTest(unittest.TestCase):
         self.addCleanup(self.f.doCleanups)
         self.f.state.write_text(json.dumps({"reviews": 1}))
         self.count = self.f.base / "fixup-runs"
-        gh = self.f.bin / "gh"
-        gh.write_text(gh.read_text().replace(
-            'elif a[0] == "api"',
-            'elif a[:2] == ["issue", "comment"]:\n'
-            '    s.setdefault("comments", []).append(a[a.index("--body") + 1])\n'
-            '    p.write_text(json.dumps(s))\n'
-            'elif a[0] == "api"',
-        ))
         self.checks = self.f.base / "gate-heads"
 
     def configure(self, script=None, *, pr=False, attempts=1):
@@ -249,7 +242,8 @@ class GateFixupsTest(unittest.TestCase):
 
         issue = {"number": 7, "title": "local change", "body": "Acceptance: make the local change",
                  "comments": [], "labels": [{"name": "ready-for-agent"}]}
-        with mock.patch.dict(os.environ, self.f.env), \
+        with chdir(self.f.repo), \
+                mock.patch.dict(os.environ, {**self.f.env, lifecycle.CONTEXT_ENV: ""}), \
                 mock.patch.object(dispatch.time, "monotonic", side_effect=lambda: clock[0]), \
                 mock.patch.object(dispatch, "review", side_effect=review):
             dispatch.configure(config.load(self.f.repo))

@@ -70,6 +70,8 @@ _PENDING_SECOND_REVIEWS: dict[int, dict] = {}
 _PENDING_RISK: dict[int, dict] = {}
 _LOW_FALLBACK: set[int] = set()
 _HOST_CLAIMS: dict[int, HostClaim] = {}
+# None preserves a pre-existing human assignment, including one to the bot login.
+_ASSIGNMENTS: dict[int, str | None] = {}
 # Worker profile -> why it cannot launch this pass (failed check, or a launch failure not yet recovered).
 UNAVAILABLE_WORKERS: dict[str, str] = {}
 # Profiles whose `probe` passed this pass: only these prove a login, so only these besides
@@ -684,15 +686,8 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
                if label["name"].startswith("host:")} - stale_hosts - {cfg.host_name}
     if foreign:
         return f"host label ({', '.join(sorted(foreign))})"
-    if claims:
-        if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
-            return "assigned"
-        # Only a later election can supersede the expired owner's transition.
-        if "requeue" not in elected_host_claim(claims) and gh_json(
-            ["pr", "list", "--repo", REPO, "--state", "open",
-             "--head", f"agent/{n}", "--json", "number"]
-        ) and interrupted_host_claim(n, claims) is None:
-            return "open PR"
+    if claims and any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
+        return "assigned"
     return None
 
 
@@ -838,28 +833,74 @@ def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
     return None
 
 
-def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
-    """Apply lifecycle transitions; release host resources only when this host owns them."""
+def unclaim(
+    n: int, *label_args: str, check: bool = False, assignee_last: bool = False,
+    exit_path: str = "unclaim",
+) -> None:
+    """Release only a run's assignment or an authenticated elected host's claim."""
     claims = host_claims(n) if cfg.host_name else []
     owned = owned_host_claim(n, claims)
-    if cfg.host_name and any(
+    requeue = any(
         flag == "--add-label" and label == LABEL_AGENT
         for flag, label in zip(label_args[::2], label_args[1::2])
-    ) and (elected := elected_host_claim(claims)):
-        context = refresh_requeue_context(n)
-        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
-    if owned is not None:
+    )
+    if requeue and n in _HOST_CLAIMS and owned is None:
+        return  # A displaced pipeline cannot release its replacement's PR or labels.
+    login = _ASSIGNMENTS.get(n) if n in _ASSIGNMENTS else host_claim_login() if owned else None
+    if claims and owned is None:
+        login = None  # A replacement host owns the shared login now.
+    fresh = None
+    if owned is not None or login is not None:
         fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,assignees"])
+    if owned is not None:
         release_stale_claims(n, fresh, claims, replacement=owned["id"])
         if (local := _HOST_CLAIMS.get(n)) is not None:
             local.stop()
-    assignee = ["--remove-assignee", "@me"] if not claims or owned is not None else []
+        current = owned_host_claim(n)
+        if current is None or current["nonce"] != owned["nonce"]:
+            owned = None
+            login = None
+            if requeue:
+                return
+    if requeue:
+        close_requeue_pr(n)
+    if cfg.host_name and requeue and (elected := elected_host_claim(claims)):
+        context = refresh_requeue_context(n)
+        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
+                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
+    clearing = login is not None and any(
+        row["login"].casefold() == login for row in fresh["assignees"]
+    )
+    assignee = ["--remove-assignee", "@me"] if clearing else []
     args = [*label_args, *assignee] if assignee_last else [*assignee, *label_args]
-    if args and run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check).returncode:
+    if args and run(["gh", "issue", "edit", str(n), "--repo", REPO, *args],
+                    check=check or clearing or requeue).returncode:
         return
+    if clearing:
+        record("assignee-cleared", ticket=n, login=login, exit_path=exit_path)
     if owned is not None:
         delete_host_claim(n, owned)
+    _ASSIGNMENTS.pop(n, None)
+
+
+def open_agent_pr_hold(n: int) -> str | None:
+    prs = gh_json(["pr", "list", "--repo", REPO, "--state", "open",
+                   "--head", f"agent/{n}", "--json", "number"])
+    return f"open agent PR #{prs[0]['number']}" if prs else None
+
+def close_requeue_pr(n: int) -> None:
+    """Close before releasing to the worker frontier; retain the PR and its human reviews."""
+    prs = gh_json(["pr", "list", "--repo", REPO, "--state", "open",
+                   "--head", f"agent/{n}", "--json", "number"])
+    for pr in prs:
+        result = run(["gh", "pr", "close", str(pr["number"]), "--repo", REPO], check=False)
+        if result.returncode and gh_json(
+            ["pr", "list", "--repo", REPO, "--state", "open",
+             "--head", f"agent/{n}", "--json", "number"]
+        ):
+            result.check_returncode()
+        record("pr-requeued", ticket=n, pr=pr["number"])
+
 
 
 def frontier() -> list[dict]:
@@ -880,10 +921,16 @@ def frontier() -> list[dict]:
             "number,title,body,labels,assignees,createdAt",
         ]
     )
+    prs = gh_json(
+        ["api", "--paginate", "--slurp", f"repos/{REPO}/pulls?state=open&per_page=100"]
+    ) if issues else []
+    open_prs = {pr["head"]["ref"]: pr["number"] for page in prs for pr in page}
     for issue in issues:
         n = issue["number"]
         if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
             issue["held"] = "initiative record"
+        elif pr := open_prs.get(f"agent/{n}"):
+            issue["held"] = f"open agent PR #{pr}"
         elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
             issue["held"] = held
         elif issue["assignees"] and not (cfg.host_name and claims):
@@ -2548,7 +2595,7 @@ def escalate(
     _ESCALATED.add(n)
     claims = host_claims(n) if cfg.host_name else []
     elected = elected_host_claim(claims)
-    unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
+    unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN, exit_path=code)
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if elected:
         first, _, rest = body.partition("\n")
@@ -3547,12 +3594,36 @@ def push_and_pr(
     existing = gh_json(
         ["pr", "list", "--repo", REPO, "--head", branch, "--json", "number,baseRefName"]
     )
+    reopen = False
+    if not existing and ticket is not None:
+        # The closing host's journal may be absent or obsolete on this host.
+        candidates = gh_json([
+            "pr", "list", "--repo", REPO, "--state", "closed", "--head", branch,
+            "--limit", "1000", "--json", "number,state,headRefName,baseRefName",
+        ])
+        if not candidates:
+            # Retain a direct-read fallback while GitHub's list catches up.
+            retained = next((row for row in reversed(lifecycle.read_events(EVENTS))
+                             if row.get("ticket") == ticket and row.get("event") == "pr-requeued"), None)
+            if retained is not None:
+                candidates = [gh_json(["pr", "view", str(retained["pr"]), "--repo", REPO,
+                                       "--json", "number,state,headRefName,baseRefName"])]
+        for pr in candidates:
+            if pr["state"] == "CLOSED" and pr["headRefName"] == branch:
+                existing = [pr]
+                reopen = True
+                break
     if existing and existing[0].get("baseRefName") != cfg.main:
         log(
             f"{branch}: existing PR #{existing[0]['number']} targets "
             f"{existing[0].get('baseRefName')!r}, not {cfg.main!r}; not pushing"
         )
         return False
+    if reopen:
+        # Withdraw the old head's approval and reopen before publishing rewritten history.
+        run(["gh", "pr", "edit", str(existing[0]["number"]), "--repo", REPO,
+             "--remove-label", LABEL_APPROVED])
+        run(["gh", "pr", "reopen", str(existing[0]["number"]), "--repo", REPO])
     if ticket is None or lease is None:
         with _REMOTE_REFS:
             run(["git", "push", "-u", "origin", branch], cwd=wt)
@@ -5511,6 +5582,9 @@ def process_ticket(
         if initiative_kind(n):
             log(f"#{n}: refused (initiative records are never executed)")
             return
+        if held := open_agent_pr_hold(n):
+            log(f"#{n}: skipped ({held})")
+            return
         from factory import binding
 
         fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "body"])
@@ -5546,6 +5620,7 @@ def process_ticket(
 
         claimed = False  # once True, nothing may leave this block without releasing the ticket
         host_claim = None
+        exit_path = "interrupted"
         try:
             execution.resource("acquired", lock_path, scope="repository")
             # Strong re-read before claiming: `issue list` is search-backed and lags
@@ -5568,6 +5643,10 @@ def process_ticket(
                 log(f"#{n}: refused (initiative records are never executed)")
                 execution.outcome = "not_admitted"
                 execution.reason = "initiative"
+                return
+            if held := open_agent_pr_hold(n):
+                log(f"#{n}: skipped ({held})")
+                execution.outcome, execution.reason = "not_admitted", held
                 return
             # `issue view` comments are GraphQL-shaped; host_setup_problem reads REST fields.
             if not cfg.host_name and (problem := host_setup_problem(
@@ -5593,31 +5672,6 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "state_changed"
                 return
-            if cfg.host_name and (interrupted := interrupted_host_claim(n, claims)):
-                # Admission reads can race a heartbeat or another host's replacement.
-                current = host_claims(n)
-                owner = interrupted_host_claim(n, current)
-                if (owner is not None and owner["nonce"] == interrupted["nonce"]
-                        and host_claim_hold(n, fresh, current) is None
-                        and gh_json(["pr", "list", "--repo", REPO, "--state", "open",
-                                     "--head", f"agent/{n}", "--json", "number"])):
-                    evidence = "local history unavailable"
-                    if (wt / ".git").exists():
-                        head = run(["git", "rev-parse", "HEAD"], cwd=wt, check=False).stdout.strip()
-                        remote = _remote_agent_head(wt, n, check=False)
-                        evidence = f"local HEAD {head or '(unavailable)'}; remote agent/{n} {remote or '(none)'}"
-                        if head and remote and remote != "(unavailable)":
-                            commits = run(["git", "log", "--format=%H", f"{remote}..{head}"],
-                                          cwd=wt, check=False)
-                            unpublished = (commits.stdout.strip().replace("\n", ", ") or "(none)"
-                                           if commits.returncode == 0 else "(unavailable)")
-                            evidence += f"; local commits not on remote: {unpublished}"
-                    escalate(
-                        n, f"own-host claim expired during an unfinished attempt with an open PR; "
-                        f"worktree kept at {wt}; {evidence}; resume agent/{n} after merging {cfg.main}",
-                        None, code="dispatcher_error",
-                    )
-                    return
             labels = {label["name"] for label in fresh["labels"]}
             observe_owner_requeue(n, fresh)
             profile = cfg.worker_key(labels)
@@ -5657,12 +5711,15 @@ def process_ticket(
                 if host_claim is None:
                     execution.outcome, execution.reason = "not_admitted", "claim_lost"
                     return
+            login = host_claim_login()
+            preexisting = any(row["login"].casefold() == login for row in fresh["assignees"])
+            _ASSIGNMENTS[n] = login if not preexisting or claims else None
+            exit_path = "claim_failed"
             try:
                 run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
             except subprocess.CalledProcessError as exc:
-                if host_claim is not None:
-                    host_claim.release()
-                # Nothing was claimed: skip this pass; the ticket stays claimable.
+                # The edit may have landed even when its response was lost.
+                # Final cleanup re-reads assignment before releasing ownership.
                 log(f"#{n}: skipped (claim failed, exit {exc.returncode}); retry next pass")
                 record_claim_decision(n, False, admission_id, returncode=exc.returncode)
                 record("claim-failed", ticket=n, returncode=exc.returncode,
@@ -5670,6 +5727,7 @@ def process_ticket(
                 execution.wait("claim_failed", mode="retry_next_pass")
                 return
             claimed = True
+            exit_path = "interrupted"
             if host_claim is not None:
                 fresh = release_stale_claims(n, fresh, claims, replacement=host_claim.comment["id"])
             record_claim_decision(n, True, admission_id)
@@ -5901,6 +5959,7 @@ def process_ticket(
                 escalate(n, f"REVISE verdict after {cfg.review_rounds} review round(s)", logfile, code="review_revise")
             elif approve_pr(n, gate_head):
                 log(f"#{n}: done (approved at {gate_head[:12]})")
+                exit_path = "done"
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
@@ -5914,7 +5973,7 @@ def process_ticket(
             # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.
             execution.outcome, execution.reason = "mechanism_failure", "worker_unavailable"
             log(f"#{n}: {exc}; unclaimed, retry once the worker is healthy")
-            unclaim(n)
+            unclaim(n, exit_path="worker_unavailable")
             return False
         except FileNotFoundError as exc:
             # Host defect (worker executable not on PATH, #260), not a ticket defect: give the
@@ -5922,24 +5981,37 @@ def process_ticket(
             # Covers every worker launch of this ticket, first attempt and review bounces alike.
             execution.outcome, execution.reason = "mechanism_failure", f"{type(exc).__name__}: {exc}"
             log(f"#{n}: worker launch failed ({exc}); unclaimed, fix PATH or [workers] (`factory doctor`)")
-            unclaim(n)
+            unclaim(n, exit_path="worker_unavailable")
             return False
         except Exception as exc:
             # A crash after the claim strands the ticket assigned + ready-for-agent, which every
             # later pass skips forever; hand it back to a human first, worktree intact, then
             # still surface the crash.
             if claimed:
-                escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error")
+                try:
+                    escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error")
+                except Exception as failure:  # noqa: BLE001 — preserve the original dispatcher error
+                    exc.add_note(f"Dispatch escalation also failed: {stderr_tail(str(failure))}")
                 execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
             raise
         finally:
-            if host_claim is not None:
-                host_claim.stop()
-                _HOST_CLAIMS.pop(n, None)
-            _AGENT_LEASE_BASES.pop((wt, n), None)
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            lock_fd.close()
-            execution.resource("released", lock_path, scope="repository")
+            original = sys.exception()
+            try:
+                if n in _ASSIGNMENTS or host_claim is not None:
+                    unclaim(n, check=True, exit_path=exit_path)
+            except Exception as failure:
+                if original is None:
+                    raise
+                original.add_note(f"Assignment cleanup also failed: {stderr_tail(str(failure))}")
+            finally:
+                _ASSIGNMENTS.pop(n, None)
+                if host_claim is not None:
+                    host_claim.stop()
+                    _HOST_CLAIMS.pop(n, None)
+                _AGENT_LEASE_BASES.pop((wt, n), None)
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+                execution.resource("released", lock_path, scope="repository")
 
 
 def fairness_session() -> dict:

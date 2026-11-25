@@ -86,6 +86,7 @@ class WorkerHealthTest(unittest.TestCase):
         self.github.issue_labels = {config.LABEL_AGENT, *labels}
         self.github.assignees = []
         self.github.pr_labels = set()
+        self.github.has_pr = False
 
     def process(self, *, forced: bool = False) -> bool | None:
         with self.patched(), mock.patch.object(dispatch, "run_gate", return_value=(True, "gate ok")) as gate, \
