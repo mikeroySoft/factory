@@ -3372,23 +3372,25 @@ def pr_gate_and_review(
                         pr_gate="FAIL", **proof_fields,
                     )
                 return "REVISE", pr_report, True
-    worker_model = _worker_model_for_head(n, head) if policy_tier == "High" else None
-    if policy_tier == "High":
-        if worker_model is None:
-            findings = (
-                f"missing_worker_provenance: High-risk review at {head} requires "
-                "worker_model from the worker attempt; configure an explicit worker --model "
-                "and run a new attempt."
+    worker_model = None
+    match policy_tier:
+        case "High":
+            worker_model = _worker_model_for_head(n, head)
+            if worker_model is None:
+                findings = (
+                    f"missing_worker_provenance: High-risk review at {head} requires "
+                    "worker_model from the worker attempt; configure an explicit worker --model "
+                    "and run a new attempt."
+                )
+                _PENDING_RISK[n] = {"head": head, "failure_code": "missing_worker_provenance", "packet": findings}
+                record("risk-check", ticket=n, head=head, reason="missing_worker_provenance",
+                       worker_model=None, pr_gate="PASS" if ok else "FAIL")
+                return None, findings, False
+            report += (
+                f"\n\n## High-risk model provenance\nworker={worker_model}, "
+                f"primary={config.command_model(cfg.reviewer)}, "
+                f"second={config.command_model(cfg.second_reviewer)}\n"
             )
-            _PENDING_RISK[n] = {"head": head, "failure_code": "missing_worker_provenance", "packet": findings}
-            record("risk-check", ticket=n, head=head, reason="missing_worker_provenance",
-                   worker_model=None, pr_gate="PASS" if ok else "FAIL")
-            return None, findings, False
-        report += (
-            f"\n\n## High-risk model provenance\nworker={worker_model}, "
-            f"primary={config.command_model(cfg.reviewer)}, "
-            f"second={config.command_model(cfg.second_reviewer)}\n"
-        )
     primary, primary_findings = review(wt, n, report, head)
     primary_row = _PENDING_REVIEWS.get(n) or {}
     if primary_row and primary_row.get("verdict") is None:
@@ -4726,15 +4728,16 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         defer_mutation_proof(n, head, "refresh")
         return False
     pending = _PENDING_REVIEWS.get(n)
-    failure_code = _PENDING_RISK.get(n, {}).get("failure_code", "reviewer_unavailable")
+    failure = _PENDING_RISK.get(n, {})
+    failure_code = failure.get("failure_code", "reviewer_unavailable")
     unavailable = (
         pending is not None and pending.get("verdict") is None
-        or failure_code == "missing_worker_provenance"
+        or "failure_code" in failure
     )
     pr_comment(n, findings)
     if unavailable:
         withdraw(
-            findings if failure_code == "missing_worker_provenance" else f"reviewer unavailable after {verb} onto moved main",
+            failure.get("packet", f"reviewer unavailable after {verb} onto moved main"),
             failure_code,
             extra=findings,
         )
@@ -5820,13 +5823,13 @@ def process_ticket(
                 )
                 return
             if verdict is None:
-                failure_code = _PENDING_RISK.get(n, {}).get("failure_code", "reviewer_unavailable")
+                failure_code = current_risk.get("failure_code", "reviewer_unavailable")
                 log(
                     f"#{n}: review unavailable ({failure_code}); not a REVISE verdict after "
                     f"{cfg.review_rounds} review round(s)"
                 )
                 escalate(
-                    n, findings if failure_code == "missing_worker_provenance" else "reviewer unavailable after retries",
+                    n, current_risk.get("packet", "reviewer unavailable after retries"),
                     logfile, extra=findings, code=failure_code,
                 )
                 return
@@ -5919,9 +5922,9 @@ def process_ticket(
                     return
                 risk_disagreement_head = current_disagreement_head
                 if verdict is None:
-                    failure_code = _PENDING_RISK.get(n, {}).get("failure_code", "reviewer_unavailable")
+                    failure_code = current_risk.get("failure_code", "reviewer_unavailable")
                     escalate(
-                        n, findings if failure_code == "missing_worker_provenance" else "reviewer unavailable after retries",
+                        n, current_risk.get("packet", "reviewer unavailable after retries"),
                         logfile, extra=findings, code=failure_code,
                     )
                     return

@@ -510,8 +510,9 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                     code="pr_checks_failed",
                 )
         elif verdict is None:
-            code = dispatch._PENDING_RISK.get(n, {}).get("failure_code", "reviewer_unavailable")
-            reason = findings if code == "missing_worker_provenance" else "reviewer unavailable after manager FIX"
+            failure = dispatch._PENDING_RISK.get(n, {})
+            code = failure.get("failure_code", "reviewer_unavailable")
+            reason = failure.get("packet", "reviewer unavailable after manager FIX")
             if already_human:
                 record_fix_failure(code, reason)
             else:
