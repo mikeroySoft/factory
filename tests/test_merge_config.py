@@ -57,5 +57,9 @@ queued_check_timeout = "1d2h3m4s"
                 self.load(BASE + f"\n[merge]\nqueued_check_timeout = {value}\n")
 
 
+    def test_one_second_is_a_valid_queue_timeout(self) -> None:
+        cfg = self.load(BASE + '\n[merge]\nqueued_check_timeout = "1s"\n')
+        self.assertEqual(cfg.queued_check_timeout_seconds, 1)
+
 if __name__ == "__main__":
     unittest.main()

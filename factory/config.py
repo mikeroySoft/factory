@@ -311,7 +311,7 @@ class Config:
             int(value) * multipliers[unit]
             for value, unit in re.findall(r"(\d+)([smhd])", self.queued_check_timeout)
         )
-        if seconds <= 0:
+        if not seconds:
             raise ConfigError("merge.queued_check_timeout must be a positive duration")
         return seconds
 
