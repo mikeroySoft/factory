@@ -512,7 +512,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         elif verdict is None:
             failure = dispatch._PENDING_RISK.get(n, {})
             code = failure.get("failure_code", "reviewer_unavailable")
-            reason = failure.get("packet", "reviewer unavailable after manager FIX")
+            reason = failure["packet"] if "packet" in failure else "reviewer unavailable after manager FIX"
             if already_human:
                 record_fix_failure(code, reason)
             else:
