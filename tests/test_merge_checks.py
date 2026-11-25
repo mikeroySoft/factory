@@ -262,5 +262,158 @@ class MergeChecksTest(unittest.TestCase):
         self.assertIn("[credential withheld]", self.decision()["checks"][-1]["link"])
 
 
+    def test_required_nonzero_results_drive_pending_and_failure_outcomes(self):
+        def checked_run(cmd, **kwargs):
+            proc = self.run_gh(cmd, **kwargs)
+            if kwargs.get("check", True) and proc.returncode:
+                raise subprocess.CalledProcessError(
+                    proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr,
+                )
+            return proc
+
+        for bucket in ("pending", "fail"):
+            with self.subTest(bucket=bucket):
+                self.commands.clear()
+                self.escalate.reset_mock()
+                self.required = [{**self.passing, "bucket": bucket}]
+                with mock.patch.object(dispatch, "run", side_effect=checked_run):
+                    dispatch.merge_pass_locked(False)
+                self.assertFalse(self.merged())
+                removed = any("--remove-label" in cmd for cmd in self.commands)
+                self.assertEqual(removed, bucket == "fail")
+                if bucket == "fail":
+                    self.assertEqual(self.escalate.call_args.kwargs["code"], "ci_failed")
+                else:
+                    self.escalate.assert_not_called()
+
+    def test_all_check_fallback_nonzero_results_drive_pending_and_failure_outcomes(self):
+        def checked_run(cmd, **kwargs):
+            proc = self.run_gh(cmd, **kwargs)
+            if kwargs.get("check", True) and proc.returncode:
+                raise subprocess.CalledProcessError(
+                    proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr,
+                )
+            return proc
+
+        self.required_error = (1, "", "no required checks reported on the 'main' branch")
+        self.job["created_at"] = datetime.now(UTC).isoformat()
+        for bucket in ("pending", "fail"):
+            with self.subTest(bucket=bucket):
+                self.commands.clear()
+                self.escalate.reset_mock()
+                self.gpu["bucket"] = bucket
+                with mock.patch.object(dispatch, "run", side_effect=checked_run):
+                    dispatch.merge_pass_locked(False)
+                self.assertFalse(self.merged())
+                removed = any("--remove-label" in cmd for cmd in self.commands)
+                self.assertEqual(removed, bucket == "fail")
+                if bucket == "fail":
+                    self.assertEqual(self.escalate.call_args.kwargs["code"], "ci_failed")
+                else:
+                    self.escalate.assert_not_called()
+
+    def test_no_required_diagnostic_is_only_valid_for_exit_one(self):
+        self.all_checks = [self.passing]
+        for code in (0, 8):
+            with self.subTest(code=code):
+                self.commands.clear()
+
+                def checked_run(cmd, code=code, **kwargs):
+                    if cmd[:3] == ["gh", "pr", "checks"] and "--required" in cmd:
+                        proc = subprocess.CompletedProcess(
+                            cmd, code, "", "no required checks reported on the 'main' branch",
+                        )
+                    else:
+                        proc = self.run_gh(cmd, **kwargs)
+                    if kwargs.get("check", True) and proc.returncode:
+                        raise subprocess.CalledProcessError(
+                            proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr,
+                        )
+                    return proc
+
+                with mock.patch.object(dispatch, "run", side_effect=checked_run):
+                    dispatch.merge_pass_locked(False)
+                self.assertFalse(self.merged())
+                self.assertFalse(any("--remove-label" in cmd for cmd in self.commands))
+
+    def test_empty_required_rows_with_accepted_exit_codes_use_all_checks(self):
+        self.all_checks = [self.passing]
+        for code in (0, 8):
+            with self.subTest(code=code):
+                self.commands.clear()
+
+                def checked_run(cmd, code=code, **kwargs):
+                    if cmd[:3] == ["gh", "pr", "checks"] and "--required" in cmd:
+                        proc = subprocess.CompletedProcess(cmd, code, "[]", "")
+                    else:
+                        proc = self.run_gh(cmd, **kwargs)
+                    if kwargs.get("check", True) and proc.returncode:
+                        raise subprocess.CalledProcessError(
+                            proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr,
+                        )
+                    return proc
+
+                with mock.patch.object(dispatch, "run", side_effect=checked_run):
+                    dispatch.merge_pass_locked(False)
+                self.assertTrue(self.merged())
+                self.assertEqual(self.decision()["checks"][0]["bucket"], "pass")
+
+    def test_malformed_check_rows_fail_closed_before_merge(self):
+        variants = (
+            ("non-dict", [self.passing, "unit"]),
+            ("missing-name", [self.passing, {"bucket": "pass"}]),
+            ("non-string-name", [self.passing, {"name": 7, "bucket": "pass"}]),
+            ("unknown-bucket", [self.passing, {"name": "odd", "bucket": "unknown"}]),
+        )
+        for label, rows in variants:
+            with self.subTest(label=label):
+                self.commands.clear()
+
+                def malformed_run(cmd, rows=rows, **kwargs):
+                    if cmd[:3] == ["gh", "pr", "checks"] and "--required" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+                    return self.run_gh(cmd, **kwargs)
+
+                with mock.patch.object(dispatch, "run", side_effect=malformed_run):
+                    dispatch.merge_pass_locked(False)
+                self.assertFalse(self.merged())
+                self.assertFalse(any("--remove-label" in cmd for cmd in self.commands))
+
+    def test_failed_job_lookup_remains_pending_without_subprocess_failure(self):
+        def checked_run(cmd, **kwargs):
+            proc = self.run_gh(cmd, **kwargs)
+            if kwargs.get("check", True) and proc.returncode:
+                raise subprocess.CalledProcessError(
+                    proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr,
+                )
+            return proc
+
+        self.errors["repos/acme/widgets/actions/jobs/456"] = (1, "unavailable")
+        with mock.patch.object(dispatch, "run", side_effect=checked_run):
+            dispatch.merge_pass_locked(False)
+        self.assertFalse(self.merged())
+        self.assertFalse(any("--remove-label" in cmd for cmd in self.commands))
+        waits = [row["wait"] for row in lifecycle.read_events(dispatch.EVENTS)
+                 if row.get("kind") == "wait"]
+        self.assertEqual(waits[-1]["reason"], "ci_pending")
+
+    def test_completed_non_cancelled_job_remains_pending(self):
+        self.job.update(status="completed", conclusion="action_required")
+        dispatch.merge_pass_locked(False)
+        self.assertFalse(self.merged())
+        waits = [row["wait"] for row in lifecycle.read_events(dispatch.EVENTS)
+                 if row.get("kind") == "wait"]
+        self.assertEqual(waits[-1]["reason"], "ci_pending")
+
+    def test_runner_with_exact_required_labels_keeps_check_pending(self):
+        self.runners = [{"runners": [{"labels": [
+            {"name": label} for label in self.job["labels"]
+        ]}]}]
+        dispatch.merge_pass_locked(False)
+        self.assertFalse(self.merged())
+        waits = [row["wait"] for row in lifecycle.read_events(dispatch.EVENTS)
+                 if row.get("kind") == "wait"]
+        self.assertEqual(waits[-1]["reason"], "ci_pending")
+
 if __name__ == "__main__":
     unittest.main()
