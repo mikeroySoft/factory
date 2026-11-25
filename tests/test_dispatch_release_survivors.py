@@ -64,7 +64,7 @@ class DispatchReleaseSurvivors(unittest.TestCase):
                 tank = self.dispatcher("tank")
                 replacement = None
 
-                def replace_owner(n, fresh, claims, **kwargs):
+                def replace_owner(n, fresh, claims, *, replacement_nonce=replacement_nonce, **kwargs):
                     nonlocal replacement
                     self.github.comments.clear()
                     self.github.issue["labels"] = [{"name": "ready-for-agent"}]

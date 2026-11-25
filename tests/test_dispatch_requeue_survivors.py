@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import dispatch, lifecycle
-from factory.config import Config, LABEL_APPROVED
+from factory.config import LABEL_APPROVED, Config
 from tests import test_host_claims
 
 
@@ -192,7 +192,7 @@ class DispatchRequeueAdmissionTest(unittest.TestCase):
                 self.github.issue["labels"] = []
                 run = module.run
 
-                def close(cmd, *args, **kwargs):
+                def close(cmd, *args, run=run, concurrently_closed=concurrently_closed, **kwargs):
                     if cmd[:3] != ["gh", "pr", "close"]:
                         return run(cmd, *args, **kwargs)
                     if concurrently_closed:
