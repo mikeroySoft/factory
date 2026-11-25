@@ -1369,5 +1369,95 @@ class WorkerModelProvenanceTest(unittest.TestCase):
         self.assertTrue(dispatch._head_evidence_matches(rows, 7, HEAD))
 
 
+class WorkerProvenanceBoundaryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        bindings, cwd = dispatch_bindings(), os.getcwd()
+        self.addCleanup(restore_dispatch, bindings, cwd)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        cfg = config.Config(self.root, "acme/widgets")
+        cfg.reviewer = ["reviewer", "--model", "primary/model"]
+        cfg.second_reviewer = ["reviewer", "--model", "second/model"]
+        cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
+        dispatch.configure(cfg)
+        self.reports = []
+
+    def review(self, _wt, n, report, head, *, role="primary", **_kwargs):
+        self.reports.append(report)
+        pending = dispatch._PENDING_SECOND_REVIEWS if role == "second" else dispatch._PENDING_REVIEWS
+        pending[n] = {"verdict": "APPROVE", "model": f"{role}/model"}
+        return "APPROVE", f"{role} accepted {head}"
+
+    def test_review_and_merge_prefer_exact_head_over_newer_lexically_lower_head(self) -> None:
+        head = "c" * 40
+        rows = high_events(head=head)
+        rows.append({"event": "attempt", "ticket": 7, "head": "b" * 40,
+                     "worker_model": "later/model"})
+        for row in rows:
+            dispatch.record(row["event"], **{key: value for key, value in row.items() if key != "event"})
+        self.assertEqual(dispatch._worker_model_for_head(7, head), "worker/model")
+        self.assertTrue(dispatch._head_evidence_matches(dispatch.lifecycle.read_events(dispatch.EVENTS), 7, head))
+        with mock.patch.object(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n")), \
+                mock.patch.object(dispatch, "review", side_effect=self.review), \
+                mock.patch.object(dispatch, "run", return_value=mock.Mock(stdout="M\tfactory/dispatch.py\n")):
+            verdict, findings, failed = dispatch.pr_gate_and_review(self.root, 7, "attempt", head, {})
+        provenance = "High-risk model provenance: worker=worker/model, primary=primary/model, second=second/model."
+        self.assertEqual((verdict, failed), ("APPROVE", False))
+        self.assertIn(provenance, findings)
+        self.assertTrue(dispatch._PENDING_RISK[7]["packet"].startswith(provenance + "\n\n"))
+        self.assertEqual(len(self.reports), 2)
+        for report in self.reports:
+            self.assertIn("worker=worker/model, primary=primary/model, second=second/model", report)
+            self.assertNotIn("later/model", report)
+
+    def test_refreshed_head_uses_latest_ticket_attempt_without_cross_ticket_or_claim_fallback(self) -> None:
+        rows = [
+            {"event": "attempt", "ticket": 7, "head": HEAD, "worker_model": "old/model"},
+            {"event": "attempt", "ticket": 7, "head": NEW_HEAD, "worker_model": "latest/model"},
+            {"event": "claimed", "ticket": 7},
+            {"event": "attempt", "ticket": 8, "head": "d" * 40, "worker_model": "foreign/model"},
+        ]
+        for model in ("latest/model", None, "unknown"):
+            with self.subTest(model=model):
+                rows[1]["worker_model"] = model
+                expected = "latest/model" if model == "latest/model" else None
+                self.assertEqual(dispatch._worker_model_for_head(7, "c" * 40, rows), expected)
+        self.assertIsNone(dispatch._worker_model_for_head(9, HEAD, rows))
+
+    def test_non_high_review_does_not_require_or_read_worker_provenance(self) -> None:
+        for tier in ("Low", "Medium"):
+            with self.subTest(tier=tier), \
+                    mock.patch.object(dispatch, "risk_for_head", return_value=(tier, [])), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n")), \
+                    mock.patch.object(dispatch, "_worker_model_for_head", side_effect=AssertionError("High only")), \
+                    mock.patch.object(dispatch, "review", return_value=("APPROVE", "accepted")) as reviewer:
+                self.assertEqual(
+                    dispatch.pr_gate_and_review(self.root, 7, "attempt", HEAD, {}),
+                    ("APPROVE", "accepted", False),
+                )
+                reviewer.assert_called_once()
+                self.assertNotIn(7, dispatch._PENDING_RISK)
+
+    def test_missing_identity_preserves_actual_pr_gate_status_and_suppresses_both_reviewers(self) -> None:
+        for ok in (True, False):
+            with self.subTest(ok=ok), \
+                    mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:dispatch"])), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(ok, f"- mutation: {'PASS' if ok else 'FAIL'}\n")), \
+                    mock.patch.object(dispatch, "review") as reviewer:
+                verdict, findings, failed = dispatch.pr_gate_and_review(self.root, 7, "attempt", HEAD, {})
+                self.assertEqual((verdict, failed), (None, False))
+                self.assertIn("missing_worker_provenance:", findings)
+                self.assertIn("worker_model from the worker attempt", findings)
+                self.assertEqual(dispatch._PENDING_RISK[7], {
+                    "head": HEAD, "failure_code": "missing_worker_provenance", "packet": findings,
+                })
+                check = dispatch.lifecycle.read_events(dispatch.EVENTS)[-1]
+                self.assertEqual(check["reason"], "missing_worker_provenance")
+                self.assertIsNone(check["worker_model"])
+                self.assertEqual(check["pr_gate"], "PASS" if ok else "FAIL")
+                reviewer.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
