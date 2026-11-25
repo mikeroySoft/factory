@@ -171,6 +171,47 @@ class MergeFeedbackTest(unittest.TestCase):
         self.assertEqual([row["code"] for row in self.events("escalate")], ["pr_feedback"])
         self.assertEqual(self.events("manage"), [])
 
+    def test_non_ci_feedback_with_summary_outside_selected_failures_blocks_approval(self) -> None:
+        self.provider.thread["isResolved"] = True
+        self.provider.checks[0]["name"] = "GPU advisory"
+        self.checks.return_value = self.selected_checks("GPU advisory")
+        self.approved_head()
+        observe_pr = manage.observe_pr
+
+        def summarized_observation(*args, **kwargs):
+            observation = observe_pr(*args, **kwargs)
+            for item in observation["items"]:
+                if item["kind"] == "review":
+                    item["summary"] = "Human requested changes"
+            return observation
+
+        with mock.patch.object(manage, "observe_pr", side_effect=summarized_observation):
+            manage.frontier_pass()
+
+        self.assertEqual([row["code"] for row in self.events("escalate")], ["pr_feedback"])
+        self.assertEqual(
+            {pair[0].split(":")[4] for pair in self.events("feedback-delivered")[0]["pairs"]},
+            {"review"},
+        )
+        self.assertEqual(self.events("manage"), [])
+        self.assertFalse(any("--add-label" in cmd and "factory-approved" in cmd for cmd in self.mutations))
+
+    def test_ci_feedback_without_summary_blocks_approval_with_selected_passing_checks(self) -> None:
+        self.quiet_humans()
+        self.provider.checks[0]["name"] = ""
+        self.checks.return_value = self.selected_checks("GPU advisory")
+        self.approved_head()
+
+        manage.frontier_pass()
+
+        self.assertEqual([row["code"] for row in self.events("escalate")], ["pr_feedback"])
+        self.assertEqual(
+            {pair[0].split(":")[4] for pair in self.events("feedback-delivered")[0]["pairs"]},
+            {"check_run"},
+        )
+        self.assertEqual(self.events("manage"), [])
+        self.assertFalse(any("--add-label" in cmd and "factory-approved" in cmd for cmd in self.mutations))
+
 
 if __name__ == "__main__":
     unittest.main()

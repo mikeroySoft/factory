@@ -551,5 +551,38 @@ class MergeChecksTest(unittest.TestCase):
             "summary": f"All {len(checks)} checks; SHA-256 {evidence['sha256']}",
         })
 
+    def test_oversized_decisions_create_missing_parents_and_reuse_artifact_directory(self):
+        factory = dispatch.ROOT / "missing" / ".factory"
+        self.assertFalse(factory.parent.exists())
+        expected = {}
+        with mock.patch.object(dispatch, "FACTORY", factory):
+            for name in ("first", "second"):
+                checks = [{"name": name, "bucket": "pass", "detail": "界" * 6000}]
+                decision_id = dispatch.record_merge_decision(
+                    7, 70, "merge now", "eligible", "head", "head", checks,
+                )
+                expected[decision_id] = checks
+                self.assertTrue((factory / "merge-checks").is_dir())
+
+        decisions = [
+            row for row in lifecycle.read_events(dispatch.EVENTS)
+            if row.get("decision_id") in expected
+        ]
+        self.assertEqual({row["decision_id"] for row in decisions}, set(expected))
+        paths = set()
+        for decision in decisions:
+            evidence = decision["checks_ref"]
+            paths.add(evidence["path"])
+            data = (dispatch.ROOT / evidence["path"]).read_bytes()
+            self.assertEqual(json.loads(data), expected[decision["decision_id"]])
+            self.assertEqual(evidence["count"], 1)
+            self.assertEqual(evidence["sha256"], hashlib.sha256(data).hexdigest())
+            self.assertIn(
+                evidence["path"],
+                {value["ref"] for value in decision["inputs"] if value["kind"] == "ci_checks"},
+            )
+        self.assertEqual(len(paths), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
