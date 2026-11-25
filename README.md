@@ -1749,8 +1749,9 @@ repeated refresh gate failures, risk disagreements, deferred review rework,
 stale mutation proof, manager releases and confirmed `requeue_agent` actions
 close the PR before restoring worker eligibility. Publication removes stale
 approval and reopens the retained PR before pushing, preserving its human
-reviews even when history is rewritten. A host without a local `pr-requeued`
-receipt discovers the closed PR from GitHub. A failed close prevents release.
+reviews even when history is rewritten. Publication discovers the closed PR
+from GitHub before consulting local receipts, which may be absent or obsolete
+on another host. A failed close prevents release.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`

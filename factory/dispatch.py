@@ -3596,17 +3596,18 @@ def push_and_pr(
     )
     reopen = False
     if not existing and ticket is not None:
-        retained = next((row for row in reversed(lifecycle.read_events(EVENTS))
-                         if row.get("ticket") == ticket and row.get("event") == "pr-requeued"), None)
-        if retained is not None:
-            candidates = [gh_json(["pr", "view", str(retained["pr"]), "--repo", REPO,
-                                   "--json", "number,state,headRefName,baseRefName"])]
-        else:
-            # A retry may publish on a host without the closing host's journal.
-            candidates = gh_json([
-                "pr", "list", "--repo", REPO, "--state", "closed", "--head", branch,
-                "--limit", "1000", "--json", "number,state,headRefName,baseRefName",
-            ])
+        # The closing host's journal may be absent or obsolete on this host.
+        candidates = gh_json([
+            "pr", "list", "--repo", REPO, "--state", "closed", "--head", branch,
+            "--limit", "1000", "--json", "number,state,headRefName,baseRefName",
+        ])
+        if not candidates:
+            # Retain a direct-read fallback while GitHub's list catches up.
+            retained = next((row for row in reversed(lifecycle.read_events(EVENTS))
+                             if row.get("ticket") == ticket and row.get("event") == "pr-requeued"), None)
+            if retained is not None:
+                candidates = [gh_json(["pr", "view", str(retained["pr"]), "--repo", REPO,
+                                       "--json", "number,state,headRefName,baseRefName"])]
         for pr in candidates:
             if pr["state"] == "CLOSED" and pr["headRefName"] == branch:
                 existing = [pr]
