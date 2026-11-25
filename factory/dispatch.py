@@ -802,11 +802,14 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
         comment = gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                            "-f", f"body={claim.body()}"])
         claim.comment.update(comment)
+        claims = host_claim_state(n, require_shared_login=True)[0]
         current = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels"])
-        elected = live_host_claims(host_claim_state(n, require_shared_login=True)[0])
-        # Labels are advisory during a race, but escalation must still stop admission.
+        elected = live_host_claims(claims)
+        # Recheck explicit pins at final admission; expired claim labels remain recoverable.
+        foreign = {row["name"][5:] for row in current["labels"] if row["name"].startswith("host:")}
+        foreign -= {row["host"] for row in claims} | {cfg.host_name}
         ready = forced or any(label["name"] == LABEL_AGENT for label in current["labels"])
-        if not ready or not elected or elected[0]["id"] != claim.comment["id"]:
+        if foreign or not ready or not elected or elected[0]["id"] != claim.comment["id"]:
             claim.release()
             record("claim_lost", ticket=n, host=cfg.host_name,
                    winner=elected[0]["host"] if elected else None)
@@ -838,10 +841,30 @@ def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
     return None
 
 
-def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
+def unclaim(
+    n: int, *label_args: str, check: bool = False, assignee_last: bool = False, host: str | None = None,
+) -> None:
     """Apply lifecycle transitions; release host resources only when this host owns them."""
-    claims = host_claims(n) if cfg.host_name else []
+    if host is not None and (
+        not isinstance(host, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,44}", host) is None
+        or ("--add-label", LABEL_AGENT) not in zip(label_args[::2], label_args[1::2])
+    ):
+        raise ValueError("host requires a valid host name and a ready-for-agent requeue")
+    claims = host_claims(n) if cfg.host_name or host is not None else []
     owned = owned_host_claim(n, claims)
+    if host is not None and any(claim["host"] == host or owned is None for claim in claims):
+        reason = "cannot pin requeue with an unresolved host claim"
+        lifecycle.append(EVENTS, {
+            "at": datetime.now(UTC).isoformat(), "event": "requeue-host-refused",
+            "ticket": n, "host": host, "reason": reason,
+        })
+        raise ValueError(reason)
+    # Close admission before releasing any ownership, including stale claims.
+    if host is not None and run(
+        ["gh", "issue", "edit", str(n), "--repo", REPO, "--remove-label", LABEL_AGENT],
+        check=check,
+    ).returncode:
+        return
     if cfg.host_name and any(
         flag == "--add-label" and label == LABEL_AGENT
         for flag, label in zip(label_args[::2], label_args[1::2])
@@ -849,6 +872,13 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
         context = refresh_requeue_context(n)
         gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                  "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
+    if host is not None:
+        label_args = tuple(
+            arg
+            for flag, label in zip(label_args[::2], label_args[1::2])
+            if (flag, label) != ("--add-label", LABEL_AGENT)
+            for arg in (flag, label)
+        )
     if owned is not None:
         fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,assignees"])
         release_stale_claims(n, fresh, claims, replacement=owned["id"])
@@ -860,6 +890,14 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
         return
     if owned is not None:
         delete_host_claim(n, owned)
+    if host is not None:
+        label = f"host:{host}"
+        run(["gh", "label", "create", label, "--repo", REPO, "--color", "ededed", "--force"],
+            check=True)
+        run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-label", label], check=True)
+        record("requeue-host-pinned", ticket=n, host=host)
+        run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-label", LABEL_AGENT],
+            check=check)
 
 
 def frontier() -> list[dict]:

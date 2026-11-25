@@ -380,10 +380,12 @@ def _timeout(deadline: float) -> float:
 
 def _checked(
     cfg: Config, argv: list[str], deadline: float, *, cwd: Path | None = None, cap: int = READ_CAP,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = _run(
-            argv, env=_environment(cfg), cwd=cwd, timeout=_timeout(deadline), cap=cap,
+            argv, env=_environment(cfg) if env is None else env,
+            cwd=cwd, timeout=_timeout(deadline), cap=cap,
         )
     except _AmbiguousCommand as exc:
         raise DecisionError("provider read did not complete", "provider_unavailable") from exc
@@ -402,12 +404,13 @@ def _read_json(
         raise DecisionError("provider returned invalid JSON", "provider_unavailable") from exc
 
 
-def _actor(cfg: Config, deadline: float) -> str:
+def _actor(cfg: Config, deadline: float, *, env: dict[str, str] | None = None) -> str:
     result = _checked(
         cfg,
         ["gh", "api", "--hostname", "github.com", "--method", "GET", "user", "--jq", ".login"],
         deadline,
         cap=1_024,
+        env=env,
     )
     actor = result.stdout.strip()
     if not actor or len(actor) > 39 or _LOGIN.fullmatch(actor) is None:
@@ -774,6 +777,40 @@ def _plan_request(
     return steps
 
 
+def _check_requeue_host(
+    cfg: Config, number: int, host: str, deadline: float, caller: str,
+) -> None:
+    actor = _actor(cfg, deadline, env={
+        **_environment(cfg), **cfg.install.get("dispatch_env", {}),
+    })
+    result = _checked(cfg, [
+        "gh", "api", "--paginate", f"repos/{cfg.repo}/issues/{number}/comments",
+        # Frame each projected page as one JSON line before the bounded pipe.
+        "--jq", (
+            '[map(select((.body // "") | startswith("Factory claim: ")) | '
+            '{body: ((.body // "") | split("\\n")[0]), user, created_at})] | tojson'
+        ),
+    ], deadline)
+    try:
+        pages = [page for line in result.stdout.splitlines() for page in json.loads(line)]
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise DecisionError("provider returned invalid JSON", "provider_unavailable") from exc
+    for page in pages:
+        for comment in page:
+            if (comment.get("user") or {}).get("login", "").casefold() != actor.casefold():
+                continue
+            first = (comment.get("body") or "").partition("\n")[0]
+            match = re.fullmatch(r"Factory claim: host=\S+ nonce=\S+ at=(\S+)", first)
+            if (match is not None and _parse_time(match[1]) is not None
+                    and _parse_time(comment.get("created_at")) is not None):
+                reason = "cannot pin requeue with an unresolved host claim"
+                lifecycle.append(cfg.factory / "events.jsonl", {
+                    "at": _format_time(_now()), "event": "requeue-host-refused",
+                    "ticket": number, "host": host, "caller": caller, "reason": reason,
+                })
+                raise DecisionError(reason, "target_busy")
+
+
 def prepare(
     cfg: Config, requests: object, *, caller: str = "dashboard", action: dict | None = None, guard=None,
 ) -> dict:
@@ -786,6 +823,7 @@ def prepare(
     if caller not in CALLERS:
         raise DecisionError(f"caller must be one of {sorted(CALLERS)}")
     normalized = _normalize_requests(requests)
+    host = action["args"].get("host") if action and action["name"] == "requeue_agent" else None
     deadline = time.monotonic() + PREPARE_SECONDS
     actor = _actor(cfg, deadline)
     targets: list[dict] = []
@@ -826,10 +864,38 @@ def prepare(
                 merge_lock = True
         if op == "issue":
             _sync_routing(request, raw)
-        planned = _plan_request(cfg, request, actor, target, raw)
+        planning_request = request
+        if host is not None and request is normalized[0]:
+            _check_requeue_host(cfg, number, host, deadline, caller)
+            steps.append({
+                **_command_step("requeue_withdraw_ready", [
+                    "gh", "issue", "edit", str(number), "--repo", cfg.repo, "--remove-label", LABEL_AGENT,
+                ]), "request": index,
+            })
+            planning_request = {**request, "add": [
+                label for label in request.get("add", []) if label != LABEL_AGENT
+            ]}
+        planned = _plan_request(cfg, planning_request, actor, target, raw)
         steps.extend({**step, "request": index} for step in planned)
         effects.append({"request": index, **_effect(request, actor, target)})
 
+    if host is not None:
+        number = normalized[0]["number"]
+        label = f"host:{host}"
+        steps.extend([
+            {**_command_step("requeue_host_label", [
+                "gh", "label", "create", label, "--repo", cfg.repo, "--color", "ededed", "--force",
+            ]), "request": 0},
+            {**_command_step("requeue_host_pin", [
+                "gh", "issue", "edit", str(number), "--repo", cfg.repo, "--add-label", label,
+            ]), "request": 0, "host": host, "number": number},
+            {**_command_step("requeue_publish_ready", [
+                "gh", "issue", "edit", str(number), "--repo", cfg.repo, "--add-label", LABEL_AGENT,
+            ]), "request": 0},
+        ])
+        effects[0]["changes"].append(
+            f"revoke agent readiness before cleanup; pin {label} and audit before publishing readiness"
+        )
     if merge_lock:
         locks.add(("merge", None))
     proposal_id = secrets.token_hex(16)
@@ -1204,6 +1270,10 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                 for step in document["steps"]:
                     if step.get("kind") == "approve":
                         _approval_policy(cfg, step["target"])
+                    elif step["action"] == "requeue_host_pin":
+                        _check_requeue_host(
+                            cfg, step["number"], step["host"], deadline, preview["caller"],
+                        )
                 started_at = _format_time(_now())
                 intent = {
                     "schema_version": 1,
@@ -1235,6 +1305,16 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                             step_results.append(_approve(cfg, step, deadline))
                         elif step.get("kind") == "command":
                             step_results.append(_mutation(cfg, step, deadline))
+                            if step["action"] == "requeue_host_pin":
+                                try:
+                                    lifecycle.append(cfg.factory / "events.jsonl", {
+                                        "at": _format_time(_now()), "event": "requeue-host-pinned",
+                                        "ticket": step["number"], "host": step["host"],
+                                        "actor": actor, "caller": preview.get("caller"),
+                                        "decision_id": proposal_id,
+                                    })
+                                except OSError as exc:
+                                    raise _AmbiguousCommand("host pin applied but its audit failed") from exc
                         else:
                             raise _FailedStep("stored action kind is invalid")
                     except _FailedStep as exc:

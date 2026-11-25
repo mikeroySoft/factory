@@ -201,6 +201,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 |------|---------|------|------|
 | `decisions._approve` | — | `factory-approved` | Human approve step; withdrawn again if the PR changed while labelling |
 | `decisions._plan_request` | `*` | `*` | Human action; labels limited to `decisions.ACT_LABELS`, `factory-approved` routed to `decisions._approve` |
+| `decisions.prepare` | `ready-for-agent` | `ready-for-agent`, `*` | Explicit-host requeues revoke readiness, clean up, pin and audit, then publish readiness |
 | `decisions._withdraw_approval` | `factory-approved` | — | Human approve step found the PR changed |
 | `dispatch.acquire_host_claim` | — | `*` | Add this host's `host:<name>` label before the comment election |
 | `dispatch.approve_pr` | `factory-approved` | `factory-approved` | Approve; withdraw again if the PR changed while labelling |
@@ -213,6 +214,7 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.refresh_pr_branch` | `factory-approved`, `ready-for-human` | `ready-for-agent` | Behind main: approval withdrawn before refresh; eligible conflict and repeated-gate requeues restore agent flow |
 | `dispatch.review_intake_pass` | — | `ready-for-human` | New issue for an unresolved opted-in PR review |
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
+| `dispatch.unclaim` | `ready-for-agent` | `ready-for-agent`, `*` | Pass through lifecycle labels and release owned claims; explicit-host requeues revoke readiness before cleanup and publish only after pinning and audit |
 | `learn.promote` | — | `factory-approved` | `factory learn` PR (lessons, curate, revert-lessons) with head-bound gate PASS, reviewer APPROVE and green CI, then squash merge (`learn.promote_pass` runs it per PR); lessons/curate merges open a `promotion-open` that `learn.decide_promotions` keeps or reverts |
 | `manage.apply` | `ready-for-human`, `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority and requeues; RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |

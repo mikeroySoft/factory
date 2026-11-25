@@ -6,6 +6,8 @@ journaling and receipts come from one path.
 """
 from __future__ import annotations
 
+import re
+
 from factory import decisions, dispatch, generation
 from factory.config import (
     LABEL_AGENT,
@@ -46,7 +48,8 @@ def _validate(schema: dict, args: object) -> dict:
         else:
             ok = (isinstance(value, str) and "\x00" not in value
                   and len(value) <= spec.get("maxLength", len(value))
-                  and value in spec.get("enum", (value,)))
+                  and value in spec.get("enum", (value,))
+                  and ("pattern" not in spec or re.fullmatch(spec["pattern"], value) is not None))
         if not ok:
             raise DecisionError(f"{key} is invalid", "invalid_args")
     return dict(args)
@@ -87,9 +90,13 @@ ACTIONS = {
         "description": (
             f"Move an open {LABEL_HUMAN} issue back to {LABEL_AGENT} and unassign the actor; refuses upstream-sync "
             "issues. Opens a new generation with fresh round budgets. intent `resume` (default) continues the kept "
-            "branch; `fresh` recuts agent/<n> from main, keeping the old heads as evidence refs."
+            "branch; `fresh` recuts agent/<n> from main, keeping the old heads as evidence refs. "
+            "Optional host explicitly adds host:<host> after requeue cleanup."
         ),
-        "schema": _schema(optional={"intent": {"type": "string", "enum": list(generation.INTENTS)}}),
+        "schema": _schema(optional={
+            "intent": {"type": "string", "enum": list(generation.INTENTS)},
+            "host": {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9._-]{0,44}$"},
+        }),
         "check": _requeue_check,
         "compile": lambda args: _request(args, add=[LABEL_AGENT], remove=[LABEL_HUMAN], unassign=True),
     },

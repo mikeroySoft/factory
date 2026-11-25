@@ -3294,7 +3294,7 @@ two MCP tools call that same function. Nothing else composes these label edits.
 
 | Action | `args` | Preconditions | Effect |
 |---|---|---|---|
-| `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
+| `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `host?`, `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; optionally add `host:<host>` in a separate step after cleanup; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
 | `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
 | `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
 | `approve_pr` | PR `number`, `ruling_id?` (string) | PR open, not draft or `factory-held`, targets configured `main`, no changes-requested review; existing exact-head gate, independent review and required manager evidence | add only `factory-approved` through `decisions.apply` → `_approve` → `_approval_policy` |
@@ -3306,6 +3306,31 @@ structured `{ok: false, error: {code, message}}` with the same `code` on both pa
 `decisions` code. Every proposal records `caller` (`dashboard` or `mcp`) and
 `action` (`{name, args}`); the `human-decision` journal rows for `prepared`,
 `started` and the final status, and the receipt, carry both.
+
+To resume unpublished work on Tank, prepare `{"action": "requeue_agent",
+"args": {"number": 875, "host": "tank"}}`, then confirm that proposal with
+`factory_apply_action`. `host` uses the configured host-name syntax (1–45 ASCII
+letters/digits, `.`, `_`, `-`; first character alphanumeric). The explicit pin is
+visible in the proposal and records `requeue-host-pinned` with host, ticket,
+actor, caller and decision ID. It does not transfer commits or replace other
+host labels. Omit `host` for the existing unpinned requeue behavior. An existing
+pin with no claim survives another named requeue. The dispatcher's `unclaim(...,
+host=...)` API likewise re-pins after claim cleanup; automated callers do not
+select a replacement host. Both explicit-host paths refuse an unretired target-host
+claim, expired or live, before any GitHub mutation and record `requeue-host-refused`.
+Named actions check all retained claims during prepare and again during apply;
+only comments by the authenticated dispatcher identity, resolved with
+`install.dispatch_env`, and valid timezone-aware claim and creation timestamps
+count. The human action identity is separate. Human or outsider claim text cannot
+block requeues or hide a genuine dispatcher claim. Claim or dispatcher-identity
+read failure refuses the action. Requeue does not retire these claims.
+Explicit-host requeues revoke readiness before cleanup and publish
+`ready-for-agent` only after pinning and its audit succeed. Pin or audit failure
+leaves the issue non-ready. Later escalation still removes the owning claim's
+host label, and manager RETRY is unchanged.
+Final host admission rechecks fresh foreign pins after reading claims, so a
+foreign admission already in flight cannot cross a completed explicit re-pin.
+Pins backed by retained expired claims remain recoverable under the existing election.
 
 For agent re-approval, prepare `{"action": "approve_pr", "args": {"number": 257,
 "ruling_id": "r3-0740"}}` with `factory_prepare_action` and the registered
