@@ -219,7 +219,10 @@ class AddOnlyOverrideTest(unittest.TestCase):
         self.addCleanup(root.cleanup)
         dispatch.configure(config.Config(Path(root.name), "acme/widgets"))
         result = subprocess.CompletedProcess([], 0, stdout="https://example.test/comment\n")
-        with mock.patch.object(dispatch, "run", return_value=result) as run, \
+        with mock.patch.object(dispatch, "run", side_effect=lambda command, **kwargs: (
+            subprocess.CompletedProcess(command, 0, stdout="[]")
+            if command[:3] == ["gh", "pr", "list"] else result
+        )) as run, \
                 mock.patch.object(dispatch, "comment_receipt"):
             manage.apply(
                 7,
