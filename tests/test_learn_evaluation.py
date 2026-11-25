@@ -254,7 +254,7 @@ class LearnEvaluationTest(unittest.TestCase):
                 "#!" + sys.executable + "\n"
                 "import json,os\n"
                 "from pathlib import Path\n"
-                "prompt=__import__('sys').argv[-1]\n"
+                "prompt=__import__('sys').stdin.read()\n"
                 "with Path(os.environ['REVIEW_PROMPTS']).open('a') as f: f.write(prompt+'\\0')\n"
                 "value=Path('snapshot/solution.txt').read_text().strip()\n"
                 "revised='```json\\n{\"verdict\":\"REVISE\",\"findings\":[{\"severity\":\"important\","
