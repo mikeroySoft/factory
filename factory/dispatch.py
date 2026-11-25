@@ -686,9 +686,8 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
                if label["name"].startswith("host:")} - stale_hosts - {cfg.host_name}
     if foreign:
         return f"host label ({', '.join(sorted(foreign))})"
-    if claims:
-        if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
-            return "assigned"
+    if claims and any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
+        return "assigned"
     return None
 
 
@@ -5978,7 +5977,7 @@ def process_ticket(
             if claimed:
                 try:
                     escalate(n, f"dispatcher error: {exc!r}; worktree kept at {wt}", None, code="dispatcher_error")
-                except Exception as failure:
+                except Exception as failure:  # noqa: BLE001 — preserve the original dispatcher error
                     exc.add_note(f"Dispatch escalation also failed: {stderr_tail(str(failure))}")
                 execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
             raise

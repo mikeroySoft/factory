@@ -19,8 +19,8 @@ p = Path(os.environ["SMOKE_STATE"])
 s = json.loads(p.read_text())
 a = sys.argv[1:]
 login = s.get("login", "runner")
-if a == ["api", "user"]:
-    print(json.dumps({"login": login}))
+if a[:2] == ["api", "user"]:
+    print(login if "--jq" in a else json.dumps({"login": login}))
     sys.exit(0)
 if a == ["api", "rate_limit"]:
     print(json.dumps({"resources": {"core": {"remaining": 5000}, "graphql": {"remaining": 5000}}}))
