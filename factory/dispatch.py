@@ -310,6 +310,10 @@ def without_github(env: dict[str, str]):
         yield {k: v for k, v in env.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")} | {"GH_CONFIG_DIR": empty}
 
 
+def _uses_omp_input(command: list[str]) -> bool:
+    return Path(command[0]).name == "omp" or cfg.reviewer_json_mode is True
+
+
 def _review_command(prompt: str, reviewer: list[str] | None = None) -> tuple[list[str], bool]:
     command = config.expand(reviewer or cfg.reviewer, prompt=prompt)
     structured = cfg.reviewer_json_mode
@@ -389,7 +393,7 @@ def _run_reviewer(
             # OMP reads stdin as prompt text. Open in the parent so file failures
             # retain their errno and enter the normal reviewer-unavailable path.
             prompt_args = [arg for arg in command[1:] if prompt and prompt in arg]
-            if prompt_args and (Path(command[0]).name == "omp" or cfg.reviewer_json_mode is True):
+            if prompt_args and _uses_omp_input(command):
                 command = [command[0], *(arg for arg in command[1:] if prompt not in arg)]
                 with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=review_dir) as file:
                     file.write(" ".join(prompt_args))
@@ -1117,6 +1121,12 @@ def review_external_pr(n: int, base: str, head: str, branch: str = "", author: s
                 f"{policy_prompt}\n"
                 f"--- BEGIN UNTRUSTED DIFF ---\n{diff}\n--- END UNTRUSTED DIFF ---"
             )
+            # Non-OMP reviewers retain their inline-argv contract and limit.
+            if len(prompt.encode()) > 120 * 1024 and not _uses_omp_input(cfg.reviewer):
+                execution.outcome = "unknown"
+                execution.reason = "prompt_too_large"
+                log(f"PR #{n}: diff too large to review at {head}")
+                return
             command, structured = _review_command(prompt)
             proc = _run_reviewer(command, prompt=prompt)
         except (OSError, subprocess.CalledProcessError) as exc:

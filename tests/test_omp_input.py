@@ -13,7 +13,6 @@ from unittest import mock
 
 from factory import config, dispatch, lifecycle
 
-
 PROBE = r'''
 import json, os, stat, sys
 from pathlib import Path
@@ -144,7 +143,7 @@ class ReviewerPromptTransportTest(unittest.TestCase):
             failure = OSError(code, os.strerror(code), "reviewer-prompt")
 
             @contextmanager
-            def temporary(*args, **kwargs):
+            def temporary(*args, operation=operation, failure=failure, paths=paths, **kwargs):
                 if operation == "create":
                     raise failure
                 with real_temporary(*args, **kwargs) as file:
@@ -155,7 +154,7 @@ class ReviewerPromptTransportTest(unittest.TestCase):
                     else:
                         yield file
 
-            def read(path, *args, **kwargs):
+            def read(path, *args, operation=operation, paths=paths, failure=failure, **kwargs):
                 if operation == "read" and Path(path) in paths:
                     raise failure
                 return real_open(path, *args, **kwargs)
@@ -179,7 +178,7 @@ class ReviewerPromptTransportTest(unittest.TestCase):
                         OSError(errno.ENOENT, os.strerror(errno.ENOENT))):
             paths = []
 
-            def run(command, **kwargs):
+            def run(command, failure=failure, paths=paths, **kwargs):
                 if command[0] == str(self.omp):
                     stdin = kwargs["stdin"]
                     paths.append(Path(stdin.name))

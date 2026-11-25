@@ -661,7 +661,7 @@ removes that text from argv and supplies it intact through a mode-0600 temporary
 file opened as stdin. The file is removed after the run, including failures.
 Prompt file creation, write, or open failures retain their errno in
 `reviewer_unavailable` diagnostics; no verdict is accepted. Other reviewer CLIs
-retain their inline-argv contract. OMP worker and manager commands load prompt
+retain their inline-argv contract and PR-intake size refusal. OMP worker and manager commands load prompt
 files only with `@{prompt}`; bare `omp {prompt}` passes the path as text.
 Factory rejects that bare argument for manager commands, not worker commands.
 
