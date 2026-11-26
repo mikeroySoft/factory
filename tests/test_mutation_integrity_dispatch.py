@@ -296,6 +296,19 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
                 self.repo, "commit-tree", f"{parent}^{{tree}}", "-p", parent,
                 "-m", f"move {i} {'gt' if greater else 'lt'}",
             )
+            # Alias the real descendant to the next unused OID in the requested
+            # direction, so the first iteration succeeds regardless of its hash.
+            ordered = int(parent, 16)
+            while True:
+                ordered += 1 if greater else -1
+                candidate = f"{ordered:040x}"
+                exists = subprocess.run(
+                    ["git", "cat-file", "-e", candidate], cwd=self.repo, capture_output=True,
+                )
+                if exists.returncode:
+                    break
+            git(self.repo, "update-ref", f"refs/replace/{candidate}", oid)
+            oid = candidate
             if oid != parent and (oid > parent) is greater:
                 return oid
         self.fail(f"could not synthesize a descendant oid {'>' if greater else '<'} {parent}")
