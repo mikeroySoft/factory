@@ -413,7 +413,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             # Preserve the no-repeat escalation contract, but retain the terminal FIX outcome.
             from factory import __version__, trace
 
-            dispatch.log(f"#{n}: manager FIX failed ({code}: {reason}); automatic FIX stops")
+            dispatch.log(f"#{n}: manager FIX failed ({code}: {reason}); ticket is already ready-for-human")
             cause = dispatch._latest_decision_id(n, {"manager"})
             dispatch.record("decision", **trace.decision(
                 ticket=n, stage="manager", chosen="FIX_FAILED",
@@ -478,6 +478,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             time.monotonic() + cfg.budget_min * 60, body=issue.get("body") or "",
             selected_worker=data["worker"],
             comments=comments,
+            gate_cache={},
         )
         if not ok:
             reason = "gate failed after manager FIX"
@@ -486,12 +487,15 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             else:
                 dispatch.escalate(n, reason, logfile, code="gate_failed")
             return
-        if gate_head == lease:
+        reviewed_head = any(
+            row.get("head") == lease and row.get("event") in {"review", "risk-check"}
+            for row in events
+        )
+        if gate_head == lease and reviewed_head:
             findings = packet.read_text()
             code = dispatch.unresolved_rework_code(findings, False)
             reason = (
-                f"manager FIX made no commit at {lease}; unresolved findings remain:\n\n"
-                f"{findings}"
+                f"manager FIX made no commit at {lease}; unresolved findings remain: {findings}"
             )
             record_fix_failure(code, reason)
             if not already_human:

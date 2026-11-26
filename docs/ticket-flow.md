@@ -80,12 +80,15 @@ flowchart TB
   RFA -->|"its PR's CI red after the release, or idle stale_days counted from the release: manage.frontier_pass, manage.released_at"| ESC
   CLAIM -->|"dispatch.process_ticket"| WR
   WR -->|"gate FAIL or worker stuck, attempts left, report fed back: dispatch.process_ticket"| WR
+  WR -->|"unchanged clean head reuses gate evidence, no retry: dispatch.process_ticket"| ESC
+  WR -->|"failed gate and Needs add-only authorization, no strike: manage.request_add_only_authorization"| MGR
   WR -->|"gate FAIL or stuck max_attempts, protected paths, or budget with unfinished handoff: dispatch.process_ticket"| ESC
   WR -->|"gate PASS, including expired clean finish: dispatch.worker_round"| PUSH
   PUSH -->|"nothing ahead of main or PR target mismatch: dispatch.push_and_pr"| ESC
   PUSH -->|"dispatch.review"| REV
   REV -->|"REVISE or pr-tier gate FAIL, review_rounds left: dispatch.process_ticket"| WR
   REV -->|"rounds exhausted, reject, protected paths, bounce gate FAIL or stuck, or budget without actionable findings: dispatch.process_ticket"| ESC
+  WR -->|"unchanged rework head, unresolved cause, no PR-tier checks or review: dispatch.process_ticket"| ESC
   REV -->|"APPROVE, evidence bound to head: dispatch.approve_pr"| FA
   REV -->|"APPROVE but head or human review changed: dispatch.process_ticket"| ESC
   REV -->|"APPROVE, manager.review = all: dispatch.approve_pr waits"| MAPP
@@ -238,6 +241,9 @@ model and run a new worker attempt.
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded`` | worker round → escalate |
 | `dispatch.process_ticket` | ``gate failed {} times; worktree kept at {}`` | worker round → escalate |
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) on attempt {}; worktree kept at {}`` | worker round → escalate |
+| `dispatch.process_ticket` | ``worker left failed head {} unchanged; worktree kept at {}`` | Unchanged failed attempt → stop (`worker_no_progress`) |
+| `dispatch.process_ticket` | ``rework left head {} unchanged; required findings remain open`` | Unchanged rework → hand off the unresolved cause without another review |
+| `dispatch.process_ticket` | ``deferred rework left head {} unchanged; required findings remain open`` | Unchanged deferred rework → hand off without PR-tier checks or reviewers |
 | `dispatch.process_ticket` | ``agent/{}: worker committed nothing over {}; read the handoff`` | push → escalate (`no_change`, only when the handoff exists; `factory watch` never files it) |
 | `dispatch.process_ticket` | ``agent/{}: PR not published (no commits over main and no handoff, or existing PR targets a base other than {}); inspect dispatcher log`` | push → escalate |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded before bounce {}`` | review → escalate |
@@ -288,7 +294,10 @@ model and run a new worker attempt.
 | `manage.apply` | ``approval evidence, head, or human review state changed before manager FIX approval`` | manager FIX → escalate |
 | `manage.apply` | ``FIX worktree head {} is not the PR head {} plus the worker's own commits; worktree kept at {}`` | manager FIX → escalate (`refresh_head`) |
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
-| `manage.escalation_pass` | ``manager_failed`` | manager decision → human |
+| `manage.apply` | ``manager FIX made no commit at {}; unresolved findings remain: {}`` | Unchanged previously reviewed FIX head → terminal unresolved-finding receipt |
+| `manage._handle_add_only_request` | ``manager declined add-only authorization: {}`` | Manager HUMAN → ordinary human escalation |
+| `manage.request_add_only_authorization` | ``manager add-only authorization rounds exhausted ({})`` | Combined manager round budget exhausted → human |
+| `manage._manager_decision` | ``manager_failed`` | Manager decision transport failure → human |
 
 ### Reused-worktree refusals
 

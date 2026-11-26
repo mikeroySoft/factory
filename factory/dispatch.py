@@ -5833,7 +5833,7 @@ def process_ticket(
 
                     manage.request_add_only_authorization(n, fresh, paths, report, logfile)
                     return
-                if carried_rework and gate_head == carried_rework["head"] and not run([
+                if ok and carried_rework and gate_head == carried_rework["head"] and not run([
                     "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
                     ":(exclude).factory-prompt.md", ":(exclude).factory",
                 ], cwd=wt).stdout.strip():
@@ -5845,7 +5845,7 @@ def process_ticket(
                     return
                 if ok:
                     break
-                if gate_head == previous_head and not run([
+                if time.monotonic() <= deadline and gate_head == previous_head and not run([
                     "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
                     ":(exclude).factory-prompt.md", ":(exclude).factory",
                 ], cwd=wt).stdout.strip():
@@ -5969,6 +5969,7 @@ def process_ticket(
                     record_worker_selection(n, labels, cause=retry_decision, relation="retries")
                     record_claim_decision(n, True, retry_decision, relation="retries")
                 previous_head = gate_head
+                execution.review_round = bounce + 1
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline,
                     body=fresh.get("body") or "",
@@ -5980,7 +5981,7 @@ def process_ticket(
 
                     manage.request_add_only_authorization(n, fresh, paths, findings + "\n\n" + report, logfile)
                     return
-                if gate_head == previous_head and not run([
+                if ok and gate_head == previous_head and not run([
                     "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
                     ":(exclude).factory-prompt.md", ":(exclude).factory",
                 ], cwd=wt).stdout.strip():
@@ -5991,7 +5992,6 @@ def process_ticket(
                     return
                 _record_rework(n, previous_head, findings, deferred=False)
                 rounds_used += 1
-                execution.review_round = bounce + 1
                 if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
                     reason = (

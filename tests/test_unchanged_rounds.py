@@ -1,6 +1,7 @@
 """Unchanged worker revisions do not buy another gate or review."""
 from __future__ import annotations
 
+import itertools
 import json
 import subprocess
 import sys
@@ -45,20 +46,21 @@ issue = {"number":''').replace(
             'if s.get("sync"):',
             'issue["labels"] = [{"name": value} for value in s.get("labels", ["ready-for-agent"])]\nif s.get("sync"):',
         ))
+        handoff = "Needs: add-only-authorization tests/test_contract.py:12\n" if needs else "No source change.\n"
         self.worker.write_text(
             "from pathlib import Path\n"
             f"p = Path({str(self.base / 'workers')!r})\n"
             "p.write_text(p.read_text() + 'run\\n' if p.exists() else 'run\\n')\n"
             "h = Path('.factory/handoff-7.md')\n"
             "h.parent.mkdir(exist_ok=True)\n"
-            f"h.write_text({('Needs: add-only-authorization tests/test_contract.py:12\n' if needs else 'No source change.\n')!r})\n"
+            f"h.write_text({handoff!r})\n"
         )
         check = [sys.executable, "-c",
-                 "from pathlib import Path; "
-                 f"p=Path({str(self.base / 'gates')!r}); "
-                 "p.write_text(p.read_text()+'run\\n' if p.exists() else 'run\\n'); "
-                 "print('FAIL: test_contract (test_contract.ContractTest.test_contract)'); "
-                 "raise SystemExit(1)"]
+                 ("from pathlib import Path; "
+                  f"p=Path({str(self.base / 'gates')!r}); "
+                  "p.write_text(p.read_text()+'run\\n' if p.exists() else 'run\\n'); "
+                  "print('FAIL: test_contract (test_contract.ContractTest.test_contract)'); "
+                  "raise SystemExit(1)")]
         self.write_config(check=check)
         self.commit_config()
 
@@ -85,7 +87,7 @@ issue = {"number":''').replace(
         self.assertEqual([r["decision"] for r in events if r["event"] == "manage"], ["AUTHORIZE"])
         self.assertFalse(any(r["event"] == "escalate" for r in events))
         self.assertFalse(any(
-            ("--add-label", "ready-for-human") in zip(row, row[1:])
+            ("--add-label", "ready-for-human") in itertools.pairwise(row)
             for row in json.loads(self.state.read_text())["edits"]
         ))
 
@@ -135,9 +137,9 @@ issue = {"number":''').replace(
         pr_log = self.base / "pr-runs"
         self.write_config(extra=(
             '\n[[gate.check]]\nname = "pr-check"\nwhen = "pr"\nrun = ' +
-            json.dumps([sys.executable, "-c", "from pathlib import Path; "
+            json.dumps([sys.executable, "-c", ("from pathlib import Path; "
                         f"p=Path({str(pr_log)!r}); "
-                        "p.write_text(p.read_text()+'run\\n' if p.exists() else 'run\\n')"]) + '\n'
+                        "p.write_text(p.read_text()+'run\\n' if p.exists() else 'run\\n')")]) + '\n'
         ))
         self.commit_config()
         self.cli("dispatch", "--ticket", "7", "--budget-min", "1")

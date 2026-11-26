@@ -1,6 +1,7 @@
 """#947: add-only gate failures ask the manager before entering the human queue."""
 from __future__ import annotations
 
+import itertools
 import subprocess
 import tempfile
 import unittest
@@ -87,7 +88,7 @@ class ManagerAuthorizationRequestTest(unittest.TestCase):
         edits = [command for command in self.commands if command[:3] == ["gh", "issue", "edit"]]
         self.assertTrue(any(config.LABEL_ADD_ONLY_OVERRIDE in command for command in edits))
         self.assertFalse(any(
-            ("--add-label", config.LABEL_HUMAN) in zip(command, command[1:]) for command in edits
+            ("--add-label", config.LABEL_HUMAN) in itertools.pairwise(command) for command in edits
         ))
 
     def test_repeated_request_spends_round_budget_without_running_manager_twice(self) -> None:
@@ -155,6 +156,8 @@ class ManagerFixNoProgressTest(unittest.TestCase):
                 "labels": [{"name": config.LABEL_HUMAN}],
             }
             lease = "a" * 40
+            dispatch.record("review", ticket=7, head=lease, actual_head=lease,
+                            accepted=True, verdict="REVISE")
             pr = {
                 "state": "OPEN",
                 "headRefName": "agent/7",
