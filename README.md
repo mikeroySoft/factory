@@ -3341,6 +3341,11 @@ double the delay on consecutive throttles up to 3,600 seconds, as described by
 hints, not automatic retries; after a proposal expires, prepare a fresh one.
 Other nonzero reads remain `provider_unavailable`. Mutation uncertainty and
 confirmation requirements are unchanged.
+Receipt observations (`observe=1`) retain the same sanitized diagnostics and retry
+fields in `observation.errors[]`, alongside the affected target and error code.
+Observation failures do not change the durable receipt or retry any mutation.
+Redaction covers quoted credential keys and quoted values, including spaces and
+escaped quotes, before diagnostic truncation.
 
 For agent re-approval, prepare `{"action": "approve_pr", "args": {"number": 257,
 "ruling_id": "r3-0740"}}` with `factory_prepare_action` and the registered

@@ -62,7 +62,8 @@ _SHA = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\Z")
 _SECRET = re.compile(
     r"(?:\b(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]{12,}"
     r"|\b(?:Bearer|Basic)\s+[A-Za-z0-9._+/=-]{12,}"
-    r"|\b(?:[\w-]*(?:token|secret|password)|api[_-]?key)\s*[:=]\s*[\"']?[^\s\"']+)",
+    r"|\b(?:[\w-]*(?:token|secret|password)|api[_-]?key)[\"']?\s*[:=]\s*"
+    r"(?:\"(?:\\.|[^\"\\])*(?:\"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s\"']+))",
     re.IGNORECASE,
 )
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
@@ -1404,7 +1405,9 @@ def _observe(cfg: Config, document: dict) -> dict:
             targets.append(value)
         except DecisionError as exc:
             actual[key] = None
-            errors.append({"target": {"kind": key[0], "number": key[1]}, "code": exc.code})
+            errors.append({
+                "target": {"kind": key[0], "number": key[1]}, "code": exc.code, **exc.extra,
+            })
     postconditions = []
     for index, request in enumerate(document["preview"]["requests"]):
         kind = "pr" if request["op"] == "pr" else "cleanup" if request["op"] == "cleanup" else "issue"
