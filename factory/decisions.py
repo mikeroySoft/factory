@@ -17,6 +17,8 @@ import sys
 import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
+from math import ceil
 from pathlib import Path
 
 from factory import config, dispatch, lifecycle
@@ -59,7 +61,9 @@ _LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
 _SHA = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\Z")
 _SECRET = re.compile(
     r"(?:\b(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]{12,}"
-    r"|\bBearer\s+[A-Za-z0-9._-]{12,})",
+    r"|\b(?:Bearer|Basic|token)\s+[A-Za-z0-9._+/=-]{12,}"
+    r"|\b(?:[\w-]*(?:token|secret|password)|api[_-]?key)[\"']?\s*[:=]\s*"
+    r"(?:\"(?:\\.|[^\"\\])*(?:\"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s\"']+))",
     re.IGNORECASE,
 )
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
@@ -87,9 +91,10 @@ _RENAME_NOREPLACE, _NOREPLACE_FLAG = _rename_noreplace(ctypes.CDLL(None, use_err
 class DecisionError(ValueError):
     """A closed, safe-to-return decision error."""
 
-    def __init__(self, message: str, code: str = "invalid_request"):
+    def __init__(self, message: str, code: str = "invalid_request", **extra: object):
         super().__init__(message)
         self.code = code
+        self.extra = extra
 
 
 class _AmbiguousCommand(Exception):
@@ -378,6 +383,31 @@ def _timeout(deadline: float) -> float:
     return min(COMMAND_SECONDS, remaining)
 
 
+def _provider_retry_after(stderr: str) -> int:
+    headers = {
+        name.lower(): value.strip()
+        for name, value in re.findall(
+            r"^[<> \t]*(Retry-After|X-RateLimit-Reset):[ \t]*([^\r\n]+)",
+            stderr, re.IGNORECASE | re.MULTILINE,
+        )
+    }
+    for name in ("retry-after", "x-ratelimit-reset"):
+        if name not in headers:
+            continue
+        value = headers[name]
+        try:
+            if name == "x-ratelimit-reset":
+                seconds = int(value) - _now().timestamp()
+            elif value.isdecimal():
+                seconds = int(value)
+            else:
+                seconds = parsedate_to_datetime(value).timestamp() - _now().timestamp()
+            return max(1, ceil(seconds))
+        except (ValueError, TypeError, OverflowError):
+            continue
+    return 60
+
+
 def _checked(
     cfg: Config, argv: list[str], deadline: float, *, cwd: Path | None = None, cap: int = READ_CAP,
 ) -> subprocess.CompletedProcess[str]:
@@ -388,7 +418,19 @@ def _checked(
     except _AmbiguousCommand as exc:
         raise DecisionError("provider read did not complete", "provider_unavailable") from exc
     if result.returncode:
-        raise DecisionError("provider read failed", "provider_unavailable")
+        stderr = _SECRET.sub("[credential withheld]", result.stderr.strip())
+        extra = {"stderr": stderr[-OUTPUT_CAP:]}
+        if argv[0] == "gh" and re.search(
+            r"\b(?:API rate limit|secondary rate limit|rate limit(?:ed| exceeded)|abuse detection)\b"
+            r"|\bHTTP(?:/\S+)?\s+429\b",
+            stderr, re.IGNORECASE,
+        ):
+            raise DecisionError(
+                "GitHub rate limit exceeded", "provider_rate_limited",
+                **extra, retryable=True, retry_after_seconds=_provider_retry_after(stderr),
+                backoff={"initial_seconds": 60, "multiplier": 2, "max_seconds": 3600},
+            )
+        raise DecisionError("provider read failed", "provider_unavailable", **extra)
     return result
 
 
@@ -1363,7 +1405,9 @@ def _observe(cfg: Config, document: dict) -> dict:
             targets.append(value)
         except DecisionError as exc:
             actual[key] = None
-            errors.append({"target": {"kind": key[0], "number": key[1]}, "code": exc.code})
+            errors.append({
+                "target": {"kind": key[0], "number": key[1]}, "code": exc.code, **exc.extra,
+            })
     postconditions = []
     for index, request in enumerate(document["preview"]["requests"]):
         kind = "pr" if request["op"] == "pr" else "cleanup" if request["op"] == "cleanup" else "issue"
