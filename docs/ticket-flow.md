@@ -78,6 +78,7 @@ flowchart TB
   RFA -->|"open, unassigned, no open agent PR or blockers: dispatch.frontier"| CLAIM
   RFA -->|"its PR's red CI completed before the release: no escalation, waits for a worker: manage.frontier_pass"| CLAIM
   RFA -->|"its PR's CI red after the release, or idle stale_days counted from the release: manage.frontier_pass, manage.released_at"| ESC
+  RFA -->|"expired interrupted own-host claim with open PR, ownership rechecked, no worker or push: dispatch.process_ticket"| ESC
   CLAIM -->|"dispatch.process_ticket"| WR
   WR -->|"gate FAIL or worker stuck, attempts left, report fed back: dispatch.process_ticket"| WR
   WR -->|"gate FAIL or stuck max_attempts, protected paths, or budget with unfinished handoff: dispatch.process_ticket"| ESC

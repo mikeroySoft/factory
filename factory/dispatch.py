@@ -616,7 +616,8 @@ def host_claim_state(n: int, *, require_shared_login: bool = False) -> tuple[lis
             except (ValueError, KeyError):
                 continue
             claims.append({**comment, "host": host, "nonce": nonce, "at": at,
-                           "heartbeat": heartbeat, "created": created})
+                           "heartbeat": heartbeat, "created": created,
+                           "preserve_assignment": "Factory assignment: human" in comment["body"].splitlines()})
     for claim in claims:
         if claim["nonce"] in requeues:
             claim["requeue"] = requeues[claim["nonce"]]
@@ -686,7 +687,11 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
                if label["name"].startswith("host:")} - stale_hosts - {cfg.host_name}
     if foreign:
         return f"host label ({', '.join(sorted(foreign))})"
-    if claims and any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
+    elected = elected_host_claim(claims)
+    if claims and issue.get("assignees") and (
+        any(row["login"].casefold() != host_claim_login() for row in issue["assignees"])
+        or elected is not None and elected.get("preserve_assignment", False)
+    ):
         return "assigned"
     return None
 
@@ -755,8 +760,11 @@ class HostClaim:
         self.thread = threading.Thread(target=self.heartbeat, daemon=True)
 
     def body(self) -> str:
-        return (f"Factory claim: host={cfg.host_name} nonce={self.comment['nonce']} "
+        body = (f"Factory claim: host={cfg.host_name} nonce={self.comment['nonce']} "
                 f"at={datetime.now(UTC).isoformat()}")
+        if self.comment.get("preserve_assignment"):
+            body += "\nFactory assignment: human"
+        return body
 
     def heartbeat(self) -> None:
         while not self.stopped.wait(cfg.claim_ttl_seconds / 4):
@@ -792,7 +800,11 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
     label = f"host:{cfg.host_name}"
     run(["gh", "label", "create", label, "--repo", REPO, "--color", "ededed", "--force"])
     run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-label", label])
-    claim = HostClaim(n, {"nonce": str(uuid.uuid4())})
+    previous = elected_host_claim(claims)
+    preserve_assignment = any(
+        row["login"].casefold() == host_claim_login() for row in issue.get("assignees", [])
+    ) and (previous is None or previous.get("preserve_assignment", False))
+    claim = HostClaim(n, {"nonce": str(uuid.uuid4()), "preserve_assignment": preserve_assignment})
     try:
         comment = gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
                            "-f", f"body={claim.body()}"])
@@ -846,7 +858,9 @@ def unclaim(
     )
     if requeue and n in _HOST_CLAIMS and owned is None:
         return  # A displaced pipeline cannot release its replacement's PR or labels.
-    login = _ASSIGNMENTS.get(n) if n in _ASSIGNMENTS else host_claim_login() if owned else None
+    login = _ASSIGNMENTS.get(n) if n in _ASSIGNMENTS else (
+        host_claim_login() if owned and not owned.get("preserve_assignment", False) else None
+    )
     if claims and owned is None:
         login = None  # A replacement host owns the shared login now.
     fresh = None
@@ -930,6 +944,10 @@ def frontier() -> list[dict]:
         if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
             issue["held"] = "initiative record"
         elif pr := open_prs.get(f"agent/{n}"):
+            if cfg.host_name:
+                claims = host_claims(n)
+                if interrupted_host_claim(n, claims) and not host_claim_hold(n, issue, claims):
+                    continue  # Admit recovery only; process_ticket escalates without a worker.
             issue["held"] = f"open agent PR #{pr}"
         elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
             issue["held"] = held
@@ -3619,16 +3637,22 @@ def push_and_pr(
             f"{existing[0].get('baseRefName')!r}, not {cfg.main!r}; not pushing"
         )
         return False
+    restored = reopen and lease == ""
+    if restored:
+        # GitHub cannot reopen a retained PR until its deleted head branch exists.
+        # The empty lease makes restoration create-only; no closed head is rewritten.
+        push_agent(wt, ticket, lease)
     if reopen:
-        # Withdraw the old head's approval and reopen before publishing rewritten history.
+        # Withdraw approval before reopening or rewriting an extant head.
         run(["gh", "pr", "edit", str(existing[0]["number"]), "--repo", REPO,
              "--remove-label", LABEL_APPROVED])
         run(["gh", "pr", "reopen", str(existing[0]["number"]), "--repo", REPO])
-    if ticket is None or lease is None:
-        with _REMOTE_REFS:
-            run(["git", "push", "-u", "origin", branch], cwd=wt)
-    else:
-        push_agent(wt, ticket, lease)
+    if not restored:
+        if ticket is None or lease is None:
+            with _REMOTE_REFS:
+                run(["git", "push", "-u", "origin", branch], cwd=wt)
+        else:
+            push_agent(wt, ticket, lease)
     if existing:
         log(f"{branch}: PR already exists (#{existing[0]['number']})")
         if ticket is not None:
@@ -5644,10 +5668,7 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "initiative"
                 return
-            if held := open_agent_pr_hold(n):
-                log(f"#{n}: skipped ({held})")
-                execution.outcome, execution.reason = "not_admitted", held
-                return
+            held = open_agent_pr_hold(n)
             # `issue view` comments are GraphQL-shaped; host_setup_problem reads REST fields.
             if not cfg.host_name and (problem := host_setup_problem(
                 None, "", fresh.get("labels", []), [
@@ -5660,7 +5681,45 @@ def process_ticket(
             shared_context = ""
             if cfg.host_name:
                 claims, shared_context = host_claim_state(n, require_shared_login=True)
-                fresh = release_stale_claims(n, fresh, claims)
+                if not held:
+                    fresh = release_stale_claims(n, fresh, claims)
+            if held:
+                interrupted = (
+                    interrupted_host_claim(n, claims)
+                    if cfg.host_name and fresh["state"].upper() == "OPEN"
+                    and LABEL_AGENT in {label["name"] for label in fresh["labels"]} else None
+                )
+                if interrupted is not None:
+                    # The frontier may have raced a heartbeat or another host's election.
+                    current = host_claims(n)
+                    recovered = interrupted_host_claim(n, current)
+                    if (recovered is not None and recovered["nonce"] == interrupted["nonce"]
+                            and not host_claim_hold(n, fresh, current)):
+                        host_claim = HostClaim(n, recovered)
+                        _HOST_CLAIMS[n] = host_claim
+                        _ASSIGNMENTS[n] = (
+                            None if recovered.get("preserve_assignment", False) else host_claim_login()
+                        )
+                        extra = ""
+                        if wt.exists():
+                            head = run(["git", "rev-parse", "HEAD"], cwd=wt, check=False)
+                            unpushed = run(
+                                ["git", "rev-list", f"origin/agent/{n}..HEAD"], cwd=wt, check=False,
+                            )
+                            extra = (
+                                f"## Retained local evidence\n\nHEAD: `{head.stdout.strip()}`\n\n"
+                                f"Unpushed commits:\n```\n{unpushed.stdout.strip()}\n```\n"
+                            )
+                        exit_path = "dispatcher_error"
+                        escalate(
+                            n, f"interrupted host claim with {held}; worktree kept at {wt}",
+                            None, extra=extra, code="dispatcher_error",
+                        )
+                        execution.outcome, execution.reason = "escalated", "interrupted_host_claim"
+                        return
+                log(f"#{n}: skipped ({held})")
+                execution.outcome, execution.reason = "not_admitted", held
+                return
             if not forced and (
                 fresh["state"].upper() != "OPEN"
                 # Authenticated claims arbitrate a shared bot assignment below;
@@ -5713,7 +5772,10 @@ def process_ticket(
                     return
             login = host_claim_login()
             preexisting = any(row["login"].casefold() == login for row in fresh["assignees"])
-            _ASSIGNMENTS[n] = login if not preexisting or claims else None
+            preserve_assignment = (
+                host_claim.comment.get("preserve_assignment", False) if host_claim else preexisting
+            )
+            _ASSIGNMENTS[n] = None if preserve_assignment else login
             exit_path = "claim_failed"
             try:
                 run(["gh", "issue", "edit", str(n), "--repo", REPO, "--add-assignee", "@me"])
@@ -6004,7 +6066,6 @@ def process_ticket(
                     raise
                 original.add_note(f"Assignment cleanup also failed: {stderr_tail(str(failure))}")
             finally:
-                _ASSIGNMENTS.pop(n, None)
                 if host_claim is not None:
                     host_claim.stop()
                     _HOST_CLAIMS.pop(n, None)
