@@ -2470,7 +2470,7 @@ ESCALATION_CODES = frozenset({
     "approval_missing", "ci_failed", "ci_runner", "refresh_head", "refresh_conflict",
     "refresh_empty", "gh_failed", "review_intake", "manager_failed",
     "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
-    "lease_refused", "dispatcher_error", "no_change", "risk_disagreement",
+    "lease_refused", "dispatcher_error", "no_change", "risk_disagreement", "missing_worker_provenance",
 })
 
 
@@ -3198,17 +3198,15 @@ def _moved_main_proof(
     return _is_ancestor(wt, snapshot, proof_base) and _is_ancestor(wt, proof_base, current)
 
 
-def _worker_model_for_head(n: int, head: str) -> str | None:
-    events = lifecycle.read_events(EVENTS)
-    exact = next((
-        event.get("worker_model") for event in reversed(events)
+def _worker_model_for_head(n: int, head: str, events: list[dict] | None = None) -> str | None:
+    attempts = [
+        event for event in (lifecycle.read_events(EVENTS) if events is None else events)
         if event.get("event") == "attempt" and event.get("ticket") == n
-        and event.get("head") == head
-    ), None)
-    return exact or next((
-        event.get("worker_model") for event in reversed(events)
-        if event.get("event") == "attempt" and event.get("ticket") == n
-    ), None)
+    ]
+    source = next((event for event in reversed(attempts) if event.get("head") == head),
+                  attempts[-1] if attempts else {})
+    model = source.get("worker_model")
+    return model if isinstance(model, str) and model.strip() and model.strip().lower() != "unknown" else None
 
 
 def _worker_finished_for_head(n: int, head: str) -> bool:
@@ -3374,6 +3372,25 @@ def pr_gate_and_review(
                         pr_gate="FAIL", **proof_fields,
                     )
                 return "REVISE", pr_report, True
+    worker_model = None
+    match policy_tier:
+        case "High":
+            worker_model = _worker_model_for_head(n, head)
+            if worker_model is None:
+                findings = (
+                    f"missing_worker_provenance: High-risk review at {head} requires "
+                    "worker_model from the worker attempt; configure an explicit worker --model "
+                    "and run a new attempt."
+                )
+                _PENDING_RISK[n] = {"head": head, "failure_code": "missing_worker_provenance", "packet": findings}
+                record("risk-check", ticket=n, head=head, reason="missing_worker_provenance",
+                       worker_model=None, pr_gate="PASS" if ok else "FAIL")
+                return None, findings, False
+            report += (
+                f"\n\n## High-risk model provenance\nworker={worker_model}, "
+                f"primary={config.command_model(cfg.reviewer)}, "
+                f"second={config.command_model(cfg.second_reviewer)}\n"
+            )
     primary, primary_findings = review(wt, n, report, head)
     primary_row = _PENDING_REVIEWS.get(n) or {}
     if primary_row and primary_row.get("verdict") is None:
@@ -3385,7 +3402,6 @@ def pr_gate_and_review(
 
     primary_model = primary_row.get("model")
     configured_second_model = config.command_model(cfg.second_reviewer)
-    worker_model = _worker_model_for_head(n, head)
     configured_models = (primary_model, configured_second_model, worker_model)
     if any(model is None for model in configured_models) or len(set(configured_models)) != 3:
         findings = (
@@ -3422,7 +3438,8 @@ def pr_gate_and_review(
         primary=primary, second=second, models=list(models), pr_gate="PASS" if ok else "FAIL",
         **proof_fields,
     )
-    packet = risk_disagreement_packet(
+    provenance = f"High-risk model provenance: worker={worker_model}, primary={models[0]}, second={models[1]}."
+    packet = provenance + "\n\n" + risk_disagreement_packet(
         head, rules, primary, primary_findings, second, second_findings,
         mutation, pr_report or "mutation check missing", changed,
     )
@@ -3447,7 +3464,7 @@ def pr_gate_and_review(
         return "REJECT", packet, False
     if "REVISE" in (primary, second) or disagreement:
         return "REVISE", packet, False
-    return "APPROVE", f"{primary_findings}\n\n{second_findings}", False
+    return "APPROVE", f"{provenance}\n\n{primary_findings}\n\n{second_findings}", False
 
 
 
@@ -3937,7 +3954,6 @@ def _head_evidence_matches(
     ):
         return False
     gate = None
-    worker_model = None
     reviews: dict[str, dict] = {}
     mutation = None
     pr_gate = None
@@ -3951,7 +3967,6 @@ def _head_evidence_matches(
             or event.get("event") == "gate-fixup" and event.get("head") == head
         ):
             gate = event.get("gate") == "PASS" and event.get("actual_head") == head
-            worker_model = event.get("worker_model") or worker_model
         elif event.get("event") == "review" and event.get("head") == head:
             reviews[event.get("role") or "primary"] = event
         elif event.get("event") == "risk-check" and event.get("head") == head:
@@ -3960,11 +3975,7 @@ def _head_evidence_matches(
             scope = event.get("mutation_scope")
             bound = isinstance(scope, str) and re.fullmatch(r"[0-9a-f]{64}", scope)
             mutation_proof = event.get("mutation_proof") if bound else None
-    if worker_model is None:
-        worker_model = next((
-            event.get("worker_model") for event in reversed(events)
-            if event.get("event") == "attempt" and event.get("ticket") == n
-        ), None)
+    worker_model = _worker_model_for_head(n, head, events)
     primary = reviews.get("primary") or {}
     primary_ok = (
         primary.get("accepted") is True
@@ -4717,12 +4728,18 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         defer_mutation_proof(n, head, "refresh")
         return False
     pending = _PENDING_REVIEWS.get(n)
-    unavailable = pending is not None and pending.get("verdict") is None
+    failure = _PENDING_RISK.get(n, {})
+    failure_code = failure.get("failure_code", "reviewer_unavailable")
+    unavailable = (
+        pending is not None and pending.get("verdict") is None
+        or "failure_code" in failure
+    )
     pr_comment(n, findings)
     if unavailable:
         withdraw(
-            f"reviewer unavailable after {verb} onto moved main",
-            "reviewer_unavailable",
+            failure["packet"] if failure else f"reviewer unavailable after {verb} onto moved main",
+            failure_code,
+            extra=findings,
         )
         return False
     if verdict != "APPROVE":
@@ -5806,13 +5823,14 @@ def process_ticket(
                 )
                 return
             if verdict is None:
+                failure_code = current_risk.get("failure_code", "reviewer_unavailable")
                 log(
-                    f"#{n}: reviewer unavailable; not a REVISE verdict after "
+                    f"#{n}: review unavailable ({failure_code}); not a REVISE verdict after "
                     f"{cfg.review_rounds} review round(s)"
                 )
                 escalate(
-                    n, "reviewer unavailable after retries", logfile,
-                    code="reviewer_unavailable",
+                    n, current_risk["packet"] if current_risk else "reviewer unavailable after retries",
+                    logfile, extra=findings, code=failure_code,
                 )
                 return
             # Durable charges survive pass boundaries; a deferred round is paid before requeue.
@@ -5904,9 +5922,10 @@ def process_ticket(
                     return
                 risk_disagreement_head = current_disagreement_head
                 if verdict is None:
+                    failure_code = current_risk.get("failure_code", "reviewer_unavailable")
                     escalate(
-                        n, "reviewer unavailable after retries", logfile,
-                        code="reviewer_unavailable",
+                        n, current_risk["packet"] if current_risk else "reviewer unavailable after retries",
+                        logfile, extra=findings, code=failure_code,
                     )
                     return
             if verdict != "APPROVE" and pr_failed:

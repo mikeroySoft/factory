@@ -510,11 +510,13 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                     code="pr_checks_failed",
                 )
         elif verdict is None:
-            reason = "reviewer unavailable after manager FIX"
+            failure = dispatch._PENDING_RISK.get(n, {})
+            code = failure.get("failure_code", "reviewer_unavailable")
+            reason = failure["packet"] if failure else "reviewer unavailable after manager FIX"
             if already_human:
-                record_fix_failure("reviewer_unavailable", reason)
+                record_fix_failure(code, reason)
             else:
-                dispatch.escalate(n, reason, logfile, code="reviewer_unavailable")
+                dispatch.escalate(n, reason, logfile, code=code)
         elif verdict != "APPROVE":
             reason = "review requested changes after manager FIX"
             if already_human:

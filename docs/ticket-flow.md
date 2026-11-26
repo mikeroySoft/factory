@@ -225,6 +225,11 @@ Every reason string passed to `dispatch.escalate`, the
 `withdraw` helper in `dispatch.refresh_pr_branch`, or recorded as an `escalate`
 event. `{}` is a runtime value.
 
+High-risk review passes through a dynamic diagnostic when the recorded attempt
+lacks `worker_model`. Ticket, refresh and manager FIX paths machine-escalate with
+`missing_worker_provenance` before reviewer launch; configure an explicit worker
+model and run a new worker attempt.
+
 | Code | Reason | Edge |
 |------|--------|------|
 | `dispatch.escalate` | ``worker killed by {} (budget_exceeded) before gate; last gate passed; worktree kept at {}`` | Budget-killed worker after the current generation's last passing gate → escalate (`budget`, not `gate_failed`) |

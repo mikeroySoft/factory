@@ -1264,6 +1264,16 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    guards and new literal-false flag declarations, with no unguarded executable
    additions or existing flag bindings. Uncertain cases stay Medium.
 
+   Worker identity comes from the recorded launch spec (`attempt.worker_model`),
+   never the current worker configuration. Both High review packets and the
+   published result name the worker and reviewer models; the same journal lookup
+   governs review and merge eligibility, including requeues, owner claims and
+   refreshed heads. The built-in chore worker pins Droid's `gpt-6-sol`.
+   Missing worker provenance stops review before either reviewer launches and
+   machine-escalates as `missing_worker_provenance`, naming the missing
+   `worker_model` and requesting an explicit model plus a new worker attempt.
+   This is not an additional approval gate for runs with recorded identity.
+
    A High PR merges without human approval when the full current-head gate
    (including all PR-tier checks) passes, both reviewers approve, and mutation
    is `PASS` or `SKIP (no changed factory code)`. Both reviewers
