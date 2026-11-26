@@ -3345,7 +3345,8 @@ Receipt observations (`observe=1`) retain the same sanitized diagnostics and ret
 fields in `observation.errors[]`, alongside the affected target and error code.
 Observation failures do not change the durable receipt or retry any mutation.
 Redaction covers quoted credential keys and quoted values, including spaces and
-escaped quotes, before diagnostic truncation.
+escaped quotes, and Bearer/Basic/legacy GitHub token authorization schemes before
+diagnostic truncation.
 
 For agent re-approval, prepare `{"action": "approve_pr", "args": {"number": 257,
 "ruling_id": "r3-0740"}}` with `factory_prepare_action` and the registered

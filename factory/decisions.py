@@ -61,7 +61,7 @@ _LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
 _SHA = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\Z")
 _SECRET = re.compile(
     r"(?:\b(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]{12,}"
-    r"|\b(?:Bearer|Basic)\s+[A-Za-z0-9._+/=-]{12,}"
+    r"|\b(?:Bearer|Basic|token)\s+[A-Za-z0-9._+/=-]{12,}"
     r"|\b(?:[\w-]*(?:token|secret|password)|api[_-]?key)[\"']?\s*[:=]\s*"
     r"(?:\"(?:\\.|[^\"\\])*(?:\"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s\"']+))",
     re.IGNORECASE,
