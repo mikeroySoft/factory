@@ -631,32 +631,42 @@ retain their raw pending counts in the tag; a later release pools those counts.
 Once the pooled sample reaches the minimum, each bar moves halfway toward the
 95% Wilson upper bound for human rate or lower bound for first pass, without
 tightening past its configured floor. A legacy tag's bar is reset once to those
-floors. A tag without a fenced bar resets the comparison, and a window without
-attempt-1 evidence is held rather than scored as zero. Factory requires every
-bar metric to be no
-worse, all completed CI statuses and check runs on `origin/<main>` to pass
-(`success`, `skipped`, and `neutral` check conclusions pass), and `factory gate
---tier release` to pass in a temporary worktree. It then bumps the patch
-version, moves the current Unreleased changelog entries under the dated release
-heading, pushes the factory-owned `release/vX.Y.Z` branch, and opens a PR. The
-release PR also updates `README.md`'s fixed-version install pin and
+floors. A missing or invalid fenced bar fails the release check, and a window
+without attempt-1 evidence is held rather than scored as zero. Experimental
+releases require every bar metric to be no worse, all completed CI statuses and
+check runs on `origin/<main>` to pass (`success`, `skipped`, and `neutral` check
+conclusions pass), and `factory gate --tier release` to pass in a temporary
+worktree. Factory bumps to the next odd patch version, moves the current
+Unreleased changelog entries under the dated release heading, pushes the
+factory-owned `release/vX.Y.Z` branch, and opens a PR. Explicit
+`factory release --promote` reuses the experimental tag's quality qualification
+and carries its bar forward unchanged; it does not require new implementation
+tickets during soak or pool the same sample twice. The recorded experimental
+ticket count must still meet `min_tickets`. Promotion requires fresh
+24-hour exact-revision Tank soak evidence, no escalations or escapes, complete
+escape attribution (including no skipped fixes), no open watch-filed engine bug,
+and no unsoaked source changes.
+Only the even public promotion PR also updates `README.md`'s fixed-version install pin and
 `docs/index.html`'s install pin, latest-release note, and top changelog history
 entry built from the new `CHANGELOG.md` section. Each of those four spots must
 appear exactly once; otherwise Factory refuses to create the release. A later
 pass updates a behind release branch from `main`, closes and deletes a
 conflicting one for rebuilding, or squash-merges a clean PR after its CI
 succeeds, respecting the required `gate` check on protected `main`. Once the
-version bump is present on `main`, a final pass creates the annotated tag on
-the first commit that introduced that version and atomically advances `stable`,
-then publishes the GitHub Release for the tag (`gh release create <tag>
---verify-tag --latest`, titled with the tag, notes from that version's
-`CHANGELOG.md` section). A Release that already exists is left alone; a `gh`
-failure is journaled as a `release` row with outcome `publish_failed` and retried
-at the start of the next pass, never rolling back the tag. A release therefore
-takes up to three dispatcher passes when no branch refresh
-is needed. The dispatcher advances an open release PR at the start of a pass,
-before it lands a ticket (every ticket edits `CHANGELOG.md`, which GitHub cannot
-union-merge), and opens a new one only at the end of a pass. Each pass derives
+version bump is present on `main`, a final check requires matching merged
+release-PR provenance and creates the annotated tag on the first commit that
+introduced that version. Automatic checks hold a merged even bump as a pending
+promotion, not version drift; rerun `factory release --promote` to finish it.
+Only promotion atomically advances `stable` with the even tag, records the soak
+result, and publishes the latest GitHub Release. Odd tags publish prereleases
+without advancing public pins or `stable`. Notes come from that version's
+`CHANGELOG.md` section, preserving literal backslashes. A Release that already
+exists is left alone; a `gh` failure is journaled as `publish_failed` and retried
+on the next check, including repeated `--promote` with auto-release disabled,
+never rolling back the tag. Experimental releases take up to three dispatcher
+passes when no branch refresh is needed. The dispatcher advances an open
+experimental release PR at the start of a pass, before landing tickets, and
+opens a new one only at the end of a pass. Each check derives
 its state from remote branches, remote tags, and PRs (only a pending GitHub Release is read from the journal), so crashes need no local recovery file. Temporary worktrees are removed,
 and local-only or stale local tags are ignored and removed before reuse. A
 completed release journals one `release` row with outcome `released`, then one

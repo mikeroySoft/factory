@@ -65,6 +65,14 @@ class ReleaseRevisionTest(unittest.TestCase):
         self.assertIn('"experimental_tag":"v0.0.3"', annotation)
         self.assertIn('"hours":24.0', annotation)
 
+    def test_promotion_retains_minimum_for_the_qualified_sample(self) -> None:
+        self.experimental()
+        self.cfg.release_min_tickets = 6
+        self.opened.reset_mock()
+        self.assertIn("experimental tickets 5 below min_tickets 6",
+                      release.run(self.cfg, promote=True))
+        self.opened.assert_not_called()
+
     def test_automatic_pass_holds_provenanced_merged_promotion_without_false_failure(self) -> None:
         self.experimental()
         self.assertIn("opened release PR", release.run(self.cfg, promote=True))

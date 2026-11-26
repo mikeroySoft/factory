@@ -376,7 +376,7 @@ def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str
             previous = section.group(1).strip() + "\n\n"
     changelog_text, count = re.subn(
         r"(?m)^## Unreleased[ \t]*\n(?:\n)?",
-        f"## Unreleased\n\n## {new} — {released.isoformat()}\n\n{previous}",
+        lambda _: f"## Unreleased\n\n## {new} — {released.isoformat()}\n\n{previous}",
         original_changelog,
         count=1,
     )
@@ -497,7 +497,7 @@ def _soak(cfg: config.Config, latest: dict[str, Any]) -> tuple[str | None, dict[
     escalations = sum(row.get("event") == "escalate" for row in rows)
     stats.configure(cfg)
     escaped = stats.escapes()
-    if any(row.get("status") == "skipped" for row in escaped):
+    if any(row.get("status") == "skipped" or row.get("skipped") for row in escaped):
         raise ValueError("promotion escape evidence is incomplete")
     escapes = {row["ticket"] for row in stats.escape_events(escaped)
                if since < _at(row["at"]) <= now}
@@ -542,14 +542,20 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True,
         latest_tag = latest["tag"]
         # Validate before retrying publication: an invalid baseline must never publish.
         bar = _bar(latest["message"])
-        comparison_bar, bar_reset = _reset_legacy_bar(bar, cfg)
+        comparison_bar, bar_reset = (bar, False) if promote else _reset_legacy_bar(bar, cfg)
         if _version_at(cfg, latest["sha"]) != latest["version"]:
             raise ValueError(f"baseline {latest_tag} does not match its version file")
-        patch = latest["version"][2] + (1 if promote or latest["version"][2] % 2 == 0 else 2)
+        current = _version_at(cfg, f"origin/{cfg.main}")
+        pending_promotion = (
+            not promote and latest["version"][2] % 2 == 1
+            and current == (*latest["version"][:2], latest["version"][2] + 1)
+        )
+        patch = latest["version"][2] + (
+            1 if promote or pending_promotion or latest["version"][2] % 2 == 0 else 2
+        )
         expected = (*latest["version"][:2], patch)
         next_version = ".".join(map(str, expected))
         branch = f"release/v{next_version}"
-        current = _version_at(cfg, f"origin/{cfg.main}")
         if current not in (latest["version"], expected):
             raise ValueError(f"version mismatch: baseline {latest_tag}, main {current}, expected {expected}")
         commit = None
@@ -568,34 +574,46 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True,
                 raise ValueError(f"version {version} has no matching merged release PR")
             if _version_at(cfg, commit) != expected:
                 raise ValueError(f"version mismatch at release commit {commit}")
-        if promote and latest["version"][2] % 2 == 0:
-            return _finish(cfg, dry_run, "latest release is already public", None, bar, latest_tag)
-        metrics = measure(cfg, latest["date"])
-        head = _git(cfg.root, "rev-parse", f"origin/{cfg.main}").stdout.strip()
+        publication = None
         if not dry_run and _unpublished(cfg, latest_tag):
-            _publish(cfg, latest_tag)
-        if not promote and current == latest["version"] and head == latest["sha"]:
-            return _finish(cfg, dry_run, _reason(f"no changes since {latest_tag}", metrics, bar),
-                           metrics, bar, latest_tag)
-        if metrics["tickets"] < cfg.release_min_tickets:
-            return _finish(cfg, dry_run, _reason(
-                f"tickets {metrics['tickets']} below min_tickets {cfg.release_min_tickets}", metrics, bar),
-                metrics, bar, latest_tag)
-        if metrics["first_pass"] is None:
-            return _finish(cfg, dry_run, _reason(
-                f"no first-attempt evidence since {latest_tag}", metrics, bar), metrics, bar, latest_tag)
-        for metric, direction in BAR:
-            worse = (metrics[metric] > comparison_bar[metric] if direction == "lower"
-                     else metrics[metric] < comparison_bar[metric])
-            if worse:
-                reason = _reason(
-                    f"{metric} {metrics[metric]} is worse than "
-                    f"{comparison_bar[metric]} ({direction} is better)",
-                    metrics, comparison_bar)
-                if not dry_run:
-                    _record_hold(cfg, reason, metrics, comparison_bar)
-                return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
+            publication = _publish(cfg, latest_tag)
+        if pending_promotion:
+            return _finish(cfg, dry_run, f"pending promotion of {latest_tag}; run factory release --promote",
+                           None, bar, latest_tag)
+        if promote and latest["version"][2] % 2 == 0:
+            reason = "latest release is already public"
+            if publication:
+                reason += f"; {publication}"
+            return _finish(cfg, dry_run, reason, None, bar, latest_tag)
+        head = _git(cfg.root, "rev-parse", f"origin/{cfg.main}").stdout.strip()
+        if not promote:
+            metrics = measure(cfg, latest["date"])
+            if current == latest["version"] and head == latest["sha"]:
+                return _finish(cfg, dry_run, _reason(f"no changes since {latest_tag}", metrics, bar),
+                               metrics, bar, latest_tag)
+            if metrics["tickets"] < cfg.release_min_tickets:
+                return _finish(cfg, dry_run, _reason(
+                    f"tickets {metrics['tickets']} below min_tickets {cfg.release_min_tickets}", metrics, bar),
+                    metrics, bar, latest_tag)
+            if metrics["first_pass"] is None:
+                return _finish(cfg, dry_run, _reason(
+                    f"no first-attempt evidence since {latest_tag}", metrics, bar), metrics, bar, latest_tag)
+            for metric, direction in BAR:
+                worse = (metrics[metric] > comparison_bar[metric] if direction == "lower"
+                         else metrics[metric] < comparison_bar[metric])
+                if worse:
+                    reason = _reason(
+                        f"{metric} {metrics[metric]} is worse than "
+                        f"{comparison_bar[metric]} ({direction} is better)",
+                        metrics, comparison_bar)
+                    if not dry_run:
+                        _record_hold(cfg, reason, metrics, comparison_bar)
+                    return _finish(cfg, dry_run, reason, metrics, bar, latest_tag)
         soak: dict[str, Any] | None = None
+        if promote and bar["tickets"] < cfg.release_min_tickets:
+            return _finish(cfg, dry_run, _reason(
+                f"experimental tickets {bar['tickets']} below min_tickets {cfg.release_min_tickets}",
+                metrics, bar), metrics, bar, latest_tag)
         if promote:
             hold, soak = _soak(cfg, latest)
             if hold:
@@ -623,16 +641,18 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True,
                 f"first pass {cfg.release_bar_floor_first_pass}.\n\n"
                 if bar_reset else ""
             )
-            updated_bar = next_bar(
+            # The odd tag already qualified this sample; promotion must not pool it twice.
+            updated_bar = bar if promote else next_bar(
                 comparison_bar,
                 metrics,
                 bar_min_tickets=cfg.release_bar_min_tickets,
                 bar_floor_human_rate=cfg.release_bar_floor_human_rate,
                 bar_floor_first_pass=cfg.release_bar_floor_first_pass,
             )
-            message = (f"Release {version}: {metrics['tickets']} tickets, human rate "
-                       f"{metrics['human_rate']}, first pass {metrics['first_pass']}.\n\n"
-                       f"{reset_note}```json\n{json.dumps(updated_bar, separators=(',', ':'))}\n```")
+            summary = (f"Public promotion of {latest_tag}." if promote else
+                       f"Release {version}: {metrics['tickets']} tickets, human rate "
+                       f"{metrics['human_rate']}, first pass {metrics['first_pass']}.")
+            message = f"{summary}\n\n{reset_note}```json\n{json.dumps(updated_bar, separators=(',', ':'))}\n```"
             if soak is not None:
                 message += f"\n\n```soak\n{json.dumps(soak, separators=(',', ':'))}\n```"
             _git(cfg.root, "tag", "-d", tag, check=False)
