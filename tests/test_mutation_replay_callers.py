@@ -9,7 +9,6 @@ from scripts import mutation
 from tests import test_mutation_caller_witness as witness
 from tests import test_mutation_proof_caller as proof_callers
 
-
 SURVIVOR = {
     "file": "factory/example.py",
     "line": 1,
@@ -32,8 +31,8 @@ def survivor_step(child):
     record["survivors"] = [SURVIVOR]
     mutation.write_proof(env[mutation.PROOF_ENV], record)
     return (
-        "factory/example.py:1: NumberReplacer `value = 1` -> `value = 2`\n"
-        "ran 1 of 1 mutants in 1s: 0 timeouts (included in killed); 0 killed; 1 survived\n",
+        ("factory/example.py:1: NumberReplacer `value = 1` -> `value = 2`\n"
+         "ran 1 of 1 mutants in 1s: 0 timeouts (included in killed); 0 killed; 1 survived\n"),
         1,
     )
 

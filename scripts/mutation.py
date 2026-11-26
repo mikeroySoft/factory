@@ -41,8 +41,8 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
-import errno
 import difflib
+import errno
 import json
 import math
 import os
@@ -485,8 +485,8 @@ def stale_equivalents(reviewed: dict[tuple, dict], disproven: set[tuple]) -> boo
 
 def replay(path: str, duration: float | None) -> int:
     """Diagnostic only: exact source/position identities, never a completion record."""
-    from attrs import evolve
     import cosmic_ray.commands
+    from attrs import evolve
     from cosmic_ray.mutating import mutate_and_test, mutate_code
     from cosmic_ray.plugins import get_operator
     from cosmic_ray.work_db import use_db

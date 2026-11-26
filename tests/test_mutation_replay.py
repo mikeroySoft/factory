@@ -76,7 +76,7 @@ class MutationReplayTest(unittest.TestCase):
         result = subprocess.run(
             ["uv", "run", "--project", str(ROOT), "--frozen", "--no-managed-python",
              "--python", sys.executable, "--group", "mutation", "python", "scripts/mutation.py",
-             *args], cwd=self.root, capture_output=True, text=True, timeout=90, env=env,
+             *args], cwd=self.root, capture_output=True, text=True, timeout=90, env=env, check=False,
         )
         return result.returncode, result.stdout + result.stderr
 
@@ -155,11 +155,11 @@ class MutationReplayTest(unittest.TestCase):
         (saved / f"mutation-{head}.json").write_text(replay)
         result = subprocess.run(
             [str(self.root / ".venv/bin/python"), "-c",
-             f"import sys; sys.path.insert(0, {str(ROOT)!r}); "
-             "from factory.cli import main; sys.exit(main())",
+             (f"import sys; sys.path.insert(0, {str(ROOT)!r}); "
+              "from factory.cli import main; sys.exit(main())"),
              "gate", "--tier", "pr", "--base", self.base, "--mutation-proof",
              "--blocking-mutation", "--report", str(report)],
-            cwd=self.root, capture_output=True, text=True, timeout=90,
+            cwd=self.root, capture_output=True, text=True, timeout=90, check=False,
             env={**os.environ, "TMPDIR": str(self.scratch), "REPLAY_AUDIT": str(self.audit)},
         )
         text = report.read_text()
