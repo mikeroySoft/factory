@@ -26,6 +26,7 @@ from factory import (
     dispatch,
     feedback,
     lifecycle,
+    pause,
     risk,
     runtime_events,
     runtime_local,
@@ -607,6 +608,7 @@ def dispatcher(runtime: dict) -> dict:
     state, errors = runtime_local.dispatcher(
         cfg, runtime.get("executions", []), runtime.get("history", {}),
     )
+    pause_state = state.get("pause") or pause.read_status()
     wait = (
         {
             "reason": "scheduled_next_pass",
@@ -657,6 +659,8 @@ def dispatcher(runtime: dict) -> dict:
             "active": state["timer_active"],
         },
         "service_active": state["service_active"],
+        "paused": state.get("paused"),
+        "pause": pause_state,
         "schedule": schedule,
         "consecutive_failures": consecutive_failures(runs),
         "runs": runs,

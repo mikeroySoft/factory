@@ -79,6 +79,34 @@ its own `[repo."owner/name".dashboard] port` in the host config. The preflight c
 reserve the port until systemd starts the service: a later bind failure exits 1
 with a one-line diagnostic, and the existing systemd restart policy still applies.
 
+**Host pause.** Use `factory pause --owner <agent-or-tool> --reason <text>` instead
+of `touch`, `factory status --json` to inspect it, and `factory resume` to clear it.
+The host-user marker is
+`${XDG_STATE_HOME:-$HOME/.local/state}/factory/factory.pause`, shared by all
+repositories. The CLI and shared pause helper atomically write UTF-8 JSON:
+
+```json
+{"owner": "district", "reason": "engine update", "created_at": "2026-11-25T12:00:00+00:00"}
+```
+
+All three fields must be nonblank strings; `created_at` must be an ISO-8601
+timestamp with a UTC offset (`Z` is also accepted). Owner and reason are reported
+verbatim. Empty, malformed, unreadable or incomplete markers **still pause**;
+they are reported as **unowned**. A pause has no expiry.
+`status --json` returns `paused`, `owner`, `reason`, `created_at`, `age_s` and
+`unowned`; `age_s` is nonnegative seconds since `created_at` for owned pauses,
+or since the marker's mtime for unowned pauses (null if stat is unavailable).
+Absent markers return `paused: false`, `unowned: false` and null metadata.
+Doctor's JSON includes the same `pause` object; dashboard JSON exposes it as
+`dispatcher.pause`, including in `--runtime-json`. Doctor text and the dashboard
+System view show ownership, reason and age. Fleet alerting for unowned pauses or
+`age_s > 1800` belongs to District, not this guard.
+
+`drain-check` checks the pause marker before District drain admission,
+so generated systemd passes and the launchd shell guard below both honor it.
+Resume only removes the marker; it does not change timers or interrupt running
+work. Hand-run stages and dashboards remain available while paused.
+
 **District drain (host-wide scheduled-pass admission).** `factory install` puts
 `ExecCondition=<python> -P -m factory drain-check` first in each pass service,
 before triage. Exit 0 admits the whole pass; exit 1 skips it without failing the
@@ -2671,7 +2699,9 @@ artifact modification. `capacity` has `configured` (integer), `active` (integer
 or null, actual held ticket admission locks), and `complete` (boolean).
 Stage count is not admission count. An unavailable service query is null,
 not false; inactive service evidence alone does not establish unexpected stop.
-`paused` is null because the current producer has no recorded pause intention.
+`paused` is true when the host pause marker exists, otherwise null (no recorded
+pause intention). `pause` carries the explicit boolean `paused` plus ownership and
+age fields documented under **Host pause** above.
 No scheduled intention is inferred from a configured interval.
 
 Each execution has the eight common F01 identity fields (`dispatcher_run_id`,
