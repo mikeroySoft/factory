@@ -304,6 +304,7 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
                 candidate = f"{ordered:040x}"
                 exists = subprocess.run(
                     ["git", "cat-file", "-e", candidate], cwd=self.repo, capture_output=True,
+                    check=False,
                 )
                 if exists.returncode:
                     break
