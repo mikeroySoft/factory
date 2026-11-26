@@ -1078,9 +1078,15 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    when the gate itself overruns; that alone does not require the finish signal.
    A worker with no log output and no worktree change for
    `[dispatch].idle_timeout` minutes is killed as `stuck` (a failed attempt,
-   retried). One that committed or wrote its handoff, then stayed quiet for
-   `[dispatch].exit_grace` seconds without exiting, is terminated and gated.
-   The attempt journal row and escalation packet name the timeout that fired.
+   retried). After a commit or handoff, live children (including blocked jobs that
+   consume no CPU) use that same idle window, not `exit_grace`. With no live
+   children, a done worker is terminated and gated after `[dispatch].exit_grace`
+   seconds of quiet; the full grace restarts when the last child exits.
+   Child discovery includes non-zombie descendants and orphaned process-group
+   members; if `ps` fails, the old no-child timeout behavior applies.
+   The attempt journal row and escalation packet name the timeout that fired;
+   the worker's terminal lifecycle row records `active_children` (PID and redacted
+   command, or null if unavailable), sampled before termination.
    If a budget-killed worker never reaches its next gate and the ticket's last
    gate in the current generation passed, escalation uses `budget`, not
    `gate_failed`; the comment and packet name `budget_min` / `budget_exceeded`
@@ -1508,8 +1514,8 @@ default model. Gate and safety policy remain file-managed.
 
 [dispatch]
 review_rounds = 1                # REVISE -> worker -> re-review cycles
-# idle_timeout = 30              # minutes quiet mid-work = stuck; 0 disables
-# exit_grace = 300               # seconds quiet after commit/handoff before termination; 0 disables
+# idle_timeout = 30              # minutes quiet mid-work or done with live children; 0 disables
+# exit_grace = 300               # seconds quiet after commit/handoff without live children; 0 disables
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
 [workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree

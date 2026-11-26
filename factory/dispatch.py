@@ -1892,12 +1892,65 @@ def _activity(wt: Path, logfile: Path, handoff: Path) -> tuple:
             git("status", "--porcelain", "--untracked-files=all"), stat(handoff))
 
 
+def _live_children(root_pid: int) -> list[int]:
+    """Non-zombie descendants or process-group members, excluding the worker itself.
+
+    Portable to macOS; a failed ps preserves the old no-child timeout behavior.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-A", "-o", "pid=,ppid=,pgid=,stat="],
+            capture_output=True, encoding="utf-8", errors="replace", check=False, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode:
+        return []
+    rows = {}
+    for line in result.stdout.splitlines():
+        with suppress(ValueError, IndexError):
+            fields = line.split()
+            rows[int(fields[0])] = (int(fields[1]), int(fields[2]), fields[3])
+    kids: dict[int, list[int]] = {}
+    for pid, (ppid, _, _) in rows.items():
+        kids.setdefault(ppid, []).append(pid)
+    tree, todo = set(), [root_pid]
+    while todo:
+        for kid in kids.get(todo.pop(), []):
+            if kid not in tree:
+                tree.add(kid)
+                todo.append(kid)
+    return [
+        pid for pid, (_, pgid, state) in rows.items()
+        if pid != root_pid and (pid in tree or pgid == root_pid) and not state.startswith("Z")
+    ]
+
+
+def _child_commands(pids: list[int]) -> list[dict]:
+    """Best-effort, redacted command evidence for a pre-termination child snapshot."""
+    commands = {}
+    if pids:
+        try:
+            result = subprocess.run(
+                ["ps", "-ww", "-p", ",".join(map(str, pids)), "-o", "pid=,args="],
+                capture_output=True, encoding="utf-8", errors="replace", check=False, timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                with suppress(ValueError):
+                    pid, _, command = line.strip().partition(" ")
+                    commands[int(pid)] = stderr_tail(command.strip())
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return [{"pid": pid, "command": commands.get(pid)} for pid in pids]
+
+
 def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadline: float,
            start: tuple) -> str | None:
     """Wait for the worker to exit; None if it did, else the timeout that fired first.
-    Raises KeyboardInterrupt within WATCH_POLL of the dispatcher's interrupt; the caller
-    stops the worker."""
-    state, changed = start, time.monotonic()
+    Done with children uses idle_timeout, even when they consume no CPU. Once the last child
+    exits, a full exit_grace starts. Raises KeyboardInterrupt within WATCH_POLL of the
+    dispatcher's interrupt; the caller stops the worker."""
+    state, changed, children = start, time.monotonic(), []
     while True:
         try:
             proc.wait(timeout=WATCH_POLL)
@@ -1907,14 +1960,19 @@ def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadl
         now, current = time.monotonic(), _activity(wt, logfile, handoff)
         if current != state:
             state, changed = current, now
-        quiet = now - changed
-        # Done: committed or wrote its handoff during this run. A done worker is never "stuck".
+        # Done: committed or wrote its handoff during this run; children may still be working.
         done = current[1] != start[1] or current[3] != start[3]
         if now >= deadline:
             return "budget_min"
-        if done and cfg.exit_grace and quiet >= cfg.exit_grace:
+        if done and cfg.exit_grace:
+            live = _live_children(proc.pid)
+            if children and not live:
+                changed = now
+            children = live
+        quiet = now - changed
+        if done and cfg.exit_grace and not children and quiet >= cfg.exit_grace:
             return "exit_grace"
-        if not done and cfg.idle_timeout and quiet >= cfg.idle_timeout * 60:
+        if (not done or children) and cfg.idle_timeout and quiet >= cfg.idle_timeout * 60:
             return "idle_timeout"
 
 
@@ -1943,8 +2001,8 @@ def run_worker(
 ) -> tuple[int, str | None]:
     """Run the worker; return its exit code and the timeout that stopped it, if any.
 
-    `idle_timeout`: no log output and no worktree change (stuck mid-work).
-    `exit_grace`: committed or wrote `handoff`, then stayed quiet without exiting.
+    `idle_timeout`: no log output or worktree change, mid-work or done with live children.
+    `exit_grace`: committed or wrote `handoff`, then stayed quiet with no live children.
     `budget_min`: the ticket's overall wall-clock deadline passed.
     Evaluation replays set `journal=False`; their aggregate result is the durable evidence.
     """
@@ -1969,6 +2027,9 @@ def run_worker(
                 if execution is not None:
                     execution.child(proc.pid)
                 fired = _watch(proc, wt, logfile, handoff, deadline, start)
+                if fired and execution is not None:
+                    # Snapshot before _stop removes the evidence; retain it on the terminal row.
+                    execution.exit_fields["active_children"] = _child_commands(_live_children(proc.pid))
             finally:
                 if proc.poll() is None:
                     _stop(proc)
@@ -5364,7 +5425,8 @@ def worker_round(
         )
         return False, (
             f"worker stuck: idle_timeout fired ({cfg.idle_timeout:g} min without worker "
-            "log output or worktree change); worker killed before the gate"
+            "log output or worktree change, including waits on live children after commit or "
+            "handoff); worker killed before the gate"
         ), logfile, head
     if time.monotonic() > deadline and not finished:
         record(
@@ -5396,7 +5458,8 @@ def worker_round(
     if fired == "exit_grace":
         report += (
             f"\n\nWorker hung after done: exit_grace fired ({cfg.exit_grace:g} s quiet after "
-            "its commit or handoff without exiting); terminated, then gated."
+            "its commit or handoff with no live children; the grace restarts when the last child "
+            "exits, while live children use idle_timeout); terminated, then gated."
         )
     record(
         "attempt", ticket=n, attempt=attempt, worker_exit=code, gate="PASS" if ok else "FAIL",
