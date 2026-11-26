@@ -109,6 +109,21 @@ class ProviderErrorTest(unittest.TestCase):
         self.assertLessEqual(len(error["stderr"]), decisions.OUTPUT_CAP)
         self.assertTrue(error["stderr"].endswith("last diagnostic"))
 
+    def test_legacy_token_authorization_is_redacted_before_bounding(self) -> None:
+        for scheme, credential in (
+            ("token", "0123456789abcdef" * 2 + "01234567"),
+            ("ToKeN", "abcdef0123456789" * 2 + "abcdef01"),
+            ("token", "a" * (decisions.OUTPUT_CAP + 100)),
+        ):
+            with self.subTest(scheme=scheme, credential_length=len(credential)):
+                error = self.error(
+                    f"generic failure\nAuthorization: {scheme} {credential}\nlast diagnostic"
+                )
+                self.assertEqual(error["code"], "provider_unavailable")
+                self.assertNotIn(credential[:20], json.dumps(error))
+                self.assertIn("[credential withheld]", error["stderr"])
+                self.assertTrue(error["stderr"].endswith("last diagnostic"))
+
     def test_dashboard_error_retains_retry_metadata(self) -> None:
         self.environment["STUB_STDERR"] = "GraphQL: API rate limit already exceeded for user ID 1791194"
         with self.assertRaises(decisions.DecisionError) as caught:
