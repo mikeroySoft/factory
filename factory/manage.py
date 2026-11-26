@@ -408,6 +408,23 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         already_human = any(
             label.get("name") == LABEL_HUMAN for label in issue.get("labels", [])
         )
+
+        def record_fix_failure(code: str, reason: str) -> None:
+            # Preserve the no-repeat escalation contract, but retain the terminal FIX outcome.
+            from factory import __version__, trace
+
+            dispatch.log(f"#{n}: manager FIX failed ({code}: {reason}); ticket is already ready-for-human")
+            cause = dispatch._latest_decision_id(n, {"manager"})
+            dispatch.record("decision", **trace.decision(
+                ticket=n, stage="manager", chosen="FIX_FAILED",
+                inputs=[{"kind": "manager_packet", "ref": str(packet), "summary": reason}],
+                options=[{"option": "FIX_FAILED", "eligible": True, "reason": f"{code}: {reason}"}],
+                rationale=f"{code}: {reason}",
+                causes=[{"decision_id": cause, "relation": "follows"}] if cause else [],
+                cost=None,
+                actor={"kind": "deterministic", "name": "manage.apply", "model": None, "version": __version__},
+            ))
+
         pr = dispatch.gh_json(["pr", "view", f"agent/{n}", "--repo", dispatch.REPO,
                                "--json", "state,headRefName,headRefOid,baseRefName,reviewDecision"])
         if pr.get("baseRefName") != cfg.main:
@@ -430,7 +447,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                     f"worktree kept at {wt}"
                 )
                 if already_human:
-                    dispatch.log(f"#{n}: manager FIX failed (refresh_head: {reason}); ticket is already ready-for-human")
+                    record_fix_failure("refresh_head", reason)
                 else:
                     dispatch.escalate(n, reason, None, code="refresh_head")
                 return
@@ -440,7 +457,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                     f"worktree kept at {wt}"
                 )
                 if already_human:
-                    dispatch.log(f"#{n}: manager FIX failed (lease_refused: {reason}); ticket is already ready-for-human")
+                    record_fix_failure("lease_refused", reason)
                 else:
                     dispatch.escalate(n, reason, None, code="lease_refused")
                 return
@@ -465,7 +482,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         if not ok:
             reason = "gate failed after manager FIX"
             if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (gate_failed: {reason}); ticket is already ready-for-human")
+                record_fix_failure("gate_failed", reason)
             else:
                 dispatch.escalate(n, reason, logfile, code="gate_failed")
             return
@@ -486,7 +503,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         if pr_failed:
             reason = "pr checks failed"
             if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (pr_checks_failed: {reason}); ticket is already ready-for-human")
+                record_fix_failure("pr_checks_failed", reason)
             else:
                 dispatch.escalate(
                     n, reason, logfile, extra="## PR-tier gate report\n\n" + findings,
@@ -495,19 +512,19 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
         elif verdict is None:
             reason = "reviewer unavailable after manager FIX"
             if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (reviewer_unavailable: {reason}); ticket is already ready-for-human")
+                record_fix_failure("reviewer_unavailable", reason)
             else:
                 dispatch.escalate(n, reason, logfile, code="reviewer_unavailable")
         elif verdict != "APPROVE":
             reason = "review requested changes after manager FIX"
             if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (review_revise: {reason}); ticket is already ready-for-human")
+                record_fix_failure("review_revise", reason)
             else:
                 dispatch.escalate(n, reason, logfile, code="review_revise")
         elif not dispatch.approve_pr(n, gate_head):
             reason = "approval evidence, head, or human review state changed before manager FIX approval"
             if already_human:
-                dispatch.log(f"#{n}: manager FIX failed (approval_drift: {reason}); ticket is already ready-for-human")
+                record_fix_failure("approval_drift", reason)
             else:
                 dispatch.escalate(n, reason, logfile, code="approval_drift")
         return

@@ -5312,6 +5312,16 @@ def worker_round(
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
     usage = worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
+    reported_model = usage.get("model")
+    if spec.model and reported_model:
+        provider = usage.get("provider")
+        reported_identity = f"{provider}/{reported_model}" if provider and "/" in spec.model else reported_model
+        matches = reported_identity == spec.model or (
+            not provider and reported_model == spec.model.partition("/")[2]
+        )
+        if not matches:
+            record("worker-model-mismatch", ticket=n, attempt=attempt,
+                   reported_model=reported_model, reported_provider=provider, **identity)
     record(
         "llm-usage", ticket=n, stage="worker", attempt=attempt,
         local=_usage_local(usage), **identity, **usage,
@@ -5454,6 +5464,10 @@ def transcript_usage(path: Path) -> dict:
             usage[key] = usage.get(key, 0) + value
         if isinstance(message.get("model"), str):
             usage["model"] = message["model"]
+            provider = message.get("provider")
+            usage.pop("provider", None)
+            if isinstance(provider, str) and provider:
+                usage["provider"] = provider
     return usage
 
 
@@ -5689,6 +5703,7 @@ def process_ticket(
             record(
                 "claimed", ticket=n, title=title, labels=sorted(labels),
                 worker=worker_key, worker_version=cfg.worker_version.get(worker_key),
+                worker_model=cfg.worker_model(worker_key),
                 priority=tier, priority_source=why, experiment=schedule.is_experiment(fresh),
                 base=replay_base, generation=ticket_generation.number,
                 claim_nonce=host_claim.comment["nonce"] if host_claim is not None else None,
