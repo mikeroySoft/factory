@@ -116,6 +116,7 @@ DECISION_STATUSES = {
     "target_busy": 409,
     "precondition_failed": 409,
     "provider_unavailable": 503,
+    "provider_rate_limited": 429,
     "deadline_exceeded": 503,
     "command_unavailable": 503,
     "storage_unavailable": 503,
@@ -126,7 +127,10 @@ DECISION_STATUSES = {
 
 def _request_error(exc: BaseException) -> WorkspaceError:
     code = str(getattr(exc, "code", "invalid_request"))
-    return WorkspaceError(code, str(exc)[:500] or "Request failed", DECISION_STATUSES.get(code, 400))
+    return WorkspaceError(
+        code, str(exc)[:500] or "Request failed", DECISION_STATUSES.get(code, 400),
+        **getattr(exc, "extra", {}),
+    )
 
 
 _FLOW_ID = r"[A-Za-z][A-Za-z0-9_]*"

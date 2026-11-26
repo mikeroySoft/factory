@@ -127,7 +127,7 @@ def _decision(root: str, slug: str, name: str, arguments: dict) -> dict:
         else:
             value = decisions.apply(cfg, arguments["proposal_id"], arguments["confirmation"])
     except decisions.DecisionError as exc:
-        return _text(json.dumps({"ok": False, "error": {"code": exc.code, "message": str(exc)}}, separators=(",", ":")), error=True)
+        return _text(json.dumps({"ok": False, "error": {"code": exc.code, "message": str(exc), **exc.extra}}, separators=(",", ":")), error=True)
     except (config.ConfigError, OSError, RuntimeError, ValueError) as exc:
         return _text(json.dumps({"ok": False, "error": {"code": "decision_failed", "message": str(exc)[:500]}}, separators=(",", ":")), error=True)
     return _text(json.dumps(value, separators=(",", ":")), error=value.get("ok") is False)

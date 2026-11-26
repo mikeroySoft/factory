@@ -3331,6 +3331,17 @@ structured `{ok: false, error: {code, message}}` with the same `code` on both pa
 `action` (`{name, args}`); the `human-decision` journal rows for `prepared`,
 `started` and the final status, and the receipt, carry both.
 
+Failed decision reads return bounded, credential-redacted `error.stderr` (at most
+8,000 characters). GitHub primary/secondary rate limits and abuse throttles return
+`provider_rate_limited`, `retryable: true`, and `retry_after_seconds`; the dashboard
+uses HTTP 429. Exposed `Retry-After` (seconds or HTTP date) takes precedence over
+`X-RateLimit-Reset` (epoch seconds). Without either, wait 60 seconds initially and
+double the delay on consecutive throttles up to 3,600 seconds, as described by
+`backoff: {initial_seconds: 60, multiplier: 2, max_seconds: 3600}`. These are caller
+hints, not automatic retries; after a proposal expires, prepare a fresh one.
+Other nonzero reads remain `provider_unavailable`. Mutation uncertainty and
+confirmation requirements are unchanged.
+
 For agent re-approval, prepare `{"action": "approve_pr", "args": {"number": 257,
 "ruling_id": "r3-0740"}}` with `factory_prepare_action` and the registered
 `repository`, then pass the returned `proposal_id` and `confirmation` to
