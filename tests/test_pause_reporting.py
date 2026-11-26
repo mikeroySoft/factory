@@ -148,6 +148,7 @@ class PauseReportingTest(unittest.TestCase):
                 )
                 self.assert_pause(report["pause"], expected, age)
                 row = next(row for row in report["rows"] if row["label"] == "dispatcher pause")
+                self.assertEqual(row["status"], "INFO")
                 if expected["paused"]:
                     self.assertIn("age", row["detail"])
                     self.assertIn("unowned" if expected["unowned"] else "owned", row["detail"])

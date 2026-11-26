@@ -534,7 +534,7 @@ def doctor(argv: list[str]) -> int:
     if unset:
         report(None, "defaults in effect", ", ".join(unset), info=True)
     report_stage_success(cfg, report)
-    report(True, "dispatcher pause", pause.describe(pause_state), info=True)
+    report(None, "dispatcher pause", pause.describe(pause_state), info=True)
     if cfg.watch_bands:
         from factory import watch
 
@@ -746,7 +746,8 @@ def doctor(argv: list[str]) -> int:
     fails = sum(r["status"] == "FAIL" for r in rows)
     if args.json:
         print(json.dumps({"ok": not fails, "version": __version__, "repo": cfg.repo, "root": str(cfg.root),
-                          "pause": pause_state, "rows": rows}, indent=2))
+                          "pause": pause_state,
+                          "rows": rows}, indent=2))
         return 1 if fails else 0
     print(f"factory doctor: {cfg.repo} at {cfg.root}")
     for r in rows:

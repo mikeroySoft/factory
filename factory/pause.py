@@ -65,7 +65,7 @@ def set_pause(owner: str, reason: str) -> dict:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=flag.parent,
                                          prefix=".factory.pause-", delete=False) as output:
             temporary = Path(output.name)
-            json.dump(data, output, ensure_ascii=False)
+            json.dump(data, output)
             output.write("\n")
         os.replace(temporary, flag)
     finally:
