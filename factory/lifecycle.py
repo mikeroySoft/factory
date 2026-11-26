@@ -419,6 +419,7 @@ class Execution:
         self.reason = None
         self.error = None
         self.process = _identity(os.getpid())
+        self.host_id = _host_id()
         self.locks = list(inherited.get("locks", []))
         if lock is not None:
             self.locks.append(_lock(lock))
@@ -466,6 +467,7 @@ class Execution:
             "kind": kind, "at": _now(), "outcome": self.outcome if kind == "exit" else None,
             "reason": self.reason if kind == "exit" else None,
             "process": self.process, "locks": list(self.locks),
+            "host_id": self.host_id,
         }
         if self._terminal:
             raise RuntimeError("execution already has a terminal lifecycle event")

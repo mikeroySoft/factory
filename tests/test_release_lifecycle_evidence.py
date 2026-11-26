@@ -16,15 +16,17 @@ class ReleaseLifecycleEvidenceTest(unittest.TestCase):
     write_release_docs = fixtures.ReleaseBoundaryTest.write_release_docs
 
     def emit_pass(self, at, *, host=None, commit=None, outcome="completed") -> None:
-        with mock.patch.object(lifecycle, "_now", return_value=at.isoformat()), \
-                mock.patch.object(lifecycle, "_host_id", return_value=host or self.host_id):
-            with lifecycle.scope(
+        with (
+            mock.patch.object(lifecycle, "_now", return_value=at.isoformat()),
+            mock.patch.object(lifecycle, "_host_id", return_value=host or self.host_id),
+            lifecycle.scope(
                 self.cfg.factory / "events.jsonl", "dispatcher", dispatcher=True, lazy=True,
                 engine_version=self.latest["tag"][1:], engine_commit=commit or self.latest["sha"],
-            ) as execution:
-                execution.outcome = outcome
-                # Real lazy dispatcher scopes persist when the pass does work.
-                execution.commit()
+            ) as execution,
+        ):
+            execution.outcome = outcome
+            # Real lazy dispatcher scopes persist when the pass does work.
+            execution.commit()
 
     def test_real_lifecycle_passes_qualify_on_tank_and_retain_exact_attribution(self) -> None:
         self.emit_pass(fixtures.NOW - timedelta(hours=24))
@@ -45,14 +47,16 @@ class ReleaseLifecycleEvidenceTest(unittest.TestCase):
                 self.assertEqual((proof["hours"], proof["passes"]), (0, 1))
 
     def test_host_identity_is_captured_not_overridden_by_event_fields(self) -> None:
-        with mock.patch.object(lifecycle, "_host_id", return_value=self.host_id):
-            with lifecycle.scope(
+        with (
+            mock.patch.object(lifecycle, "_host_id", return_value=self.host_id),
+            lifecycle.scope(
                 self.cfg.factory / "events.jsonl", "dispatcher", dispatcher=True,
                 host_id="spoofed-host", engine_version=self.latest["tag"][1:],
                 engine_commit=self.latest["sha"],
-            ) as execution:
-                with mock.patch.object(lifecycle, "_host_id", return_value="other-host"):
-                    row = execution.emit("result", host_id="spoofed-host")
+            ) as execution,
+            mock.patch.object(lifecycle, "_host_id", return_value="other-host"),
+        ):
+            row = execution.emit("result", host_id="spoofed-host")
         self.assertEqual(row["host_id"], self.host_id)
         rows = lifecycle.read_events(self.cfg.factory / "events.jsonl")
         self.assertTrue(all(row["host_id"] == self.host_id for row in rows))

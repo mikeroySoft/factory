@@ -455,14 +455,15 @@ def _update_release_files(cfg: config.Config, worktree: Path, old: str, new: str
     page.write_text(page_text)
 
 
-def _soak(cfg: config.Config, latest: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
-    """Only completed, exact-revision dispatcher passes on the local Tank count."""
+def _soak(cfg: config.Config, latest: dict[str, Any],
+          until: datetime | None = None) -> tuple[str | None, dict[str, Any]]:
+    """Completed exact-revision Tank passes, bounded by merge time when finishing a PR."""
     from factory import stats, watch
 
     proof: dict[str, Any] = {"experimental_tag": latest["tag"], "commit": latest["sha"]}
     if cfg.host_name != "tank":
         return "promotion requires real passes on Tank", proof
-    now = datetime.now(UTC)
+    now = datetime.now(UTC) if until is None else until
     since = _at(latest["date"])
     rows = [row for row in lifecycle.read_events(cfg.factory / "events.jsonl")
             if isinstance(row.get("at"), str) and since < _at(row["at"]) <= now]
@@ -559,6 +560,7 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True,
         if current not in (latest["version"], expected):
             raise ValueError(f"version mismatch: baseline {latest_tag}, main {current}, expected {expected}")
         commit = None
+        merged_at = None
         if current > latest["version"]:
             version = ".".join(map(str, current))
             commits = _git(
@@ -567,11 +569,13 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True,
                 "--", cfg.release_version_file,
             ).stdout.splitlines()
             commit = commits[0] if commits else ""
-            merged = _pulls(cfg, branch, state="closed")
-            if not commit or not any(
-                pull.get("merged_at") and pull.get("merge_commit_sha") == commit for pull in merged
-            ):
+            merged = next((
+                pull for pull in _pulls(cfg, branch, state="closed")
+                if pull.get("merged_at") and pull.get("merge_commit_sha") == commit
+            ), None)
+            if not commit or merged is None:
                 raise ValueError(f"version {version} has no matching merged release PR")
+            merged_at = _at(merged["merged_at"])
             if _version_at(cfg, commit) != expected:
                 raise ValueError(f"version mismatch at release commit {commit}")
         publication = None
@@ -615,10 +619,10 @@ def run(cfg: config.Config, dry_run: bool = False, open_pr: bool = True,
                 f"experimental tickets {bar['tickets']} below min_tickets {cfg.release_min_tickets}",
                 metrics, bar), metrics, bar, latest_tag)
         if promote:
-            hold, soak = _soak(cfg, latest)
+            hold, soak = _soak(cfg, latest, until=merged_at)
             if hold:
                 return _finish(cfg, dry_run, _reason(hold, metrics, bar), metrics, bar, latest_tag)
-            if not _promotion_source(cfg, latest, f"origin/{cfg.main}"):
+            if commit is None and not _promotion_source(cfg, latest, f"origin/{cfg.main}"):
                 return _finish(cfg, dry_run, _reason(
                     "promotion blocked by unsoaked changes on main; cut an experimental release first",
                     metrics, bar), metrics, bar, latest_tag)

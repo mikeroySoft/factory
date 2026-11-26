@@ -410,9 +410,11 @@ The existing minimum-ticket, human-touch/first-pass ratchet, CI, and release gat
 still apply. The soak window must have no escalations or attributed escaped
 defects, and the engine repository must have no open watch-filed bug.
 The even tag records the revision-bound soak result alongside its quality bar.
-Unsoaked source changes on main or in the promotion PR block promotion; release
-those changes experimentally first. Only version, changelog, and public release
-documentation updates are allowed between the experimental and public source.
+Unsoaked source changes on main or in the promotion PR block opening and merging;
+only version, changelog, and public release documentation updates are allowed.
+After merge, completion checks the proven release commit and bounds soak evidence
+at the PR's merge time, so later main changes or incidents cannot strand that tag.
+Open watch-filed bugs and incomplete escape attribution still block publication.
 
 A baseline tag without a valid JSON quality bar fails closed. Baseline/version
 drift, including an unrecognized manual bump without the matching merged release

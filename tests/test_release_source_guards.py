@@ -187,6 +187,90 @@ class ReleaseSourceGuardsTest(unittest.TestCase):
                         ):
                     release.run(self.cfg, dry_run=True)
 
+    def test_pending_pr_rejects_both_lower_and_higher_version_files(self) -> None:
+        for version in ("0.0.2", "0.0.4"):
+            with self.subTest(version=version):
+                self.new_repo()
+                self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+                self.events()
+                (self.repo / "factory" / "__init__.py").write_text(f'__version__ = "{version}"\n')
+                self.git(self.repo, "add", "factory/__init__.py")
+                self.git(self.repo, "commit", "-qm", "wrong release PR version")
+                sha = self.git(self.repo, "rev-parse", "HEAD")
+                pull = {"number": 12, "head": {"sha": sha}}
+                with mock.patch.object(release, "_pulls", return_value=[pull]), \
+                        mock.patch.object(release, "_pull", return_value=pull), \
+                        self.assertRaisesRegex(release.ReleaseError, "version mismatch in release PR"):
+                    release.run(self.cfg)
+
+    def test_provenanced_release_commit_must_match_expected_version_in_both_directions(self) -> None:
+        for wrong in ("0.0.2", "0.0.4"):
+            with self.subTest(version=wrong):
+                self.new_repo()
+                self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+                version_file = self.repo / "factory" / "__init__.py"
+                version_file.write_text(f'__version__ = "{wrong}"\n# target 0.0.3\n')
+                self.git(self.repo, "add", "factory/__init__.py")
+                self.git(self.repo, "commit", "-qm", "purported release with wrong version")
+                purported = self.git(self.repo, "rev-parse", "HEAD")
+                version_file.write_text('__version__ = "0.0.3"\n')
+                self.git(self.repo, "add", "factory/__init__.py")
+                self.git(self.repo, "commit", "-qm", "later version repair")
+                self.git(self.repo, "push", "-q", "origin", "main")
+                pulls = [{"merged_at": "2026-01-01T00:00:00Z", "merge_commit_sha": purported}]
+                with mock.patch.object(release, "_pulls", return_value=pulls), \
+                        self.assertRaisesRegex(release.ReleaseError, "version mismatch at release commit"):
+                    release.run(self.cfg)
+
+    def test_minimum_ticket_boundary_uses_counts_not_integer_identity(self) -> None:
+        self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+        self.cfg.release_min_tickets = 257
+        self.events(tickets=257)
+        with mock.patch.object(release, "_pulls", return_value=[]), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                redirect_stdout(io.StringIO()):
+            self.assertIn("would open release PR for v0.0.3", release.run(self.cfg, dry_run=True))
+
+    def test_promotion_source_changes_only_the_first_version_occurrence(self) -> None:
+        version_file = self.repo / "factory" / "__init__.py"
+        version_file.write_text('__version__ = "0.0.1"\n# previous 0.0.1\n')
+        self.git(self.repo, "add", "factory/__init__.py")
+        self.git(self.repo, "commit", "-qm", "baseline with a historical version")
+        baseline = self.git(self.repo, "rev-parse", "HEAD")
+        version_file.write_text('__version__ = "0.0.2"\n# previous 0.0.1\n')
+        self.git(self.repo, "add", "factory/__init__.py")
+        self.git(self.repo, "commit", "-qm", "promotion")
+        candidate = self.git(self.repo, "rev-parse", "HEAD")
+        self.assertTrue(release._promotion_source(
+            self.cfg, {"sha": baseline, "version": (0, 0, 1)}, candidate,
+        ))
+
+    def test_experimental_legacy_bar_reset_is_retained_in_the_next_tag(self) -> None:
+        self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+        self.events()
+        sha = self.release_commit("0.0.3")
+        self.git(self.repo, "push", "-q", "origin", "main")
+        pulls = [{"merged_at": "2026-01-01T00:00:00Z", "merge_commit_sha": sha}]
+        with mock.patch.object(release, "_pulls", return_value=pulls), \
+                mock.patch.object(release, "ci_passes", return_value=True), \
+                mock.patch.object(release, "_gh_release", return_value=subprocess.CompletedProcess(
+                    [], 0, "", "",
+                )):
+            self.assertIn("released v0.0.3", release.run(self.cfg))
+        annotation = self.git(self.origin, "for-each-ref", "--format=%(contents)", "refs/tags/v0.0.3")
+        bar = release._bar(annotation)
+        self.assertEqual(bar["human_rate"], self.cfg.release_bar_floor_human_rate)
+        self.assertEqual(bar["first_pass"], self.cfg.release_bar_floor_first_pass)
+
+    def test_automatic_pass_recognizes_promotion_after_first_odd_patch(self) -> None:
+        self.tag_and_advance({"human_rate": 0.0, "first_pass": 1.0, "tickets": 1})
+        sha = self.release_commit("0.0.2")
+        self.git(self.repo, "push", "-q", "origin", "main")
+        pulls = [{"merged_at": "2026-01-01T00:00:00Z", "merge_commit_sha": sha}]
+        with mock.patch.object(release, "_pulls", return_value=pulls):
+            self.assertIn("pending promotion of v0.0.1", release.run(self.cfg, open_pr=False))
+        self.assertNotIn("v0.0.2", self.git(self.origin, "tag", "--list"))
+
 
 if __name__ == "__main__":
     unittest.main()

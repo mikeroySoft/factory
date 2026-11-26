@@ -337,7 +337,7 @@ class ReleaseTest(unittest.TestCase):
     def certify_release(self, sha: str, version: str) -> None:
         self.enterContext(mock.patch.object(
             release, "_pulls", side_effect=lambda cfg, branch, state="open": [
-                {"merged_at": "2026-01-01T00:00:00Z", "merge_commit_sha": sha}
+                {"merged_at": datetime.now(UTC).isoformat(), "merge_commit_sha": sha}
             ] if branch == f"release/v{version}" and state == "closed" else [],
         ))
         self.enterContext(mock.patch.object(release, "ci_passes", return_value=True))

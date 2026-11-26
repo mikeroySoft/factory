@@ -51,7 +51,9 @@ class ReleasePolicyTest(unittest.TestCase):
         self.git(self.repo, "merge", "--ff-only", f"origin/release/v{version}")
         self.git(self.repo, "push", "-q", "origin", "HEAD:main")
         sha = self.git(self.repo, "rev-parse", "HEAD")
-        self.pulls.return_value = [{"merged_at": "2026-01-01T00:00:00Z", "merge_commit_sha": sha}]
+        self.pulls.return_value = [{
+            "merged_at": datetime.now(UTC).isoformat(), "merge_commit_sha": sha,
+        }]
         return sha
 
     def soak(self, tag: str = "v0.0.1", *, span: float = 24, host: str | None = None,
