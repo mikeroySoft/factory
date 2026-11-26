@@ -35,7 +35,10 @@ class RequeueReleaseJournalTest(unittest.TestCase):
 
                     self.assertEqual(self.github.issue["assignees"], [])
                     self.assertEqual(self.github.open_prs, [])
-                    self.assertEqual(self.github.comments, [])
+                    self.assertEqual(
+                        [comment["body"] for comment in self.github.comments],
+                        [f"Factory requeue: nonce={claim.comment['nonce']}\n"] if host else [],
+                    )
                     self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
                     events = lifecycle.read_events(module.EVENTS)[before:]
                     [released] = [row for row in events if row.get("event") == "assignee-cleared"]

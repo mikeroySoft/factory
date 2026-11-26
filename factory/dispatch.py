@@ -3850,7 +3850,7 @@ def defer_mutation_proof(n: int, head: str, source: str) -> None:
     record("mutation-proof-wait", ticket=n, head=head, source=source)
     unclaim(
         n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
-        assignee_last=True, check=True,
+        assignee_last=True, check=True, exit_path="mutation-proof-wait",
     )
     log(f"#{n}: mutation proof base moved during {source}; retrying next pass")
 
@@ -4465,7 +4465,7 @@ def _record_rework(n: int, head: str, findings: str, deferred: bool) -> None:
     )
     if deferred:
         unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
-                assignee_last=True, check=True)
+                assignee_last=True, check=True, exit_path="review-rework")
 
 
 def _actionable_review(n: int, head: str, verdict: str | None, findings: str, pr_failed: bool) -> bool:
@@ -4649,7 +4649,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             remote_head, remote_head, [],
         )
         record("conflict-requeue", ticket=n, pr=pr, head=remote_head, verb=verb, files=conflicts, round=rounds + 1)
-        unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True)
+        unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+                assignee_last=True, exit_path="conflict-requeue")
         log(f"#{n}: PR #{pr} {verb} onto {cfg.main} conflicts in {', '.join(conflicts)}; requeued to a worker")
         return False
     head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
@@ -4777,7 +4778,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 reports=reports, changed_files=changed_files, unrelated=unrelated, round=rounds + 1,
                 refreshed_head=head, evidence_ref=evidence_ref,
             )
-            unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True)
+            unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+                    assignee_last=True, exit_path="gate-requeue")
             log(f"#{n}: PR #{pr} gate failed twice after {verb} onto {cfg.main}; requeued to a worker")
             return False
     if not ok:
@@ -4841,7 +4843,8 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
                 "risk-requeue", ticket=n, pr=pr, head=head,
                 packet=state["packet"], round=rounds + 1,
             )
-            unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT, assignee_last=True)
+            unclaim(n, "--remove-label", LABEL_HUMAN, "--add-label", LABEL_AGENT,
+                    assignee_last=True, exit_path="risk-requeue")
             log(f"#{n}: PR #{pr} High-risk checks disagreed after refresh; requeued to a worker")
             return False
         withdraw(

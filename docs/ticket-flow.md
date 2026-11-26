@@ -73,7 +73,6 @@ flowchart TB
   TRI -->|"triage.apply_decision"| WONT
   NI -->|"question comment: triage.apply_decision"| REPORTER
   REPORTER -.->|"no watcher re-queues needs-info; a human relabels: decisions.apply"| NT
-
   %% Build
   RFA -->|"open, unassigned, no open agent PR or blockers: dispatch.frontier"| CLAIM
   RFA -->|"its PR's red CI completed before the release: no escalation, waits for a worker: manage.frontier_pass"| CLAIM
@@ -246,6 +245,7 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``High-risk machine checks disagreed on two successive heads`` | Non-actionable disagreement → one worker rework; next-head non-actionable disagreement → escalate (`risk_disagreement`) |
 | `dispatch.process_ticket` | ``approval evidence, head, or human review state changed before approval`` | review → escalate |
 | `dispatch.process_ticket` | ``dispatcher error: {}; worktree kept at {}`` | any post-claim exception → escalate (`dispatcher_error`), then re-raised; a `LeaseRefused` from `dispatch.push_agent` escalates as `lease_refused` with its own message |
+| `dispatch.process_ticket` | ``interrupted host claim with {}; worktree kept at {}`` | Expired own-host publication → escalate without a worker or push; retain the PR and local history evidence |
 | `dispatch.merge_pass_locked` | ``PR #{}: CI failed ({}); `{}` label removed`` | CI fail → escalate |
 | `dispatch.runner_unavailable` | ``PR #{}: CI runner unavailable ({}) in run {}; `{}` kept`` | CI no runner after rerun → escalate |
 | `dispatch.merge_pass_locked` | ``PR #{}: missing approval evidence bound to {}; `{}` label removed`` | CI pass, missing evidence → escalate |
