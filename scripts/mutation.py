@@ -31,6 +31,9 @@ and again (every copy) after the baseline and before any mutation, any other pat
 (untracked, ignored or staged-new in the checkout, or baseline output) is deleted from the
 copy, never from the checkout, and the run continues. Runs
 without a record path keep the historical changed_lines() and never import the helper.
+
+``--replay PROOF`` re-tests only recorded survivors against current working files.
+It skips the baseline, keeps related-first fail-fast ordering, and never writes proof.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ import argparse
 import ast
 import collections
 import errno
+import difflib
 import json
 import math
 import os
@@ -55,6 +59,7 @@ import tomllib
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 CAP = 200
 BASE = "origin/main"  # without a gate-named base (report-only and unopted runs)
@@ -72,6 +77,7 @@ PROOF_COUNTS = ("planned", "ran", "killed", "survived", "timeouts", "blocking_su
 
 def proof_record(*, mode: str, status: str, reason: str, exit_code: int,
                  files: list[str] | tuple[str, ...] = (), scope: dict | None = None,
+                 survivors: list[dict] | None = None,
                  **counts: int) -> dict:
     """The runner's completion record; the gate re-checks every field against its exit
     and `scope` against its own factory.mutation_scope computation."""
@@ -82,6 +88,7 @@ def proof_record(*, mode: str, status: str, reason: str, exit_code: int,
         "protocol": PROOF_PROTOCOL, "version": PROOF_VERSION, "mode": mode, "status": status,
         "reason": reason, "exit": exit_code, "files": sorted(files), "scope": scope,
         "counts": {name: int(counts.get(name, 0)) for name in PROOF_COUNTS},
+        **({"survivors": survivors} if survivors is not None else {}),
     }
 
 
@@ -476,6 +483,132 @@ def stale_equivalents(reviewed: dict[tuple, dict], disproven: set[tuple]) -> boo
     return bool(stale)
 
 
+def replay(path: str, duration: float | None) -> int:
+    """Diagnostic only: exact source/position identities, never a completion record."""
+    from attrs import evolve
+    import cosmic_ray.commands
+    from cosmic_ray.mutating import mutate_and_test, mutate_code
+    from cosmic_ray.plugins import get_operator
+    from cosmic_ray.work_db import use_db
+    from cosmic_ray.work_item import TestOutcome
+
+    root = Path.cwd()
+    try:
+        record = json.loads(Path(path).read_text())
+        if (not isinstance(record, dict) or record.get("protocol") != PROOF_PROTOCOL
+                or record.get("version") != PROOF_VERSION
+                or not isinstance(record.get("survivors"), list)):
+            raise ValueError("requires a full proof with recorded survivor identities")
+        entries = record["survivors"]
+        if len(entries) > CAP or record["counts"]["survived"] != len(entries):
+            raise ValueError("survivor identities do not match the proof counts")
+        for entry in entries:
+            file = Path(entry["file"])
+            if (file.is_absolute() or ".." in file.parts or file.as_posix() != entry["file"]
+                    or file.parts[0] != "factory" or file.suffix != ".py"
+                    or not file.resolve().is_relative_to(root)):
+                raise ValueError("survivor file must be a repository-relative factory Python path")
+            if (type(entry["line"]) is not int or entry["line"] < 1
+                    or not isinstance(entry["operator"], str) or not entry["operator"]
+                    or any(not isinstance(entry[key], str) for key in ("original", "mutated"))
+                    or entry["original"] == entry["mutated"]):
+                raise ValueError("invalid survivor source identity")
+            for key in ("start_pos", "end_pos"):
+                pos = entry[key]
+                if (not isinstance(pos, list) or len(pos) != 2
+                        or any(type(n) is not int for n in pos) or pos[0] < 1 or pos[1] < 0):
+                    raise ValueError("invalid survivor position")
+            if entry["line"] != entry["start_pos"][0] or entry["start_pos"] >= entry["end_pos"]:
+                raise ValueError("invalid survivor span")
+    except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
+        print(f"invalid replay proof: {exc}")
+        return 1
+
+    started = time.monotonic()
+    window = max(1, gate_timeout() - RESERVE) if duration is None else duration - RESERVE
+    deadline = started + window
+    with tempfile.TemporaryDirectory(prefix="factory-mutation-replay-") as tmp:
+        scratch = Path(tmp)
+        # Re-enumerate only the named files, without sampling. Earlier edits can change
+        # an operator's occurrence number even when the recorded source line is intact.
+        sources = {}
+        for entry in entries:
+            file = entry["file"]
+            if file not in sources:
+                try:
+                    sources[file] = Path(file).read_text()
+                except FileNotFoundError:
+                    sources[file] = ""
+        with use_db(scratch / "session.sqlite") as db:
+            cosmic_ray.commands.init([Path(p) for p, source in sources.items() if source], db, {})
+            candidates = [item.mutations[0] for item in db.work_items]
+        selected = []
+        for entry in entries:
+            identity = tuple(entry[key] for key in ("file", "line", "operator", "original", "mutated"))
+            match = None
+            for candidate in candidates:
+                if (str(candidate.module_path) != entry["file"]
+                        or candidate.operator_name != entry["operator"]
+                        or list(candidate.start_pos) != entry["start_pos"]
+                        or list(candidate.end_pos) != entry["end_pos"]):
+                    continue
+                source = sources[entry["file"]]
+                changed = mutate_code(source, get_operator(candidate.operator_name)(), candidate.occurrence)
+                if changed is None:
+                    continue
+                diff = "\n".join(difflib.unified_diff(source.split("\n"), changed.split("\n")))
+                if mutation_key(candidate, SimpleNamespace(diff=diff)) == identity:
+                    match = candidate
+                    break
+            if match is None:
+                print(f"{entry['file']}:{entry['line']}: no longer applies (the source line changed)")
+            else:
+                selected.append(match)
+        if not selected:
+            return 0
+        workers = min(WORKERS, len(selected))
+        copies = [scratch / f"copy{i}" for i in range(workers)]
+        for copy in copies:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                print("replay incomplete: deadline exceeded during preparation")
+                return 1
+            subprocess.run(
+                ["git", "clone", "--quiet", "--shared", "--no-checkout", str(root), str(copy)],
+                check=True, timeout=remaining,
+            )
+            shutil.copytree(root, copy, ignore=COPY_IGNORE, dirs_exist_ok=True)
+        queue = collections.deque(selected)
+        results = []
+
+        def worker(copy: Path) -> None:
+            while (remaining := deadline - time.monotonic()) > 0:
+                try:
+                    mutation = queue.popleft()
+                except IndexError:
+                    return
+                result = mutate_and_test(
+                    [evolve(mutation, module_path=copy / mutation.module_path)],
+                    test_command(copy, str(mutation.module_path)), remaining,
+                )
+                results.append((mutation, result))
+
+        with ThreadPoolExecutor(workers) as pool:
+            list(pool.map(worker, copies))
+    broken = bool(queue)
+    for mutation, result in sorted(results, key=lambda item: (str(item[0].module_path), item[0].start_pos)):
+        if result.test_outcome not in (TestOutcome.KILLED, TestOutcome.SURVIVED) or result.output == "timeout":
+            print(f"replay incomplete: {mutation.module_path}:{mutation.start_pos[0]}: "
+                  f"{(result.output or '')[-1000:]}")
+            broken = True
+        else:
+            print(f"{mutation.module_path}:{mutation.start_pos[0]}: {result.test_outcome.value} "
+                  f"{mutation.operator_name} {describe(result.diff or '')}")
+    print(f"replayed {len(results)} of {len(selected)} applicable survivors in {time.monotonic() - started:.2f}s "
+          "(diagnostic only; no proof written)")
+    return 1 if broken else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # Popped before any work: baseline, mutant and --test-module children inherit
     # os.environ, and must never learn where the completion record goes or its base.
@@ -500,12 +633,15 @@ def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: boo
     parser.add_argument("--check-equivalents", action="store_true",
                         help="validate reviewed source/context without selecting or running mutants")
     parser.add_argument("--test-module", default=None)
+    parser.add_argument("--replay", metavar="PROOF", help="re-test recorded survivors; never write proof")
     parser.add_argument("--duration", type=total_duration, default=None, metavar="SECONDS",
                         help="explicit total: the deadline is SECONDS - RESERVE after the anchor, "
                         "instead of max(1, [gate].timeout - RESERVE)")
     args = parser.parse_args(argv)
     if args.test_module is not None:
         return run_tests(args.test_module)
+    if args.replay is not None:
+        return replay(args.replay, args.duration)
     outcome["mode"] = "blocking" if args.blocking else "report-only"
     if base is None:
         print("mutation proof requested without a base commit")
@@ -727,6 +863,11 @@ def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: boo
               else "no-blocking-survivors")
     )
     outcome.update(status=status, reason=reason, **tally)
+    outcome["survivors"] = [
+        dict(zip(("file", "line", "operator", "original", "mutated"), mutation_key(m, r)),
+             start_pos=list(m.start_pos), end_pos=list(m.end_pos))
+        for m, r in sorted(survivors, key=lambda item: (str(item[0].module_path), item[0].start_pos))
+    ]
     # cosmic-ray swallows its own failures (a mutation it could not write, a test command it
     # could not launch) into INCOMPETENT results. NO_TEST also leaves the sampled
     # mutation untested; neither is evidence of a killed or surviving mutant.
