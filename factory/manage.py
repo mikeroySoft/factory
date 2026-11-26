@@ -413,7 +413,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             # Preserve the no-repeat escalation contract, but retain the terminal FIX outcome.
             from factory import __version__, trace
 
-            dispatch.log(f"#{n}: manager FIX failed ({code}: {reason}); ticket is already ready-for-human")
+            dispatch.log(f"#{n}: manager FIX failed ({code}: {reason}); automatic FIX stops")
             cause = dispatch._latest_decision_id(n, {"manager"})
             dispatch.record("decision", **trace.decision(
                 ticket=n, stage="manager", chosen="FIX_FAILED",
@@ -485,6 +485,17 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                 record_fix_failure("gate_failed", reason)
             else:
                 dispatch.escalate(n, reason, logfile, code="gate_failed")
+            return
+        if gate_head == lease:
+            findings = packet.read_text()
+            code = dispatch.unresolved_rework_code(findings, False)
+            reason = (
+                f"manager FIX made no commit at {lease}; unresolved findings remain:\n\n"
+                f"{findings}"
+            )
+            record_fix_failure(code, reason)
+            if not already_human:
+                dispatch.escalate(n, reason, logfile, extra=findings, code=code)
             return
         fresh = dispatch.gh_json(
             ["pr", "view", f"agent/{n}", "--repo", dispatch.REPO, "--json", "baseRefName"]
@@ -1119,6 +1130,225 @@ def frontier_pass(dry_run: bool = False) -> None:
                     execution.resource("released", lock_path, scope="repository")
 
 
+def _pending_add_only_row(events: list[dict], n: int) -> dict | None:
+    rows = generation.current(events, n).rows
+    for index in range(len(rows) - 1, -1, -1):
+        request = rows[index]
+        if request.get("event") != "manager-request" or request.get("code") != "add_only_authorization":
+            continue
+        if request.get("exhausted"):
+            return None
+        managed = [
+            row for row in rows[index + 1:]
+            if row.get("event") == "manage"
+            and row.get("code") == "add_only_authorization"
+            and row.get("packet") == request.get("packet")
+            and row.get("round") == request.get("round")
+        ]
+        if not managed:
+            return request
+        return (
+            request
+            if pending_fix(rows[index:], round=request.get("round"), pr=None) is not None
+            else None
+        )
+    return None
+
+
+def pending_add_only_request(n: int) -> bool:
+    """Whether dispatch must wait for the manager instead of running another worker."""
+    return _pending_add_only_row(lifecycle.read_events(dispatch.EVENTS), n) is not None
+
+
+def _ensure_request_comment(n: int, request: dict, events: list[dict]) -> bool:
+    if any(
+        row.get("event") == "comment"
+        and row.get("kind") == "escalation"
+        and row.get("round") == request["round"]
+        and row.get("at", "") >= request["at"]
+        for row in events
+    ):
+        return True
+    paths = "\n".join(f"- `{path}`" for path in request["paths"])
+    body = (
+        "Factory dispatcher requesting manager authorization before escalation.\n\n"
+        "Requested edits to existing add-only files:\n"
+        f"{paths}\n\nManager packet: `{request['packet']}`"
+    )
+    try:
+        proc = dispatch.run(
+            ["gh", "issue", "comment", str(n), "--repo", dispatch.REPO, "--body", body],
+            check=False,
+        )
+    except OSError as exc:
+        dispatch.log(f"#{n}: manager request comment failed ({exc}); request remains queued")
+        return False
+    return dispatch.comment_receipt(
+        n, "escalation", proc.stdout if proc.returncode == 0 else "",
+        round=request["round"],
+    )
+
+
+def _manager_decision(
+    n: int, issue: dict, trigger: dict, events: list[dict], *,
+    queue_failure: bool = False, code: str | None = None,
+) -> tuple[str, str, object] | None:
+    cfg = dispatch.cfg
+    packet = Path(trigger["packet"])
+    workers = selectable_workers(cfg)
+    parts = [
+        MENU,
+        "Worker labels:\n" + "\n".join(
+            f"- {key}: {cfg.worker_when.get(key) or '(no when rule)'}" for key in workers
+        ),
+        f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}",
+        packet.read_text(),
+    ]
+    notes_path = cfg.factory / NOTES_NAME
+    for path in (cfg.root / LESSONS_NAME, notes_path):
+        if path.is_file():
+            parts.append(f"## {path.name}\n\n{path.read_text()}")
+    wt = cfg.factory / f"wt-{n}"
+    cwd = wt if wt.is_dir() else cfg.root
+    prompt_path = cfg.factory / f"manager-prompt-{n}.md"
+    prompt_path.write_text("\n\n".join(parts))
+    notes = rejected = None
+    output = ""
+    try:
+        proc = dispatch.run(cfg.manager_cmd(prompt_path, cwd), cwd=cwd, check=False)
+        output = proc.stdout
+        if proc.returncode:
+            body = f"Manager command exited {proc.returncode} (argv: {json.dumps(cfg.manager)})"
+            tail = "\n".join(proc.stderr.splitlines()[-5:])
+            if tail:
+                body += "\n" + tail
+            if queue_failure:
+                dispatch.log(f"#{n}: {body}; request remains queued")
+                return None
+            decision, data = "HUMAN", None
+            dispatch.record(
+                "escalate", ticket=n, round=trigger["round"],
+                packet=str(packet), code="manager_failed", reason="manager_failed",
+            )
+        else:
+            output, notes = split_notes(proc.stdout)
+            rejected = "CURATE" if split_curate(output)[1] is not None else None
+            decision, body, data = (
+                ("HUMAN", CURATE_REJECTED, None) if rejected else parse(output, workers)
+            )
+    except (OSError, config.ConfigError) as exc:
+        if queue_failure:
+            dispatch.log(f"#{n}: manager command failed ({exc}); request remains queued")
+            return None
+        decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
+        dispatch.record(
+            "escalate", ticket=n, round=trigger["round"],
+            packet=str(packet), code="manager_failed", reason="manager_failed",
+        )
+        output = body
+    try:
+        if human_activity(n, trigger, events):
+            return None
+    except (CalledProcessError, OSError, ValueError):
+        if queue_failure:
+            return None
+        raise
+    status = write_notes(notes_path, notes) if notes is not None else None
+    if status is not None and status != "written":
+        dispatch.log(f"#{n}: manager notes {status}; keeping the existing file")
+    record_manager_decision(n, decision, body, data, output, workers, packet)
+    dispatch.record(
+        "manage", ticket=n, decision=decision, round=trigger["round"],
+        packet=str(packet), notes=status, rejected=rejected, **({"code": code} if code else {}),
+    )
+    return decision, body, data
+
+
+def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
+    cfg = dispatch.cfg
+    events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
+    commented = _ensure_request_comment(n, request, events)
+    events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
+    if not cfg.manager or not commented:
+        return
+    try:
+        if human_activity(n, request, events):
+            return
+    except (CalledProcessError, OSError, ValueError) as exc:
+        dispatch.log(f"#{n}: manager request takeover check failed ({exc}); request remains queued")
+        return
+    packet = Path(request["packet"])
+    if not packet.is_file():
+        return
+    pending = pending_fix(events[events.index(request):], round=request["round"], pr=None)
+    if pending is not None:
+        resume_fix(n, issue, pending, round=request["round"])
+        dispatch.unclaim(n)
+        return
+    result = _manager_decision(
+        n, issue, request, events,
+        queue_failure=True, code="add_only_authorization",
+    )
+    if result is None:
+        return
+    decision, body, data = result
+    if decision == "HUMAN":
+        findings = packet.read_text()
+        dispatch.escalate(
+            n,
+            f"manager declined add-only authorization: {body}",
+            Path(request["log"]) if request.get("log") else None,
+            extra=findings,
+            code="add_only_authorization",
+            round_number=request["round"],
+        )
+        return
+    if decision == "FIX":
+        apply_fix(n, issue, data, packet, round=request["round"])
+    else:
+        apply(n, issue, decision, body, data, packet)
+    dispatch.unclaim(n)
+
+
+def request_add_only_authorization(
+    n: int, issue: dict, paths: list[str], report: str, logfile: Path | None,
+) -> None:
+    """Queue and, when available, run the manager before an add-only failure escalates."""
+    events = lifecycle.read_events(dispatch.EVENTS)
+    pending = _pending_add_only_row(events, n)
+    if pending is None:
+        named = "\n".join(f"- `{path}`" for path in paths)
+        packet, round_number = dispatch.escalation_packet(
+            n,
+            "manager authorization required for edits to existing add-only files",
+            logfile,
+            dispatch.cfg.factory / f"wt-{n}",
+            extra=(
+                f"## Requested add-only paths\n\n{named}\n\n"
+                f"## Full failed gate report\n\n{report}"
+            ),
+        )
+        exhausted = round_number > dispatch.cfg.manager_rounds
+        dispatch.record(
+            "manager-request", ticket=n, code="add_only_authorization",
+            paths=paths, packet=str(packet), log=str(logfile) if logfile else None,
+            round=round_number, exhausted=exhausted,
+        )
+        if exhausted:
+            dispatch.escalate(
+                n,
+                f"manager add-only authorization rounds exhausted ({dispatch.cfg.manager_rounds})",
+                logfile,
+                extra=packet.read_text(),
+                code="add_only_authorization",
+                round_number=round_number,
+            )
+            return
+        pending = _pending_add_only_row(lifecycle.read_events(dispatch.EVENTS), n)
+    if pending is not None:
+        _handle_add_only_request(n, issue, pending)
+
+
 def manage_pass(dry_run: bool = False) -> None:
     """Viability (a GitHub-wide label scan) runs on the triage host; frontier and escalation rounds, owned through the local journal, run on every host with a manager; terminal handoffs need no manager."""
     try:
@@ -1137,8 +1367,25 @@ def manage_pass(dry_run: bool = False) -> None:
 
 def escalation_pass(dry_run: bool = False) -> None:
     cfg = dispatch.cfg
-    issues = dispatch.gh_json(["issue", "list", "--repo", cfg.repo, "--state", "open", "--label", LABEL_HUMAN,
-                               "--json", "number,title,body,labels", "--limit", "1000"])
+    events = lifecycle.read_events(dispatch.EVENTS)
+    pending_numbers = {
+        row["ticket"] for row in events
+        if row.get("event") == "manager-request"
+        and row.get("code") == "add_only_authorization"
+        and _pending_add_only_row(events, row["ticket"]) is not None
+    }
+    issues = dispatch.gh_json([
+        "issue", "list", "--repo", cfg.repo, "--state", "open", "--label", LABEL_HUMAN,
+        "--json", "number,title,body,labels", "--limit", "1000",
+    ])
+    listed = {issue["number"] for issue in issues}
+    for n in pending_numbers - listed:
+        issue = dispatch.gh_json([
+            "issue", "view", str(n), "--repo", cfg.repo,
+            "--json", "number,title,body,state,labels",
+        ])
+        if issue.get("state") == "OPEN":
+            issues.append(issue)
     for issue in issues:
         n = issue["number"]
         lock_path = cfg.factory / "locks" / f"{n}.lock"
@@ -1160,6 +1407,21 @@ def escalation_pass(dry_run: bool = False) -> None:
                 execution.resource("acquired", lock_path, scope="repository")
             try:
                 events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
+                authorization = _pending_add_only_row(events, n)
+                if authorization is not None:
+                    if dispatch.initiative_kind(n):
+                        dispatch.log(f"#{n}: refused (initiative records are never managed)")
+                        continue
+                    if dry_run:
+                        dispatch.log(f"#{n}: would manage queued add-only authorization request")
+                        continue
+                    execution.commit()
+                    try:
+                        _handle_add_only_request(n, issue, authorization)
+                    except dispatch.WorkerUnavailable as exc:
+                        execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
+                        dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
+                    continue
                 escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
                 if not escalation or escalation.get("upstream") or escalation.get("pr") or not escalation.get("packet"):
@@ -1193,52 +1455,11 @@ def escalation_pass(dry_run: bool = False) -> None:
                         execution.error = dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc))
                         dispatch.log(f"#{n}: resumed manager FIX failed: {exc}; leaving for human")
                     continue
-                workers = selectable_workers(cfg)
-                parts = [MENU, "Worker labels:\n" + "\n".join(
-                    f"- {k}: {cfg.worker_when.get(k) or '(no when rule)'}" for k in workers),
-                         f"Issue #{n}: {issue['title']}\n\n{issue.get('body') or ''}", packet.read_text()]
-                notes_path = cfg.factory / NOTES_NAME
-                for path in (cfg.root / LESSONS_NAME, notes_path):
-                    if path.is_file():
-                        parts.append(f"## {path.name}\n\n{path.read_text()}")
-                wt = cfg.factory / f"wt-{n}"
-                cwd = wt if wt.is_dir() else cfg.root
-                notes = rejected = None
-                output = ""
                 execution.commit()
-                try:
-                    prompt_path = cfg.factory / f"manager-prompt-{n}.md"
-                    prompt_path.write_text("\n\n".join(parts))
-                    proc = dispatch.run(cfg.manager_cmd(prompt_path, cwd), cwd=cwd, check=False)
-                    output = proc.stdout
-                    if proc.returncode:
-                        body = f"Manager command exited {proc.returncode} (argv: {json.dumps(cfg.manager)})"
-                        tail = "\n".join(proc.stderr.splitlines()[-5:])
-                        if tail:
-                            body += "\n" + tail
-                        decision, data = "HUMAN", None
-                        dispatch.record("escalate", ticket=n, round=round_number,
-                                        packet=str(packet), code="manager_failed", reason="manager_failed")
-                    else:
-                        output, notes = split_notes(proc.stdout)
-                        rejected = "CURATE" if split_curate(output)[1] is not None else None
-                        decision, body, data = ("HUMAN", CURATE_REJECTED, None) if rejected else parse(output, workers)
-                except (OSError, config.ConfigError) as exc:
-                    decision, body, data = "HUMAN", f"Manager command failed: {exc}", None
-                    dispatch.record("escalate", ticket=n, round=round_number,
-                                    packet=str(packet), code="manager_failed", reason="manager_failed")
-                    output = body
-                # A human may have taken over while the model was thinking.
-                if human_activity(n, escalation, events):
+                result = _manager_decision(n, issue, escalation, events)
+                if result is None:
                     continue
-                status = write_notes(notes_path, notes) if notes is not None else None
-                if status is not None and status != "written":
-                    dispatch.log(f"#{n}: manager notes {status}; keeping the existing file")
-                record_manager_decision(
-                    n, decision, body, data, output, workers, packet,
-                )
-                dispatch.record("manage", ticket=n, decision=decision, round=round_number,
-                                packet=str(packet), notes=status, rejected=rejected)
+                decision, body, data = result
                 try:
                     if decision == "FIX":
                         apply_fix(n, issue, data, packet, round=round_number)

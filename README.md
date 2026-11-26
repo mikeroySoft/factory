@@ -347,8 +347,9 @@ conflict-free prefix) and runs the host gate on it, then files one
 evidence and hands the candidate to that issue's `agent/<n>` branch. From there
 it is an ordinary ticket: a clean candidate whose staged gate passed goes
 straight to the PR and review; otherwise the worker repairs it within
-`max_attempts`/`budget_min`, the gate reruns after every attempt, and exhausted
-attempts escalate like any ticket. The worker gets no bypass: its gate
+`max_attempts`/`budget_min`; unchanged rounds reuse their recorded gate result
+and stop retrying, while exhausted changed attempts escalate like any ticket.
+The worker gets no bypass: its gate
 (`factory gate --upstream <tip> --upstream <staged head>`, also on refresh)
 ignores only protected-path hits whose content equals the dispatcher's staged
 candidate's, or the upstream tip's for a path upstream itself changed; a
@@ -763,8 +764,29 @@ AUTHORIZE uses `{"justification":"...","guidance":"..."}` to record why an
 existing add-only file must change, add `factory-add-only-override`, and return
 the ticket to `ready-for-agent`. It is limited to required add-only edits or
 removal of obsolete wording-only assertions, and never authorizes protected
-paths. The normal gate and independent review run again. FIX uses
-`{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
+paths. The normal gate and independent review run again.
+
+A worker blocked by an existing add-only assertion can put one machine-readable
+line in `.factory/handoff-<n>.md`:
+`Needs: add-only-authorization <path>[:<line>] ...` (repository-relative paths,
+shell-quoted when they contain spaces). With a failing gate, the dispatcher
+sends the named paths and full failed report, including test IDs, to the manager
+in the same pass. This is a request, not authority: no failure escalation or
+`ready-for-human` label is applied unless the manager declines. Without an
+available manager, the durable request waits without launching another worker.
+Existing AUTHORIZE decisions and subsequent worker guidance are unchanged.
+
+Attempt-gate reuse is bound to a clean commit/tree, base, gate authority and
+dispatcher engine revision. A dispatcher-owned report under `.factory/gate-cache/`
+must match its attempt journal digest; changed inputs or a missing/tampered
+report require a fresh gate. Evidence survives passes within the same ticket
+generation, not an owner requeue. An unchanged rework head never reaches PR-tier
+checks or reviewers and spends no further review round; it hands off the open
+cause as `mutation_survivors_unresolved`, `pr_checks_unresolved` or
+`review_findings_unresolved`. An unchanged failed attempt stops as
+`worker_no_progress`. Gates and path protection rules are unchanged.
+
+FIX uses `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round
 in the kept `agent/<n>` worktree for its open PR, ignoring other ticket labels.
 A kept head ahead of the remote PR head is pushed first
 (`--force-with-lease` against the recorded PR head) when it is a head a

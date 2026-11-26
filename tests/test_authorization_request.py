@@ -86,7 +86,22 @@ class ManagerAuthorizationRequestTest(unittest.TestCase):
         self.assertFalse(any(row.get("event") == "escalate" for row in rows))
         edits = [command for command in self.commands if command[:3] == ["gh", "issue", "edit"]]
         self.assertTrue(any(config.LABEL_ADD_ONLY_OVERRIDE in command for command in edits))
-        self.assertFalse(any(config.LABEL_HUMAN in command and "--add-label" in command for command in edits))
+        self.assertFalse(any(
+            ("--add-label", config.LABEL_HUMAN) in zip(command, command[1:]) for command in edits
+        ))
+
+    def test_repeated_request_spends_round_budget_without_running_manager_twice(self) -> None:
+        self.request()
+        self.request()
+
+        rows = self.events()
+        requests = [row for row in rows if row.get("event") == "manager-request"]
+        self.assertEqual([row["round"] for row in requests], [1, 2])
+        self.assertEqual(len(self.manager_calls), 1)
+        escalation = next(row for row in rows if row.get("event") == "escalate")
+        self.assertEqual(escalation["round"], 2)
+        self.assertEqual(escalation["code"], "add_only_authorization")
+        self.assertFalse(manage.pending_add_only_request(7))
 
     def test_decline_enters_standard_human_escalation(self) -> None:
         self.manager_output = "DECISION: HUMAN\nThe requested mutation is not justified."

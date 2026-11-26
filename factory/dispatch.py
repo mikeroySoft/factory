@@ -179,6 +179,9 @@ STANDING_INSTRUCTIONS = """
 - Last, write `.factory/handoff-{n}.md` (gitignored): what you changed, what is
   still unverified, and what you would do next. The next attempt and the human
   who inherits this ticket read it.
+- If a failed gate requires an unauthorized edit to an existing add-only file,
+  add one handoff line: `Needs: add-only-authorization <path>[:<line>] ...`.
+  Name repository-relative paths; this requests a manager decision, not permission.
 - For native-host acceptance, add a `## Native-host proof` handoff section with
   `Head SHA: <tested commit>` and any archive/tree digest, followed by results,
   or cite a worktree-relative proof file (for example `.factory/macos-proof.txt`)
@@ -2455,9 +2458,10 @@ def escalation_packet(
         + f"\n\n## Worktree path\n\n`{wt}`\n"
         + (f"\n{extra.strip()}\n" if extra.strip() else "")
     )
-    round_number = 1 + sum(
-        event.get("event") == "escalate" and event.get("reason") != "manager_failed"
-        for event in generation.current(events, n).rows
+    rows = generation.current(events, n).rows
+    round_number = 1 + max(
+        sum(event.get("event") == "escalate" and event.get("reason") != "manager_failed" for event in rows),
+        max((event.get("round", 0) for event in rows if event.get("event") == "manager-request"), default=0),
     )
     return packet, round_number
 
@@ -2471,6 +2475,8 @@ ESCALATION_CODES = frozenset({
     "refresh_empty", "gh_failed", "review_intake", "manager_failed",
     "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
     "lease_refused", "dispatcher_error", "no_change", "risk_disagreement", "missing_worker_provenance",
+    "add_only_authorization", "worker_no_progress", "mutation_survivors_unresolved",
+    "review_findings_unresolved", "pr_checks_unresolved",
 })
 
 
@@ -2483,6 +2489,7 @@ def escalate(
     code: str,
     refreshed_head: str | None = None,
     evidence_ref: str | None = None,
+    round_number: int | None = None,
 ) -> None:
     assert code in ESCALATION_CODES, code
     assert (refreshed_head is None) == (evidence_ref is None)
@@ -2515,7 +2522,8 @@ def escalate(
             + f"- Refreshed head: `{refreshed_head}`\n"
             + f"- Evidence ref: `{evidence_ref}`\n"
         )
-    packet, round_number = escalation_packet(n, reason, log_path, wt, extra=extra)
+    packet, next_round = escalation_packet(n, reason, log_path, wt, extra=extra)
+    round_number = next_round if round_number is None else round_number
     from factory import trace
 
     cause = _latest_decision_id(n, {"gate", "review", "manager", "claim"})
@@ -4393,6 +4401,12 @@ def _actionable_review(n: int, head: str, verdict: str | None, findings: str, pr
     return bool(_required_fixes(findings, "review"))
 
 
+def unresolved_rework_code(findings: str, pr_failed: bool) -> str:
+    if _actionable_mutation(findings):
+        return "mutation_survivors_unresolved"
+    return "pr_checks_unresolved" if pr_failed else "review_findings_unresolved"
+
+
 def pending_risk_requeue_head(n: int) -> str | None:
     rows = [
         event for event in lifecycle.read_events(EVENTS)
@@ -5255,6 +5269,7 @@ def worker_round(
     selected_worker: str | None = None,
     comments: list[dict] | None = None,
     fixups: bool = True,
+    gate_cache: dict | None = None,
 ) -> tuple[bool, str, Path, str]:
     """One worker + gate cycle, bound to one immutable head."""
     from factory import results
@@ -5377,7 +5392,23 @@ def worker_round(
         sync, labels, body, handoff_path.read_text() if handoff_path.exists() else "",
         comments=comments,
     )
-    ok, report = run_gate(wt, n, **flags)
+    # Reuse only dispatcher-recorded evidence for the same clean commit, base,
+    # authority and engine. The journal digest pins the host-side report.
+    gate_key = (head, run(["git", "rev-parse", f"origin/{cfg.main}"], cwd=wt).stdout.strip(),
+                json.dumps(flags, sort_keys=True), __version__, config.engine_commit())
+    cached = gate_cache.get(gate_key) if gate_cache is not None and not before_status else None
+    cache_report = FACTORY / "gate-cache" / f"{n}.md"
+    if cached is None and gate_cache is not None and not before_status and cache_report.is_file():
+        prior = next((
+            row for row in reversed(generation.current(lifecycle.read_events(EVENTS), n).rows)
+            if row.get("event") == "attempt"
+        ), {})
+        data = cache_report.read_bytes()
+        if (prior.get("gate_key") == list(gate_key) and prior.get("clean")
+                and prior.get("actual_head") == head and prior.get("gate") in {"PASS", "FAIL"}
+                and prior.get("gate_sha256") == hashlib.sha256(data).hexdigest()):
+            cached = prior["gate"] == "PASS", data.decode()
+    ok, report = cached if cached is not None else run_gate(wt, n, **flags)
     actual_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
     after_status = run(status_cmd, cwd=wt).stdout.strip()
     if actual_head != head:
@@ -5398,12 +5429,20 @@ def worker_round(
             f"\n\nWorker hung after done: exit_grace fired ({cfg.exit_grace:g} s quiet after "
             "its commit or handoff without exiting); terminated, then gated."
         )
+    gate_digest = None
+    if gate_cache is not None and actual_head == head and not before_status and not after_status:
+        gate_key = (head, *gate_key[1:])
+        gate_cache[gate_key] = ok, report
+        cache_report.parent.mkdir(parents=True, exist_ok=True)
+        cache_report.write_text(report)
+        gate_digest = hashlib.sha256(report.encode()).hexdigest()
     record(
         "attempt", ticket=n, attempt=attempt, worker_exit=code, gate="PASS" if ok else "FAIL",
         seconds=int(time.monotonic() - started), cost=usage["cost"], log=str(logfile),
         transcript=transcript, brief=brief_path(wt, n).exists(), head=head,
         actual_head=actual_head, clean=not before_status and not after_status,
-        finished=finished,
+        finished=finished, gate_reused=cached is not None,
+        gate_key=list(gate_key), gate_sha256=gate_digest,
         handoff=handoff, **identity, **timeout,
     )
     return ok, report, logfile, head
@@ -5486,6 +5525,26 @@ def transcript_usage(path: Path) -> dict:
             if isinstance(provider, str) and provider:
                 usage["provider"] = provider
     return usage
+
+
+def add_only_request(wt: Path, n: int, labels: set[str]) -> list[str]:
+    if LABEL_ADD_ONLY_OVERRIDE in labels:
+        return []
+    handoff = wt / ".factory" / f"handoff-{n}.md"
+    if not handoff.is_file():
+        return []
+    match = re.search(r"(?m)^Needs: add-only-authorization[ \t]+([^\n]+)$", handoff.read_text())
+    if match is None:
+        return []
+    try:
+        paths = shlex.split(match[1])
+    except ValueError:
+        return []
+    for token in paths:
+        path = re.sub(r":\d+$", "", token)
+        if not path or Path(path).is_absolute() or any(part in {".", ".."} for part in path.split("/")):
+            return []
+    return list(dict.fromkeys(paths))
 
 
 def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
@@ -5599,6 +5658,11 @@ def process_ticket(
                 log(f"#{n}: refused (initiative records are never executed)")
                 execution.outcome = "not_admitted"
                 execution.reason = "initiative"
+                return
+            from factory import manage
+
+            if manage.pending_add_only_request(n):
+                execution.wait("add_only_authorization", mode="retry_next_pass")
                 return
             # `issue view` comments are GraphQL-shaped; host_setup_problem reads REST fields.
             if not cfg.host_name and (problem := host_setup_problem(
@@ -5745,14 +5809,50 @@ def process_ticket(
             staged = None if resolve else sync_staged(n, wt)
             if staged is not None:
                 report, gate_head = staged
+            gate_cache: dict = {}
+            carried_rework = next((
+                row for row in reversed(generation.current(lifecycle.read_events(EVENTS), n).rows)
+                if row.get("event") in {"attempt", "review-rework"}
+            ), {})
+            previous_head = (
+                carried_rework.get("head") if carried_rework.get("event") == "attempt"
+                and carried_rework.get("clean")
+                and carried_rework.get("head") == carried_rework.get("actual_head") else None
+            )
+            if carried_rework.get("event") != "review-rework" or not carried_rework.get("deferred"):
+                carried_rework = {}
             for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, attempt, deadline, body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
                     fixups=attempt == MAX_ATTEMPTS,
+                    gate_cache=gate_cache,
                 )
+                if not ok and (paths := add_only_request(wt, n, labels)):
+                    from factory import manage
+
+                    manage.request_add_only_authorization(n, fresh, paths, report, logfile)
+                    return
+                if carried_rework and gate_head == carried_rework["head"] and not run([
+                    "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+                    ":(exclude).factory-prompt.md", ":(exclude).factory",
+                ], cwd=wt).stdout.strip():
+                    findings = carried_rework["findings"]
+                    escalate(
+                        n, f"deferred rework left head {gate_head} unchanged; required findings remain open",
+                        logfile, extra=findings, code=unresolved_rework_code(findings, False),
+                    )
+                    return
                 if ok:
                     break
+                if gate_head == previous_head and not run([
+                    "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+                    ":(exclude).factory-prompt.md", ":(exclude).factory",
+                ], cwd=wt).stdout.strip():
+                    escalate(n, f"worker left failed head {gate_head} unchanged; worktree kept at {wt}",
+                             logfile, extra=report, code="worker_no_progress")
+                    return
+                previous_head = gate_head
                 if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
                     reason = (
@@ -5857,9 +5957,6 @@ def process_ticket(
                         logfile, code="budget",
                     )
                     return
-                _record_rework(n, gate_head, findings, deferred=False)
-                rounds_used += 1
-                execution.review_round = bounce + 1
                 extra = (
                     f"## PR-tier gate report, round {bounce} (failed)\n\n{findings}"
                     if pr_failed else
@@ -5871,11 +5968,30 @@ def process_ticket(
                 if retry_decision:
                     record_worker_selection(n, labels, cause=retry_decision, relation="retries")
                     record_claim_decision(n, True, retry_decision, relation="retries")
+                previous_head = gate_head
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, MAX_ATTEMPTS + bounce, deadline,
                     body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
+                    gate_cache=gate_cache,
                 )
+                if (not ok or pr_failed) and (paths := add_only_request(wt, n, labels)):
+                    from factory import manage
+
+                    manage.request_add_only_authorization(n, fresh, paths, findings + "\n\n" + report, logfile)
+                    return
+                if gate_head == previous_head and not run([
+                    "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+                    ":(exclude).factory-prompt.md", ":(exclude).factory",
+                ], cwd=wt).stdout.strip():
+                    escalate(
+                        n, f"rework left head {gate_head} unchanged; required findings remain open",
+                        logfile, extra=findings, code=unresolved_rework_code(findings, pr_failed),
+                    )
+                    return
+                _record_rework(n, previous_head, findings, deferred=False)
+                rounds_used += 1
+                execution.review_round = bounce + 1
                 if guidance := _protected_gate_guidance(report, labels):
                     tests = "- protected-tests: FAIL" in report or "- protected-paths: FAIL (add-only" in report
                     reason = (
