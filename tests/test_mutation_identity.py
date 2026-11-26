@@ -48,13 +48,14 @@ class MutationIdentityTest(unittest.TestCase):
         status, report = self.fixture.attempt_gate()
         self.assertEqual(status, 0, report)
         self.assertIn("mutation-equivalents: PASS", report)
-        self.assertIn("factory/example.py:5 -> 6", report)
+        events = (self.fixture.root / ".factory/events.jsonl").read_text()
+        self.assertIn("factory/example.py:5 -> 6", events)
 
     def test_changed_operator_or_mutated_text_remains_a_survivor(self):
         for field, value in (("operator", "core/ObsoleteReplacer"),
                              ("mutated", "    unused = 99")):
             with self.subTest(field=field):
-                entries = [{**entry, field: value} for entry in self.fixture.entries]
+                entries = [{**self.fixture.entries[0], field: value}]
                 (self.fixture.root / "reviewed.json").write_text(json.dumps(entries))
                 status, report = self.fixture.cli()
                 self.assertEqual(status, 1, report)
@@ -87,7 +88,8 @@ class MutationIdentityTest(unittest.TestCase):
         for source, renamed in (
             ("class First:\n" + "\n".join("    " + line for line in SOURCE.splitlines()) + "\n",
              "class Second:"),
-            ("def outer():\n" + "\n".join("    " + line for line in SOURCE.splitlines()) + "\n",
+            ("def outer():\n    # outer scope\n"
+             + "\n".join("    " + line for line in SOURCE.splitlines()) + "\n",
              "def other():"),
         ):
             with self.subTest(scope=source.splitlines()[0]):

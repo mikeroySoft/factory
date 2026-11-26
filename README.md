@@ -1353,17 +1353,18 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    identity has not changed. Matching survivors remain in the report as
    **accepted equivalent**, with the argument and reviewer, but do not block.
    Invalid entries fail in both blocking and report-only modes. Before selecting
-   mutants, committed registries resolve every entry using its complete `original`
-   text plus the three source lines before and after it, from the registry's last
-   committed revision. That protected registry revision is the review snapshot
-   for all entries; updating it reanchors their contexts. At file boundaries,
-   missing neighbours must remain BOF/EOF. Exactly one identical window must exist
-   in the current file: zero or multiple matches, changed context, rewritten or
-   deleted source, unreadable files, and shallow history fail closed. Pure line
-   drift uses the resolved line in every identity comparison without editing the
-   registry; each relocation reports old/new lines, operator, source and context
-   revision. Ad-hoc uncommitted registries remain strictly line-pinned and cannot
-   relocate without a committed review snapshot.
+   mutants, committed registries resolve each entry from the registry's last
+   committed revision, the protected review snapshot. Within a function or class,
+   matching uses the complete `original` text and qualified lexical owner
+   (including enclosing classes and outer functions). Inserting code above a
+   mutant or changing neighbouring lines does not invalidate that identity.
+   Exactly one source match must remain in the same owner; renamed owners,
+   rewritten/deleted source and ambiguous matches fail closed. Module-level
+   entries retain exact three-line before/after context and BOF/EOF boundaries.
+   Unreadable or invalid Python files and shallow history also fail closed.
+   Resolved lines govern every exact operator/original/mutated identity comparison
+   without editing the registry. Each relocation reports old/new lines, operator,
+   source and context revision. Ad-hoc uncommitted registries remain line-pinned.
    The attempt gate runs `mutation-equivalents` validation for configured
    `scripts/mutation.py --equivalents FILE` commands, even when mutation itself
    belongs to the PR tier. Relocations are journaled as `equivalent-relocation`
