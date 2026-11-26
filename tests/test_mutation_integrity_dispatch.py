@@ -300,6 +300,39 @@ class MutationIntegrityDispatchTest(unittest.TestCase):
                 return oid
         self.fail(f"could not synthesize a descendant oid {'>' if greater else '<'} {parent}")
 
+    def test_descendant_oid_handles_boundary_prefixes(self) -> None:
+        real_git = git
+
+        def without_hash_retries(repo: Path, *args: str) -> str:
+            nonlocal commits
+            if args[0] == "commit-tree":
+                commits += 1
+                self.assertEqual(commits, 1, "oid synthesis must not retry commit hashes")
+            return real_git(repo, *args)
+
+        for parent, greater in (
+            ("fffb781bd3263f2de5d8648c7c0432fe8c1a5fcc", True),
+            ("0004781bd3263f2de5d8648c7c0432fe8c1a5fcc", False),
+        ):
+            with self.subTest(parent=parent, greater=greater):
+                git(self.repo, "update-ref", f"refs/replace/{parent}", self.new_base)
+                for _ in range(3):
+                    commits = 0
+                    with mock.patch.dict("os.environ", {
+                        "GIT_AUTHOR_NAME": "Factory Test",
+                        "GIT_AUTHOR_EMAIL": "factory@example.test",
+                        "GIT_COMMITTER_NAME": "Factory Test",
+                        "GIT_COMMITTER_EMAIL": "factory@example.test",
+                        "GIT_AUTHOR_DATE": "2026-11-26T00:00:00+00:00",
+                        "GIT_COMMITTER_DATE": "2026-11-26T00:00:00+00:00",
+                    }), mock.patch(__name__ + ".git", side_effect=without_hash_retries):
+                        child = self.descendant_oid(parent, greater=greater)
+                    self.assertEqual(len(child), 40)
+                    self.assertNotEqual(child, parent)
+                    self.assertEqual(child > parent, greater)
+                    self.assertEqual(git(self.repo, "show", "-s", "--format=%P", child), parent)
+                    git(self.repo, "merge-base", "--is-ancestor", parent, child)
+
     def test_merge_base_failure_is_not_ancestry(self) -> None:
         # proof_base is between snapshot and current so the move path has to
         # ask git; a signal or git error must not count as ancestry.
