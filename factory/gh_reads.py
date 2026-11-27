@@ -132,8 +132,6 @@ class Pass:
             self.codes[code] += 1
             if limited:
                 self.reason, self.reset = code, reset
-            elif self.reason is None and self.reads >= 3 and self.failed_reads * 2 > self.reads:
-                self.reason = "gh_reads_unavailable"
             self.emit("gh-read-skipped", code=code, returncode=status, stderr_tail=detail,
                       rate_limit=probe, rate_limit_probe_error=probe_error, reset=reset,
                       command=cmd[1:3], **identity)
@@ -217,6 +215,10 @@ def run(cmd, invoke, *, env=None, check=True):
         state.failure(cmd, exc, env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         state.failure(cmd, exc, env)
+    finally:
+        with state.lock:
+            if state.reason is None and state.reads >= 3 and state.failed_reads * 2 > state.reads:
+                state.reason = "gh_reads_unavailable"
     return result
 
 
