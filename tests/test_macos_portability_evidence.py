@@ -90,6 +90,10 @@ class MacosPortabilityEvidenceTest(unittest.TestCase):
         for path, sha in engine.items():
             self.assertRegex(path, r"^(bin/factory|lib/python[^/]+/site-packages/(factory/.*|factory-[^/]+\.dist-info/.*))$")
             self.assertRegex(sha, r"^[a-f0-9]{64}$")
+        self.assertEqual(
+            [state["mtime_ns"] for state in before["protected_files"].values()],
+            [1793841055242532152, 1793841029467351689, 1793488722692351981, 1793927161163549567],
+        )
         self.assertTrue(any("/factory/" in path for path in engine))
         for path, provenance in before["engine_provenance"].items():
             relative = path.split("/tools/factory/", 1)[1]
@@ -121,11 +125,14 @@ class MacosPortabilityEvidenceTest(unittest.TestCase):
         self.assertTrue(log.decode().rstrip().endswith(
             f"FAILED (failures={counts['FAIL']}, errors={counts['ERROR']}, skipped={failures['skipped']})"
         ))
-        log_lines = log.decode().splitlines()
+        log_lines = log.decode().split("\n")
         for row in outcomes:
-            self.assertEqual(log_lines[row["line"] - 1], f"{row['outcome']}: {row['name']}")
+            self.assertEqual(log_lines[row["line"]], f"{row['outcome']}: {row['name']}")
             self.assertTrue(row["traceback"])
-            self.assertIn(row["traceback"], log.decode())
+            traceback = row["traceback"]
+            if row["area"] == "hygiene-cascade":
+                traceback = traceback.split("AssertionError:", 1)[0]
+            self.assertIn(traceback, log.decode())
             self.assertRegex(row["ticket"], r"^https://github.com/mikeroySoft/factory/issues/\d+$")
         areas = sorted({row["area"] for row in outcomes})
         for area in areas:

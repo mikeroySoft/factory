@@ -1,11 +1,11 @@
 {
-  "root": "/private/tmp/factory-572-z2uygc2o",
-  "checkout": "/private/tmp/factory-572-z2uygc2o/checkout",
+  "root": "<scratch>",
+  "checkout": "<scratch>/checkout",
   "sha": {
     "command": [
       "git",
       "-C",
-      "/private/tmp/factory-572-z2uygc2o/checkout",
+      "<scratch>/checkout",
       "rev-parse",
       "origin/main"
     ],
@@ -52,8 +52,8 @@
     "tests"
   ],
   "environment_overrides": {
-    "XDG_CONFIG_HOME": "/private/tmp/factory-572-z2uygc2o/xdg",
-    "UV_CACHE_DIR": "/private/tmp/factory-572-z2uygc2o/uv-cache",
+    "XDG_CONFIG_HOME": "<scratch>/xdg",
+    "UV_CACHE_DIR": "<scratch>/uv-cache",
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_NOSYSTEM": "1",
     "PYTHONUNBUFFERED": "1"
@@ -63,7 +63,7 @@
   "finished_at": "2026-11-06T08:03:48.953797+00:00",
   "python": {
     "command": [
-      "/private/tmp/factory-572-z2uygc2o/checkout/.venv/bin/python",
+      "<scratch>/checkout/.venv/bin/python",
       "--version"
     ],
     "exit": 0,
@@ -74,7 +74,7 @@
     "command": [
       "git",
       "-C",
-      "/private/tmp/factory-572-z2uygc2o/checkout",
+      "<scratch>/checkout",
       "status",
       "--porcelain=v1",
       "--untracked-files=all"
@@ -83,7 +83,7 @@
     "stdout": "",
     "stderr": ""
   },
-  "suite_log_sha256": "a722bc9d542330634f1503dbfc6acc240b0a260dcfea0635c9184a29cd4cb7f9",
+  "suite_log_sha256": "578f9fd303ee817030b370aac554460260dba83129b6341d0751f7b987a0532e",
   "unchanged": {
     "launchctl_factory": true,
     "protected_files": true,
@@ -93,5 +93,21 @@
     "benito_head": true,
     "benito_status": true,
     "benito_diff": true
+  },
+  "scrub": {
+    "tool": "OMP edit, using JavaScript RegExp/String.replaceAll and JSON.parse/stringify",
+    "date": "2026-11-26",
+    "rules": [
+      "Replace the operator home prefix with <home> and experiment scratch root with <scratch>.",
+      "Replace the native per-user temporary root with <tmp>; retain its canonical alias as <resolved-tmp>. Apply to full and unittest-truncated paths without changing line breaks.",
+      "Keep only the factory package, factory dist-info, and bin/factory engine hashes; preserve all retained digests and snapshot comparison keys.",
+      "Recompute the committed suite.log SHA-256 and byte count; preserve outcome IDs, counts, line anchors, and measured revisions."
+    ],
+    "original_suite_log_bytes": 491942,
+    "original_suite_log_sha256": "a722bc9d542330634f1503dbfc6acc240b0a260dcfea0635c9184a29cd4cb7f9",
+    "suite_log_bytes": 452396,
+    "original_engine_file_count": 2323,
+    "retained_engine_file_count": 73,
+    "removed_engine_file_count": 2250
   }
 }

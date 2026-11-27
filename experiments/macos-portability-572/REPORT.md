@@ -19,11 +19,11 @@ One top-level run of the unchanged configured test gate at **origin/main `3c2c99
 
 Counts are not interchangeable: `1522 - 78 - 18 - 11 = 1415` is **not** the number of passed methods. A subtest failure and a cleanup error can belong to one method. Deduplicating the 96 outer reports yields 85 unsuccessful methods; `1522 - 85 - 11 = 1426`. Failure-only methods: 69; error-only: 12; both: 4. The exact extracted IDs, subtest labels, outcome types, area assignments and original log-line anchors are in [failures.json](failures.json).
 
-The suite itself launches nested suites in `test_tempdir_hygiene`; those outputs are retained verbatim but excluded from outer totals. No manual rerun, isolated test rerun, skip, xfail, expectedFailure, or gate relaxation was used for this inventory.
+The suite itself launches nested suites in `test_tempdir_hygiene`; those outputs are retained with host paths normalized but excluded from outer totals. No manual rerun, isolated test rerun, skip, xfail, expectedFailure, or gate relaxation was used for this inventory.
 
 ## Checkout and command
 
-Cloned `https://github.com/mikeroySoft/factory.git`, main only, into `/private/tmp/factory-572-z2uygc2o/checkout`, outside both the live engine and `/Users/mike/factories/benito-app`. Recorded origin/main and checkout HEAD were the SHA above; final `git status --porcelain=v1 --untracked-files=all` was empty. The checkout was never edited.
+Cloned `https://github.com/mikeroySoft/factory.git`, main only, into `<scratch>/checkout`, outside both the live engine and `<home>/factories/benito-app`. Recorded origin/main and checkout HEAD were the SHA above; final `git status --porcelain=v1 --untracked-files=all` was empty. The checkout was never edited.
 
 The command was read from that checkout's `.factory.toml` `test` check, including its existing `--no-managed-python` option:
 
@@ -31,18 +31,26 @@ The command was read from that checkout's `.factory.toml` `test` check, includin
 uv run --frozen --no-managed-python python -m unittest discover -s tests
 ```
 
-Process-local isolation, not repository edits: `XDG_CONFIG_HOME=/private/tmp/factory-572-z2uygc2o/xdg`, `UV_CACHE_DIR=/private/tmp/factory-572-z2uygc2o/uv-cache`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, `PYTHONUNBUFFERED=1`; inherited `FACTORY_LIFECYCLE_CONTEXT` removed. HOME, native TMPDIR, platform and PATH were not replaced. The stock fixtures additionally isolate their own host configuration.
+Process-local isolation, not repository edits: `XDG_CONFIG_HOME=<scratch>/xdg`, `UV_CACHE_DIR=<scratch>/uv-cache`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, `PYTHONUNBUFFERED=1`; inherited `FACTORY_LIFECYCLE_CONTEXT` removed. HOME, native TMPDIR, platform and PATH were not replaced. The stock fixtures additionally isolate their own host configuration.
 
 ## Complete evidence
 
 - [Published summary on #572](https://github.com/mikeroySoft/factory/issues/572#issuecomment-6680417436); issue/comment bodies were read back through the authenticated API.
-- [Hosted full log and before/after snapshots](https://gist.github.com/mikeroySoft/faf417ab4344ba6061ef41a06e20c633); hosted suite.log bytes were read back through `gh gist view --raw` and SHA-256 verified.
-- [suite.log](suite.log): **491942 bytes**, SHA-256 **`a722bc9d542330634f1503dbfc6acc240b0a260dcfea0635c9184a29cd4cb7f9`**; complete combined stdout/stderr, including nested hygiene output.
+- [Hosted full log and before/after snapshots](https://gist.github.com/mikeroySoft/faf417ab4344ba6061ef41a06e20c633); original hosted suite.log bytes were read back through `gh gist view --raw` and SHA-256 verified. Hosted copies are historical originals; this scrub changes only committed artifacts.
+- [suite.log](suite.log): **452396 bytes**, SHA-256 **`578f9fd303ee817030b370aac554460260dba83129b6341d0751f7b987a0532e`**; path-normalized complete combined stdout/stderr, including nested hygiene output.
 - [metadata.json](metadata.json): exact argv, versions, start/end, exit, checkout status, digest and comparison results.
 - [before.json](before.json), [after.json](after.json): launchd rows, protected-file digests/modes/mtime, installed-engine manifest/provenance and benito checkout state.
-- [failures.json](failures.json): all 96 outer outcome reports, with complete outer tracebacks; hygiene bodies summarize their child exit while the unabridged child logs remain in suite.log.
+- [failures.json](failures.json): all 96 outer outcome reports, with path-normalized outer tracebacks; hygiene bodies summarize their child exit while the unabridged child logs remain in suite.log.
 
-The remote scratch checkout and evidence directory remain available at `/private/tmp/factory-572-z2uygc2o`. They were not installed or used to launch a service.
+At capture time, the remote scratch checkout and evidence directory were retained at `<scratch>`. They were not installed or used to launch a service.
+
+## Publication scrub — #728
+
+Host paths use `<home>` for the operator home, `<scratch>` for the experiment root, `<tmp>` for the native per-user temporary root, and `<resolved-tmp>` for its canonical alias. The last two remain distinct so canonical-path failures still show the measured mismatch. The same substitutions cover full and unittest-truncated paths in every committed artifact without changing log line numbers. Existing unittest `[N chars]` markers describe the original output, not placeholder lengths.
+
+The original 2323-entry engine manifest is reduced to 73 factory/launcher entries; 2250 third-party or venv-support hashes were removed from each snapshot. Retained source and distribution hashes, measured revisions, all eight comparison keys, and all 96 failure/error reports are unchanged. No separate test-tree hash manifest was present in the original capture; the tested checkout remains pinned by its source revision. Metadata records the scrub tool, date, rules, original log digest/size, and recomputed committed log digest/size. No experiment was rerun and no hosted copy was modified.
+
+Regression checks scan `experiments/` for new absolute host paths and validate snapshot comparisons, retained hashes, log digest/anchors, and report counts. Existing out-of-scope fixture path lines are digest-pinned rather than blanket-exempted.
 
 ## Failure areas and linked tickets
 
@@ -62,7 +70,7 @@ Every outer failure/error has one primary area below; dependency overlaps are de
 | transport-proc-cleanup | 0 | 5 | [#677](https://github.com/mikeroySoft/factory/issues/677) |
 | **Total** | **78** | **18** | |
 
-- **Canonical paths (#641, 43 FAIL):** `/var/folders/...` fixture roots differ from `/private/var/folders/...` returned by resolve/git/getcwd; includes workspace's selected-repository refusal and the selected-interpreter diagnostic. Normalize identity comparison boundaries and fixture expectations, retaining rejection of genuinely different roots. The selected-interpreter branch is a source-supported suspected same-family cause, not independently reproduced.
+- **Canonical paths (#641, 43 FAIL):** `<tmp>/...` fixture roots differ from `<resolved-tmp>/...` returned by resolve/git/getcwd; includes workspace's selected-repository refusal and the selected-interpreter diagnostic. Normalize identity comparison boundaries and fixture expectations, retaining rejection of genuinely different roots. The selected-interpreter branch is a source-supported suspected same-family cause, not independently reproduced.
 - **Process/lock identity (#632, 25 FAIL + 6 ERROR):** absent `/proc`/machine identity produces unknown liveness and missing/duplicate owner rows. `lifecycle._resource` uses `_host_id() or _UNKNOWN_HOST` while `resources` compares to bare `_host_id()`, making local false when the probe returns None. Use consistent stable native host/boot/process identity. #641 may also affect lexical lock-path comparisons. No independent failure of fcntl was demonstrated.
 - **Evidence identity (#626, 2 FAIL):** complete-state observe exits 1 with partial_collection and missing native boot/namespace/host identity. The transport method's assertion truncates output before the error list; its same-source attribution is inference from the shared observe path and existing #626 evidence.
 - **Transport cleanup (#677, 5 ERROR across 4 methods):** marker_pids unconditionally enumerates absent `/proc`, including cleanup for non-forking cases. Replace the Linux-shaped fixture with portable test-owned process discovery; preserve descendant/SIGINT assertions. This is separate from production identity handling.
@@ -101,7 +109,7 @@ Requested `launchctl list | grep factory` rows, before **and** after:
 
 Capture implementation ran `launchctl list` and filtered lines containing `factory` in Python (equivalent to the requested grep); the pipeline text in the snapshot is its display label. Exit 0 and no stderr both times. No load/unload/start/stop/restart or plist write was performed.
 
-The old District engine source path in the ticket is no longer present. The actual launcher resolves to `/Users/mike/.local/share/uv/tools/factory/bin/factory`; installed version is **0.4.7**, with unchanged PEP 610 VCS commit **`1ccadb38845d44ce4961659c32ef33530a34f507`** before/after. All **2323** captured engine-file SHA-256 entries match; `__pycache__` and `.pyc` are deliberately excluded. Launcher, active plist, saved plist and factory config all retain identical resolved path, digest, mode and mtime. No config contents were published, only hashes.
+The old District engine source path in the ticket is no longer present. The actual launcher resolves to `<home>/.local/share/uv/tools/factory/bin/factory`; installed version is **0.4.7**, with unchanged PEP 610 VCS commit **`1ccadb38845d44ce4961659c32ef33530a34f507`** before/after. All **73** retained engine-file SHA-256 entries match (factory package, factory dist-info including RECORD/direct_url.json, and launcher); `__pycache__` and `.pyc` are deliberately excluded. Launcher, active plist, saved plist and factory config all retain identical resolved path, digest, mode and mtime. No config contents were published, only hashes.
 
 Benito checkout HEAD remains **`1442a3c40d3db506939d24b334e71cb9496b853c`**; tracked diff remains empty, status identical with the same three pre-existing untracked `.factory` runtime files. Those runtime files' contents were not snapshotted; no claim is made about incidental live journal writes. No command ran inside that checkout except read-only git inspection with `GIT_OPTIONAL_LOCKS=0`.
 
