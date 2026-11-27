@@ -19,26 +19,35 @@ def _within(value: str, root: Path) -> bool:
 
 
 def _users(root: Path) -> bool:
-    """Only confirmed live process use protects an unlocked root, never unknowns."""
+    """Protect roots with live users or an inconclusive non-Linux probe."""
     root = root.resolve()
     if sys.platform != "linux":
-        # macOS has no /proc. lsof covers cwd/open files; ps covers inherited
-        # scratch paths even when the child has changed cwd and closed its files.
-        with suppress(OSError, subprocess.TimeoutExpired):
+        # Inspect process file names, not the scratch tree. Each probe has a
+        # deadline; uncertainty retains the root rather than risking live data.
+        try:
             result = subprocess.run(
-                ["lsof", "-t", "+D", str(root)], capture_output=True, text=True, timeout=10, check=False,
+                ["lsof", "-nP", "-Fpn"], capture_output=True, text=True, timeout=10, check=False,
             )
-            if any(pid.isdecimal() and int(pid) != os.getpid() for pid in result.stdout.split()):
+            if result.returncode or result.stderr:
                 return True
-        with suppress(OSError, subprocess.TimeoutExpired):
+            other_process = False
+            for field in result.stdout.splitlines():
+                if field.startswith("p"):
+                    other_process = field[1:].isdecimal() and int(field[1:]) != os.getpid()
+                elif other_process and field.startswith("n") and _within(field[1:], root):
+                    return True
             result = subprocess.run(
                 ["ps", "axeww", "-o", "pid=,command="], capture_output=True, text=True, timeout=10, check=False,
             )
+            if result.returncode or result.stderr:
+                return True
             for line in result.stdout.splitlines():
                 parts = line.split(None, 1)
                 if (len(parts) == 2 and parts[0].isdecimal() and int(parts[0]) != os.getpid()
                         and any(f"{key}={root}" in parts[1] for key in ("TMPDIR", "GH_CONFIG_DIR"))):
                     return True
+        except (OSError, subprocess.TimeoutExpired):
+            return True
         return False
     try:
         processes = list(Path("/proc").iterdir())

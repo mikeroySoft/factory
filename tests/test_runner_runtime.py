@@ -190,6 +190,56 @@ class RunnerRuntimeTest(unittest.TestCase):
                 events.append(events[-1] | {"outcome": "completed", "reason": None})
                 self.assertEqual(watch.signals(cfg, events), [])
 
+    def test_nonlinux_reap_retains_roots_when_owner_probes_fail(self):
+        from factory import runner
+
+        for command in ("lsof", "ps"):
+            for failure in ("timeout", "oserror", "exit"):
+                with self.subTest(command=command, failure=failure):
+                    root = self.base / "factory-runner-probe"
+                    root.mkdir(exist_ok=True)
+
+                    def probe(argv, command=command, failure=failure, **kwargs):
+                        if argv[0] == command:
+                            if failure == "timeout":
+                                raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+                            if failure == "oserror":
+                                raise OSError("probe unavailable")
+                            return subprocess.CompletedProcess(argv, 2, "", "probe failed")
+                        return subprocess.CompletedProcess(argv, 0, "", "")
+
+                    with mock.patch.object(runner.sys, "platform", "darwin"), \
+                            mock.patch.object(runner.subprocess, "run", side_effect=probe):
+                        runner.reap()
+                    self.assertTrue(root.exists())
+
+    def test_nonlinux_reap_checks_child_paths_without_recursive_walk(self):
+        from factory import runner
+
+        for source in ("file", "environment", "empty"):
+            with self.subTest(source=source):
+                root = (self.base / "factory-runner-child").resolve()
+                root.mkdir(exist_ok=True)
+                child = os.getpid() + 100000
+
+                def probe(argv, source=source, child=child, root=root, **kwargs):
+                    self.assertNotIn("+D", argv)
+                    self.assertGreater(kwargs["timeout"], 0)
+                    self.assertLessEqual(kwargs["timeout"], 10)
+                    output = ""
+                    if argv[0] == "lsof" and source == "file":
+                        output = f"p{child}\nn{root}/nested/open-file\n"
+                    if argv[0] == "ps" and source == "environment":
+                        output = f"{child} child TMPDIR={root}/nested\n"
+                    return subprocess.CompletedProcess(argv, 0, output, "")
+
+                with mock.patch.object(runner.sys, "platform", "darwin"), \
+                        mock.patch.object(runner.subprocess, "run", side_effect=probe):
+                    runner.reap()
+                self.assertEqual(root.exists(), source != "empty")
+                if root.exists():
+                    shutil.rmtree(root)
+
     # reap(), temp_root() and preflight() edges (#694, r3-0250).
     def test_preflight_refuses_one_byte_below_the_free_space_minimum_and_admits_the_minimum(self):
         from factory import runner
