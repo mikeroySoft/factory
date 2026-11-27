@@ -80,15 +80,12 @@ flowchart TB
   RFA -->|"its PR's CI red after the release, or idle stale_days counted from the release: manage.frontier_pass, manage.released_at"| ESC
   CLAIM -->|"dispatch.process_ticket"| WR
   WR -->|"gate FAIL or worker stuck, attempts left, report fed back: dispatch.process_ticket"| WR
-  WR -->|"unchanged clean head reuses gate evidence, no retry: dispatch.process_ticket"| ESC
-  WR -->|"failed gate and Needs add-only authorization, no strike: manage.request_add_only_authorization"| MGR
   WR -->|"gate FAIL or stuck max_attempts, protected paths, or budget with unfinished handoff: dispatch.process_ticket"| ESC
   WR -->|"gate PASS, including expired clean finish: dispatch.worker_round"| PUSH
   PUSH -->|"nothing ahead of main or PR target mismatch: dispatch.push_and_pr"| ESC
   PUSH -->|"dispatch.review"| REV
   REV -->|"REVISE or pr-tier gate FAIL, review_rounds left: dispatch.process_ticket"| WR
   REV -->|"rounds exhausted, reject, protected paths, bounce gate FAIL or stuck, or budget without actionable findings: dispatch.process_ticket"| ESC
-  WR -->|"unchanged rework head, unresolved cause, no PR-tier checks or review: dispatch.process_ticket"| ESC
   REV -->|"APPROVE, evidence bound to head: dispatch.approve_pr"| FA
   REV -->|"APPROVE but head or human review changed: dispatch.process_ticket"| ESC
   REV -->|"APPROVE, manager.review = all: dispatch.approve_pr waits"| MAPP
@@ -98,6 +95,9 @@ flowchart TB
   MAPP -->|"CI fail, late feedback, stale, rounds exhausted, HUMAN: manage.frontier_pass"| ESC
   FA -->|"late feedback or stale past stale_days, any manager.review mode: manage.frontier_pass"| ESC
   MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
+  WR -->|"unchanged clean head reuses gate evidence, no retry: dispatch.process_ticket"| ESC
+  WR -->|"failed gate and Needs add-only authorization, no strike: manage.request_add_only_authorization"| MGR
+  WR -->|"unchanged rework head, unresolved cause, no PR-tier checks or review: dispatch.process_ticket"| ESC
   PUSH -->|"agent/<n> push refused, remote moved since the lease was read or leased head absent from starting and final history while starting head remains an ancestor of final: dispatch.push_agent"| ESC
   CLAIM -->|"any other dispatcher exception after the claim, then re-raised: dispatch.process_ticket"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
