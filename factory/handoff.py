@@ -156,7 +156,7 @@ def compose(n: int, request: str, token: str, escalation: dict, why: str, observ
         "",
         "**Routing**",
         *routing,
-        ("To claim or reassign this decision, set a `**Decision owner**` section (a GitHub login) in the issue body; "
+        ("To claim or reassign this decision, set a `**Decision owner**` section (a GitHub login or host-configured bot role) in the issue body; "
          "the next pass reflects it and never overwrites it."),
         "",
         f"<!-- {token} -->",

@@ -79,7 +79,7 @@ ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engin
 # upstream never come from here. Everything else is left for other tools (District).
 # `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
 # `leak_scan.extra` is read from both and concatenated: host terms only add to the scan.
-HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "manager", "install", "prices"})
+HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "manager", "install", "prices", "bot_owners"})
 HOST_KEYS = {"dashboard": ("port",), "gate": ("lock", "mutation_duration", "mutation_slots"),
              "review": ("command", "second_command", "json_mode")}
 HOST_SCALARS = ("host_name", "triage_host", "land_host", "release_host", "claim_ttl")
@@ -106,6 +106,7 @@ KNOWN_KEYS = {
     "dashboard": ("port", "theme"),
     "install": ("every", "dashboard", "host", "python", "env", "dispatch_env"),
     "collaboration": ("fallback", "reasons", "components"),
+    "bot_owners": ("fallback", "roles"),
     "prices": None,
     "watch": ("engine_repo", "host_failure_minutes"),
 }
@@ -130,6 +131,9 @@ BAND_TIERS = frozenset({"log", "diagnose", "act"})
 ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
 # GitHub login, or `@org/team`. Syntax only: never proof of membership or authorization.
 OWNER = re.compile(r"@?(?P<login>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)|(?P<team>@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100})")
+# Vetted non-human accounts only; login syntax and naming conventions do not prove bot ownership.
+BOT_OWNER_LOGINS = frozenset({"mikeroysoft-grok"})
+OWNER_ROLE = re.compile(r"[A-Za-z][A-Za-z0-9 -]*")
 
 
 class ConfigError(SystemExit):
@@ -271,6 +275,8 @@ class Config:
     install: dict = field(default_factory=lambda: dict(DEFAULT_INSTALL))  # `factory install` defaults
     # `[collaboration]`: human decision owners for `factory plan route`; None = section absent (legacy behaviour).
     collaboration: dict | None = None
+    # Host-only role aliases and delivery fallback; absent preserves explicit login/team routing.
+    bot_owners: dict | None = None
     # `[watch].engine_repo`: where `factory watch` files engine/runtime failures from every install.
     watch_engine_repo: str = ENGINE_REPO
     watch_host_failure_minutes: int = 60
@@ -523,6 +529,23 @@ def owner(value: object, where: str) -> str:
     return match["login"] or match["team"]
 
 
+def bot_owner_settings(table: dict) -> dict:
+    """Host role destinations must be vetted bot logins, including the unknown-role fallback."""
+    if set(table) - {"fallback", "roles"}:
+        raise ConfigError("bot_owners: expected only fallback and roles")
+    roles = table.get("roles", {})
+    if not isinstance(roles, dict) or any(
+        not isinstance(role, str) or not OWNER_ROLE.fullmatch(role) or role != role.strip()
+        for role in roles
+    ):
+        raise ConfigError("bot_owners.roles must map role names to approved bot logins")
+    fallback = table.get("fallback")
+    for value in (fallback, *roles.values()):
+        if not isinstance(value, str) or value not in BOT_OWNER_LOGINS:
+            raise ConfigError("bot_owners roles and fallback require an approved bot login")
+    return {"roles": dict(roles), "fallback": fallback}
+
+
 def collaboration_settings(table: object) -> dict:
     """Validate `[collaboration]`: fallback owner, per-reason owners, exact path-prefix component owners."""
     if not isinstance(table, dict):
@@ -704,8 +727,9 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     host = host_config()
     host_sections = (host.get("defaults", {}), host.get("repo", {}).get(slug, {}))
     for section in host_sections:
-        if "worker_wrap" in section and not isinstance(section["worker_wrap"], dict):
-            raise ConfigError(f"{host_config_path()}: worker_wrap must be a table")
+        for table in ("worker_wrap", "bot_owners"):
+            if table in section and not isinstance(section[table], dict):
+                raise ConfigError(f"{host_config_path()}: {table} must be a table")
     layered = merge(host_filter(host_sections[0]), host_filter(host_sections[1]))
     host_review = layered.get("review", {})
     raw, raw_repo = merge(layered, raw), raw
@@ -726,6 +750,10 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
     if not isinstance(evaluation, dict):
         raise ConfigError("[eval] must be a table")
     cfg = Config(root=root, repo=slug, raw_repo=raw_repo)
+    if "bot_owners" in raw_repo:
+        raise ConfigError(f"{path}: bot_owners is host-only; set it in {host_config_path()}")
+    if "bot_owners" in layered:
+        cfg.bot_owners = bot_owner_settings(layered["bot_owners"])
     for key in ("host_name", "triage_host", "land_host", "release_host"):
         value = layered.get(key)
         if value is not None and (
