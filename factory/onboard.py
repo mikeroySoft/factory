@@ -386,7 +386,10 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
 
     with probe:
         try:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # A BSD wildcard bind with SO_REUSEADDR can hide specific-address
+            # listeners. Require an exclusive bind for wildcard targets there.
+            if not (platform_identity.darwin() and target[0] == "0.0.0.0"):
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(target)
             # BSD SO_REUSEADDR lets this specific bind succeed beside a listening
             # wildcard (`0.0.0.0`, dual-stack `::`) that still serves the address.
