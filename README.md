@@ -898,13 +898,15 @@ fallback = "mikeroysoft-grok"
 
 Per-repository host overrides use `[repo."owner/name".bot_owners]` and its
 `roles` subtable. Tickets keep `**Decision owner**` followed by `Factory PM`;
-`Decision owner: Factory PM` on its own line is also accepted. Role names are
-case-sensitive. The mapping is checked before login syntax, and a nonempty
-unknown role name (letters, digits, spaces and hyphens, starting with a letter)
-that is not a valid login logs a warning and routes to the required bot
-`fallback`, recording the unknown name in public routing provenance. Empty,
-multiline or malformed declarations remain invalid. Without host bot settings,
-existing explicit-login/team routing is unchanged.
+`Decision owner: Factory PM` on its own line is also accepted when bot settings
+are configured; malformed inline values are ignored. Role names are case-sensitive.
+The mapping is checked before login syntax. With bot settings, unknown bare role
+names (letters, digits, spaces and hyphens, starting with a letter) log a warning
+and route to the required bot `fallback`, even if the name could be a login.
+Use `@login` or `@org/team` for explicit destinations on these hosts. Unknown names
+are recorded in public routing provenance. Empty, multiline or malformed bold
+sections remain invalid. Without host bot settings, inline declarations are ignored
+and existing bold-section explicit-login/team routing is unchanged.
 
 Role targets and the fallback accept only the vetted non-human account
 `mikeroysoft-grok`; adding another account requires extending

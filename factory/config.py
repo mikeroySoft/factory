@@ -133,7 +133,7 @@ ROUTE_REASONS = ("requirements", "implementation", "ci", "unknown")
 OWNER = re.compile(r"@?(?P<login>[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)|(?P<team>@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100})")
 # Vetted non-human accounts only; login syntax and naming conventions do not prove bot ownership.
 BOT_OWNER_LOGINS = frozenset({"mikeroysoft-grok"})
-OWNER_ROLE = re.compile(r"[A-Za-z][A-Za-z0-9 -]*")
+OWNER_ROLE = re.compile(r"[A-Za-z](?:[A-Za-z0-9 -]*[A-Za-z0-9-])?")
 
 
 class ConfigError(SystemExit):
@@ -535,7 +535,7 @@ def bot_owner_settings(table: dict) -> dict:
         raise ConfigError("bot_owners: expected only fallback and roles")
     roles = table.get("roles", {})
     if not isinstance(roles, dict) or any(
-        not isinstance(role, str) or not OWNER_ROLE.fullmatch(role) or role != role.strip()
+        not isinstance(role, str) or not OWNER_ROLE.fullmatch(role)
         for role in roles
     ):
         raise ConfigError("bot_owners.roles must map role names to approved bot logins")

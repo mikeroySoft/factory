@@ -121,7 +121,7 @@ class OwnerRolesTest(unittest.TestCase):
                 route = self.cli.events("handoff")[0]["route"]
                 self.assertEqual((route["status"], route["owner"], route["source"]),
                                  ("selected", BOT, "fallback"))
-                self.assertEqual(route["provenance"][0]["outcome"], "absent")
+                self.assertIn("- decision_owner: absent", self.cli.requests()[0]["body"])
                 self.assertIn(f"@{BOT} — you own this decision", self.cli.requests()[0]["body"])
 
     def test_malformed_inline_value_does_not_block_collaboration_delivery(self):
@@ -131,7 +131,7 @@ class OwnerRolesTest(unittest.TestCase):
         route = self.cli.events("handoff")[0]["route"]
         self.assertEqual((route["status"], route["owner"], route["source"]),
                          ("selected", BOT, "fallback"))
-        self.assertEqual(route["provenance"][0]["outcome"], "absent")
+        self.assertIn("- decision_owner: absent", self.cli.requests()[0]["body"])
         self.assertIn(f"@{BOT} — you own this decision", self.cli.requests()[0]["body"])
 
     def test_explicit_bot_login_keeps_direct_routing(self):
