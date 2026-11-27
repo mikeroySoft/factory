@@ -17,6 +17,8 @@ class AuthorizationReworkTest(unittest.TestCase):
         fixture.cfg.manager = ["manager", "{prompt}"]
         fixture.cfg.review_rounds = 2
         fixture.patch(manage, "human_activity", return_value=False)
+        fixture.patch(dispatch, "fallback_worker", return_value="default")
+        fixture.patch(dispatch, "worker_missing", return_value=None)
         fixture.patch(manage, "selectable_workers", return_value={"default": []})
         original = fixture.command.side_effect
 

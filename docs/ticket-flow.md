@@ -218,6 +218,8 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
 | `learn.promote` | — | `factory-approved` | `factory learn` PR (lessons, curate, revert-lessons) with head-bound gate PASS, reviewer APPROVE and green CI, then squash merge (`learn.promote_pass` runs it per PR); lessons/curate merges open a `promotion-open` that `learn.decide_promotions` keeps or reverts |
 | `manage.apply` | `ready-for-human`, `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority and requeues; RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
+| `manage._handle_add_only_request` | `ready-for-agent` | `ready-for-agent`, `ready-for-human` | Release a queued claim while its durable request blocks workers; CLOSE/SPLIT retain ordinary terminal parent disposition |
+| `manage.pending_add_only_request` | — | `ready-for-agent` | Direct human add-only authority releases an old queued claim before completing its request |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |
 | `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, `ready-for-human`, or `wontfix-proposal` |
 | `watch.run_pass` | — | `*` | New `bug` + `needs-triage` issue per runtime-failure fingerprint (`watch.LABELS`) |

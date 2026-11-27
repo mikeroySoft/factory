@@ -4424,20 +4424,23 @@ def refresh_requeue_context(n: int) -> str:
     rows = [
         event for event in lifecycle.read_events(EVENTS)
         if event.get("ticket") == n
-        and event.get("event") in {
-            "attempt", "conflict-requeue", "gate-requeue", "risk-requeue",
-            "review-rework",
-        }
+        and (
+            event.get("event") in {
+                "attempt", "conflict-requeue", "gate-requeue", "risk-requeue", "review-rework",
+            }
+            or event.get("event") == "manager-request" and event.get("rework")
+        )
     ]
     if not rows or rows[-1]["event"] == "attempt":
         return ""
     event = rows[-1]
-    if event["event"] == "review-rework":
+    if event["event"] in {"review-rework", "manager-request"}:
+        rework = event.get("rework", event)
         return (
             f"## Reviewer findings, round {event['round']} (carried from the previous pass)\n\n"
-            f"{event['findings']}\n\n"
+            f"{rework['findings']}\n\n"
             "Address required fixes only on the existing ticket branch. Gate and review run again.\n\n"
-        ) if event.get("deferred") else ""
+        ) if event.get("deferred") or event.get("rework") else ""
     if event["event"] == "conflict-requeue":
         return (
             f"## Refresh conflict, round {event['round']}\n\n"
@@ -5817,13 +5820,16 @@ def process_ticket(
             carried_rework = next((
                 row for row in reversed(generation.current(lifecycle.read_events(EVENTS), n).rows)
                 if row.get("event") in {"attempt", "review-rework"}
+                or row.get("event") == "manager-request" and row.get("rework")
             ), {})
             previous_head = (
                 carried_rework.get("head") if carried_rework.get("event") == "attempt"
                 and carried_rework.get("clean")
                 and carried_rework.get("head") == carried_rework.get("actual_head") else None
             )
-            if carried_rework.get("event") != "review-rework" or not carried_rework.get("deferred"):
+            if carried_rework.get("event") == "manager-request":
+                carried_rework = carried_rework["rework"]
+            elif carried_rework.get("event") != "review-rework" or not carried_rework.get("deferred"):
                 carried_rework = {}
             for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
                 ok, report, logfile, gate_head = worker_round(
@@ -5844,7 +5850,8 @@ def process_ticket(
                     findings = carried_rework["findings"]
                     escalate(
                         n, f"deferred rework left head {gate_head} unchanged; required findings remain open",
-                        logfile, extra=findings, code=unresolved_rework_code(findings, False),
+                        logfile, extra=findings,
+                        code=unresolved_rework_code(findings, carried_rework.get("pr_failed", False)),
                     )
                     return
                 if ok:
@@ -5983,7 +5990,10 @@ def process_ticket(
                 if (not ok or pr_failed) and (paths := add_only_request(wt, n, labels)):
                     from factory import manage
 
-                    manage.request_add_only_authorization(n, fresh, paths, findings + "\n\n" + report, logfile)
+                    manage.request_add_only_authorization(
+                        n, fresh, paths, findings + "\n\n" + report, logfile,
+                        rework={"head": previous_head, "findings": findings, "pr_failed": pr_failed},
+                    )
                     return
                 if ok and gate_head == previous_head and not run([
                     "git", "status", "--porcelain", "--untracked-files=all", "--", ".",

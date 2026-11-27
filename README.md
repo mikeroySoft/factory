@@ -774,9 +774,12 @@ sends the named paths and full failed report, including test IDs, to the manager
 in the same pass. This is a request, not authority: no failure escalation or
 `ready-for-human` label is applied unless the manager declines. Without an
 available manager, the durable request waits without launching another worker.
-A live `factory-add-only-override` label completes that pending request at dispatch
-or manager admission, without replaying the manager, including after a partial
-decision application. Unrelated human activity does not grant authorization.
+Queued requests release the ticket assignment and host claim while the durable
+pending guard blocks further workers. A live `factory-add-only-override` label
+completes that pending request at dispatch or manager admission, without replaying
+the manager, including after a partial decision application. Unrelated human
+activity does not grant authorization. CLOSE and SPLIT retain the parent in
+`ready-for-human`, as on the ordinary manager path.
 Authorization requests and ordinary escalations share monotonically increasing
 manager rounds within the ticket generation; PR frontier rounds remain separate.
 Existing AUTHORIZE decisions and subsequent worker guidance are unchanged.
@@ -788,7 +791,9 @@ report require a fresh gate. Evidence survives passes within the same ticket
 generation, not an owner requeue. An unchanged rework head never reaches PR-tier
 checks or reviewers and spends no further review round; it hands off the open
 cause as `mutation_survivors_unresolved`, `pr_checks_unresolved` or
-`review_findings_unresolved`. An unchanged failed attempt stops as
+`review_findings_unresolved`. Authorization requests retain that head and the open
+findings without charging a review round; authorization alone cannot buy another
+PR-tier check or review of the same head. An unchanged failed attempt stops as
 `worker_no_progress`. Gates and path protection rules are unchanged.
 
 FIX uses `{"worker":"ci-fix","guidance":"..."}` to run exactly one selected worker round

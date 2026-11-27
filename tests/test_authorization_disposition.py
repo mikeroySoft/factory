@@ -130,10 +130,9 @@ class AuthorizationClaimDispositionTest(unittest.TestCase):
         commands = self.run_terminal("DECISION: CLOSE\nDuplicate of shipped work")
 
         transition = self.terminal_transition(commands)
-        comment = next(index for index, command in enumerate(commands)
-                       if command[:3] == ["gh", "issue", "comment"])
-        self.assertLess(transition, comment)
-        self.assertTrue(any(config.LABEL_WONTFIX in command for command in commands))
+        proposal = next(index for index, command in enumerate(commands)
+                        if ("--add-label", config.LABEL_WONTFIX) in pairwise(command))
+        self.assertLess(transition, proposal)
 
     def test_split_moves_parent_to_human_before_real_apply(self) -> None:
         children = [{"title": "Child", "body": "Child acceptance", "blocked_by": []}]
