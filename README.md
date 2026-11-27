@@ -1320,8 +1320,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    and prints `killed`, `survived`, or `no longer applies` for each identity.
    It re-enumerates named files to account for changed operator occurrence numbers;
    source text, mutation, and positions must still match exactly. Changed or deleted
-   source is not relocated. Related tests run first and stop at the first failure;
-   declaring a survivor still requires every discovered test to pass.
+   source is not relocated. Replay orders related test modules by the smallest
+   matching feature-map row first, then module name, ahead of unrelated tests,
+   and stops at the first failure. Declaring a survivor still requires every
+   discovered test to pass. Full-proof test ordering is unchanged.
    Replay skips the unmutated baseline entirely and never writes a proof record,
    even if a proof-output environment variable is set. Existing test failures can
    therefore appear as kills: replay is diagnostic, not certification.

@@ -308,7 +308,7 @@ def sample(lines: dict[str, set[int]], scratch: Path) -> tuple[list, int]:
     return (groups[0] + groups[1])[:CAP], len(groups[0])
 
 
-def test_command(copy: Path, module: str | None = None) -> str:
+def test_command(copy: Path, module: str | None = None, *, replay: bool = False) -> str:
     """Run the trusted producer's test-only entry point against a prepared head copy."""
     # Reuse the provisioned environment already on this process's sys.path (baked
     # into launch.py). Do not recompute paths from this interpreter's packaging scheme.
@@ -337,19 +337,23 @@ def test_command(copy: Path, module: str | None = None) -> str:
         "env", "-C", str(copy), sys.executable, "-I", "-S", "-B", "-c", launcher,
         str(copy), *paths, "--", str(Path(__file__).resolve()), "--test-module", module or "",
     ]
+    if replay:
+        command.append("--replay-tests")
     return shlex.join(command)
 
 
-def run_tests(module: str) -> int:
+def run_tests(module: str, *, replay: bool = False) -> int:
     """Fail fast, but require the entire discovered suite to declare a survivor.
 
     The feature map only changes ordering, never which tests run. Keeping cases
     from each module/class together preserves unittest's shared fixture lifetime.
     """
-    related = set()
+    related = {}
     for line in Path("AGENTS.md").read_text().splitlines():
         if f"`{module}`" in line:
-            related.update(re.findall(r"`tests/(\w+)\.py`", line))
+            names = re.findall(r"`tests/(\w+)\.py`", line)
+            for name in names:
+                related[name] = min(related.get(name, len(names)), len(names))
 
     def cases(suite):
         for test in suite:
@@ -360,6 +364,9 @@ def run_tests(module: str) -> int:
 
     def priority(test):
         name = type(test).__module__.rsplit(".", 1)[-1]
+        if replay:
+            # Narrow feature rows precede broad integration rows during diagnosis.
+            return (related.get(name, sys.maxsize), name)
         return (0 if name.startswith("test_risk_") else 1 if name in related else 2, name)
 
     suite = unittest.TestSuite(sorted(
@@ -602,7 +609,7 @@ def replay(path: str, duration: float | None) -> int:
                     return
                 result = mutate_and_test(
                     [evolve(mutation, module_path=copy / mutation.module_path)],
-                    test_command(copy, str(mutation.module_path)), remaining,
+                    test_command(copy, str(mutation.module_path), replay=True), remaining,
                 )
                 results.append((mutation, result))
 
@@ -646,13 +653,14 @@ def _main(argv: list[str] | None, outcome: dict, base: str | None, *, proof: boo
     parser.add_argument("--check-equivalents", action="store_true",
                         help="validate reviewed source/context without selecting or running mutants")
     parser.add_argument("--test-module", default=None)
+    parser.add_argument("--replay-tests", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--replay", metavar="PROOF", help="re-test recorded survivors; never write proof")
     parser.add_argument("--duration", type=total_duration, default=None, metavar="SECONDS",
                         help="explicit total: the deadline is SECONDS - RESERVE after the anchor, "
                         "instead of max(1, [gate].timeout - RESERVE)")
     args = parser.parse_args(argv)
     if args.test_module is not None:
-        return run_tests(args.test_module)
+        return run_tests(args.test_module, replay=args.replay_tests)
     if args.replay is not None:
         return replay(args.replay, args.duration)
     outcome["mode"] = "blocking" if args.blocking else "report-only"

@@ -228,6 +228,31 @@ class MutationReplayValidationTest(proof_callers.ProofCallerCases):
         self.assertEqual((record["status"], record["reason"]),
                          ("complete", "no-blocking-survivors"))
 
+    def test_valid_multiline_and_positive_column_spans_are_persisted(self) -> None:
+        self.configure()
+        entries = [
+            {**SURVIVOR, "start_pos": [1, 2], "end_pos": [1, 3]},
+            {**SURVIVOR, "start_pos": [1, 2], "end_pos": [2, 0]},
+            {**SURVIVOR, "line": 2, "start_pos": [2, 0], "end_pos": [2, 1]},
+        ]
+        result = self.invoke([proof_callers.produced(
+            killed=0, survived=3, survivors=entries,
+        )])
+        self.assertEqual(result["report_status"], "PASS")
+        self.assertEqual(json.loads(self.replay_path().read_text())["survivors"], entries)
+
+    def test_start_row_above_line_and_negative_multiline_end_column_are_rejected(self) -> None:
+        self.configure()
+        for changes in (
+            {"line": 1, "start_pos": [2, 0], "end_pos": [2, 1]},
+            {"start_pos": [1, 0], "end_pos": [2, -1]},
+        ):
+            with self.subTest(changes=changes):
+                self.assertEqual(
+                    self.verdict([{**SURVIVOR, **changes}]),
+                    ("FAIL", "malformed survivors metadata"),
+                )
+
 
 for _name in [name for name in dir(proof_callers.ProofCallerCases) if name.startswith("test_")]:
     if _name not in MutationReplayValidationTest.__dict__:
