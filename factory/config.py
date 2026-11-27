@@ -192,8 +192,8 @@ class Config:
     max_active: int = 2
     max_attempts: int = 3
     budget_min: int = 90
-    idle_timeout: float = 30  # minutes without worker log output or worktree change = stuck; 0 off
-    exit_grace: float = 300  # seconds a done (handoff/commit) worker may stay quiet before termination; 0 off
+    idle_timeout: float = 30  # minutes quiet mid-work or done with live child jobs; 0 off
+    exit_grace: float = 300  # seconds quiet after handoff/commit with no live child jobs; 0 off
     review_rounds: int = 1  # REVISE -> worker -> re-review cycles before escalating
     engine_yield_for_update: bool = False
     signoff: bool = True  # `git commit -s`; Signed-off-by trailer on merges

@@ -17,7 +17,7 @@
 # review_rounds = 1    # REVISE -> worker -> re-review cycles before escalating
 # budget_min = 90      # wall-clock budget per ticket; overall ceiling, kills a running worker
 # idle_timeout = 30    # minutes quiet mid-work or after commit/handoff with live children:
-#                      # killed, attempt fails (reason `stuck`) and retries; 0 disables
+#                      # killed, attempt fails (`stuck`) and retries, even with exit_grace = 0; 0 disables
 # exit_grace = 300     # seconds quiet after commit/handoff with no live children; the clock
 #                      # restarts when the last child exits; then terminated and gated; 0 disables
 # signoff = true       # `git commit -s`; Signed-off-by trailer on merges (DCO)

@@ -1892,15 +1892,16 @@ def _activity(wt: Path, logfile: Path, handoff: Path) -> tuple:
             git("status", "--porcelain", "--untracked-files=all"), stat(handoff))
 
 
-def _live_children(root_pid: int) -> list[int]:
-    """Non-zombie descendants or process-group members, excluding the worker itself.
+def _live_children(root_pid: int, *, worker_argv: list[str] | None = None,
+                   launch_chain: set[int] | None = None) -> list[int]:
+    """Non-zombie child work, excluding the wrapper-to-agent launch chain.
 
     Portable to macOS; a failed ps preserves the old no-child timeout behavior.
     """
     try:
         result = subprocess.run(
-            ["ps", "-A", "-o", "pid=,ppid=,pgid=,stat="],
-            capture_output=True, encoding="utf-8", errors="replace", check=False, timeout=5,
+            ["ps", "-Aww", "-o", "pid=,ppid=,pgid=,stat=,args="],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=WATCH_POLL,
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -1909,10 +1910,11 @@ def _live_children(root_pid: int) -> list[int]:
     rows = {}
     for line in result.stdout.splitlines():
         with suppress(ValueError, IndexError):
-            fields = line.split()
-            rows[int(fields[0])] = (int(fields[1]), int(fields[2]), fields[3])
+            fields = line.split(None, 4)
+            rows[int(fields[0])] = (int(fields[1]), int(fields[2]), fields[3],
+                                   fields[4] if len(fields) > 4 else "")
     kids: dict[int, list[int]] = {}
-    for pid, (ppid, _, _) in rows.items():
+    for pid, (ppid, _, _, _) in rows.items():
         kids.setdefault(ppid, []).append(pid)
     tree, todo = set(), [root_pid]
     while todo:
@@ -1920,9 +1922,22 @@ def _live_children(root_pid: int) -> list[int]:
             if kid not in tree:
                 tree.add(kid)
                 todo.append(kid)
+    # Retain the discovered chain when the agent later changes its process title.
+    excluded = launch_chain if launch_chain is not None else {root_pid}
+    if worker_argv:
+        # ps flattens argv whitespace. Match the full worker suffix so interpreter/
+        # shebang launches work without mistaking a gate for the agent.
+        suffix = " ".join(" ".join([Path(worker_argv[0]).name, *worker_argv[1:]]).split())
+        for pid in tree:
+            command = " ".join(rows[pid][3].split())
+            if (command == suffix or command.endswith("/" + suffix)
+                    or command.endswith(" " + suffix)):
+                while pid in rows and pid not in excluded:
+                    excluded.add(pid)
+                    pid = rows[pid][0]
     return [
-        pid for pid, (_, pgid, state) in rows.items()
-        if pid != root_pid and (pid in tree or pgid == root_pid) and not state.startswith("Z")
+        pid for pid, (_, pgid, state, _) in rows.items()
+        if pid not in excluded and (pid in tree or pgid == root_pid) and not state.startswith("Z")
     ]
 
 
@@ -1933,7 +1948,7 @@ def _child_commands(pids: list[int]) -> list[dict]:
         try:
             result = subprocess.run(
                 ["ps", "-ww", "-p", ",".join(map(str, pids)), "-o", "pid=,args="],
-                capture_output=True, encoding="utf-8", errors="replace", check=False, timeout=5,
+                capture_output=True, encoding="utf-8", errors="replace", timeout=WATCH_POLL,
             )
             for line in result.stdout.splitlines():
                 with suppress(ValueError):
@@ -1945,12 +1960,15 @@ def _child_commands(pids: list[int]) -> list[dict]:
 
 
 def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadline: float,
-           start: tuple) -> str | None:
+           start: tuple, *, worker_argv: list[str] | None = None,
+           launch_chain: set[int] | None = None) -> str | None:
     """Wait for the worker to exit; None if it did, else the timeout that fired first.
     Done with children uses idle_timeout, even when they consume no CPU. Once the last child
     exits, a full exit_grace starts. Raises KeyboardInterrupt within WATCH_POLL of the
     dispatcher's interrupt; the caller stops the worker."""
     state, changed, children = start, time.monotonic(), []
+    if launch_chain is None:
+        launch_chain = {proc.pid}
     while True:
         try:
             proc.wait(timeout=WATCH_POLL)
@@ -1964,8 +1982,9 @@ def _watch(proc: subprocess.Popen, wt: Path, logfile: Path, handoff: Path, deadl
         done = current[1] != start[1] or current[3] != start[3]
         if now >= deadline:
             return "budget_min"
-        if done and cfg.exit_grace:
-            live = _live_children(proc.pid)
+        if done or worker_argv:
+            live = (_live_children(proc.pid, worker_argv=worker_argv, launch_chain=launch_chain)
+                    if worker_argv else _live_children(proc.pid))
             if children and not live:
                 changed = now
             children = live
@@ -1998,6 +2017,7 @@ def run_worker(
     worker: str | None = None,
     worker_version: str | None = None,
     journal: bool = True,
+    wrap: int = 0,
 ) -> tuple[int, str | None]:
     """Run the worker; return its exit code and the timeout that stopped it, if any.
 
@@ -2026,10 +2046,13 @@ def run_worker(
             try:
                 if execution is not None:
                     execution.child(proc.pid)
-                fired = _watch(proc, wt, logfile, handoff, deadline, start)
+                child_options = {"worker_argv": cmd[wrap:], "launch_chain": {proc.pid}} if wrap else {}
+                fired = _watch(proc, wt, logfile, handoff, deadline, start, **child_options)
                 if fired and execution is not None:
                     # Snapshot before _stop removes the evidence; retain it on the terminal row.
-                    execution.exit_fields["active_children"] = _child_commands(_live_children(proc.pid))
+                    execution.exit_fields["active_children"] = _child_commands(
+                        _live_children(proc.pid, **child_options),
+                    )
             finally:
                 if proc.poll() is None:
                     _stop(proc)
@@ -5348,6 +5371,8 @@ def worker_round(
             spec.argv, n, spec.transcript, spec.wrap if spec.transcript else None,
         )
         run_options = {}
+        if spec.wrap:
+            run_options["wrap"] = spec.wrap
         if spec.env:
             run_options["env_overrides"] = spec.env
         if spec.version:

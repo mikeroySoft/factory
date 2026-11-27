@@ -1079,11 +1079,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    A worker with no log output and no worktree change for
    `[dispatch].idle_timeout` minutes is killed as `stuck` (a failed attempt,
    retried). After a commit or handoff, live children (including blocked jobs that
-   consume no CPU) use that same idle window, not `exit_grace`. With no live
+   consume no CPU) use that same idle window, even with `exit_grace = 0`. With no live
    children, a done worker is terminated and gated after `[dispatch].exit_grace`
    seconds of quiet; the full grace restarts when the last child exits.
-   Child discovery includes non-zombie descendants and orphaned process-group
-   members; if `ps` fails, the old no-child timeout behavior applies.
+   Child discovery excludes the wrapper-to-agent launch chain and includes
+   non-zombie descendants and orphaned process-group members; if `ps` fails,
+   the old no-child timeout behavior applies.
    The attempt journal row and escalation packet name the timeout that fired;
    the worker's terminal lifecycle row records `active_children` (PID and redacted
    command, or null if unavailable), sampled before termination.
