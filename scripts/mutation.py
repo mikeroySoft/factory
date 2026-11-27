@@ -94,18 +94,11 @@ def proof_record(*, mode: str, status: str, reason: str, exit_code: int,
 
 
 def write_proof(path: str, record: dict) -> None:
-    import hashlib
     target = Path(path)
     data = json.dumps(record, sort_keys=True).encode()
     if len(data) > 64 * 1024 and "survivors" in record:
-        survivors = json.dumps(record["survivors"], sort_keys=True).encode()
-        sidecar = target.with_suffix(".survivors.json")
-        with tempfile.NamedTemporaryFile(dir=sidecar.parent, delete=False) as stream:
-            stream.write(survivors)
-            temporary = stream.name
-        os.replace(temporary, sidecar)
         record = {key: value for key, value in record.items() if key != "survivors"}
-        record["survivors_sha256"] = hashlib.sha256(survivors).hexdigest()
+        record["survivors_truncated"] = True
         data = json.dumps(record, sort_keys=True).encode()
     with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
         stream.write(data)
@@ -545,6 +538,8 @@ def replay(path: str, duration: float | None) -> int:
     root = Path.cwd()
     try:
         record = json.loads(Path(path).read_text())
+        if isinstance(record, dict) and "survivors_truncated" in record:
+            raise ValueError("survivor identities were truncated; requires a new full proof")
         if (not isinstance(record, dict) or record.get("protocol") != PROOF_PROTOCOL
                 or record.get("version") != PROOF_VERSION
                 or not isinstance(record.get("survivors"), list)):
@@ -615,24 +610,30 @@ def replay(path: str, duration: float | None) -> int:
                 _, _, _, original, mutated = mutation_key(candidate, SimpleNamespace(diff=diff))
                 if (original, mutated) == (entry["original"], entry["mutated"]):
                     matches.append(candidate)
-            if (len(matches) > 1 and isinstance(head, str)
-                    and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head)):
+            if matches:
                 file = entry["file"]
                 if file not in line_maps:
-                    previous = subprocess.run(
-                        ["git", "show", f"{head}:{file}"],
-                        capture_output=True, text=True, check=False,
-                    )
-                    line_maps[file] = (
-                        replay_line_map(previous.stdout, sources[file])
-                        if previous.returncode == 0 else {}
-                    )
+                    if isinstance(head, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):
+                        previous = subprocess.run(
+                            ["git", "show", f"{head}:{file}"],
+                            capture_output=True, text=True, check=False,
+                        )
+                        line_maps[file] = (
+                            replay_line_map(previous.stdout, sources[file])
+                            if previous.returncode == 0 else {}
+                        )
+                    else:
+                        line_maps[file] = {}
                 rows = line_maps[file]
                 start_row, end_row = entry["start_pos"][0], entry["end_pos"][0]
-                if start_row in rows and end_row in rows:
-                    matches = [candidate for candidate in matches
-                               if candidate.start_pos[0] == rows[start_row]
-                               and candidate.end_pos[0] == rows[end_row]]
+                if start_row not in rows or end_row not in rows:
+                    print(f"replay incomplete: {file}:{entry['line']}: ambiguous survivor "
+                          "(no unambiguous proof-head source mapping)")
+                    ambiguous = True
+                    continue
+                matches = [candidate for candidate in matches
+                           if candidate.start_pos[0] == rows[start_row]
+                           and candidate.end_pos[0] == rows[end_row]]
             if len(matches) > 1:
                 print(f"replay incomplete: {entry['file']}:{entry['line']}: ambiguous survivor "
                       "(multiple identical source targets)")

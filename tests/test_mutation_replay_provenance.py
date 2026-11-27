@@ -29,8 +29,8 @@ class MutationReplayProvenanceTest(replay_tests.MutationReplayTest):
 
         code, report = self.cli("--replay", str(self.proof), proof=self.output_proof)
 
-        self.assertEqual(code, 0, report)
-        self.assertIn("no longer applies", report)
+        self.assertEqual(code, 1, report)
+        self.assertIn("ambiguous survivor", report)
         self.assertNotIn(": killed ", report)
         self.assertNotIn(": survived ", report)
         self.assertFalse(self.audit.exists())
@@ -65,6 +65,22 @@ class MutationReplayProvenanceTest(replay_tests.MutationReplayTest):
         self.assertFalse(self.audit.exists())
         self.assertFalse(self.output_proof.exists())
         self.assertEqual(self.proof.read_bytes(), raw)
+
+    def test_matching_source_without_proof_head_is_not_reported_killed(self):
+        self.full_proof()
+        record = json.loads(self.proof.read_text())
+        del record["scope"]
+        self.proof.write_text(json.dumps(record))
+        test = self.root / "tests/test_example.py"
+        test.write_text(test.read_text() + "        self.assertEqual(example.value, 1)\n")
+
+        code, report = self.cli("--replay", str(self.proof), proof=self.output_proof)
+
+        self.assertEqual(code, 1, report)
+        self.assertIn("ambiguous survivor", report)
+        self.assertNotIn(": killed ", report)
+        self.assertFalse(self.audit.exists())
+        self.assertFalse(self.output_proof.exists())
 
 
 for _name in [name for name in dir(replay_tests.MutationReplayTest) if name.startswith("test_")]:

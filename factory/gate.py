@@ -37,7 +37,6 @@ CHECK_TIMEOUT = 1200  # seconds; overridable via --check-timeout
 MUTATION_PROOF_ENV = "FACTORY_MUTATION_PROOF"
 MUTATION_PROOF_BASE_ENV = "FACTORY_MUTATION_PROOF_BASE"  # the caller base, resolved by the gate
 MUTATION_PROOF_MAX_BYTES = 64 * 1024
-MUTATION_SURVIVORS_MAX_BYTES = 16 * 1024 * 1024
 MUTATION_RESERVE = 60  # scripts/mutation.py's cleanup reserve; an explicit total must exceed it
 MUTATION_PROOF_COUNTS = ("planned", "ran", "killed", "survived", "timeouts", "blocking_survivors",
                          "not_started", "cut_short", "broken")
@@ -210,7 +209,7 @@ def read_mutation_proof(
     if (
         not isinstance(record, dict)
         or not MUTATION_PROOF_KEYS <= record.keys()
-        or record.keys() - MUTATION_PROOF_KEYS - {"survivors", "survivors_sha256"}
+        or record.keys() - MUTATION_PROOF_KEYS - {"survivors", "survivors_truncated"}
     ):
         return "FAIL", "malformed completion record"
     counts, files = _proof_counts(record["counts"]), record["files"]
@@ -223,15 +222,13 @@ def read_mutation_proof(
         or not isinstance(files, list) or not all(isinstance(path, str) and path for path in files)
     ):
         return "FAIL", "malformed or unsupported completion record"
-    if "survivors" in record and "survivors_sha256" in record:
+    if "survivors_truncated" in record and (
+        record["survivors_truncated"] is not True or counts["survived"] == 0
+        or "survivors" in record
+    ):
         return "FAIL", "malformed survivors metadata"
     if "survivors" in record and not _proof_survivors(
         record["survivors"], files, counts["survived"],
-    ):
-        return "FAIL", "malformed survivors metadata"
-    if "survivors_sha256" in record and (
-        not isinstance(record["survivors_sha256"], str)
-        or re.fullmatch(r"[0-9a-f]{64}", record["survivors_sha256"]) is None
     ):
         return "FAIL", "malformed survivors metadata"
     if record["exit"] != returncode:
@@ -295,20 +292,6 @@ def _read_proof_file(path: Path) -> bytes | None:
         os.close(fd)
 
 
-def _read_survivors_file(path: Path) -> bytes:
-    """Read a producer sidecar without following links, bounded independently of the core."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    try:
-        import stat
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError("survivors sidecar is not a regular file")
-        with os.fdopen(fd, "rb", closefd=False) as stream:
-            data = stream.read(MUTATION_SURVIVORS_MAX_BYTES + 1)
-        if len(data) > MUTATION_SURVIVORS_MAX_BYTES:
-            raise ValueError("oversized survivors sidecar")
-        return data
-    finally:
-        os.close(fd)
 
 
 # Record-reading tests pass this stub; it does not name a producer. Every other
@@ -477,25 +460,9 @@ def _proof_run(
         )
         data = _read_proof_file(path)
         status, why = read_mutation_proof(data, proc.returncode, expected)
-        record = None
-        if data and (status != "FAIL" or why.startswith("complete with ")):
-            try:
-                record = json.loads(data)
-                if "survivors_sha256" in record:
-                    import hashlib
-                    sidecar = _read_survivors_file(path.with_suffix(".survivors.json"))
-                    if hashlib.sha256(sidecar).hexdigest() != record["survivors_sha256"]:
-                        raise ValueError("survivors sidecar digest mismatch")
-                    survivors = json.loads(sidecar)
-                    if not _proof_survivors(
-                        survivors, record["files"], record["counts"]["survived"],
-                    ):
-                        raise ValueError("malformed survivors sidecar")
-                    record = {key: value for key, value in record.items()
-                              if key != "survivors_sha256"}
-                    record["survivors"] = survivors
-            except (OSError, ValueError, TypeError, KeyError) as exc:
-                status, why, record = "FAIL", f"invalid survivors sidecar: {exc}", None
+        record = (
+            json.loads(data) if status != "FAIL" or why.startswith("complete with ") else {}
+        )
     try:
         after = mutation_scope.compute(expected.base)
         changed = mutation_scope.tracked_mismatches(expected.head, Path.cwd())
@@ -508,15 +475,14 @@ def _proof_run(
     output = f"{proc.stdout}{proc.stderr}"
     if (
         (status == "PASS" or why.startswith("complete with "))
-        and record is not None
-        and "survivors" in record
+        and ("survivors" in record or "survivors_truncated" in record)
     ):
         proof = Path(".factory") / f"mutation-{expected.head}.json"
         proof.parent.mkdir(exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=f".{proof.name}.", dir=proof.parent)
         try:
-            with os.fdopen(fd, "w") as stream:
-                json.dump(record, stream)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
             os.replace(temporary, proof)
         finally:
             try:

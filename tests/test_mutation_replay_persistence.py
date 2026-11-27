@@ -9,15 +9,13 @@ from factory import dispatch, mutation_scope
 from scripts import mutation
 from tests import test_mutation_caller_witness as witness
 from tests import test_mutation_proof_caller as proof_callers
-from tests import test_mutation_replay_transport as transport
+from tests.test_mutation_replay_callers import SURVIVOR
 
 
-def sidecar_completion(records: list[dict], *, blocking: bool):
+def inline_completion(records: list[dict], *, blocking: bool):
     def produce(child):
         env = child.kwargs["env"]
         scope = mutation_scope.compute(env[mutation.PROOF_BASE_ENV])
-        entries = transport.survivors()
-        count = len(entries)
         record = mutation.proof_record(
             mode="blocking",
             status="complete",
@@ -25,15 +23,15 @@ def sidecar_completion(records: list[dict], *, blocking: bool):
             exit_code=int(blocking),
             files=sorted(scope.lines),
             scope=scope.receipt(),
-            planned=count,
-            ran=count,
-            survived=count,
-            blocking_survivors=count if blocking else 0,
-            survivors=entries,
+            planned=1,
+            ran=1,
+            survived=1,
+            blocking_survivors=int(blocking),
+            survivors=[SURVIVOR],
         )
         records.append(record)
         mutation.write_proof(env[mutation.PROOF_ENV], record)
-        assert "survivors_sha256" in json.loads(Path(env[mutation.PROOF_ENV]).read_text())
+        assert json.loads(Path(env[mutation.PROOF_ENV]).read_text()) == record
         return "survivor diagnostics\n", int(blocking)
 
     return produce
@@ -43,25 +41,18 @@ class MutationReplayPersistenceTest(proof_callers.ProofCallerCases):
     def replay_path(self) -> Path:
         return self.root / ".factory" / f"mutation-{self.head}.json"
 
-    def test_passing_sidecar_persists_the_exact_producer_record(self) -> None:
+    def test_passing_inline_survivors_persist_the_exact_producer_record(self) -> None:
         self.configure()
         records: list[dict] = []
-        result = self.invoke([sidecar_completion(records, blocking=False)])
+        result = self.invoke([inline_completion(records, blocking=False)])
 
         self.assertEqual(result["report_status"], "PASS")
-        saved = json.loads(self.replay_path().read_text())
-        self.assertEqual(saved, records[0])
-        self.assertEqual(
-            (saved["protocol"], saved["version"]),
-            (mutation.PROOF_PROTOCOL, mutation.PROOF_VERSION),
-        )
-        self.assertIn("survivors", saved)
-        self.assertNotIn("survivors_sha256", saved)
+        self.assertEqual(json.loads(self.replay_path().read_text()), records[0])
 
-    def test_blocking_sidecar_persists_an_exact_rework_command(self) -> None:
+    def test_blocking_inline_survivors_persist_an_exact_rework_command(self) -> None:
         self.configure()
         records: list[dict] = []
-        result = self.invoke([sidecar_completion(records, blocking=True)])
+        result = self.invoke([inline_completion(records, blocking=True)])
 
         self.assertEqual(self.summary(result), witness.BLOCKED)
         self.assertEqual(json.loads(self.replay_path().read_text()), records[0])
@@ -79,9 +70,7 @@ class MutationReplayPersistenceTest(proof_callers.ProofCallerCases):
 
         def edit_tracked_input(child):
             output = proof_callers.produced(
-                killed=2,
-                survived=1,
-                survivors=[transport.survivors()[0]],
+                killed=2, survived=1, survivors=[SURVIVOR],
             )(child)
             (self.root / "factory/example.py").write_text("value = 3\n")
             return output
@@ -94,6 +83,43 @@ class MutationReplayPersistenceTest(proof_callers.ProofCallerCases):
             self.review_reports[0],
         )
         self.assertFalse(self.replay_path().exists())
+
+    def test_invalid_completed_record_is_not_persisted(self) -> None:
+        self.configure()
+
+        def invalid(child):
+            output, returncode = proof_callers.produced()(child)
+            path = Path(child.kwargs["env"][mutation.PROOF_ENV])
+            record = json.loads(path.read_text())
+            record["unexpected"] = True
+            path.write_text(json.dumps(record))
+            return output, returncode
+
+        result = self.invoke([invalid])
+
+        self.assertEqual(result["report_status"], "FAIL")
+        self.assertFalse(self.replay_path().exists())
+
+    def test_uncompleted_record_is_not_persisted(self) -> None:
+        self.configure()
+        result = self.invoke([
+            proof_callers.produced(
+                status="incomplete", reason="deadline", ran=1, killed=1, not_started=2,
+            )
+        ])
+
+        self.assertEqual(result["report_status"], "FAIL")
+        self.assertFalse(self.replay_path().exists())
+
+    def test_finished_zero_survivor_record_is_persisted_exactly(self) -> None:
+        self.configure()
+        result = self.invoke([proof_callers.produced(survivors=[])])
+
+        self.assertEqual(result["report_status"], "PASS")
+        saved = json.loads(self.replay_path().read_text())
+        self.assertEqual(saved["counts"]["survived"], 0)
+        self.assertEqual(saved["survivors"], [])
+        self.assertEqual((saved["status"], saved["reason"]), ("complete", "no-blocking-survivors"))
 
 
 for _name in [name for name in dir(proof_callers.ProofCallerCases) if name.startswith("test_")]:

@@ -1335,10 +1335,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Old proof records without survivor identities require a new full run.
    `factory gate --tier pr` always runs its full trusted proof; replay output cannot
    replace it. Full-run seed, cap, sample and survivor requirements are unchanged.
-   Large survivor payloads travel in a digest-bound diagnostic sidecar; the core
-   completion record retains its 64-KiB limit. The gate checks the sidecar before
-   saving a self-contained replay record with the exact original and mutated source.
-   The sidecar is bounded at 16 MiB and is never accepted as completion proof.
+   When survivor identities would push the completion record beyond 64 KiB, the
+   producer omits the identities and sets `survivors_truncated: true`, retaining
+   exact positive survivor counts. The gate fails blocking survivors as usual,
+   saves the bounded record for diagnostics, and replay refuses truncated records.
 
    On `proof = "mutation-v1"` checks, the gate recomputes committed scope from raw
    textual diffs (no text conversion or external diff driver), counting only Git's

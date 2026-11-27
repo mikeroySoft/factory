@@ -31,9 +31,9 @@ class MutationReplayDuplicateTargetsTest(replay_tests.MutationReplayTest):
         code, report = self.cli("--replay", str(self.proof), proof=self.output_proof)
         self.assertEqual(code, 1, report)
         self.assertIn("ambiguous survivor", report)
-        self.assertIn("replayed 1 of 1 applicable survivors", report)
+        self.assertNotIn("replayed ", report)
         self.assertNotIn(": survived ", report)
-        self.assertEqual(self.audit.read_text().splitlines(), ["related"])
+        self.assertFalse(self.audit.exists())
         self.assertFalse(self.output_proof.exists())
 
     def test_moved_duplicate_targets_replay_after_inserted_and_deleted_lines(self):
