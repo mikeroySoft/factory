@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Failed `test`/`tests`/`pytest`/`unittest` gate checks now put every failing test ID before the raw output tail. The first entry includes the full-output `path:line`, assertion or exception, and expected/actual excerpt; the lifecycle result journals the same detail. Embedded subprocess exception chains cannot replace the outer test's assertion evidence. Unparseable test output says so explicitly, while passing and non-test checks remain unchanged (#473).
 
 - Mutation equivalents inside functions and classes re-match by exact source and qualified enclosing scope after line shifts, without requiring unchanged neighbouring lines or a protected registry edit. Operator and replacement text remain exact; renamed scopes and ambiguous matches fail closed. Module-level context checks and protected-path rules are unchanged (#928).
 - Tools-enabled reviewer calibration sends prompts through stdin instead of argv, avoiding E2BIG on large diffs (#940).
