@@ -91,3 +91,39 @@ class DashboardWildcardHostDarwinTest(unittest.TestCase):
                    if row["label"] == f"dashboard port {case.cfg.dashboard_port}")
         self.assertEqual((code, row["status"]), (1, "FAIL"))
         self.assertIn("on 0.0.0.0 is in use by an unknown process", row["detail"])
+
+
+class DashboardWildcardSpecificHolderDarwinTest(unittest.TestCase):
+    fixture = DashboardPortDarwinTest.fixture
+
+    def test_wildcard_consumers_refuse_specific_address_holder(self):
+        from factory import onboard
+
+        for reuse in (False, True):
+            for consumer in ("doctor", "install"):
+                with self.subTest(reuse=reuse, consumer=consumer):
+                    case = self.fixture()
+                    case.cfg.install["host"] = "0.0.0.0"
+                    with socket.socket() as holder:
+                        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, int(reuse))
+                        holder.bind(("127.0.0.1", 0))
+                        holder.listen()
+                        case.cfg.dashboard_port = holder.getsockname()[1]
+                        ss = subprocess.CompletedProcess(
+                            [], 0, case.ss_line("127.0.0.1", case.cfg.dashboard_port), ""
+                        )
+                        with patch.object(onboard.platform_identity, "darwin", return_value=True):
+                            if consumer == "doctor":
+                                code, output, _ = case.doctor(ss)
+                                row = next(row for row in json.loads(output)["rows"]
+                                           if row["label"] == f"dashboard port {case.cfg.dashboard_port}")
+                                self.assertEqual((code, row["status"]), (1, "FAIL"))
+                                detail = row["detail"]
+                            else:
+                                code, _, detail, calls, units = case.install(
+                                    ["--dashboard", "--host", "0.0.0.0"], ss
+                                )
+                                self.assertEqual(code, 1)
+                                self.assertFalse(units.exists())
+                                self.assertFalse(any(cmd[0] == "systemctl" for cmd in calls))
+                        self.assertIn("on 0.0.0.0 is in use by an unknown process", detail)
