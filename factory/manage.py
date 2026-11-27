@@ -1167,9 +1167,16 @@ def _pending_add_only_row(events: list[dict], n: int) -> dict | None:
     return None
 
 
-def pending_add_only_request(n: int) -> bool:
-    """Whether dispatch must wait for the manager instead of running another worker."""
-    return _pending_add_only_row(lifecycle.read_events(dispatch.EVENTS), n) is not None
+def pending_add_only_request(n: int, *, labels: set[str] | None = None) -> bool:
+    """Wait for the manager unless the live issue already grants authorization."""
+    request = _pending_add_only_row(lifecycle.read_events(dispatch.EVENTS), n)
+    if request is not None and labels is not None and LABEL_ADD_ONLY_OVERRIDE in labels:
+        dispatch.record(
+            "manager-request-complete", ticket=n, packet=request["packet"],
+            round=request["round"], reason="human_authorized",
+        )
+        return False
+    return request is not None
 
 
 def _ensure_request_comment(n: int, request: dict, events: list[dict]) -> bool:
@@ -1278,6 +1285,8 @@ def _manager_decision(
 
 def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
     cfg = dispatch.cfg
+    if not pending_add_only_request(n, labels={label["name"] for label in issue.get("labels", [])}):
+        return
     events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
     commented = _ensure_request_comment(n, request, events)
     events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows

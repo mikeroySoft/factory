@@ -2461,7 +2461,11 @@ def escalation_packet(
     rows = generation.current(events, n).rows
     round_number = 1 + max(
         sum(event.get("event") == "escalate" and event.get("reason") != "manager_failed" for event in rows),
-        max((event.get("round", 0) for event in rows if event.get("event") == "manager-request"), default=0),
+        max((
+            event.get("round", 0) for event in rows
+            if event.get("event") == "manager-request"
+            or event.get("event") == "escalate" and event.get("reason") != "manager_failed"
+        ), default=0),
     )
     return packet, round_number
 
@@ -5661,7 +5665,7 @@ def process_ticket(
                 return
             from factory import manage
 
-            if manage.pending_add_only_request(n):
+            if manage.pending_add_only_request(n, labels={label["name"] for label in fresh["labels"]}):
                 execution.wait("add_only_authorization", mode="retry_next_pass")
                 return
             # `issue view` comments are GraphQL-shaped; host_setup_problem reads REST fields.

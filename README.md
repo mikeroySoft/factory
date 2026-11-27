@@ -774,6 +774,11 @@ sends the named paths and full failed report, including test IDs, to the manager
 in the same pass. This is a request, not authority: no failure escalation or
 `ready-for-human` label is applied unless the manager declines. Without an
 available manager, the durable request waits without launching another worker.
+A live `factory-add-only-override` label completes that pending request at dispatch
+or manager admission, without replaying the manager, including after a partial
+decision application. Unrelated human activity does not grant authorization.
+Authorization requests and ordinary escalations share monotonically increasing
+manager rounds within the ticket generation; PR frontier rounds remain separate.
 Existing AUTHORIZE decisions and subsequent worker guidance are unchanged.
 
 Attempt-gate reuse is bound to a clean commit/tree, base, gate authority and
