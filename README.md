@@ -1308,6 +1308,33 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    current working files overlaid, so Git-dependent tests run without skips.
    Baseline and mutant subprocesses disable bytecode writes, preventing cached
    baseline code from masking same-size mutations in reused scratch copies.
+   To iterate on survivors without another full proof, use the proof file and exact
+   replay command printed by the gate and carried into the rework brief:
+
+   ```sh
+   uv run --frozen --no-managed-python --group mutation python scripts/mutation.py --replay .factory/mutation-HEAD.json
+   ```
+
+   Replace `HEAD` with the recorded commit ID from the brief. Replay uses the current
+   working files (including uncommitted tests), runs only the recorded survivors,
+   and prints `killed`, `survived`, or `no longer applies` for each identity.
+   It re-enumerates named files to account for changed operator occurrence numbers;
+   source text, mutation, and positions must still match exactly. Changed or deleted
+   source is not relocated. Replay orders related test modules by the smallest
+   matching feature-map row first, then module name, ahead of unrelated tests,
+   and stops at the first failure. Declaring a survivor still requires every
+   discovered test to pass. Full-proof test ordering is unchanged.
+   Replay skips the unmutated baseline entirely and never writes a proof record,
+   even if a proof-output environment variable is set. Existing test failures can
+   therefore appear as kills: replay is diagnostic, not certification.
+   Old proof records without survivor identities require a new full run.
+   `factory gate --tier pr` always runs its full trusted proof; replay output cannot
+   replace it. Full-run seed, cap, sample and survivor requirements are unchanged.
+   Large survivor payloads travel in a digest-bound diagnostic sidecar; the core
+   completion record retains its 64-KiB limit. The gate checks the sidecar before
+   saving a self-contained replay record with the exact original and mutated source.
+   The sidecar is bounded at 16 MiB and is never accepted as completion proof.
+
    On `proof = "mutation-v1"` checks, the gate recomputes committed scope from raw
    textual diffs (no text conversion or external diff driver), counting only Git's
    LF line boundaries; source inside a hunk cannot become a file header.

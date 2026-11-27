@@ -42,6 +42,9 @@ MUTATION_PROOF_COUNTS = ("planned", "ran", "killed", "survived", "timeouts", "bl
                          "not_started", "cut_short", "broken")
 MUTATION_PROOF_KEYS = {"protocol", "version", "mode", "status", "reason", "exit", "files", "counts",
                        "scope"}
+MUTATION_SURVIVOR_KEYS = {
+    "file", "line", "operator", "start_pos", "end_pos", "original", "mutated",
+}
 SKIP_NO_FACTORY_CODE = "SKIP (no changed factory code)"
 # Fixed host namespace: never under a repo, gate.lock, or the gate's private TMPDIR.
 MUTATION_SLOT_PREFIX = Path("/tmp/factory-mutation")
@@ -159,6 +162,30 @@ def _proof_counts(counts: object) -> dict[str, int] | None:
     return counts
 
 
+def _proof_survivors(value: object, files: list[str], count: int) -> bool:
+    if not isinstance(value, list) or len(value) != count:
+        return False
+    for survivor in value:
+        if not isinstance(survivor, dict) or survivor.keys() != MUTATION_SURVIVOR_KEYS:
+            return False
+        start, end = survivor["start_pos"], survivor["end_pos"]
+        if (
+            survivor["file"] not in files
+            or type(survivor["line"]) is not int or survivor["line"] < 1
+            or not isinstance(survivor["operator"], str) or not survivor["operator"]
+            or not isinstance(start, list) or len(start) != 2
+            or not isinstance(end, list) or len(end) != 2
+            or any(type(part) is not int for part in (*start, *end))
+            or start[0] < 1 or start[1] < 0 or end[0] < 1 or end[1] < 0
+            or survivor["line"] != start[0] or start >= end
+            or not isinstance(survivor["original"], str)
+            or not isinstance(survivor["mutated"], str)
+            or survivor["original"] == survivor["mutated"]
+        ):
+            return False
+    return True
+
+
 def read_mutation_proof(
     data: bytes | None, returncode: int, expected: mutation_scope.Scope,
 ) -> tuple[str, str]:
@@ -177,7 +204,8 @@ def read_mutation_proof(
         record = json.loads(data)
     except ValueError:
         return "FAIL", "malformed completion record"
-    if not isinstance(record, dict) or record.keys() != MUTATION_PROOF_KEYS:
+    allowed = MUTATION_PROOF_KEYS | {"survivors", "survivors_sha256"}
+    if not isinstance(record, dict) or not MUTATION_PROOF_KEYS <= record.keys() <= allowed:
         return "FAIL", "malformed completion record"
     counts, files = _proof_counts(record["counts"]), record["files"]
     if (
@@ -189,6 +217,17 @@ def read_mutation_proof(
         or not isinstance(files, list) or not all(isinstance(path, str) and path for path in files)
     ):
         return "FAIL", "malformed or unsupported completion record"
+    if "survivors" in record and "survivors_sha256" in record:
+        return "FAIL", "malformed survivors metadata"
+    if "survivors" in record and not _proof_survivors(
+        record["survivors"], files, counts["survived"],
+    ):
+        return "FAIL", "malformed survivors metadata"
+    if "survivors_sha256" in record and (
+        not isinstance(record["survivors_sha256"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", record["survivors_sha256"]) is None
+    ):
+        return "FAIL", "malformed survivors metadata"
     if record["exit"] != returncode:
         return "FAIL", f"record exit {record['exit']} contradicts observed exit {returncode}"
     if record["mode"] != "blocking":
@@ -246,6 +285,23 @@ def _read_proof_file(path: Path) -> bytes | None:
         return os.read(fd, MUTATION_PROOF_MAX_BYTES + 1)
     except OSError as exc:
         return f"unreadable: {exc}".encode()
+    finally:
+        os.close(fd)
+
+
+def _read_survivors_file(path: Path) -> bytes:
+    """Read a producer sidecar without following links, bounded independently of the core."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        import stat
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("survivors sidecar is not a regular file")
+        data = bytearray()
+        while chunk := os.read(fd, min(1024 * 1024, 16 * 1024 * 1024 + 1 - len(data))):
+            data.extend(chunk)
+            if len(data) > 16 * 1024 * 1024:
+                raise ValueError("oversized survivors sidecar")
+        return bytes(data)
     finally:
         os.close(fd)
 
@@ -393,9 +449,9 @@ def _trusted_mutation_command(
 def _proof_run(
     cmd: list[str], base: str, duration: float | None = None,
 ) -> tuple[str, str, str, mutation_scope.Scope | None]:
-    """`(output, status, why, scope)`: the caller base is resolved to a commit once, before
-    the run, and the scope recomputed from that commit after it (a moved HEAD fails).
-    `duration` (explicit `--mutation-duration`) is this check's enclosing timeout."""
+    """Run the proof producer, persist replayable completed results, and return its verdict.
+
+    The caller base is resolved once before the run and the scope recomputed afterward."""
     try:
         expected = mutation_scope.compute(base)
         dirty = mutation_scope.tracked_mismatches(expected.head, Path.cwd())
@@ -415,7 +471,26 @@ def _proof_run(
             cmd, proof_path=path, proof_base=expected.base, **limit,
         )
         data = _read_proof_file(path)
-    status, why = read_mutation_proof(data, proc.returncode, expected)
+        status, why = read_mutation_proof(data, proc.returncode, expected)
+        record = None
+        if data and (status != "FAIL" or why.startswith("complete with ")):
+            try:
+                record = json.loads(data)
+                if "survivors_sha256" in record:
+                    import hashlib
+                    sidecar = _read_survivors_file(path.with_suffix(".survivors.json"))
+                    if hashlib.sha256(sidecar).hexdigest() != record["survivors_sha256"]:
+                        raise ValueError("survivors sidecar digest mismatch")
+                    survivors = json.loads(sidecar)
+                    if not _proof_survivors(
+                        survivors, record["files"], record["counts"]["survived"],
+                    ):
+                        raise ValueError("malformed survivors sidecar")
+                    record = {key: value for key, value in record.items()
+                              if key != "survivors_sha256"}
+                    record["survivors"] = survivors
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                status, why, record = "FAIL", f"invalid survivors sidecar: {exc}", None
     try:
         after = mutation_scope.compute(expected.base)
         changed = mutation_scope.tracked_mismatches(expected.head, Path.cwd())
@@ -425,7 +500,31 @@ def _proof_run(
         status, why = "FAIL", "HEAD or the applicable scope changed during the run"
     elif status != "FAIL" and changed:
         status, why = "FAIL", f"tracked inputs changed during the run: {', '.join(changed[:20])}"
-    return f"{proc.stdout}{proc.stderr}", status, why, expected
+    output = f"{proc.stdout}{proc.stderr}"
+    if (
+        (status == "PASS" or why.startswith("complete with "))
+        and record is not None
+        and record.get("status") == "complete"
+        and "survivors" in record
+    ):
+        proof = Path(".factory") / f"mutation-{expected.head}.json"
+        proof.parent.mkdir(exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{proof.name}.", dir=proof.parent)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump(record, stream, sort_keys=True)
+            os.replace(temporary, proof)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+        replay = (
+            "uv run --frozen --no-managed-python --group mutation "
+            f"python scripts/mutation.py --replay {proof.as_posix()}"
+        )
+        output += f"\nmutation proof record: {proof.as_posix()}\nmutation replay: {replay}\n"
+    return output, status, why, expected
 
 
 def run_mutation_proof(
