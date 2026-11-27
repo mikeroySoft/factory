@@ -80,6 +80,39 @@ class AuthorizationRecoveryTest(unittest.TestCase):
         self.assertFalse(manage.pending_add_only_request(7))
         self.assertEqual(len(self.manager_calls), 1)
 
+    def test_unreadable_pending_issue_does_not_block_other_manager_requests(self):
+        failures = (
+            subprocess.CalledProcessError(1, ["gh", "issue", "view", "7"], stderr="not found"),
+            OSError("GitHub unavailable"),
+            ValueError("invalid issue response"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                dispatch.EVENTS.unlink(missing_ok=True)
+                self.cfg.manager = None
+                self.request()
+                issue8 = {**self.issue, "number": 8}
+                with mock.patch.object(dispatch, "run", side_effect=self.command_result):
+                    manage.request_add_only_authorization(8, issue8, self.paths, self.report, None)
+                self.cfg.manager = ["manager", "{prompt}"]
+
+                def github(args):
+                    if args[:2] == ["issue", "list"]:
+                        return []
+                    if args[:3] == ["issue", "view", "7"]:
+                        raise failure
+                    return {**issue8, "state": "OPEN"}
+
+                with mock.patch.object(dispatch, "run", side_effect=self.command_result), \
+                        mock.patch.object(dispatch, "gh_json", side_effect=github), \
+                        mock.patch.object(dispatch, "initiative_kind", return_value=None), \
+                        mock.patch.object(manage, "selectable_workers", return_value={"default": []}), \
+                        mock.patch.object(manage, "human_activity", return_value=False):
+                    manage.escalation_pass()
+                self.assertEqual([r["ticket"] for r in self.events() if r.get("event") == "manage"], [8])
+                self.assertTrue(manage.pending_add_only_request(7))
+                self.assertFalse(manage.pending_add_only_request(8))
+
     def test_unavailable_fix_worker_stays_pending_without_an_application_failure(self):
         self.manager_output = (
             'DECISION: FIX\n{"worker":"ci-fix","guidance":"Repair the current PR."}'
