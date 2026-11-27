@@ -16,10 +16,10 @@
 # max_attempts = 3     # worker+gate rounds before escalating
 # review_rounds = 1    # REVISE -> worker -> re-review cycles before escalating
 # budget_min = 90      # wall-clock budget per ticket; overall ceiling, kills a running worker
-# idle_timeout = 30    # minutes with no worker log output and no worktree change = stuck:
-#                      # killed, attempt fails (reason `stuck`) and retries; 0 disables
-# exit_grace = 300     # seconds a worker may stay quiet after committing or writing its
-#                      # handoff without exiting; then terminated and gated; 0 disables
+# idle_timeout = 30    # minutes quiet mid-work or after commit/handoff with live children:
+#                      # killed, attempt fails (`stuck`) and retries, even with exit_grace = 0; 0 disables
+# exit_grace = 300     # seconds quiet after commit/handoff with no live children; the clock
+#                      # restarts when the last child exits; then terminated and gated; 0 disables
 # signoff = true       # `git commit -s`; Signed-off-by trailer on merges (DCO)
 # Regex with one capture group: dollars spent, read from the worker log after
 # each attempt and summed into .factory/events.jsonl and the dashboard.

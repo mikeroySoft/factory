@@ -492,6 +492,7 @@ def replay_ticket(
                     **cfg.worker_environment(worker, promptfile, wt), **isolated,
                 },
                 worker=worker, worker_version=cfg.worker_version.get(worker),
+                wrap=len(cfg.worker_wrap),
             )
             transcript = dispatch._transcript(session_dir, wall)
             usage = dispatch.worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
@@ -575,6 +576,7 @@ def replay_ticket(
                     **cfg.worker_environment(worker, promptfile, wt), **isolated,
                 },
                 worker=worker, worker_version=cfg.worker_version.get(worker),
+                wrap=len(cfg.worker_wrap),
             )
             transcript = dispatch._transcript(session_dir, wall)
             usage = dispatch.worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
