@@ -237,5 +237,16 @@ class DoctorHostClaimsTest(unittest.TestCase):
         self.assertIn("offline", row["detail"])
 
 
+
+
+def setUpModule() -> None:
+    from unittest.mock import patch
+
+    abi = patch("factory.darwin_observer.abi_facts",
+                return_value=("darwin", "arm64", 8, "little", (27, 2)))
+    abi.start()
+    unittest.addModuleCleanup(abi.stop)
+
+
 if __name__ == "__main__":
     unittest.main()

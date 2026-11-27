@@ -580,6 +580,15 @@ def signals(
 ) -> list[dict]:
     """Every observed failure, newest journal evidence first within each fingerprint."""
     found: dict[str, dict] = {}
+    from factory import darwin_observer
+
+    if problem := darwin_observer.abi_problem():
+        key = fingerprint("runtime", "unsupported darwin ABI")
+        found[key] = {
+            "fingerprint": key, "kind": "runtime", "stage": "darwin observer",
+            "key": "unsupported darwin ABI", "rows": [], "excerpt": problem,
+            "log": None, "latest": None, "command": "factory doctor",
+        }
     wait = next((r for r in reversed(events) if r.get("event") == "learn-wait"), None)
     blocked = next((r for r in reversed(events) if r.get("event") == "learn-blocked"), None)
     if (wait and blocked and wait.get("pr") is not None and wait.get("pr") == blocked.get("pr")
