@@ -163,13 +163,14 @@ class PendingRequestSurvivorRegressionTest(unittest.TestCase):
                     dispatch, "pr_gate_and_review",
                     return_value=(dispatch.PR_GATE_WAIT, "waiting", False),
                 ) as review, \
-                mock.patch.object(dispatch, "defer_mutation_proof"):
+                mock.patch.object(dispatch, "defer_mutation_proof"), \
+                mock.patch.object(dispatch, "escalate"):
             manage.apply(7, self.issue, "FIX", "", {
                 "worker": "default", "guidance": "Resolve the finding.",
             }, packet)
 
-        push.assert_called_once_with(wt, 7, lease)
         review.assert_called_once_with(wt, 7, "gate passed", gate_head, {})
+        push.assert_called_once_with(wt, 7, lease)
 
 
 class RequestCommentSurvivorRegressionTest(unittest.TestCase):
@@ -199,7 +200,7 @@ class RequestCommentSurvivorRegressionTest(unittest.TestCase):
         with mock.patch.object(lifecycle, "read_events", return_value=[request]), \
                 mock.patch.object(dispatch, "run", side_effect=command), \
                 mock.patch.object(manage, "human_activity", return_value=False), \
-                mock.patch.object(manage, "_manager_decision") as decide:
+                mock.patch.object(manage, "_manager_decision", return_value=None) as decide:
             manage._handle_add_only_request(7, self.issue, request)
 
         decide.assert_not_called()
@@ -217,22 +218,51 @@ class RequestCommentSurvivorRegressionTest(unittest.TestCase):
             [], -9, "https://github.com/acme/widgets/issues/7#issuecomment-102\n", "killed",
         ))
 
-    def test_completed_failure_recovery_does_not_release_the_agent_label_again(self) -> None:
+    def test_release_journaled_failure_recovery_preserves_terminal_human_state(self) -> None:
         request = self.request_row()
+        released = {
+            "event": "manager-request-release", "ticket": 7,
+            "packet": request["packet"], "round": request["round"],
+        }
         failed = {
             "event": "manager-request-failed", "ticket": 7,
             "packet": request["packet"], "round": request["round"],
             "reason": "application failed",
         }
+        labels = {config.LABEL_AGENT}
+        edits: list[list[str]] = []
 
-        with mock.patch.object(lifecycle, "read_events", return_value=[request, failed]), \
-                mock.patch.object(manage, "_ensure_request_comment", return_value=True), \
-                mock.patch.object(manage, "human_activity", return_value=False), \
-                mock.patch.object(dispatch, "escalate"), \
-                mock.patch.object(dispatch, "unclaim") as unclaim:
+        def github(command: list[str], *args, **kwargs) -> subprocess.CompletedProcess:
+            if command[:3] == ["gh", "issue", "edit"]:
+                edits.append(command)
+                for flag, label in zip(command[6::2], command[7::2]):
+                    if flag == "--remove-label":
+                        labels.discard(label)
+                    elif flag == "--add-label":
+                        labels.add(label)
+                return subprocess.CompletedProcess(command, 0, "", "")
+            if command[:3] == ["gh", "issue", "comment"]:
+                return subprocess.CompletedProcess(
+                    command, 0,
+                    "https://github.com/acme/widgets/issues/7#issuecomment-103\n", "",
+                )
+            raise AssertionError(command)
+
+        with mock.patch.object(
+                lifecycle, "read_events", return_value=[request, released, failed],
+        ), mock.patch.object(
+                manage, "_ensure_request_comment", return_value=True,
+        ), mock.patch.object(
+                manage, "human_activity", return_value=False,
+        ), mock.patch.object(dispatch, "run", side_effect=github):
             manage._handle_add_only_request(7, self.issue, request)
 
-        unclaim.assert_not_called()
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(labels, {config.LABEL_HUMAN})
+        self.assertTrue(any(
+            row.get("event") == "manager-request-complete"
+            for row in lifecycle.read_events(dispatch.EVENTS)
+        ))
 
 
 class EscalationScanSurvivorRegressionTest(unittest.TestCase):

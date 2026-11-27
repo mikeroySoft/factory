@@ -775,7 +775,8 @@ in the same pass. This is a request, not authority: no failure escalation or
 `ready-for-human` label is applied unless the manager declines. Without an
 available manager, the durable request waits without launching another worker.
 Queued requests release the ticket assignment and host claim while the durable
-pending guard blocks further workers. A live `factory-add-only-override` label
+pending guard blocks further workers; Factory's own cleanup does not count as
+human takeover on later manager passes. A live `factory-add-only-override` label
 completes that pending request at dispatch or manager admission, without replaying
 the manager, including after a partial decision application. Unrelated human
 activity does not grant authorization. CLOSE and SPLIT retain the parent in
@@ -792,7 +793,8 @@ generation, not an owner requeue. An unchanged rework head never reaches PR-tier
 checks or reviewers and spends no further review round; it hands off the open
 cause as `mutation_survivors_unresolved`, `pr_checks_unresolved` or
 `review_findings_unresolved`. Authorization requests retain that head and the open
-findings without charging a review round; authorization alone cannot buy another
+findings, including when a carried rework round fails its attempt gate, without
+charging a review round; authorization alone cannot buy another
 PR-tier check or review of the same head. An unchanged failed attempt stops as
 `worker_no_progress`. Gates and path protection rules are unchanged.
 
@@ -806,7 +808,10 @@ guidance and the escalation packet to the worker, re-gates, pushes only on a
 gate PASS bound to the resulting commit, and independently re-reviews that
 same commit. Only a zero-exit, well-formed fresh APPROVE whose remote PR head
 still matches restores `factory-approved`; failure stays with the human. FIX
-does not merge or requeue the issue.
+does not merge or requeue the issue. Only an actual reviewer run at the current
+head makes an unchanged FIX unresolved rework; a PR-gate failure or missing-worker-
+provenance risk row alone does not skip that head's first review. Queued FIX
+completion retains its approval, deferral or terminal human disposition.
 RESOLVE is escalation-only evidence that the requested outcome is already on
 the configured main branch (by commit or PR), or that the ticket duplicates
 another issue. It comments before closing the issue as completed and removes

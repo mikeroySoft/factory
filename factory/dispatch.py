@@ -850,8 +850,13 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
         for flag, label in zip(label_args[::2], label_args[1::2])
     ) and (elected := elected_host_claim(claims)):
         context = refresh_requeue_context(n)
-        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
-                 "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
+        comment = gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
+                           "-f", f"body=Factory requeue: nonce={elected['nonce']}\n{context}"])
+        if comment.get("id") is not None:
+            comment_receipt(
+                n, "requeue",
+                f"https://github.com/{REPO}/issues/{n}#issuecomment-{comment['id']}",
+            )
     if owned is not None:
         fresh = gh_json(["issue", "view", str(n), "--repo", REPO, "--json", "labels,assignees"])
         release_stale_claims(n, fresh, claims, replacement=owned["id"])
@@ -5841,7 +5846,9 @@ def process_ticket(
                 if not ok and (paths := add_only_request(wt, n, labels)):
                     from factory import manage
 
-                    manage.request_add_only_authorization(n, fresh, paths, report, logfile)
+                    manage.request_add_only_authorization(
+                        n, fresh, paths, report, logfile, rework=carried_rework or None,
+                    )
                     return
                 if ok and carried_rework and gate_head == carried_rework["head"] and not run([
                     "git", "status", "--porcelain", "--untracked-files=all", "--", ".",

@@ -266,6 +266,20 @@ def _record_wontfix(n: int, chosen: str, rationale: str, *, pr: int | None = Non
     return payload["decision_id"]
 
 
+def _request_release(request: dict, events: list[dict]) -> int | None:
+    for index in range(len(events) - 1, -1, -1):
+        row = events[index]
+        if row == request:
+            break
+        if (
+            row.get("event") == "manager-request-release"
+            and row.get("packet") == request.get("packet")
+            and row.get("round") == request.get("round")
+        ):
+            return index
+    return None
+
+
 def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
     """Timeline activity since the escalation that the factory did not journal itself.
 
@@ -276,7 +290,9 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
     """
     items = handoff.timeline(n)
     machine = {e["comment"] for e in events if e.get("event") == "comment"}
-    escalation_comments = {e["comment"] for e in events if e.get("event") == "comment"
+    release = _request_release(escalation, events) if escalation.get("event") == "manager-request" else None
+    marker_events = events[release + 1:] if release is not None else events
+    escalation_comments = {e["comment"] for e in marker_events if e.get("event") == "comment"
                            and e.get("kind") == "escalation" and e.get("round") == escalation.get("round")
                            and e.get("at", "") >= escalation["at"]}
     marker = next((i for i, item in enumerate(items) if item.get("event") == "commented"
@@ -296,6 +312,11 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
         # Only the recorded escalation comment bounds its own label/assignee churn.
         if index < marker and (
             (kind == "labeled" and item.get("label", {}).get("name") == LABEL_HUMAN)
+            or (
+                kind == "labeled"
+                and item.get("label", {}).get("name") == LABEL_AGENT
+                and release is not None
+            )
             or (kind == "unlabeled" and item.get("label", {}).get("name") == LABEL_AGENT)
             or (kind == "unlabeled" and item.get("label", {}).get("name") in removed_host_labels
                 and (item.get("actor") or {}).get("login", "").casefold() == dispatch.host_claim_login())
@@ -488,7 +509,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
                 dispatch.escalate(n, reason, logfile, code="gate_failed")
             return
         reviewed_head = any(
-            row.get("head") == lease and row.get("event") in {"review", "risk-check"}
+            row.get("head") == lease and row.get("event") == "review"
             for row in generation.current(events, n).rows
         )
         if gate_head == lease and reviewed_head:
@@ -1182,6 +1203,8 @@ def pending_add_only_request(n: int, *, labels: set[str] | None = None) -> bool:
 
 
 def _ensure_request_comment(n: int, request: dict, events: list[dict]) -> bool:
+    release = _request_release(request, events)
+    events = events[release + 1:] if release is not None else events
     if any(
         row.get("event") == "comment"
         and row.get("kind") == "escalation"
@@ -1289,13 +1312,13 @@ def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
     cfg = dispatch.cfg
     if not pending_add_only_request(n, labels={label["name"] for label in issue.get("labels", [])}):
         return
-    release_args = ("--add-label", LABEL_AGENT)
-    released = False
+    release_pending = False
     try:
         events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
         commented = _ensure_request_comment(n, request, events)
         events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
         if not cfg.manager or not commented:
+            release_pending = True
             return
         try:
             if human_activity(n, request, events):
@@ -1305,6 +1328,7 @@ def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
             return
         packet = Path(request["packet"])
         if not packet.is_file():
+            release_pending = True
             return
         failed = next((
             row for row in reversed(events[events.index(request):])
@@ -1313,12 +1337,10 @@ def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
         ), None)
         if failed is not None:
             # A partial SPLIT/REWRITE must never be replayed. Retry only its human handoff.
-            release_args = ()
             dispatch.escalate(
                 n, f"manager decision application failed: {failed['reason']}", None,
                 extra=packet.read_text(), code="manager_failed", round_number=request["round"],
             )
-            released = True
             dispatch.record(
                 "manager-request-complete", ticket=n, packet=str(packet), round=request["round"],
             )
@@ -1333,32 +1355,29 @@ def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
                 queue_failure=True, code="add_only_authorization",
             )
             if result is None:
+                release_pending = True
                 return
             decision, body, data = result
             if decision == "HUMAN":
-                findings = packet.read_text()
-                release_args = ()
                 dispatch.escalate(
                     n,
                     f"manager declined add-only authorization: {body}",
                     Path(request["log"]) if request.get("log") else None,
-                    extra=findings,
+                    extra=packet.read_text(),
                     code="add_only_authorization",
                     round_number=request["round"],
                 )
-                released = True
                 return
             if decision == "FIX":
                 apply_fix(n, issue, data, packet, round=request["round"])
-            else:
-                if decision in {"CLOSE", "SPLIT"}:
-                    release_args = ()
-                    dispatch.unclaim(
-                        n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN,
-                    )
-                    released = True
-                apply(n, issue, decision, body, data, packet)
+                return
+            if decision in {"CLOSE", "SPLIT"}:
+                dispatch.unclaim(
+                    n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN,
+                )
+            apply(n, issue, decision, body, data, packet)
         except dispatch.WorkerUnavailable:
+            release_pending = True
             raise
         except (CalledProcessError, OSError, ValueError) as exc:
             dispatch.record(
@@ -1367,8 +1386,20 @@ def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
             )
             raise
     finally:
-        if not released:
-            dispatch.unclaim(n, *release_args)
+        if release_pending:
+            events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
+            if _request_release(request, events) is None:
+                try:
+                    dispatch.unclaim(n, "--add-label", LABEL_AGENT, check=True)
+                except (CalledProcessError, OSError, ValueError) as exc:
+                    dispatch.log(f"#{n}: manager request release failed ({exc}); request remains queued")
+                else:
+                    dispatch.record(
+                        "manager-request-release", ticket=n,
+                        packet=request["packet"], round=request["round"],
+                    )
+                    events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
+                    _ensure_request_comment(n, request, events)
 
 
 def request_add_only_authorization(

@@ -48,7 +48,7 @@ class CarriedAuthorizationTest(unittest.TestCase):
         self.assertEqual(dispatch._review_rounds_used(7), 1)
         request = next(row for row in lifecycle.read_events(dispatch.EVENTS)
                        if row.get("event") == "manager-request")
-        self.assertEqual(request["rework"], carried)
+        self.assertEqual({key: request["rework"][key] for key in carried}, carried)
 
 
 if __name__ == "__main__":
