@@ -1322,7 +1322,8 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    and relocates an identical source/mutation span after inserted or deleted
    lines. Columns and relative span must still match; changed/deleted source is not
    replayed. Repeated source lines are mapped from the proof's committed source
-   through forward and reverse line diffs; both must agree on the current position.
+   through forward and reverse line diffs; both must agree on the current position,
+   and adjacent identical-line runs must retain their length and within-run position.
    Unresolved duplicate or collapsed targets fail as ambiguous rather than selecting
    the wrong occurrence. Replay orders related test modules by the smallest
    matching feature-map row first, then module name, ahead of unrelated tests,

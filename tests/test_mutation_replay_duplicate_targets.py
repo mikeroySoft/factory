@@ -83,6 +83,16 @@ class MutationReplayDuplicateTargetsTest(replay_tests.MutationReplayTest):
         self.assertFalse(self.output_proof.exists())
         self.assertEqual(self.proof.read_bytes(), recorded)
 
+    def test_expanding_an_identical_run_does_not_guess_the_recorded_occurrences(self):
+        self.duplicate_proof()
+        (self.root / "factory/example.py").write_text("# before\n" + "value = 1\n" * 3)
+        code, report = self.cli("--replay", str(self.proof), proof=self.output_proof)
+        self.assertEqual(code, 1, report)
+        self.assertIn("ambiguous survivor", report)
+        self.assertNotIn("no longer applies", report)
+        self.assertFalse(self.audit.exists())
+        self.assertFalse(self.output_proof.exists())
+
 
 for _name in [name for name in dir(replay_tests.MutationReplayTest) if name.startswith("test_")]:
     if _name not in MutationReplayDuplicateTargetsTest.__dict__:

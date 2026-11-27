@@ -43,6 +43,7 @@ import ast
 import collections
 import difflib
 import errno
+import itertools
 import json
 import math
 import os
@@ -504,8 +505,17 @@ def stale_equivalents(reviewed: dict[tuple, dict], disproven: set[tuple]) -> boo
 
 
 def replay_line_map(previous: str, current: str) -> dict[int, int]:
-    """Map unchanged rows only when forward and reverse diff alignment agree."""
+    """Map unchanged rows only when both diff directions and duplicate runs agree."""
     before, after = previous.splitlines(), current.splitlines()
+
+    def runs(lines):
+        spans = []
+        for _, group in itertools.groupby(lines):
+            size = sum(1 for _ in group)
+            spans.extend((offset, size) for offset in range(size))
+        return spans
+
+    old_runs, new_runs = runs(before), runs(after)
     forward = {
         old + offset + 1: new + offset + 1
         for old, new, size in difflib.SequenceMatcher(None, before, after, autojunk=False).get_matching_blocks()
@@ -519,7 +529,8 @@ def replay_line_map(previous: str, current: str) -> dict[int, int]:
         for offset in range(size)
     }
     # Identical inserted/deleted runs can align either way: do not guess an identity.
-    return {old: new for old, new in forward.items() if backward.get(old) == new}
+    return {old: new for old, new in forward.items()
+            if backward.get(old) == new and old_runs[old - 1] == new_runs[new - 1]}
 
 
 def replay(path: str, duration: float | None) -> int:
