@@ -93,10 +93,23 @@ def proof_record(*, mode: str, status: str, reason: str, exit_code: int,
 
 
 def write_proof(path: str, record: dict) -> None:
+    import hashlib
     target = Path(path)
-    partial = target.with_name(target.name + ".partial")
-    partial.write_text(json.dumps(record, sort_keys=True))
-    os.replace(partial, target)  # never a half-written record at `path`
+    data = json.dumps(record, sort_keys=True).encode()
+    if len(data) > 64 * 1024 and "survivors" in record:
+        survivors = json.dumps(record["survivors"], sort_keys=True).encode()
+        sidecar = target.with_suffix(".survivors.json")
+        with tempfile.NamedTemporaryFile(dir=sidecar.parent, delete=False) as stream:
+            stream.write(survivors)
+            temporary = stream.name
+        os.replace(temporary, sidecar)
+        record = {key: value for key, value in record.items() if key != "survivors"}
+        record["survivors_sha256"] = hashlib.sha256(survivors).hexdigest()
+        data = json.dumps(record, sort_keys=True).encode()
+    with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+        stream.write(data)
+        temporary = stream.name
+    os.replace(temporary, target)  # never a half-written record at `path`
 
 
 def changed_lines() -> dict[str, set[int]]:
