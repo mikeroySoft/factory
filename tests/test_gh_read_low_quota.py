@@ -20,7 +20,7 @@ class LowQuotaPathTest(unittest.TestCase):
                 journal = cfg.factory / "events.jsonl"
                 calls = []
 
-                def command(cmd, *args, **kwargs):
+                def command(cmd, *args, calls=calls, path=path, **kwargs):
                     calls.append(cmd)
                     if cmd[:3] == ["gh", "api", "rate_limit"]:
                         return subprocess.CompletedProcess(cmd, 0, json.dumps({"resources": {
