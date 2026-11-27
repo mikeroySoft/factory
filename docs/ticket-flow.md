@@ -95,6 +95,9 @@ flowchart TB
   MAPP -->|"CI fail, late feedback, stale, rounds exhausted, HUMAN: manage.frontier_pass"| ESC
   FA -->|"late feedback or stale past stale_days, any manager.review mode: manage.frontier_pass"| ESC
   MAPP -.->|"CI cancel still treated as fail before approval: manage.frontier_pass"| ESC
+  WR -->|"unchanged clean head reuses gate evidence, no retry: dispatch.process_ticket"| ESC
+  WR -->|"failed gate and Needs add-only authorization, no strike: manage.request_add_only_authorization"| MGR
+  WR -->|"unchanged rework head, unresolved cause, no PR-tier checks or review: dispatch.process_ticket"| ESC
   PUSH -->|"agent/<n> push refused, remote moved since the lease was read or leased head absent from starting and final history while starting head remains an ancestor of final: dispatch.push_agent"| ESC
   CLAIM -->|"any other dispatcher exception after the claim, then re-raised: dispatch.process_ticket"| ESC
   MAPP -->|"FIX or CLOSE: manage.apply"| MGR
@@ -215,6 +218,8 @@ One row per function that edits labels (`--add-label`, `--remove-label`, or
 | `dispatch.sync_issue` | — | `ready-for-agent` | New sync ticket for new upstream commits; its `agent/N` candidate carries the merge and gate evidence |
 | `learn.promote` | — | `factory-approved` | `factory learn` PR (lessons, curate, revert-lessons) with head-bound gate PASS, reviewer APPROVE and green CI, then squash merge (`learn.promote_pass` runs it per PR); lessons/curate merges open a `promotion-open` that `learn.decide_promotions` keeps or reverts |
 | `manage.apply` | `ready-for-human`, `*` | `factory-add-only-override`, `ready-for-agent`, `needs-triage`, `wontfix-proposal`, `*` | AUTHORIZE grants add-only authority and requeues; RETRY/REWRITE/ROUTE return to agent; SPLIT children; CLOSE; RESOLVE closes completed; ROUTE labels |
+| `manage._handle_add_only_request` | `ready-for-agent` | `ready-for-agent`, `ready-for-human` | Release a queued claim while its durable request blocks workers; CLOSE/SPLIT retain ordinary terminal parent disposition |
+| `manage.pending_add_only_request` | — | `ready-for-agent` | Direct human add-only authority releases an old queued claim before completing its request |
 | `manage.viability_pass` | `*` | `needs-triage` | Opt-in label removed; BUILD queues triage |
 | `triage.apply_decision` | `needs-triage` | `*` | `*` is the decision: `ready-for-agent`, `needs-info`, `ready-for-human`, or `wontfix-proposal` |
 | `watch.run_pass` | — | `*` | New `bug` + `needs-triage` issue per runtime-failure fingerprint (`watch.LABELS`) |
@@ -238,6 +243,9 @@ model and run a new worker attempt.
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded`` | worker round → escalate |
 | `dispatch.process_ticket` | ``gate failed {} times; worktree kept at {}`` | worker round → escalate |
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) on attempt {}; worktree kept at {}`` | worker round → escalate |
+| `dispatch.process_ticket` | ``worker left failed head {} unchanged; worktree kept at {}`` | Unchanged failed attempt → stop (`worker_no_progress`) |
+| `dispatch.process_ticket` | ``rework left head {} unchanged; required findings remain open`` | Unchanged rework → hand off the unresolved cause without another review |
+| `dispatch.process_ticket` | ``deferred rework left head {} unchanged; required findings remain open`` | Unchanged deferred rework → hand off without PR-tier checks or reviewers |
 | `dispatch.process_ticket` | ``agent/{}: worker committed nothing over {}; read the handoff`` | push → escalate (`no_change`, only when the handoff exists; `factory watch` never files it) |
 | `dispatch.process_ticket` | ``agent/{}: PR not published (no commits over main and no handoff, or existing PR targets a base other than {}); inspect dispatcher log`` | push → escalate |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded before bounce {}`` | review → escalate |
@@ -288,7 +296,11 @@ model and run a new worker attempt.
 | `manage.apply` | ``approval evidence, head, or human review state changed before manager FIX approval`` | manager FIX → escalate |
 | `manage.apply` | ``FIX worktree head {} is not the PR head {} plus the worker's own commits; worktree kept at {}`` | manager FIX → escalate (`refresh_head`) |
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
-| `manage.escalation_pass` | ``manager_failed`` | manager decision → human |
+| `manage.apply` | ``manager FIX made no commit at {}; unresolved findings remain: {}`` | Unchanged previously reviewed FIX head → terminal unresolved-finding receipt |
+| `manage._handle_add_only_request` | ``manager declined add-only authorization: {}`` | Manager HUMAN → ordinary human escalation |
+| `manage._handle_add_only_request` | ``manager decision application failed: {}`` | Failed decision application → human escalation (`manager_failed`), never replay the partial decision |
+| `manage.request_add_only_authorization` | ``manager add-only authorization rounds exhausted ({})`` | Combined manager round budget exhausted → human |
+| `manage._manager_decision` | ``manager_failed`` | Manager decision transport failure → human |
 
 ### Reused-worktree refusals
 

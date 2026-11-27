@@ -933,11 +933,13 @@ class LocalCLI(unittest.TestCase):
             'p.exists() or p.write_text("change\\n")'))
         self.cli("dispatch", "--ticket", "7")
         reviewed = [e["head"] for e in lifecycle.read_events(self.events) if e.get("event") == "review"]
-        self.assertEqual(len(reviewed), 2)
+        self.assertEqual(len(reviewed), 1)
         self.assertEqual(len(set(reviewed)), 1)
         self.assertEqual(self.pr_runs(), reviewed[:1])
         prompts = self.prompts(self.review_prompts)
-        self.assertEqual(len(prompts), 2)
+        self.assertEqual(len(prompts), 1)
+        escalations = [e for e in lifecycle.read_events(self.events) if e.get("event") == "escalate"]
+        self.assertEqual([e["code"] for e in escalations], ["review_findings_unresolved"])
         for prompt in prompts:
             self.assertIn("- slow: PASS", prompt)
 
