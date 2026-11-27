@@ -362,15 +362,19 @@ def _listener_conflicts(local: str, target: str) -> bool:
 
 def _wildcard_held(port: int) -> bool:
     """Whether a wildcard listener covers IPv4 `port`; raises OSError when it cannot tell."""
-    # A dual-stack holder also occupies the IPv4 wildcard; IPv6-only holders do not.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            probe.bind(("0.0.0.0", port))
-        except OSError as exc:
-            if exc.errno != errno.EADDRINUSE:
-                raise
-            return True
+    covers_ipv4 = True  # IPv4 is probed first; a dual-stack holder also collides there.
+    for family, address in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6:
+                probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            try:
+                probe.bind((address, port))
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE:
+                    raise
+                return covers_ipv4
+        covers_ipv4 = False
     return False
 
 
