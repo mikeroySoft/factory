@@ -49,8 +49,9 @@ class AuthorizationLogEvidenceTest(unittest.TestCase):
                 mock.patch.object(dispatch, "gh_json", side_effect=fixture.github), \
                 mock.patch.object(manage, "selectable_workers", return_value={"default": []}):
             manage.request_add_only_authorization(
-                7, fixture.issue, ["tests/test_policy.py:9"],
-                "- test: FAIL\nFAILED tests.test_policy.Policy.test_existing_rule\n", logfile,
+                n=7, issue=fixture.issue, paths=["tests/test_policy.py:9"],
+                report="- test: FAIL\nFAILED tests.test_policy.Policy.test_existing_rule\n",
+                logfile=logfile,
             )
 
         published = [args[args.index("--body") + 1] for args in commands
