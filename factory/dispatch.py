@@ -5860,6 +5860,11 @@ def process_ticket(
                 _record_rework(n, gate_head, findings, deferred=False)
                 rounds_used += 1
                 execution.review_round = bounce + 1
+                bounced_pr_run = pr_runs.get(gate_head)
+                last_pr_result = (
+                    ("PASS" if bounced_pr_run[0] else "FAIL")
+                    if bounced_pr_run is not None else "not run"
+                )
                 extra = (
                     f"## PR-tier gate report, round {bounce} (failed)\n\n{findings}"
                     if pr_failed else
@@ -5867,6 +5872,11 @@ def process_ticket(
                     f"Address required fixes only; optional suggestions are not requirements.\n\n"
                     f"{findings}"
                 )
+                if bounced_pr_run is not None and not pr_failed:
+                    extra += (
+                        f"\n\n## PR-tier gate report, round {bounce} ({last_pr_result})\n\n"
+                        f"{bounced_pr_run[1]}"
+                    )
                 retry_decision = _latest_decision_id(n, {"gate"} if pr_failed else {"review"})
                 if retry_decision:
                     record_worker_selection(n, labels, cause=retry_decision, relation="retries")
@@ -5891,9 +5901,32 @@ def process_ticket(
                 if not ok:
                     stuck = report.startswith("worker stuck")
                     failed = "idle_timeout fired (worker stuck)" if stuck else "gate failed"
+                    rows = generation.current(lifecycle.read_events(EVENTS), n).rows
+                    current_attempt = next((
+                        row for row in reversed(rows) if row.get("event") == "attempt"
+                    ), {})
+                    budget_cut = (
+                        current_attempt.get("log") == str(logfile)
+                        and current_attempt.get("gate") is None
+                        and current_attempt.get("timeout") == "budget_min"
+                    )
+                    if budget_cut:
+                        last_attempt_gate = next((
+                            row["gate"] for row in reversed(rows)
+                            if row.get("event") == "attempt" and row.get("gate") in {"PASS", "FAIL"}
+                        ), "unknown")
+                        escalate(
+                            n,
+                            f"worker killed by budget_min before gate after review bounce {bounce}; "
+                            f"budget_exceeded; last attempt-gate result: {last_attempt_gate}; "
+                            f"last PR-tier result: {last_pr_result}; "
+                            f"worktree kept at {wt}",
+                            logfile, extra=extra, code="budget",
+                        )
+                        return
                     escalate(
                         n, f"{failed} after review bounce {bounce}; worktree kept at {wt}", logfile,
-                        code="worker_stuck" if stuck else "gate_failed",
+                        extra=extra, code="worker_stuck" if stuck else "gate_failed",
                     )
                     return
                 lease = push_agent(wt, n, lease)

@@ -242,6 +242,9 @@ model and run a new worker attempt.
 | `dispatch.process_ticket` | ``agent/{}: PR not published (no commits over main and no handoff, or existing PR targets a base other than {}); inspect dispatcher log`` | push → escalate |
 | `dispatch.process_ticket` | ``wall-clock budget ({} min) exceeded before bounce {}`` | review → escalate |
 | `dispatch.process_ticket` | ``gate failed after review bounce {}; worktree kept at {}`` | review → escalate |
+| `dispatch.process_ticket` | ``worker killed by budget_min before gate after review bounce {}; budget_exceeded; last attempt-gate result: {}; last PR-tier result: PASS; worktree kept at {}`` | review → escalate (budget; triggering report retained) |
+| `dispatch.process_ticket` | ``worker killed by budget_min before gate after review bounce {}; budget_exceeded; last attempt-gate result: {}; last PR-tier result: FAIL; worktree kept at {}`` | review → escalate (budget; triggering report retained) |
+| `dispatch.process_ticket` | ``worker killed by budget_min before gate after review bounce {}; budget_exceeded; last attempt-gate result: {}; last PR-tier result: not run; worktree kept at {}`` | review → escalate (budget; PR tier absent) |
 | `dispatch.process_ticket` | ``idle_timeout fired (worker stuck) after review bounce {}; worktree kept at {}`` | review → escalate |
 | `dispatch.process_ticket` | ``REVISE verdict after {} review round(s)`` | review → escalate |
 | `dispatch.process_ticket` | ``reviewer unavailable after retries`` | review tooling retries exhausted → escalate (`reviewer_unavailable`) |
