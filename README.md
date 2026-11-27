@@ -1318,9 +1318,11 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Replace `HEAD` with the recorded commit ID from the brief. Replay uses the current
    working files (including uncommitted tests), runs only the recorded survivors,
    and prints `killed`, `survived`, or `no longer applies` for each identity.
-   It re-enumerates named files to account for changed operator occurrence numbers;
-   source text, mutation, and positions must still match exactly. Changed or deleted
-   source is not relocated. Replay orders related test modules by the smallest
+   It re-enumerates named files to account for changed operator occurrence numbers
+   and relocates a unique identical source/mutation span after inserted or deleted
+   lines. Columns and relative span must still match; changed/deleted source is not
+   replayed, and multiple identical targets fail as ambiguous rather than selecting
+   the wrong occurrence. Replay orders related test modules by the smallest
    matching feature-map row first, then module name, ahead of unrelated tests,
    and stops at the first failure. Declaring a survivor still requires every
    discovered test to pass. Full-proof test ordering is unchanged.

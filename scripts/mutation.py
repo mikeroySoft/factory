@@ -504,7 +504,7 @@ def stale_equivalents(reviewed: dict[tuple, dict], disproven: set[tuple]) -> boo
 
 
 def replay(path: str, duration: float | None) -> int:
-    """Diagnostic only: exact source/position identities, never a completion record."""
+    """Diagnostic only: relocate unique exact source identities, never write proof."""
     import cosmic_ray.commands
     from attrs import evolve
     from cosmic_ray.mutating import mutate_and_test, mutate_code
@@ -563,29 +563,35 @@ def replay(path: str, duration: float | None) -> int:
             cosmic_ray.commands.init([Path(p) for p, source in sources.items() if source], db, {})
             candidates = [item.mutations[0] for item in db.work_items]
         selected = []
+        ambiguous = False
         for entry in entries:
-            identity = tuple(entry[key] for key in ("file", "line", "operator", "original", "mutated"))
-            match = None
+            matches = []
             for candidate in candidates:
                 if (str(candidate.module_path) != entry["file"]
                         or candidate.operator_name != entry["operator"]
-                        or list(candidate.start_pos) != entry["start_pos"]
-                        or list(candidate.end_pos) != entry["end_pos"]):
+                        or candidate.start_pos[1] != entry["start_pos"][1]
+                        or candidate.end_pos[1] != entry["end_pos"][1]
+                        or candidate.end_pos[0] - candidate.start_pos[0]
+                        != entry["end_pos"][0] - entry["start_pos"][0]):
                     continue
                 source = sources[entry["file"]]
                 changed = mutate_code(source, get_operator(candidate.operator_name)(), candidate.occurrence)
                 if changed is None:
                     continue
                 diff = "\n".join(difflib.unified_diff(source.split("\n"), changed.split("\n")))
-                if mutation_key(candidate, SimpleNamespace(diff=diff)) == identity:
-                    match = candidate
-                    break
-            if match is None:
+                _, _, _, original, mutated = mutation_key(candidate, SimpleNamespace(diff=diff))
+                if (original, mutated) == (entry["original"], entry["mutated"]):
+                    matches.append(candidate)
+            if len(matches) > 1:
+                print(f"replay incomplete: {entry['file']}:{entry['line']}: ambiguous survivor "
+                      "(multiple identical source targets)")
+                ambiguous = True
+            elif not matches:
                 print(f"{entry['file']}:{entry['line']}: no longer applies (the source line changed)")
             else:
-                selected.append(match)
+                selected.append(matches[0])
         if not selected:
-            return 0
+            return 1 if ambiguous else 0
         workers = min(WORKERS, len(selected))
         copies = [scratch / f"copy{i}" for i in range(workers)]
         for copy in copies:
@@ -615,7 +621,7 @@ def replay(path: str, duration: float | None) -> int:
 
         with ThreadPoolExecutor(workers) as pool:
             list(pool.map(worker, copies))
-    broken = bool(queue)
+    broken = ambiguous or bool(queue)
     for mutation, result in sorted(results, key=lambda item: (str(item[0].module_path), item[0].start_pos)):
         if result.test_outcome not in (TestOutcome.KILLED, TestOutcome.SURVIVED) or result.output == "timeout":
             print(f"replay incomplete: {mutation.module_path}:{mutation.start_pos[0]}: "
