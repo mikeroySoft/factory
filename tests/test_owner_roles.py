@@ -4,9 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import test_handoff as fixtures
-
 from factory import config
+from tests import test_handoff as fixtures
 
 BOT = "mikeroysoft-grok"
 HOST = f'''[defaults.bot_owners]
