@@ -79,6 +79,52 @@ its own `[repo."owner/name".dashboard] port` in the host config. The preflight c
 reserve the port until systemd starts the service: a later bind failure exits 1
 with a one-line diagnostic, and the existing systemd restart policy still applies.
 
+### Pause a repository
+
+```sh
+factory pause --reason "maintenance"                 # pause until resumed
+factory pause --reason "maintenance" --until 2h      # duration
+factory pause --reason "maintenance" --until 2026-11-17T09:00:00Z
+factory resume
+```
+
+Pause is durable, local to this repository's main checkout, and independent of
+the timer's pace. It does not disable the timer: scheduled passes observe the
+flag and stop before new side effects. `--reason` is optional and displays as
+`no reason` when omitted. Without `--until`, an explicit `factory resume` is
+required; a duration or RFC 3339 timestamp resumes admission after its deadline
+is resolved by a stage check. Pausing again after an expired deadline journals
+the expiry and starts the new pause; repeating an active pause is a no-op.
+Re-running `factory install` or applying Factory through District leaves the local
+flag in place. Fleet-wide District pause controls are outside Factory's repository pause.
+
+A pause set during a pass prevents the dispatcher from starting another ticket.
+Work already inside a stage may finish that checkpoint, then is safely parked
+and unclaimed before any PR creation, merge, or push. A paused manager FIX retains
+its pending decision and worktree for the next pass without another manager round.
+Before resuming that FIX, the manager reacquires the assignment and host claim;
+competing ownership leaves the decision pending. A resumed, approved FIX stays
+claimed so the subsequent ticket pass cannot run another worker on its head.
+A refresh paused before its push preserves the candidate in a
+`refs/factory-evidence/` ref and restores the live PR head in the worktree.
+It restores the withdrawn approval only while that PR head remains unchanged,
+releases ownership, and removes the ticket from the worker frontier. The next
+unpaused merge pass refreshes and re-reviews it normally. A concurrently changed
+PR head stays unapproved and worker-eligible instead of inheriting stale approval.
+Resume starts no work by itself; the next timer pass continues from durable GitHub
+and worktree state.
+
+The only pause override is `factory dispatch --ticket N --force`. It applies to
+that explicit ticket invocation without clearing the flag; `--force` without
+`--ticket` is rejected, and scheduled or untargeted passes cannot bypass pause.
+If the engine is stale and `engine.yield_for_update` is enabled, the forced-ticket
+invocation refuses without running release, landing, or review intake.
+
+`factory doctor` reports the reason, actor, start and expiry (or `not paused`)
+as an informational row; unreadable or invalid pause state is blocking. Runtime
+JSON reads the flag passively, and every workspace view shows the same pause
+details in an accessible banner.
+
 **District drain (host-wide scheduled-pass admission).** `factory install` puts
 `ExecCondition=<python> -P -m factory drain-check` first in each pass service,
 before triage. Exit 0 admits the whole pass; exit 1 skips it without failing the
@@ -372,7 +418,9 @@ landed on its own, and partial progress needs its own reviewed PR.
 | `factory claims --supported` | Prints exactly `host-claims 1` and exits 0 for District's multi-host capability check. Works offline outside a repository; bare or other arguments exit 2. |
 | `factory triage` | Labels every `needs-triage` issue via the local model: `ready-for-agent` (with an agent brief), `needs-info` (with the question), `ready-for-human`, or `wontfix-proposal` (proposal comment and label; a human closes). An issue unchanged since its last triage comment is skipped. After two consecutive unparseable model decisions, it comments once, records `triage_stalled`, and keeps the issue for retry. `--dry-run`, `--issue N`, `--replay a,b,c`. |
 | `factory triage-probe` | Sends `GET <triage base>/models` with a three-second timeout. A 503 `Loading model` response is alive. After three consecutive failures it restarts `[triage].service` at most once per 15 minutes; failures and restarts are lifecycle-journaled. With no service configured it reports only. |
-| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets, worked concurrently → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` forces one issue; `--dry-run` prints the plan from the checkout as it is. |
+| `factory dispatch` | One stateless pass: fetch and detach the main checkout at `origin/<main>` before `.factory.toml` is read (a root with tracked or untracked changes outside `.factory/` exits 1 with a `root_dirty` dispatcher exit row naming the paths and does nothing, even when its config does not load) → upstream sync (stage a sync ticket) → merge stage (at most one PR) → review-only PR intake → manager → claim up to `max_active` tickets, worked concurrently → worker plan → worker → gate → PR → review → up to `review_rounds` bounces. `--ticket N` targets one issue; `--ticket N --force` is the only pause override and does not clear the pause. `--force` without `--ticket` is rejected. `--dry-run` prints the plan from the checkout as it is. |
+| `factory pause [--reason TEXT] [--until DURATION\|TIMESTAMP]` | Durably pauses this repository without changing timer pace. An omitted reason is reported as `no reason`; omitting `--until` pauses until `factory resume`. |
+| `factory resume` | Clears this repository's durable pause flag; it does not trigger a pass. |
 | `factory explain N [--json] [--since ISO]` | Reads the live `.factory/events.jsonl` and retained `events.jsonl.N.gz` segments without writing. JSON mode returns `{ticket,nodes,edges,loops,cost,frontier,frontier_stage,coverage}`; `cost` totals the ticket and each retry loop has its own total. `frontier_stage` distinguishes gate, review, manager, human, merge eligibility, and blocker waits; merged and wontfix tickets have a null frontier. Text mode prints a compact decision tree. Legacy `claimed`, `attempt`, `review`, `approved`, `merged`, and `escalate` rows become `synthesized: true` nodes, while `coverage` names part-1 stages with no structured record. Output is bounded to the runtime projection's 1 MiB limit. |
 | `factory manage` | First recommends directions for `needs-review` PRs, then `needs-viability` issues; then resolves untouched `ready-for-human` escalation packets within `[manager].rounds`; finally publishes one routed human handoff request per escalation whose automatic recovery is terminal (also without a manager). `--dry-run` lists eligible requests without inference or writes. |
 | `factory gate` | Runs the deterministic gate in the current worktree and writes a Markdown report. Workers run it themselves; the dispatcher re-runs it as the evidence of record. |
@@ -2703,17 +2751,20 @@ schema versions rather than interpreting them as version 1.
 | `history` | Explicit retained-window coverage object below. |
 | `errors` | At most 32 structured partial-error objects, `{source, scope, code}` strings. No exception text, credentials, configuration dumps, or log excerpts. |
 
-`dispatcher` has nullable booleans `service_active`, `timer_active`, and `paused`;
-nullable UTC `next_at`; UTC `observed_at`; string `observation`; `capacity`;
-`run_ids` (sorted dispatcher-run identity strings); and `latest_transition`
-(null or `{event_id, at, execution_id, kind}` from a returned `enter`/`exit`).
-Latest means the last retained observed transition in journal order, not an
-artifact modification. `capacity` has `configured` (integer), `active` (integer
-or null, actual held ticket admission locks), and `complete` (boolean).
-Stage count is not admission count. An unavailable service query is null,
-not false; inactive service evidence alone does not establish unexpected stop.
-`paused` is null because the current producer has no recorded pause intention.
-No scheduled intention is inferred from a configured interval.
+`dispatcher` has nullable booleans `service_active` and `timer_active`; nullable
+UTC `next_at`; `paused`, which is null or `{reason, at, who, until}` (`until`
+is nullable); UTC `observed_at`; string `observation`; `capacity`; `run_ids`
+(sorted dispatcher-run identity strings); and `latest_transition` (null or
+`{event_id, at, execution_id, kind}` from a returned `enter`/`exit`). Latest
+means the last retained observed transition in journal order, not an artifact
+modification. `capacity` has `configured` (integer), `active` (integer or null,
+actual held ticket admission locks), and `complete` (boolean). Stage count is
+not admission count. An unavailable service query is null, not false; inactive
+service evidence alone does not establish unexpected stop. A null `paused`
+means not paused only when `errors` has no `{source:"pause",scope:"repository"}`
+entry. Codes `unavailable` and `invalid_state` make pause state unknown. This
+reader is passive: an expired pause can remain visible until the next
+operational stage check resolves it.
 
 Each execution has the eight common F01 identity fields (`dispatcher_run_id`,
 `root_execution_id`, `execution_id`, `parent_execution_id`, `ticket`, `attempt`,

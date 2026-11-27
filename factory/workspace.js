@@ -93,6 +93,14 @@
     return `<div class="collection"><span class="signal" data-status="${status}" data-tone="${tone(status)}">${esc(status)}</span><span>${repoObservedAt(repo) ? `latest source ${esc(date(repoObservedAt(repo)))}` : 'no observation yet'}</span><button class="btn btn-small" type="button" data-refresh ${collection.refreshing || state.request ? 'disabled' : ''}>Refresh selected</button></div>`;
   }
 
+  function pauseBanner(repo) {
+    const value = runtime(repo), paused = object(object(value.dispatcher).paused);
+    const unavailable = array(value.errors).some(error => object(error).source === 'pause');
+    if (unavailable) return '<section class="pause-banner pause-unavailable" role="alert" aria-label="Repository pause state unavailable"><div><span class="eyebrow">Dispatch control</span><strong>Pause state unavailable</strong><p>Factory cannot determine whether this repository is paused.</p></div></section>';
+    if (!Object.keys(paused).length) return '';
+    return `<section class="pause-banner" role="status" aria-label="Repository paused"><div><span class="eyebrow">Dispatch control</span><strong>Paused</strong><p>${esc(paused.reason || 'no reason')}</p></div><dl><div><dt>By</dt><dd>${esc(paused.who)}</dd></div><div><dt>Since</dt><dd>${esc(date(paused.at))}</dd></div><div><dt>Until</dt><dd>${paused.until ? esc(date(paused.until)) : 'manually resumed'}</dd></div></dl></section>`;
+  }
+
   function evidenceNotices(repo) {
     if (!repo) return '';
     const errors = [...array(repo.errors), repo.collection?.error, state.error && {message:state.error}].filter(Boolean);
@@ -333,6 +341,7 @@
     const keep=previousTool&&previousTool.dataset.nativeTool===current.view.toLowerCase()&&previousTool.dataset.repository===repo?.slug;
     if(keep)previousTool.remove(); else WorkspaceTools.dispose();
     app.innerHTML=`<div class="workspace-shell"><aside class="rail"><div><strong class="wordmark">Factory</strong><span>Outcome workspace</span></div>${nav(current.view)}<div class="rail-tools"><button class="btn shortcut" type="button" data-palette>Jump <kbd>${navigator.platform.includes('Mac')?'⌘':'Ctrl'} K</kbd></button>${themePicker()}<button class="btn" type="button" data-chat aria-expanded="${state.chatOpen}">FM dock</button></div><footer>${repo?`<strong>${esc(repo.slug)}</strong><small>${esc(repo.root||'registered root withheld')}</small>`:'No repository'}${signal(coverage(observation(repo)).status||'unobserved')}</footer></aside><div class="workspace-main"><header class="toolbar">${repoPicker(repo)}${collectionMarkup(repo)}</header><main id="main" tabindex="-1">${state.loading&&!repo?'<p class="empty">Loading registered repositories…</p>':state.error&&!repo?`<p class="error">${esc(state.error)}</p>`:content(current.view,repo)}</main></div></div>`;
+    app.querySelector('.toolbar')?.insertAdjacentHTML('afterend',pauseBanner(repo));
     if(current.view==='Overview')app.querySelector('#main .workspace-head')?.insertAdjacentHTML('afterend',journeyMarkup());
     app.querySelector('#main')?.insertAdjacentHTML('beforeend',evidenceNotices(repo));
     for(const node of app.querySelectorAll('[data-action-choice]')){const chosen=choices.get(node.dataset.actionChoice);if(chosen){const index=JSON.parse(node.dataset.actionOptions).findIndex(option=>JSON.stringify(option)===chosen);if(index>=0)node.value=String(index);}}

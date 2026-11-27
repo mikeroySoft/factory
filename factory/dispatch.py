@@ -39,7 +39,7 @@ from functools import cache
 from pathlib import Path
 from urllib.parse import quote
 
-from factory import __version__, brief, config, generation, lifecycle, risk, runner
+from factory import __version__, brief, config, generation, lifecycle, pause, risk, runner
 from factory.claims import HostSetupError, host_setup_problem, repository_host_problem
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
@@ -232,6 +232,10 @@ def run(
 
     A failed checked command logs its redacted stderr tail, then raises as before.
     """
+    if (cmd[:2] == ["git", "push"]
+        or cmd[:3] in (["gh", "pr", "create"], ["gh", "pr", "merge"])
+        or (cmd[:3] == ["gh", "issue", "edit"] and "--add-assignee" in cmd)):
+        pause.require_running(ROOT)
     try:
         return _run(cmd, cwd, check, stdout, stderr, env, timeout)
     except subprocess.CalledProcessError as exc:
@@ -931,6 +935,8 @@ def latest_head_review_verdict(events: list[dict], n: int, pr: int, head: str) -
 
 def review_intake_pass(dry_run: bool) -> None:
     """Review opted-in PR revisions, and `factory learn` PRs, without running the issue/merge pipeline."""
+    if pause.check(ROOT, log):
+        return
     if cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host:
         log(f"review-intake: skipped, triage host is {cfg.triage_host}")
         return
@@ -940,6 +946,8 @@ def review_intake_pass(dry_run: bool) -> None:
     ])
     login = None
     for pr in prs:
+        if pause.check(ROOT, log):
+            return
         if pr["state"] != "OPEN" or pr["isDraft"]:
             continue
         # Branch-name admission is for the dispatcher's own chore PRs; a fork can name its branch anything.
@@ -4498,6 +4506,44 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         )
         return evidence_ref
 
+    def restore_approval(expected_head: str) -> bool:
+        """Restore only the approval removed from this still-unchanged PR head."""
+        fields = "state,headRefName,headRefOid,baseRefName,isDraft,reviewDecision"
+
+        def unchanged(state: dict) -> bool:
+            return isinstance(state, dict) and (
+                state.get("state") == "OPEN"
+                and state.get("headRefName") == f"agent/{n}"
+                and state.get("headRefOid") == expected_head
+                and state.get("baseRefName") == cfg.main
+                and not state.get("isDraft")
+                and state.get("reviewDecision") != "CHANGES_REQUESTED"
+            )
+
+        added = False
+        try:
+            if not unchanged(gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", fields])):
+                return False
+            changed = run(
+                ["gh", "pr", "edit", str(pr), "--repo", REPO,
+                 "--add-label", FACTORY_APPROVED],
+                check=False,
+            )
+            if changed.returncode:
+                return False
+            added = True
+            if unchanged(gh_json(["pr", "view", str(pr), "--repo", REPO, "--json", fields])):
+                return True
+        except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+            pass
+        if added:
+            run(
+                ["gh", "pr", "edit", str(pr), "--repo", REPO,
+                 "--remove-label", FACTORY_APPROVED],
+                check=False,
+            )
+        return False
+
     def withdraw(
         reason: str,
         code: str,
@@ -4704,7 +4750,23 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
             refreshed_head=head,
         )
         return False
-    if push_agent(wt, n, remote_head, check=False) is None:
+    try:
+        pushed = push_agent(wt, n, remote_head, check=False)
+    except pause.Paused:
+        evidence_ref = restore_pr_head(head)
+        parked_head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        approval_restored = parked_head == remote_head and restore_approval(remote_head)
+        record(
+            "refresh-paused", ticket=n, pr=pr, head=parked_head, refreshed_head=head,
+            evidence_ref=evidence_ref, approval_restored=approval_restored,
+        )
+        unclaim(n, *(("--remove-label", LABEL_AGENT) if approval_restored else ()))
+        log(
+            f"#{n}: PR #{pr} refresh paused; candidate kept at {evidence_ref}, "
+            f"worktree restored to {parked_head[:12]}, ownership released"
+        )
+        return False
+    if pushed is None:
         withdraw(
             "remote head changed while refreshed evidence was being produced",
             "refresh_head",
@@ -4814,6 +4876,8 @@ def land_pass(dry_run: bool) -> None:
     merge queue: landing one PR makes the others stale, and the refresh path
     re-earns gate and fresh review evidence before they land.
     """
+    if pause.check(ROOT, log):
+        return
     if cfg.host_name is not None and cfg.land_host is not None and cfg.host_name != cfg.land_host:
         log(f"land: skipped, land host is {cfg.land_host}")
         return
@@ -4848,6 +4912,8 @@ def land_pass(dry_run: bool) -> None:
 
 def merge_pass_locked(dry_run: bool) -> None:
     """Ticket PR merge stage; `factory learn` PRs in the same listing go to `learn.promote_pass` first."""
+    if pause.check(ROOT, log):
+        return
     prs = gh_json(
         [
             "pr",
@@ -4881,6 +4947,8 @@ def merge_pass_locked(dry_run: bool) -> None:
             continue
         candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
     for pr_num, n, listed_head in sorted(candidates):
+        if pause.check(ROOT, log):
+            return
         if cfg.host_name is not None:
             elected = elected_host_claim(host_claims(n))
             if elected is not None and elected["host"] != cfg.host_name:
@@ -5525,6 +5593,8 @@ def process_ticket(
 
     An `issue["_factory_admitted"]` event is set once the `claimed` row is journaled, before the
     worker runs: `ticket_pass` ranks its next pick only then."""
+    if pause.check(ROOT, log):
+        return False
     admission_id = admission_id or issue.get("_factory_admission_id")
     n, title = issue["number"], issue["title"]
     labels = {label["name"] for label in issue.get("labels", [])}
@@ -5579,6 +5649,7 @@ def process_ticket(
         host_claim = None
         try:
             execution.resource("acquired", lock_path, scope="repository")
+            pause.require_running(ROOT)
             # Strong re-read before claiming: `issue list` is search-backed and lags
             # label/assignee edits, which re-claimed #16/#17 seconds after escalation.
             # The initiative kind is read here even when forced: `--ticket` cannot bypass it.
@@ -5683,6 +5754,7 @@ def process_ticket(
                 record("plan-bound", ticket=n, schema_version=1, baseline=baseline,
                        issue={key: fresh.get(key) for key in ("title", "body", "comments")})
 
+            pause.require_running(ROOT)
             if cfg.host_name:
                 host_claim = acquire_host_claim(n, fresh, claims, forced=forced)
                 if host_claim is None:
@@ -5746,11 +5818,13 @@ def process_ticket(
             if staged is not None:
                 report, gate_head = staged
             for attempt in range(1, MAX_ATTEMPTS + 1 if staged is None else 1):
+                pause.require_running(ROOT)
                 ok, report, logfile, gate_head = worker_round(
                     n, wt, labels, title, extra, attempt, deadline, body=fresh.get("body") or "",
                     comments=fresh.get("comments"),
                     fixups=attempt == MAX_ATTEMPTS,
                 )
+                pause.require_running(ROOT)
                 if ok:
                     break
                 if guidance := _protected_gate_guidance(report, labels):
@@ -5836,6 +5910,7 @@ def process_ticket(
             # Durable charges survive pass boundaries; a deferred round is paid before requeue.
             rounds_used = _review_rounds_used(n)
             for bounce in range(1, cfg.review_rounds + 2):
+                pause.require_running(ROOT)
                 if pr_failed and (guidance := _protected_gate_guidance(findings, labels)):
                     escalate(n, "PR gate blocked by protected paths", logfile,
                              extra=f"{guidance}\n\n{findings}", code="protected_paths")
@@ -5938,6 +6013,11 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except pause.Paused:
+            execution.outcome, execution.reason = "not_admitted", "paused"
+            if claimed or host_claim is not None:
+                unclaim(n)
+            return
         except HostSetupError as exc:
             log(f"#{n}: refused ({exc})")
             execution.outcome, execution.reason = "not_admitted", "host_setup"
@@ -6006,6 +6086,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
     An interrupt (Ctrl-C) stops every in-flight pipeline first, as it stopped the one before #579.
     """
     from factory import schedule
+    if pause.check(ROOT, log):
+        return
 
     with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
         active = active_tickets()
@@ -6037,6 +6119,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
     pool = ThreadPoolExecutor(max_workers=capacity)
     try:
         for remaining in range(capacity, 0, -1):
+            if pause.check(ROOT, log):
+                break
             with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True):
                 rows = [issue for issue in frontier() if issue["number"] not in picked]
                 if all(issue.get("held") for issue in rows):
@@ -6143,6 +6227,7 @@ def main(argv: list[str]) -> int:
         description="AI-factory dispatcher (one pass, stateless)"
     )
     parser.add_argument("--ticket", type=int, help="process exactly this open issue")
+    parser.add_argument("--force", action="store_true", help="override pause for --ticket only; do not resume the repository")
     parser.add_argument(
         "--budget-min",
         type=int,
@@ -6153,6 +6238,18 @@ def main(argv: list[str]) -> int:
         "--dry-run", action="store_true", help="print planned actions; no side effects"
     )
     args = parser.parse_args(argv)
+    if args.force and not args.ticket:
+        parser.error("--force requires --ticket")
+    with pause.override(args.force):
+        try:
+            return _dispatch_pass(args)
+        except pause.Paused:
+            return 0
+
+
+def _dispatch_pass(args: argparse.Namespace) -> int:
+    if pause.check(config.repo_root(), log):
+        return 1 if args.ticket else 0
     if not args.dry_run:
         dirty = pin_root()
         if dirty:
@@ -6164,6 +6261,8 @@ def main(argv: list[str]) -> int:
                 execution.emit("result", paths=dirty)
             return 1
     configure(config.load())  # from the tree now pinned at origin/<main>
+    if pause.check(ROOT, log):
+        return 1 if args.ticket else 0
     if not args.dry_run:
         _sweep_stale_factory_tempdirs()
     if args.budget_min is None:
@@ -6184,6 +6283,9 @@ def main(argv: list[str]) -> int:
             if not args.dry_run:
                 record("engine-stale", installed_commit=installed, target_commit=target,
                        yield_for_update=cfg.engine_yield_for_update)
+        if args.force and yield_for_update:
+            log("engine-stale: refusing forced ticket while yielding for update; no stages run")
+            return 1
         if not args.dry_run:
             from factory import results
 
@@ -6228,8 +6330,14 @@ def main(argv: list[str]) -> int:
         # A release PR merges before this pass lands a ticket (every ticket edits CHANGELOG.md,
         # which GitHub cannot union-merge), and a new one opens only after landing.
         release_step(open_pr=False)
+        if pause.check(ROOT, log):
+            return 0
         land_pass(args.dry_run)
+        if pause.check(ROOT, log):
+            return 0
         review_intake_pass(args.dry_run)
+        if pause.check(ROOT, log):
+            return 0
         if yield_for_update:
             log("engine-stale: yielding after land and review intake; no new tickets")
             if not args.dry_run:
@@ -6239,8 +6347,14 @@ def main(argv: list[str]) -> int:
         from factory.manage import manage_pass
 
         manage_pass(args.dry_run)
+        if pause.check(ROOT, log):
+            return 0
         ticket_pass(args.budget_min, args.dry_run)
+        if pause.check(ROOT, log):
+            return 0
         learn_pass(args.dry_run)
+        if pause.check(ROOT, log):
+            return 0
         release_step(open_pr=True)
         if not args.dry_run:
             lifecycle.record_stage_success(EVENTS, "dispatch")

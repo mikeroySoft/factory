@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, claims, config, lifecycle, platform_identity
+from factory import __version__, claims, config, lifecycle, pause, platform_identity
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -533,6 +533,14 @@ def doctor(argv: list[str]) -> int:
     if unset:
         report(None, "defaults in effect", ", ".join(unset), info=True)
     report_stage_success(cfg, report)
+    try:
+        paused = pause.read(cfg.root)
+    except OSError:
+        report(False, "repository pause", "state unavailable")
+    except ValueError:
+        report(False, "repository pause", "state invalid")
+    else:
+        report(True, "repository pause", pause.describe(paused) if paused else "not paused", info=True)
     if cfg.watch_bands:
         from factory import watch
 

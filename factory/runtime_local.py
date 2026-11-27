@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
-from . import config, platform_identity
+from . import config, pause, platform_identity
 from .config import Config, ConfigError
 
 COMMAND_TIMEOUT = 0.5
@@ -234,6 +234,15 @@ def dispatcher(cfg: Config, executions: list[dict], history: dict) -> tuple[dict
     def error(source: str, scope: str, code: str) -> None:
         errors.append({"source": source, "scope": scope, "code": code})
 
+    try:
+        paused = pause.read(cfg.root)
+    except OSError:
+        paused = None
+        error("pause", "repository", "unavailable")
+    except ValueError:
+        paused = None
+        error("pause", "repository", "invalid_state")
+
     def active(kind: str) -> bool | None:
         try:
             text = _command(kind, unit=cfg.unit)
@@ -292,7 +301,7 @@ def dispatcher(cfg: Config, executions: list[dict], history: dict) -> tuple[dict
         observation = "unavailable"
     return {
         "service_active": service_active, "timer_active": timer_active, "next_at": next_at,
-        "paused": None,
+        "paused": paused,
         "observed_at": observed.isoformat(timespec="microseconds").replace("+00:00", "Z"),
         "observation": observation,
         "capacity": {"configured": cfg.max_active, "active": active_count, "complete": active_count is not None},
