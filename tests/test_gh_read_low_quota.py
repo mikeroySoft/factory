@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, gh_reads, lifecycle, triage, watch
-from tests.test_gh_reads import PassReadTest
+from tests import test_gh_reads as read_fixture
 
 
 class LowQuotaPathTest(unittest.TestCase):
@@ -56,10 +56,10 @@ class LowQuotaPathTest(unittest.TestCase):
 
 
 class WatchLowQuotaTest(unittest.TestCase):
-    setUp = PassReadTest.setUp
-    probe = PassReadTest.probe
-    command = PassReadTest.command
-    rows = PassReadTest.rows
+    setUp = read_fixture.PassReadTest.setUp
+    probe = read_fixture.PassReadTest.probe
+    command = read_fixture.PassReadTest.command
+    rows = read_fixture.PassReadTest.rows
 
     def test_watch_read_with_six_units_preserves_ticket_and_defers_next_pass(self):
         self.remaining = 6

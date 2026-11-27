@@ -2,15 +2,15 @@
 import unittest
 
 from factory import lifecycle
-from tests.test_dispatch_preflight import DispatchPreflightTest
+from tests import test_dispatch_preflight as preflight
 
 
 class BulkBudgetTest(unittest.TestCase):
-    setUp = DispatchPreflightTest.setUp
-    dispatcher = DispatchPreflightTest.dispatcher
-    launch = DispatchPreflightTest.launch
-    run_pass = DispatchPreflightTest.run_pass
-    assert_no_claim = DispatchPreflightTest.assert_no_claim
+    setUp = preflight.DispatchPreflightTest.setUp
+    dispatcher = preflight.DispatchPreflightTest.dispatcher
+    launch = preflight.DispatchPreflightTest.launch
+    run_pass = preflight.DispatchPreflightTest.run_pass
+    assert_no_claim = preflight.DispatchPreflightTest.assert_no_claim
 
     def test_bulk_pass_defers_before_large_pr_listing_below_graphql_floor(self):
         module, result, output, health, land = self.run_pass(

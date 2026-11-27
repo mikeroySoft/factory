@@ -1706,7 +1706,10 @@ nor consumes local approval evidence, removes `factory-approved`, or escalates
 them. PRs without a claim retain ordinary eligibility checks.
 
 Before any GitHub mutation, dispatch reads `gh api rate_limit` and requires at
-least **100 remaining** in both GraphQL and REST (`core`). Below either floor,
+least **1000 GraphQL points** for a bulk pass (up to 1000 PRs/issues with nested
+connections), **100 GraphQL points** for explicit `--ticket` dispatch, and
+**100 REST (`core`) requests**. An engine-update yield still uses the bulk floor
+because it runs landing and review intake. Below either floor,
 or if the budget cannot be verified, it skips the whole pass (exit 0), logs the
 reason and reset time when available, and journals `pass-skipped` with reason
 `github_rate_limit` and code `rate_limited` or `gh_read_failed`. Dry-run budget
@@ -1735,7 +1738,8 @@ a second merge in the same pass.
 
 A rate limit ends the pass immediately. A reported resource reset or Retry-After
 is journaled as `gh-read-backoff`; subsequent passes make no GitHub calls until
-that time. Without a reported reset, the next scheduled pass can try again.
+that time, including when a rejected query leaves a small nonzero budget.
+Without a reported reset, the next scheduled pass can try again.
 Other read failures end the pass as `gh_reads_unavailable` once at least three
 reads were attempted and more than half failed. There are no inline retries.
 Each affected pass logs and journals `pass-summary` with attempted/failed reads,

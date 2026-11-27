@@ -6273,7 +6273,7 @@ def pin_root() -> list[str]:
     return paths
 
 
-def github_preflight(dry_run: bool) -> int | None:
+def github_preflight(dry_run: bool, *, bulk: bool = False) -> int | None:
     """No GitHub mutations until both API budgets and repository host setup are safe."""
     detail = ""
     code = "gh_read_failed"
@@ -6284,8 +6284,10 @@ def github_preflight(dry_run: bool) -> int | None:
             remaining = budget["remaining"]
             if type(remaining) is not int or remaining < 0:
                 raise ValueError(f"invalid {name} remaining budget")
-            if remaining < 100:
-                detail = f"{name} has {remaining} remaining (floor 100), reset {budget.get('reset', 'unknown')}"
+            # Bulk PR/issue listings request up to 1000 nodes with nested connections.
+            floor = 1000 if bulk and name == "graphql" else 100
+            if remaining < floor:
+                detail = f"{name} has {remaining} remaining (floor {floor}), reset {budget.get('reset', 'unknown')}"
                 code = "rate_limited"
                 reset = budget.get("reset")
                 reads = gh_reads.current()
@@ -6355,7 +6357,7 @@ def main(argv: list[str]) -> int:
     ):
         if reads.stopped:
             return 0
-        if (preflight := github_preflight(args.dry_run)) is not None:
+        if (preflight := github_preflight(args.dry_run, bulk=not args.ticket or yield_for_update)) is not None:
             return preflight
         if stale:
             log(f"engine-stale: installed {installed}, District target {target}")

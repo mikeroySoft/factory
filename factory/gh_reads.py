@@ -118,7 +118,8 @@ class Pass:
                 or cmd[1:3] == ["pr", "diff"]
             ) else "graphql"
             budget = probe.get(resource, {})
-            if budget.get("remaining") == 0 and budget.get("reset", 0) > time.time():
+            # A costly GraphQL query can be rejected before the last points are spent.
+            if budget.get("remaining", -1) >= 0 and budget.get("reset", 0) > time.time():
                 reset = budget["reset"]
             elif match := re.search(r"retry[- ]after[:= ]+(\d+)", detail, re.IGNORECASE):
                 reset = time.time() + int(match[1])
