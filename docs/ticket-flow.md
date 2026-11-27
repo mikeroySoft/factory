@@ -296,6 +296,7 @@ model and run a new worker attempt.
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
 | `manage.apply` | ``manager FIX made no commit at {}; unresolved findings remain: {}`` | Unchanged previously reviewed FIX head → terminal unresolved-finding receipt |
 | `manage._handle_add_only_request` | ``manager declined add-only authorization: {}`` | Manager HUMAN → ordinary human escalation |
+| `manage._handle_add_only_request` | ``manager decision application failed: {}`` | Failed decision application → human escalation (`manager_failed`), never replay the partial decision |
 | `manage.request_add_only_authorization` | ``manager add-only authorization rounds exhausted ({})`` | Combined manager round budget exhausted → human |
 | `manage._manager_decision` | ``manager_failed`` | Manager decision transport failure → human |
 
