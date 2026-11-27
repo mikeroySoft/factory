@@ -4803,6 +4803,27 @@ def cleanup_after_merge(n: int, head: str) -> None:
     # unlinking it under a live holder lets the next opener lock a second inode.
 
 
+def _producer_only_landing() -> bool:
+    return cfg.host_name is not None and cfg.land_host is not None and cfg.host_name != cfg.land_host
+
+
+def _local_landing_heads() -> set[tuple[int, int, str]]:
+    """Producer routing uses only this host's complete, exact-head approval evidence."""
+    events = lifecycle.read_events(EVENTS)
+    return {
+        (e["pr"], e["ticket"], e["head"])
+        for e in events
+        if e.get("event") == "approved"
+        and isinstance(e.get("pr"), int)
+        and isinstance(e.get("ticket"), int)
+        and isinstance(e.get("head"), str)
+        and e.get("gate_head") == e["head"] == e.get("review_head")
+        and _head_evidence_matches(events, e["ticket"], e["head"])
+        and latest_head_review_verdict(events, e["ticket"], e["pr"], e["head"])
+        not in {"REQUEST_CHANGES", "REVISE"}
+    }
+
+
 def land_pass(dry_run: bool) -> None:
     """Under one lock: upstream sync (stages a sync ticket, never moves main), then
     the merge stage (at most ONE approved, green, up-to-date factory PR per pass).
@@ -4814,14 +4835,16 @@ def land_pass(dry_run: bool) -> None:
     merge queue: landing one PR makes the others stale, and the refresh path
     re-earns gate and fresh review evidence before they land.
     """
-    if cfg.host_name is not None and cfg.land_host is not None and cfg.host_name != cfg.land_host:
+    producer_only = _producer_only_landing()
+    if producer_only and not _local_landing_heads():
         log(f"land: skipped, land host is {cfg.land_host}")
         return
     # Serialize against concurrent dispatcher runs (timer + manual): two merge
     # stages rebasing the same worktree would corrupt it. Skip, don't wait —
     # the next timer pass retries.
     if dry_run:
-        sync_pass(True)
+        if not producer_only:
+            sync_pass(True)
         merge_pass_locked(True)
         return
     (FACTORY / "locks").mkdir(parents=True, exist_ok=True)
@@ -4838,7 +4861,8 @@ def land_pass(dry_run: bool) -> None:
             return
         try:
             execution.resource("acquired", lock_path, scope="repository")
-            sync_pass(dry_run)
+            if not producer_only:
+                sync_pass(dry_run)
             merge_pass_locked(dry_run)
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -4862,10 +4886,12 @@ def merge_pass_locked(dry_run: bool) -> None:
     )
     from factory.learn import promote_pass
 
-    try:
-        promote_pass(prs, dry_run)
-    except Exception as exc:  # noqa: BLE001 - a lessons merge failure never blocks ticket merges
-        log(f"promotion: failed ({type(exc).__name__}: {exc})")
+    producer_heads = _local_landing_heads() if _producer_only_landing() else None
+    if producer_heads is None:
+        try:
+            promote_pass(prs, dry_run)
+        except Exception as exc:  # noqa: BLE001 - a lessons merge failure never blocks ticket merges
+            log(f"promotion: failed ({type(exc).__name__}: {exc})")
     candidates = []
     for pr in prs:
         m = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
@@ -4881,6 +4907,8 @@ def merge_pass_locked(dry_run: bool) -> None:
             continue
         candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
     for pr_num, n, listed_head in sorted(candidates):
+        if producer_heads is not None and (pr_num, n, listed_head) not in producer_heads:
+            continue
         if cfg.host_name is not None:
             elected = elected_host_claim(host_claims(n))
             if elected is not None and elected["host"] != cfg.host_name:
@@ -5185,23 +5213,45 @@ def merge_pass_locked(dry_run: bool) -> None:
             method = "--merge" if carries_upstream else "--squash"
             body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
             with lifecycle.scope(EVENTS, "merge", ticket=n):
-                run(
-                    [
-                        "gh",
-                        "pr",
-                        "merge",
-                        str(pr_num),
-                        "--repo",
-                        REPO,
-                        method,
-                        "--match-head-commit",
-                        head,
-                        "--subject",
-                        final["title"],
-                        "--body",
-                        body,
-                    ]
-                )
+                try:
+                    run(
+                        [
+                            "gh",
+                            "pr",
+                            "merge",
+                            str(pr_num),
+                            "--repo",
+                            REPO,
+                            method,
+                            "--match-head-commit",
+                            head,
+                            "--subject",
+                            final["title"],
+                            "--body",
+                            body,
+                        ]
+                    )
+                except subprocess.CalledProcessError:
+                    # A concurrent landing can move main after our last freshness check.
+                    # Establish that race from GitHub, not from an error-message substring.
+                    current = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
+                    if (
+                        current.get("state") != "OPEN"
+                        or current.get("headRefOid") != head
+                        or current.get("baseRefName") != cfg.main
+                        or current.get("isDraft")
+                        or FACTORY_APPROVED not in {label["name"] for label in current.get("labels", [])}
+                        or current.get("reviewDecision") == "CHANGES_REQUESTED"
+                        or not gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]
+                    ):
+                        raise
+                    record_merge_decision(
+                        n, pr_num, "refresh branch", "base moved during merge; re-earn gate and review",
+                        head, head, latest_checks,
+                    )
+                    if refresh_pr_branch(n, pr_num, carries_upstream):
+                        execution.outcome = "refreshed"
+                    return
                 try:
                     merged_pr = gh_json([
                         "pr", "view", str(pr_num), "--repo", REPO, "--json", "mergeCommit",

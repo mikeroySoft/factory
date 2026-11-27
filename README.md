@@ -1671,12 +1671,14 @@ Unset `triage_host` keeps triage enabled everywhere. `claim_ttl` defaults to
 `"2h"` and accepts positive `s`, `m`, `h`, or `d` durations, including `"1h30m"`.
 `factory doctor` reports the effective host settings.
 
-Set the same `land_host = "tank"` on both Tank and Ultron before enabling
-Ultron's Factory timer. Only the matching `host_name` runs landing: upstream
-sync, merge and behind-main refresh. Other hosts skip before any landing git/gh
-calls or journal writes, including dry runs. Unset `land_host` keeps landing
-enabled everywhere. Like `triage_host`, it is host-only and uses the same host
-name syntax and per-repository override.
+`land_host = "tank"` selects the host for upstream sync and general landing.
+A producer with complete local SHA-bound gate, review and approval evidence may
+also land its own ticket PRs, including refreshing behind-main branches and
+re-earning gate and review locally. It does not run upstream sync or lessons
+promotion. Without such evidence, other hosts skip before landing git/gh calls
+or journal writes, including dry runs. No cross-host journal import or label-only
+approval is supported. Unset `land_host` keeps landing enabled everywhere.
+The setting remains host-only with the same host-name syntax and overrides.
 
 `release_host` works the same way: set the same `release_host = "tank"` on every
 host and only the matching `host_name` runs the release step; other hosts log
@@ -1697,6 +1699,9 @@ Independently, the ticket merge stage skips PRs whose elected claim belongs to
 another host, even after that claim expires. It neither refreshes those branches
 nor consumes local approval evidence, removes `factory-approved`, or escalates
 them. PRs without a claim retain ordinary eligibility checks.
+A base that moves between the final freshness check and the merge request causes
+a local refresh and fresh gate/review, not an `approval_missing` escalation.
+
 
 Before any GitHub mutation, dispatch reads `gh api rate_limit` and requires at
 least **100 remaining** in both GraphQL and REST (`core`). Below either floor,
