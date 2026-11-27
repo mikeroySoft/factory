@@ -63,3 +63,44 @@ class SelfWorkTest(unittest.TestCase):
         self.assertIsNone(factory['known_spend_share'])
         self.assertEqual(factory['unpriced_usage'], 1)
         self.assertIsNone(result['factory_watch_filed_share'])
+
+    def setUp(self):
+        # Keep the original command regression offline at the subprocess boundary.
+        patcher = mock.patch.object(
+            stats.subprocess, 'run',
+            return_value=mock.Mock(returncode=0, stdout='[{"number": 1}, {"number": 2}]'))
+        self.issue_read = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_product_command_targets_factory_and_preserves_shares_on_read_failure(self):
+        now = datetime(2026, 11, 27, tzinfo=UTC)
+        with tempfile.TemporaryDirectory() as temp:
+            current = config.Config(Path(temp), 'owner/Benito')
+            current.factory.mkdir()
+            (current.factory / 'events.jsonl').write_text(
+                json.dumps({'at': now.isoformat(), 'event': 'attempt'}) + '\n' +
+                json.dumps({'at': now.isoformat(), 'event': 'llm-usage',
+                            'stage': 'worker', 'cost': 2}) + '\n')
+            for failure in (None, OSError('missing gh'),
+                            stats.subprocess.TimeoutExpired('gh', 10), 'invalid-json'):
+                with self.subTest(failure=failure):
+                    self.issue_read.side_effect = failure if isinstance(failure, Exception) else None
+                    self.issue_read.return_value = mock.Mock(
+                        returncode=0 if failure == 'invalid-json' else 1, stdout='not json')
+                    output = io.StringIO()
+                    with mock.patch.object(stats, 'resolve', return_value=current), \
+                         mock.patch.object(stats, '_now', return_value=now), \
+                         mock.patch.object(config, 'host_config', return_value={}), \
+                         contextlib.redirect_stdout(output):
+                        self.assertEqual(stats.main([
+                            '--repo', 'owner/Benito', '--week', '--self-work', '--json']), 0)
+                    report = json.loads(output.getvalue())
+                    self.assertEqual(report['repositories']['owner/Benito']['attempt_share'], 1)
+                    self.assertEqual(report['repositories']['owner/Benito']['known_spend_share'], 1)
+                    self.assertIsNone(report['factory_tickets_filed'])
+                    self.assertIsNone(report['factory_watch_filed_share'])
+                    argv = self.issue_read.call_args.args[0]
+                    self.assertEqual(argv.count('--repo'), 1)
+                    self.assertEqual(argv[argv.index('--repo') + 1], 'mikeroySoft/factory')
+                    self.assertFalse(self.issue_read.call_args.kwargs['check'])
+                    self.assertEqual(self.issue_read.call_args.kwargs['timeout'], 10)

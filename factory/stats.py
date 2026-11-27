@@ -1147,10 +1147,14 @@ def self_work_report(current: Config, start: datetime, end: datetime) -> dict:
     # creation cohort separately, never substitute attempted tickets for filings.
     tickets = None
     try:
-        created = gh("issue", "list", "--repo", "mikeroySoft/factory", "--state", "all",
-                     "--search", f"created:{_stamp(start)}..{_stamp(end)}",
-                     "--limit", "10000", "--json", "number")
-        if len(created) < 10000:
+        completed = subprocess.run(
+            ["gh", "issue", "list", "--repo", "mikeroySoft/factory", "--state", "all",
+             "--search", f"created:{_stamp(start)}..{_stamp(end)}",
+             "--limit", "10000", "--json", "number"],
+            text=True, capture_output=True, check=False, timeout=10,
+        )
+        created = json.loads(completed.stdout) if completed.returncode == 0 else None
+        if isinstance(created, list) and len(created) < 10000:
             tickets = {row["number"] for row in created}
     except (subprocess.SubprocessError, ValueError, OSError):
         pass
