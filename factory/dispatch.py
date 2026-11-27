@@ -5891,9 +5891,32 @@ def process_ticket(
                 if not ok:
                     stuck = report.startswith("worker stuck")
                     failed = "idle_timeout fired (worker stuck)" if stuck else "gate failed"
+                    rows = generation.current(lifecycle.read_events(EVENTS), n).rows
+                    current_attempt = next((
+                        row for row in reversed(rows) if row.get("event") == "attempt"
+                    ), {})
+                    budget_cut = (
+                        current_attempt.get("log") == str(logfile)
+                        and current_attempt.get("gate") is None
+                        and current_attempt.get("timeout") == "budget_min"
+                    )
+                    if budget_cut:
+                        last_attempt_gate = next((
+                            row["gate"] for row in reversed(rows)
+                            if row.get("event") == "attempt" and row.get("gate") in {"PASS", "FAIL"}
+                        ), "unknown")
+                        escalate(
+                            n,
+                            f"worker killed by budget_min before gate after review bounce {bounce}; "
+                            f"budget_exceeded; last attempt-gate result: {last_attempt_gate}; "
+                            f"last PR-tier result: {'FAIL' if pr_failed else 'PASS'}; "
+                            f"worktree kept at {wt}",
+                            logfile, extra=extra, code="budget",
+                        )
+                        return
                     escalate(
                         n, f"{failed} after review bounce {bounce}; worktree kept at {wt}", logfile,
-                        code="worker_stuck" if stuck else "gate_failed",
+                        extra=extra, code="worker_stuck" if stuck else "gate_failed",
                     )
                     return
                 lease = push_agent(wt, n, lease)
