@@ -2124,10 +2124,13 @@ branches, or merge state.
   ignored; an uninterrupted streak spanning `[watch].host_failure_minutes`
   files with the `host` label rather than as a Factory lifecycle defect.
   Reviewer, gate, and isolated GitHub-config roots hold directory flocks for their
-  owner's lifetime. After normal exit or a crash, only confirmed live process use
+  owner's lifetime. After normal exit or a crash, confirmed live process use
   (cwd, open files, or inherited scratch environment) retains an unlocked root.
-  Unknown/unreadable process visibility alone never protects it. Linux process
-  state is parsed as bytes so non-UTF-8 process names do not interrupt cleanup.
+  On non-Linux hosts, non-recursive lsof and ps probes each have a 10-second
+  timeout; timeout, launch failure, nonzero exit, or diagnostic stderr also
+  retains the root. On Linux, unknown/unreadable process visibility alone does
+  not protect it; process state is parsed as bytes so non-UTF-8 process names do
+  not interrupt cleanup.
   Read-only review snapshots are removable, and legacy one-day temp sweeping
   remains in place.
 - **Audit trail**: `.factory/events.jsonl` retains the ticket outcome events
