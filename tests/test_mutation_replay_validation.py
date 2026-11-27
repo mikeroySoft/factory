@@ -7,9 +7,7 @@ from pathlib import Path
 
 from factory import gate
 from scripts import mutation
-from tests import test_mutation_caller_witness as witness
 from tests import test_mutation_proof_caller as proof_callers
-
 
 SURVIVOR = {
     "file": "factory/example.py",
@@ -109,7 +107,7 @@ class MutationReplayValidationTest(proof_callers.ProofCallerCases):
 
     def test_survivor_scalar_fields_are_strict(self) -> None:
         self.configure()
-        same_original = "".join(["same", " source"])
+        same_original = "same source"
         same_mutated = bytearray(b"same source").decode()
         self.assertEqual(same_original, same_mutated)
         self.assertIsNot(same_original, same_mutated)

@@ -501,25 +501,29 @@ def _proof_run(
     elif status != "FAIL" and changed:
         status, why = "FAIL", f"tracked inputs changed during the run: {', '.join(changed[:20])}"
     output = f"{proc.stdout}{proc.stderr}"
-    if (status == "PASS" or why.startswith("complete with ")) and record is not None:
-        if record.get("status") == "complete" and "survivors" in record:
-            proof = Path(".factory") / f"mutation-{expected.head}.json"
-            proof.parent.mkdir(exist_ok=True)
-            fd, temporary = tempfile.mkstemp(prefix=f".{proof.name}.", dir=proof.parent)
+    if (
+        (status == "PASS" or why.startswith("complete with "))
+        and record is not None
+        and record.get("status") == "complete"
+        and "survivors" in record
+    ):
+        proof = Path(".factory") / f"mutation-{expected.head}.json"
+        proof.parent.mkdir(exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{proof.name}.", dir=proof.parent)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump(record, stream, sort_keys=True)
+            os.replace(temporary, proof)
+        finally:
             try:
-                with os.fdopen(fd, "w") as stream:
-                    json.dump(record, stream, sort_keys=True)
-                os.replace(temporary, proof)
-            finally:
-                try:
-                    os.unlink(temporary)
-                except FileNotFoundError:
-                    pass
-            replay = (
-                "uv run --frozen --no-managed-python --group mutation "
-                f"python scripts/mutation.py --replay {proof.as_posix()}"
-            )
-            output += f"\nmutation proof record: {proof.as_posix()}\nmutation replay: {replay}\n"
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+        replay = (
+            "uv run --frozen --no-managed-python --group mutation "
+            f"python scripts/mutation.py --replay {proof.as_posix()}"
+        )
+        output += f"\nmutation proof record: {proof.as_posix()}\nmutation replay: {replay}\n"
     return output, status, why, expected
 
 
