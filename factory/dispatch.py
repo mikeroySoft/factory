@@ -6273,7 +6273,7 @@ def pin_root() -> list[str]:
     return paths
 
 
-def github_preflight(dry_run: bool, *, bulk: bool = False) -> int | None:
+def github_preflight(dry_run: bool, *, bulk: bool = True) -> int | None:
     """No GitHub mutations until both API budgets and repository host setup are safe."""
     detail = ""
     code = "gh_read_failed"
@@ -6357,7 +6357,11 @@ def main(argv: list[str]) -> int:
     ):
         if reads.stopped:
             return 0
-        if (preflight := github_preflight(args.dry_run, bulk=not args.ticket or yield_for_update)) is not None:
+        preflight = (
+            github_preflight(args.dry_run, bulk=False)
+            if args.ticket and not yield_for_update else github_preflight(args.dry_run)
+        )
+        if preflight is not None:
             return preflight
         if stale:
             log(f"engine-stale: installed {installed}, District target {target}")
