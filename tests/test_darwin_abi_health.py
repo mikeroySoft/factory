@@ -12,7 +12,7 @@ from factory import config, darwin_observer, onboard, watch
 
 class DarwinABIHealthTest(unittest.TestCase):
     def test_doctor_and_watch_report_unsupported_darwin_abi(self):
-        dynamic_darwin = "".join(("dar", "win"))
+        dynamic_darwin = bytearray(b"darwin").decode()
         self.assertEqual(dynamic_darwin, darwin_observer.SUPPORTED_PLATFORM)
         self.assertIsNot(dynamic_darwin, darwin_observer.SUPPORTED_PLATFORM)
         cases = [
