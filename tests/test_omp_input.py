@@ -150,3 +150,15 @@ class ReviewerPromptTransportTest(unittest.TestCase):
             self.assertEqual(result['reason'], 'reviewer_unavailable')
             self.assertIn(f'[Errno {errno.ENOSPC}]', result['failure_reason'])
             self.assertIn('prompt filesystem full', result['findings'])
+
+    def test_run_reviewer_transports_prompt_with_noninterned_executable_name(self):
+        class NoninternedPath(type(Path())):
+            @property
+            def name(self):
+                return super().name.encode().decode()
+
+        basename = NoninternedPath('/temporary/omp').name
+        self.assertEqual(basename, 'omp')
+        self.assertIsNot(basename, sys.intern('omp'))
+        with mock.patch.object(dispatch, 'Path', NoninternedPath):
+            self.test_run_reviewer_transports_oversized_prompt_and_separate_diff()
