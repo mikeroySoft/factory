@@ -77,3 +77,27 @@ class BounceBudgetTest(unittest.TestCase):
         _, escalation, gates = self.exercise_bounce(False)
         self.assertEqual(escalation['code'], 'gate_failed')
         self.assertEqual(gates, [7, '7-pr', 7])
+
+    def test_reviewer_routed_pr_failure_reports_actual_result(self):
+        original = dispatch.pr_gate_and_review
+
+        def reviewer_routed(*args, **kwargs):
+            verdict, findings, _ = original(*args, **kwargs)
+            # High-risk mutation-only failures reach review with pr_failed=False.
+            return verdict, findings, False
+
+        with mock.patch.object(dispatch, 'pr_gate_and_review', side_effect=reviewer_routed):
+            _, escalation, _ = self.exercise_bounce(True)
+        self.assertEqual(escalation['code'], 'budget')
+        self.assertIn('last PR-tier result: FAIL', escalation['reason'])
+        self.assertIn('bounce-proof-evidence', Path(escalation['packet']).read_text())
+
+    def test_absent_pr_run_is_not_reported_as_pass(self):
+        def no_pr_run(*args, **kwargs):
+            return 'REVISE', 'Reviewer requests changes without PR-tier checks', False
+
+        with mock.patch.object(dispatch, 'pr_gate_and_review', side_effect=no_pr_run):
+            _, escalation, gates = self.exercise_bounce(True)
+        self.assertEqual(escalation['code'], 'budget')
+        self.assertIn('last PR-tier result: not run', escalation['reason'])
+        self.assertEqual(gates, [7])
