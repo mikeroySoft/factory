@@ -3510,3 +3510,21 @@ Operator and agent guide: [docs/guide/index.md](docs/guide/index.md).
 ## License
 
 MIT
+
+### Weekly self-work report
+
+`factory stats --week --self-work [--json]` compares the current repository and
+host-registered repository roots over the trailing seven UTC days. Attempt shares
+count existing `attempt` receipts; spend shares use worker `llm-usage` only, with
+reported costs or configured model prices. Shares are fractions of the observed
+fleet, not estimates of unregistered repositories. `unpriced_usage` exposes missing
+costs; spend shares describe known dollars only. Missing journals are listed, not
+invented as zero-activity product repositories.
+
+Factory watch filing share is distinct newly filed Factory issues with existing
+`watch` receipts across these journals divided by all Factory issues created in
+the window. Comments and closure receipts are excluded. Attempts and usage do not
+record issue creation, so the denominator requires one GitHub issue-list read
+(up to 10,000 issues); failure or reaching that cap yields an unknown denominator
+and share. No new journal event is needed. Missing source journals can undercount
+watch filings; this is observed local coverage, not a global GitHub provenance audit.

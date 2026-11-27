@@ -68,3 +68,4 @@ map or a path in it does not exist; update the map in the same change.
 | Eval promotion | `factory/promotion.py`, `docs/eval-promotion-contract.md` | `tests/test_promotion.py` | `test` |
 | Frozen worker eval suite | `factory/eval.py`, `factory/eval-suite.json` | `tests/test_eval.py` | `test` |
 | Experiments | `experiments/b1-build/build.py`, `experiments/o1-observation/observer.py`, `experiments/escalation-reasons/classify.py`, `experiments/reviewer-calibration/run_calibration.py`, `experiments/reviewer-calibration/run_tools.py` | `tests/test_b1_build.py`, `tests/test_o1_observation.py`, `tests/test_escalation_reasons.py`, `tests/test_reviewer_calibration_model.py` | `test` |
+| Weekly fleet self-work shares | `factory/stats.py` | `tests/test_self_work.py` | `test` |

@@ -1086,11 +1086,86 @@ def resolve(repo: str | None) -> Config:
     return local
 
 
+def self_work_metrics(snapshots: dict[str, list[dict]], prices: dict[str, dict],
+                      start: datetime, end: datetime, factory_tickets: set[int] | None) -> dict:
+    """Shares of observed attempts and worker spend; watch receipts can live in any repo."""
+    repositories = {}
+    watch_tickets = {
+        row["issue"] for rows in snapshots.values() for row in window_rows(rows, start, end)
+        if row.get("event") == "watch" and not row.get("commented") and not row.get("closed")
+        and row.get("repo") == "mikeroySoft/factory" and type(row.get("issue")) is int
+    }
+    for repo, history in sorted(snapshots.items()):
+        rows = window_rows(history, start, end)
+        usage = [row for row in rows if row.get("event") == "llm-usage"
+                 and row.get("stage") == "worker"]
+        costs = [priced(row, prices) for row in usage]
+        repositories[repo] = {
+            "kind": "factory" if repo.casefold() == "mikeroysoft/factory" else "product",
+            "attempts": sum(row.get("event") == "attempt" for row in rows),
+            "known_spend": sum(cost for cost in costs if cost is not None),
+            "unpriced_usage": costs.count(None),
+        }
+    attempts = sum(row["attempts"] for row in repositories.values())
+    spend = sum(row["known_spend"] for row in repositories.values())
+    for row in repositories.values():
+        row["attempt_share"] = row["attempts"] / attempts if attempts else None
+        row["known_spend_share"] = row["known_spend"] / spend if spend else None
+    return {
+        "window": {"start": _stamp(start), "end": _stamp(end)},
+        "repositories": repositories,
+        "factory_tickets_filed": len(factory_tickets) if factory_tickets is not None else None,
+        "factory_watch_filed": len(watch_tickets),
+        "factory_watch_filed_share": (
+            len(watch_tickets & factory_tickets) / len(factory_tickets) if factory_tickets else None
+        ),
+    }
+
+
+def self_work_report(current: Config, start: datetime, end: datetime) -> dict:
+    roots = {current.repo: current}
+    missing = []
+    for slug, table in config.host_config().get("repo", {}).items():
+        if slug == current.repo or not isinstance(table, dict) or not table.get("path"):
+            continue
+        try:
+            other = config.load(Path(table["path"]))
+            if other.repo != slug:
+                missing.append(slug)
+                continue
+            roots[slug] = other
+        except (config.ConfigError, OSError):
+            missing.append(slug)
+    snapshots = {}
+    for slug, root in roots.items():
+        journal = root.factory / "events.jsonl"
+        if journal.is_file():
+            snapshots[slug] = lifecycle.read_events(journal)
+        else:
+            missing.append(slug)
+    # Attempts and usage cannot tell how many tickets were created: read the
+    # creation cohort separately, never substitute attempted tickets for filings.
+    tickets = None
+    try:
+        created = gh("issue", "list", "--repo", "mikeroySoft/factory", "--state", "all",
+                     "--search", f"created:{_stamp(start)}..{_stamp(end)}",
+                     "--limit", "10000", "--json", "number")
+        if len(created) < 10000:
+            tickets = {row["number"] for row in created}
+    except (subprocess.SubprocessError, ValueError, OSError):
+        pass
+    result = self_work_metrics(snapshots, current.prices, start, end, tickets)
+    result["missing_repositories"] = sorted(missing)
+    return result
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="factory stats", description=__doc__)
     parser.add_argument("--json", action="store_true", help="print metric rows as JSON")
     parser.add_argument("--week", action="store_true",
                         help="trailing seven-day journal metrics plus one bounded stuck-ticket read")
+    parser.add_argument("--self-work", action="store_true",
+                        help="weekly fleet attempt/spend shares and Factory watch filing share")
     parser.add_argument("--by-worker", action="store_true",
                         help="split gate pass rate, attempts, reported token usage and known cost by claim label")
     parser.add_argument("--by-brief", action="store_true", help="split first-gate pass rate by tickets with/without a brief")
@@ -1106,8 +1181,26 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--promotions", action="store_true",
                         help="merged lessons/curate PRs with their before/after score means and keep/revert decision")
     args = parser.parse_args(argv)
+    if args.self_work and not args.week:
+        parser.error("--self-work requires --week")
     configure(resolve(args.repo))
     journal = cfg.factory / "events.jsonl"
+    if args.self_work:
+        now = _now()
+        result = self_work_report(cfg, now - timedelta(days=7), now)
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"Window: {result['window']['start']} to {result['window']['end']}")
+            for repo, row in result["repositories"].items():
+                print(f"{repo} ({row['kind']}): {row['attempts']} attempts; "
+                      f"attempt share={row['attempt_share']}; known worker spend=${row['known_spend']:.4f}; "
+                      f"spend share={row['known_spend_share']}; unpriced usage={row['unpriced_usage']}")
+            print(f"Factory watch filings: {result['factory_watch_filed']}; "
+                  f"all Factory filings={result['factory_tickets_filed']}; "
+                  f"share={result['factory_watch_filed_share']}")
+            print(f"Missing repositories: {result['missing_repositories']}")
+        return 0
     if not args.escapes and not journal.is_file():
         raise SystemExit(f"factory stats: no journal at {journal}; this is not the dispatcher's root. "
                          f'Set [repo."{cfg.repo}"].path in {config.host_config_path()} or pass --repo owner/name')
