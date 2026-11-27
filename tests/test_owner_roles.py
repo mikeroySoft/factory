@@ -93,3 +93,92 @@ class OwnerRolesTest(unittest.TestCase):
         self.assertEqual(fixtures.handoff.mentions(self.cli.events("handoff")[0]["route"]), [f"@{BOT}"])
         self.assertNotIn("personal-owner", body)
         self.assertNotIn("personal-owner", json.dumps(self.cli.state["issue"]["labels"]))
+
+    def test_unknown_bare_roles_never_become_login_mentions(self):
+        for role in ("Maintainer", "Release-PM"):
+            for declaration in (f"**Decision owner**\n{role}", f"Decision owner: {role}"):
+                with self.subTest(declaration=declaration):
+                    self.cli.reset()
+                    self.cli.escalate("gate failed after 3 attempts", 1)
+                    self.cli.state["issue"]["body"] = declaration
+                    proc = self.cli.manage()
+                    self.assertIn(f"unknown decision owner role {role!r}", proc.stdout + proc.stderr)
+                    route = self.cli.events("handoff")[0]["route"]
+                    self.assertEqual((route["status"], route["owner"], route["source"]),
+                                     ("selected", BOT, "bot_fallback"))
+                    self.assertEqual(fixtures.handoff.mentions(route), [f"@{BOT}"])
+                    self.assertNotIn(f"@{role}", self.cli.requests()[0]["body"])
+
+    def test_inline_without_bot_settings_preserves_collaboration_delivery(self):
+        self.host.unlink()
+        self.cli.configure(manager=False, collaboration=f'[collaboration]\nfallback = "{BOT}"\n')
+        for role in ("Factory PM", "Ops team", BOT):
+            with self.subTest(role=role):
+                self.cli.reset()
+                self.cli.escalate("gate failed after 3 attempts", 1)
+                self.cli.state["issue"]["body"] = f"Decision owner: {role}"
+                self.cli.manage()
+                route = self.cli.events("handoff")[0]["route"]
+                self.assertEqual((route["status"], route["owner"], route["source"]),
+                                 ("selected", BOT, "fallback"))
+                self.assertEqual(route["provenance"][0]["outcome"], "absent")
+                self.assertIn(f"@{BOT} — you own this decision", self.cli.requests()[0]["body"])
+
+    def test_malformed_inline_value_does_not_block_collaboration_delivery(self):
+        self.cli.configure(manager=False, collaboration=f'[collaboration]\nfallback = "{BOT}"\n')
+        self.cli.state["issue"]["body"] = "Decision owner: Factory PM (ops)"
+        self.cli.manage()
+        route = self.cli.events("handoff")[0]["route"]
+        self.assertEqual((route["status"], route["owner"], route["source"]),
+                         ("selected", BOT, "fallback"))
+        self.assertEqual(route["provenance"][0]["outcome"], "absent")
+        self.assertIn(f"@{BOT} — you own this decision", self.cli.requests()[0]["body"])
+
+    def test_explicit_bot_login_keeps_direct_routing(self):
+        self.cli.state["issue"]["body"] = f"Decision owner: @{BOT}"
+        self.cli.manage()
+        route = self.cli.events("handoff")[0]["route"]
+        self.assertEqual((route["status"], route["owner"], route["source"]),
+                         ("selected", BOT, "decision_owner"))
+        self.assertIn(f"@{BOT} — you own this decision", self.cli.requests()[0]["body"])
+
+    def test_fallback_only_host_settings_deliver_unknown_roles(self):
+        self.host.write_text(f'[defaults.bot_owners]\nfallback = "{BOT}"\n')
+        self.cli.state["issue"]["body"] = "**Decision owner**\nUnknown Product Role"
+        proc = self.cli.manage()
+        self.assertIn("unknown decision owner role 'Unknown Product Role'", proc.stdout + proc.stderr)
+        self.assertEqual(self.cli.events("handoff")[0]["target"], f"@{BOT}")
+        self.assertIn(f"@{BOT} — you own this decision", self.cli.requests()[0]["body"])
+
+    def test_invalid_host_role_tables_are_configuration_errors(self):
+        for roles in ('[]', '["Factory PM"]', '42', '"Factory PM"'):
+            with self.subTest(roles=roles):
+                self.host.write_text(f'[defaults.bot_owners]\nfallback = "{BOT}"\nroles = {roles}\n')
+                with (
+                    mock.patch.dict("os.environ", self.cli.env),
+                    self.assertRaisesRegex(config.ConfigError, "bot_owners.roles"),
+                ):
+                    config.load(self.cli.repo, worktree=True)
+
+    def test_invalid_host_role_names_are_configuration_errors(self):
+        for role in ("", " Factory PM", "Factory PM ", "Factory_PM", "Factory PM (ops)", "9PM"):
+            with self.subTest(role=role):
+                self.host.write_text(HOST.replace('"Factory PM"', json.dumps(role)))
+                with (
+                    mock.patch.dict("os.environ", self.cli.env),
+                    self.assertRaisesRegex(config.ConfigError, "bot_owners.roles"),
+                ):
+                    config.load(self.cli.repo, worktree=True)
+
+    def test_non_string_role_keys_are_configuration_errors(self):
+        with self.assertRaisesRegex(config.ConfigError, "bot_owners.roles"):
+            config.bot_owner_settings({"fallback": BOT, "roles": {1: BOT}})
+
+    def test_unknown_host_bot_setting_is_rejected(self):
+        self.host.write_text(HOST.replace("[defaults.bot_owners]\n",
+                                         "[defaults.bot_owners]\nfallbak = true\n"))
+        with (
+            mock.patch.dict("os.environ", self.cli.env),
+            self.assertRaisesRegex(config.ConfigError, "expected only fallback and roles"),
+        ):
+            config.load(self.cli.repo, worktree=True)
