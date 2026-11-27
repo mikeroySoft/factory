@@ -1899,16 +1899,14 @@ def _live_children(root_pid: int, *, worker_argv: list[str] | None = None,
     Portable to macOS; a failed ps preserves the old no-child timeout behavior.
     """
     try:
-        result = subprocess.run(
+        output = subprocess.check_output(
             ["ps", "-Aww", "-o", "pid=,ppid=,pgid=,stat=,args="],
-            capture_output=True, encoding="utf-8", errors="replace", timeout=WATCH_POLL,
+            encoding="utf-8", errors="replace", timeout=WATCH_POLL,
         )
     except (OSError, subprocess.SubprocessError):
         return []
-    if result.returncode:
-        return []
     rows = {}
-    for line in result.stdout.splitlines():
+    for line in output.splitlines():
         with suppress(ValueError, IndexError):
             fields = line.split(None, 4)
             rows[int(fields[0])] = (int(fields[1]), int(fields[2]), fields[3],
@@ -1930,8 +1928,7 @@ def _live_children(root_pid: int, *, worker_argv: list[str] | None = None,
         suffix = " ".join(" ".join([Path(worker_argv[0]).name, *worker_argv[1:]]).split())
         for pid in tree:
             command = " ".join(rows[pid][3].split())
-            if (command == suffix or command.endswith("/" + suffix)
-                    or command.endswith(" " + suffix)):
+            if command == suffix or command.endswith(("/" + suffix, " " + suffix)):
                 while pid in rows and pid not in excluded:
                     excluded.add(pid)
                     pid = rows[pid][0]
@@ -1946,11 +1943,11 @@ def _child_commands(pids: list[int]) -> list[dict]:
     commands = {}
     if pids:
         try:
-            result = subprocess.run(
+            output = subprocess.check_output(
                 ["ps", "-ww", "-p", ",".join(map(str, pids)), "-o", "pid=,args="],
-                capture_output=True, encoding="utf-8", errors="replace", timeout=WATCH_POLL,
+                encoding="utf-8", errors="replace", timeout=WATCH_POLL,
             )
-            for line in result.stdout.splitlines():
+            for line in output.splitlines():
                 with suppress(ValueError):
                     pid, _, command = line.strip().partition(" ")
                     commands[int(pid)] = stderr_tail(command.strip())

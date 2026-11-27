@@ -193,8 +193,8 @@ class ExitGraceChildrenTest(unittest.TestCase):
                         mock.patch.object(dispatch, "WATCH_POLL", 0.02), \
                         mock.patch.object(dispatch, "cfg", SimpleNamespace(
                             exit_grace=0.06, idle_timeout=0.006), create=True), \
-                        mock.patch.object(dispatch, "_activity", side_effect=lambda *args:
-                                          (None, "base", "", handoff.exists())):
+                        mock.patch.object(dispatch, "_activity", side_effect=lambda *args, path=handoff:
+                                          (None, "base", "", path.exists())):
                     _, fired = dispatch.run_worker(
                         argv, root, root / "log", handoff, time.monotonic() + 5, wrap=3,
                     )
