@@ -390,7 +390,13 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
             probe.bind(target)
             # BSD SO_REUSEADDR lets this specific bind succeed beside a listening
             # wildcard (`0.0.0.0`, dual-stack `::`) that still serves the address.
-            collision = platform_identity.darwin() and _wildcard_held(port)
+            if platform_identity.darwin():
+                # A wildcard target would collide with our own held bind.
+                if target[0] == "0.0.0.0":
+                    probe.close()
+                collision = _wildcard_held(port)
+            else:
+                collision = False
         except OSError as exc:
             if exc.errno != errno.EADDRINUSE:
                 return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
@@ -398,7 +404,6 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
 
         # Darwin has no `ss`. There, the target bind plus both wildcard probes
         # succeeding is the positive evidence that nothing serves host:port.
-        # (A `0.0.0.0` host collides with its own held probe and stays closed.)
         if not collision and platform_identity.darwin():
             return True, f"available on {host}"
 
