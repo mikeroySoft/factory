@@ -5,13 +5,14 @@ import json
 import os
 import sys
 import unittest
-from datetime import datetime, timezone
 from contextlib import chdir
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
 from factory import config, dispatch, lifecycle, stats
 from tests import test_dispatch_lifecycle as fixtures
+
 
 class BounceBudgetTest(unittest.TestCase):
     setUp = fixtures.LocalCLI.setUp
@@ -69,7 +70,7 @@ class BounceBudgetTest(unittest.TestCase):
         attempts = [row for row in events if row.get('event') == 'attempt']
         self.assertIsNone(attempts[-1]['gate'])
         self.assertEqual(attempts[-1]['timeout'], 'budget_min')
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self.assertEqual(stats.weekly_metrics(events, now, now, None)['escalations_by_code'], {'budget': 1})
 
     def test_real_bounce_gate_failure_is_gate_failed(self):
