@@ -640,8 +640,10 @@ row until the bar value changes.
 
 Routing distinguishes absent optional information from invalid declarations. A missing
 ticket `Decision owner` section permits fallback; an empty or malformed section stops
-with `invalid`. A missing initiative `Owner` section permits configured requirements
-ownership and fallback, but an explicitly empty or malformed Owner stops routing.
+with `invalid`. Host-configured bot roles are resolved before login validation; unknown
+role names use the host bot fallback (see [Routed human handoffs](#routed-human-handoffs)).
+A missing initiative `Owner` section permits configured requirements ownership and
+fallback, but an explicitly empty or malformed Owner stops routing.
 On user-owned repositories, mixed team/login destinations remain invalid with no
 selection; provenance retains the original destinations and rejected teams for
 diagnosis. Unavailable verification remains unknown, never authorization.
@@ -884,6 +886,35 @@ delivery of a mention is not asserted.
 Explanatory text escapes mention syntax, including rejected destinations, routing
 provenance and previous owners; only the current validated owner or candidates receive
 native mentions.
+
+Named bot owners are configured only in `$XDG_CONFIG_HOME/factory/config.toml`:
+
+```toml
+[defaults.bot_owners]
+fallback = "mikeroysoft-grok"
+[defaults.bot_owners.roles]
+"Factory PM" = "mikeroysoft-grok"
+```
+
+Per-repository host overrides use `[repo."owner/name".bot_owners]` and its
+`roles` subtable. Tickets keep `**Decision owner**` followed by `Factory PM`;
+`Decision owner: Factory PM` on its own line is also accepted when bot settings
+are configured; malformed inline values are ignored. Role names are case-sensitive.
+The mapping is checked before login syntax. With bot settings, unknown bare role
+names (letters, digits, spaces and hyphens, starting with a letter) log a warning
+and route to the required bot `fallback`, even if the name could be a login.
+Use `@login` or `@org/team` for explicit destinations on these hosts. Unknown names
+are recorded in public routing provenance. Empty, multiline or malformed bold
+sections remain invalid. Without host bot settings, inline declarations are ignored
+and existing bold-section explicit-login/team routing is unchanged.
+
+Role targets and the fallback accept only the vetted non-human account
+`mikeroysoft-grok`; adding another account requires extending
+`factory.config.BOT_OWNER_LOGINS` after verifying bot ownership. Arbitrary human
+logins, teams and repository-supplied bot mappings are refused. This bot-only
+constraint applies to role mappings and their fallback; existing explicit
+login/team overrides and collaboration owners retain their contracts. Mapping
+does not edit ticket bodies, labels or assignees.
 
 Human-takeover detection uses only the factory's own recorded comment ids: the
 escalation comment, manager comments and handoff requests are journaled as `comment`

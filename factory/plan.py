@@ -7,6 +7,7 @@ and every command emits one schema-1 JSON object.
 """
 from __future__ import annotations
 
+import logging
 import re
 import sys
 import time
@@ -178,9 +179,26 @@ class Reader:
             return True
 
         # 1. explicit per-ticket override
+        bots = cfg.bot_owners
         declared = next((text for name, text in _sections(body) if name == "Decision owner"), None)
+        if declared is None and bots:
+            inline = re.search(r"^Decision owner:[ \t]*(.*)$", body, re.MULTILINE)
+            if inline:
+                value = inline[1].strip()
+                if config.OWNER_ROLE.fullmatch(value) or config.OWNER.fullmatch(value):
+                    declared = value
         if declared is not None:
             declared = re.split(r"\r?\n[ \t]*\r?\n|^ {0,3}#{1,6}(?:[ \t]+|$)", declared, maxsplit=1, flags=re.MULTILINE)[0].strip()
+            if bots and declared in bots["roles"]:
+                step("decision_owner", "selected", f"ticket role {declared!r} maps to a host-configured bot",
+                     owner=bots["roles"][declared])
+                return self.verify()
+            if bots and not declared.startswith("@") and config.OWNER_ROLE.fullmatch(declared):
+                logging.getLogger(__name__).warning(
+                    "ticket #%s: unknown decision owner role %r; routing to bot fallback", number, declared)
+                step("decision_owner", "unknown", f"unknown role {declared!r}; using host bot fallback")
+                step("bot_fallback", "selected", "host bot_owners.fallback", owner=bots["fallback"])
+                return self.verify()
             match = config.OWNER.fullmatch(declared)
             if step("decision_owner", "selected" if match else "invalid",
                     f"ticket body declares {declared!r}" + ("" if match else ": not a GitHub login or @org/team"),
