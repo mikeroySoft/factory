@@ -218,7 +218,7 @@ class RunnerRuntimeTest(unittest.TestCase):
 
         for source in ("file", "environment", "empty"):
             with self.subTest(source=source):
-                root = self.base / "factory-runner-child"
+                root = (self.base / "factory-runner-child").resolve()
                 root.mkdir(exist_ok=True)
                 child = os.getpid() + 100000
 
