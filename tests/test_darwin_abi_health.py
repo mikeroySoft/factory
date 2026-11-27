@@ -12,11 +12,16 @@ from factory import config, darwin_observer, onboard, watch
 
 class DarwinABIHealthTest(unittest.TestCase):
     def test_doctor_and_watch_report_unsupported_darwin_abi(self):
+        dynamic_darwin = "".join(("dar", "win"))
+        self.assertEqual(dynamic_darwin, darwin_observer.SUPPORTED_PLATFORM)
+        self.assertIsNot(dynamic_darwin, darwin_observer.SUPPORTED_PLATFORM)
         cases = [
             (("darwin", "arm64", 8, "little", (27, 3)), True),
             (("darwin", "x86_64", 8, "little", (27, 2)), True),
             (("darwin", "arm64", 8, "little", (27, 2)), False),
             (("linux", "x86_64", 8, "little", None), False),
+            ((dynamic_darwin, "arm64", 8, "little", (27, 3)), True),
+            (("aix", "arm64", 8, "little", None), False),
         ]
         with tempfile.TemporaryDirectory() as directory:
             cfg = config.Config(Path(directory), "acme/widgets", signoff=False)
