@@ -1,0 +1,17 @@
+r3-0735 #903 ablation (Ultron), driver: /Users/mike/tmp/r3-0735/driver.sh
+source tree: scratch detached worktree /Users/mike/tmp/r3-0735/wt at 69b50b7de964e09ab429cb68b067299ad06c3cec
+interpreter: /Users/mike/tmp/r3-0735/wt/.venv/bin/python -> base /Users/mike/.local/share/uv/tools/factory/bin/python (Python 3.12.13); scratch venv via uv sync --frozen --no-managed-python --offline (factory editable from tree + tomlkit)
+harness: 3b78a952 experiments/baseline-903/ablation_run.py byte-identical, wrapped by arm_runner.py to record failing/erroring test ids
+config sha before: e071ebe909c9b2c1fea62bad01545406307952ae664416029dea9361444f026b
+uv.lock sha before: ac6661ba52ea87d7bf27c9b8d2c5c167eb7c4f73573b35b402d6e367775a7651
+pause: ~/.local/state/factory-guard/factory.pause created 2026-11-24T07:28:53-0800; in-flight pass drained 07:30:29 PST rc=0
+prior RAM disk: /dev/disk19 (RamDisk903, ram://4194304, 2 GiB) idle (lsof +D empty), detached 2026-11-24T07:28:26-0800 via hdiutil detach, rc=0, not forced
+harness sha256:
+0a4268b2809dc8633192f399d7838c7cdfe865726a06147e818d4c26b0f1ad2b  harness/ablation_run.py
+884ca6850f4d07b55b3860e5641170c46f8b6a9fe9bb9bf31c483cb370ecd0d2  harness/analyze.py
+68e97d669a95f684a6aebededa905bac8de360be452f3aea3e272c74a0c098aa  harness/arm_runner.py
+8fbb7af95d0800d9818614e3883dd84c1488e03e4b08620a3ebab411ae25421c  harness/git-cache-wrapper.orig.sh
+37f41e982a1603d93cf202819ab1422ebfb47fba148433d08a802aa842e79419  harness/test_analyze.py
+8c2d8f067f87181336c99a3101c2d720c8357b68036001396be331eb4c27d161  harness/gitbin/git
+8e1c38cabecf7c9405fc7a4d60ec035e4f1da64a1dd0a3adf68724779335b598  harness/throttle-site/sitecustomize.py
+454952bb06b27604a47995911fcaf583639ce7fc61219ba05b74b92378092cba  driver.sh

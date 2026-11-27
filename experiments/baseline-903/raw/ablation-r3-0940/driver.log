@@ -1,0 +1,30 @@
+2026-11-24T09:41:57-0800 pause file created
+2026-11-24T09:41:57-0800 driver start pid 17121; budget 18000s
+To https://github.com/mikeroySoft/factory.git
+   b4c36096..0bc3091d  0bc3091d7697377e9c850c9e79d79523228a67e1 -> agent/903
+2026-11-24T09:42:00-0800 pushed 0bc3091d7697377e9c850c9e79d79523228a67e1 (start)
+ps: stdout: Broken pipe
+2026-11-24T09:42:10-0800 start control-1-try1 (control)
+2026-11-24T10:08:49-0800 end control-1-try1 rc=0 wall=1599s
+ps: stdout: Broken pipe
+To https://github.com/mikeroySoft/factory.git
+   0bc3091d..829ec8b6  829ec8b6a395904c653e7ec29db70a28f88f4a66 -> agent/903
+2026-11-24T10:09:02-0800 pushed 829ec8b6a395904c653e7ec29db70a28f88f4a66 (control-1-try1)
+ps: stdout: Broken pipe
+2026-11-24T10:09:13-0800 start git-cache-try1 (git-cache)
+2026-11-24T10:37:13-0800 end git-cache-try1 rc=1 wall=1680s
+ps: stdout: Broken pipe
+To https://github.com/mikeroySoft/factory.git
+   829ec8b6..5ab0b36a  5ab0b36a774131d8bb4252fc1526813c7dbab23f -> agent/903
+2026-11-24T10:37:26-0800 pushed 5ab0b36a774131d8bb4252fc1526813c7dbab23f (git-cache-try1)
+2026-11-24T10:37:26-0800 git-cache try1 INVALID_outcome
+ps: stdout: Broken pipe
+2026-11-24T10:37:36-0800 start git-cache-try2 (git-cache)
+2026-11-24T11:05:34-0800 end git-cache-try2 rc=1 wall=1678s
+ps: stdout: Broken pipe
+To https://github.com/mikeroySoft/factory.git
+   5ab0b36a..4746d49f  4746d49fe8436f1e1cd8fa642fef7fd351b8f740 -> agent/903
+2026-11-24T11:05:47-0800 pushed 4746d49fe8436f1e1cd8fa642fef7fd351b8f740 (git-cache-try2)
+2026-11-24T11:05:47-0800 git-cache try2 INVALID_outcome
+2026-11-24T11:05:47-0800 factory resumed (pause file removed)
+2026-11-24T11:05:47-0800 final config sha e071ebe909c9b2c1fea62bad01545406307952ae664416029dea9361444f026b (expect e071ebe909c9b2c1fea62bad01545406307952ae664416029dea9361444f026b) uv.lock ac6661ba52ea87d7bf27c9b8d2c5c167eb7c4f73573b35b402d6e367775a7651 (expect ac6661ba52ea87d7bf27c9b8d2c5c167eb7c4f73573b35b402d6e367775a7651)

@@ -1,0 +1,18 @@
+2026-11-24T10:08:49-0800
+vm.loadavg: { 1.97 2.67 2.64 }
+10:08  up 6 days, 59 mins, 5 users, load averages: 1.97 2.67 2.64
+vm_cpu_mean3=22.96
+--- benito/factory processes
+  533     1 06-00:59:00   0.2 /Users/mike/dev/mikeroysoft/benito-app/.derivedData/BenitoServer/Build/Products/Debug/Benito Server.app/Contents/MacOS/Benito Server
+ 1096     1 06-00:58:44   0.0 /Users/mike/Library/Application Support/Benito/bin/benito-server
+ 1108     1 06-00:58:44   0.0 /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m http.server 8091 --bind 0.0.0.0 --directory /Users/mike/dev/mi
+ 1674  1096 06-00:58:28   0.0 /usr/bin/dns-sd -R Benito _benito._tcp local 8082 version=0.1.0
+--- top cpu
+  PID  %CPU COMMAND
+87990  87.7 /Users/mike/dev/hermes/venv/bin/python3 /Users/mike/dev/hermes/venv/bin/hermes dashboard --host 0.0.0.0 --port 9119 --no-open --insecure --skip-buil
+42612  23.2 /Applications/VMware Fusion.app/Contents/Library/vmware-vmx -E en -s vmx.stdio.keep=TRUE -# product=64;name=VMware Fusion;version=13.6.3;buildnumber
+  199  10.4 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console
+ 1372   8.5 /usr/bin/powermetrics -i 2000 --samplers cpu_power gpu_power -a --hide-cpu-duty-cycle
+ 1120   5.5 /Library/Application Support/Universal Audio/Apollo/UA Mixer Engine.app/Contents/MacOS/UA Mixer Engine -silent
+ 1125   4.0 /Users/mike/Library/Application Support/iStat Menus 7/iStat Menus Menubar.app/Contents/MacOS/iStat Menus Menubar
+  536   2.8 /System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter

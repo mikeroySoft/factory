@@ -1,0 +1,2 @@
+{"label": "ram", "vm": {"control-1": 28.16, "ram": 25.48}, "neighbors": ["control-1"], "ok": true}
+outcome_matches_control1=no

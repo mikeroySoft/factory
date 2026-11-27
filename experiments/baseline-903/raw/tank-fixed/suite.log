@@ -1,0 +1,1052 @@
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7 PR #70: merged into main (squash, ticket #7)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7 PR #70: merged into main (squash, ticket #7)
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: escalating to human (review_revise: REVISE verdict after 257 review round(s))
+[dispatch] #7: escalating to human (review_revise: REVISE verdict after 2 review round(s))
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: escalating to human (review_revise: REVISE verdict after 0 review round(s))
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7: escalating to human (review_revise: PR #70: fresh review requested changes after rebase onto moved main; `factory-approved` label removed)
+[dispatch] #7: escalating to human (pr_checks_failed: PR #70: fresh review requested changes after rebase onto moved main; `factory-approved` label removed)
+[dispatch] #7: escalating to human (review_revise: PR #70: review rejected the refreshed head; `factory-approved` label removed)
+[dispatch] #7: escalating to human (protected_paths: PR #70: PR gate blocked by protected paths; `factory-approved` label removed)
+[dispatch] #7: escalating to human (review_revise: PR #70: review round budget exhausted after refresh; `factory-approved` label removed)
+[dispatch] #7: escalating to human (review_revise: PR #70: review round budget exhausted after refresh; `factory-approved` label removed)
+[dispatch] #10000: escalating to human (review_revise: REVISE verdict after 2 review round(s))
+Brief Jev rerank failed; using noun order
+Traceback (most recent call last):
+  File "/tmp/factory-903/matched.AaPsnt/tree/factory/brief.py", line 95, in rerank
+    with urllib.request.urlopen(request, timeout=15) as response:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1139, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1143, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1198, in _execute_mock_call
+    raise effect
+OSError: offline
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+{"event": "score", "ticket": 10, "attempt": 1, "transcript": "/tmp/tmpsjyqqh5p/.factory/transcripts/10/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #11, #12, #13, #14, #15, #16, #17, #18, #19, #20:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t20
+{"event": "score", "ticket": 1, "attempt": 1, "transcript": "/tmp/tmpb9surtt4/.factory/transcripts/1/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 2, "attempt": 1, "transcript": "/tmp/tmpb9surtt4/.factory/transcripts/2/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 3, "attempt": 1, "transcript": "/tmp/tmpb9surtt4/.factory/transcripts/3/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 4, "attempt": 1, "transcript": "/tmp/tmpb9surtt4/.factory/transcripts/4/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 5, "attempt": 1, "transcript": "/tmp/tmpb9surtt4/.factory/transcripts/5/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 6, "attempt": 1, "transcript": "/tmp/tmpb9surtt4/.factory/transcripts/6/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 7, "attempt": 1, "transcript": "/tmp/tmpb9surtt4/.factory/transcripts/7/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 8, "attempt": 1, "transcript": "/tmp/tmpb9surtt4/.factory/transcripts/8/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 9, "attempt": 1, "transcript": "/tmp/tmpb9surtt4/.factory/transcripts/9/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 10, "attempt": 1, "transcript": "/tmp/tmpb9surtt4/.factory/transcripts/10/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpigpacxfq/worker.py -> /tmp/tmpigpacxfq/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: worker killed by budget_min (budget_exceeded) before gate; last gate passed; worktree kept at /tmp/tmpigpacxfq/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (budget: worker killed by budget_min (budget_exceeded) before gate; last gate passed; worktree kept at /tmp/tmp65q56j0w/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (budget: worker killed by budget_exceeded (budget_exceeded) before gate; last gate passed; worktree kept at /tmp/tmp65q56j0w/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (budget: worker killed by budget_exceeded (budget_exceeded) before gate; last gate passed; worktree kept at /tmp/tmp65q56j0w/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+  warning: 2 source file(s) produced zero nodes and are absent from the graph: Cargo.toml, pyproject.toml. A re-run will retry them (empties are no longer cached); if it persists, please report the file(s) (#1666).
+  warning: 1 source file(s) produced zero nodes and are absent from the graph: pyproject.toml. A re-run will retry them (empties are no longer cached); if it persists, please report the file(s) (#1666).
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #3 worker: /home/mike/.local/share/uv/tools/factory/bin/python -c import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(6) /tmp/tmp_ebuso8y/child.pid -> /tmp/tmp_ebuso8y/worker.log
+[dispatch] #3: pipeline raised KeyboardInterrupt('dispatcher interrupted')
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #1: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #1: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #1: pipeline raised TicketFailed('#1 pipeline failed')
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python -c import json, os, sys; d = os.environ.get('GH_CONFIG_DIR'); json.dump({'tokens': [k for k in ('GH_TOKEN', 'GITHUB_TOKEN') if k in os.environ], 'dir': d, 'entries': os.listdir(d) if d and os.path.isdir(d) else None}, open(sys.argv[1], 'w')); print('```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE') /tmp/tmp7k0x3hw9/seen.json -> /tmp/tmp7k0x3hw9/worker.log
+[dispatch] worker exited 0 after 0s
+[dispatch] command failed (exit 128); stderr tail:
+fatal: '/tmp/tmpv908m5t0/origin.git/missing' does not appear to be a git repository
+fatal: Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.
+
+[dispatch] command failed (exit 1); stderr tail:
+To /tmp/tmpdu66czle/origin.git
+ ! [rejected]        agent/curate-x -> agent/curate-x (non-fast-forward)
+error: failed to push some refs to '/tmp/tmpdu66czle/origin.git'
+hint: Updates were rejected because the tip of your current branch is behind
+hint: its remote counterpart. If you want to integrate the remote changes,
+hint: use 'git pull' before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp85_n_cat/worker.py -> /tmp/tmp85_n_cat/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp9mzv0e7i/worker.py -> /tmp/tmp9mzv0e7i/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmppfdmja2l/worker.py -> /tmp/tmppfdmja2l/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp3b__94mg/worker.py -> /tmp/tmp3b__94mg/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpj92txy07/worker.py -> /tmp/tmpj92txy07/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpp6kk7909/worker.py -> /tmp/tmpp6kk7909/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at 586f6dc0c0c1)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpick7u4zz/worker.py -> /tmp/tmpick7u4zz/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpt9_i1sh4/worker.py -> /tmp/tmpt9_i1sh4/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited -15 after 0s (budget_min fired: budget_exceeded)
+[dispatch] #7: escalating to human (budget: wall-clock budget (0 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp96k1e2s0/worker.py -> /tmp/tmp96k1e2s0/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpvhbkmg5w/worker.py -> /tmp/tmpvhbkmg5w/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 1 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp2rppgc_d/worker.py -> /tmp/tmp2rppgc_d/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp2rppgc_d/worker.py -> /tmp/tmp2rppgc_d/repo/.factory/logs/7-attempt-3.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at 3fcc284e69a7)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpzs3du54r/worker.py -> /tmp/tmpzs3du54r/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at 9751a4275e33)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpcaumbk66/worker.py -> /tmp/tmpcaumbk66/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at 5f41e5dce4ca)
+[dispatch] #7: escalating to human (protected_paths: worker removed or changed existing tests)
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmppd25f3ip/worker.py -> /tmp/tmppd25f3ip/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpjql6z5x_/worker.py -> /tmp/tmpjql6z5x_/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: manager FIX failed (reviewer_unavailable: reviewer unavailable after manager FIX); ticket is already ready-for-human
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpqfheg6ij/worker.py -> /tmp/tmpqfheg6ij/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #7: restored unplanned dependency lockfile drift: uv.lock, web/package-lock.json
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp8sprlm1q/worker.py -> /tmp/tmp8sprlm1q/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #7: restored unplanned dependency lockfile drift: uv.lock
+[dispatch] #7: restored unplanned dependency lockfile drift: uv.lock
+[dispatch] #7: restored unplanned dependency lockfile drift: services/api/uv.lock
+[dispatch] #7: restored unplanned dependency lockfile drift: sub/uv.lock, uv.lock
+[dispatch] #7: done (approved at 5e28023e04fc)
+[dispatch] #7: done (approved at 19f28ced2b9f)
+[dispatch] #7: done (approved at 2743f14e5917)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7: done (approved at c205e348198e)
+[dispatch] #7: refused (Factory claim author login tank-login does not match dispatcher login ultron-login)
+[dispatch] #7: refused (Factory claim author login ultron-login does not match dispatcher login tank-login)
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, District target aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target cccccccccccccccccccccccccccccccccccccccc
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+eval default: not_tested (token budget exceeded (6 > 5))
+eval default: baseline
+eval default: baseline
+eval default: keep (train +0.000 (noise 0.000); lockbox +0.000 (noise 0.000))
+eval default: revert (train drop -1.000 beyond noise 0.000)
+[dispatch] #7 PR #42: worker eval keep claim missing for aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; run `cd /tmp/tmp44qu9fmi/.factory/wt-7 && /home/mike/.local/share/uv/tools/factory/bin/python -m factory eval --profile prime`; not merging
+eval default: baseline
+eval default: revert (train drop -1.000 beyond noise 0.000)
+eval default: revert (train drop -1.000 beyond noise 0.000)
+eval default: baseline
+eval default: keep (train +1.000 (noise 0.000); lockbox +1.000 (noise 0.000))
+eval default: keep (train +0.000 (noise 0.000); lockbox +0.000 (noise 0.000))
+[dispatch] PR #1: would record review intake at head-1
+[dispatch] PR #2: would record review intake at head-2
+[dispatch] PR #6: would record review intake at head-6
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+[dispatch] PR #1: recording review intake at head-1
+[dispatch] PR #2: recording review intake at head-2
+[dispatch] PR #6: retrying review at head-6 after intake without a result
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+[dispatch] PR #1: retrying review at head-1 after intake without a result
+[dispatch] PR #2: retrying review at head-2 after intake without a result
+[dispatch] PR #6: retrying review at head-6 after intake without a result
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+[dispatch] PR #17: recording review intake at head-0
+[dispatch] PR #17: unresolved after 1 automated review attempt(s); would escalate to human
+[dispatch] PR #17: unresolved after 1 automated review attempt(s); escalating to human
+[dispatch] PR #17: recording review intake at head-0
+[dispatch] PR #17: recording review intake at head-1
+[dispatch] PR #17: unresolved after 2 automated review attempt(s); would escalate to human
+[dispatch] PR #17: unresolved after 2 automated review attempt(s); escalating to human
+[dispatch] PR #17: recording review intake at head-1
+[dispatch] PR #17: recording review intake at head-2
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at head-17
+[dispatch] PR #17: diff too large to review at head-17
+[dispatch] PR #18: recording review intake at head-18
+learned from tickets #3:
+- Run `make test` before the gate.
+wrote /tmp/tmpplx9veut/repo/.factory-lessons.md; review and commit it
+[dispatch] #7 PR #70: CI pending {'pending': 2}; waiting
+[dispatch] #7 PR #70: CI pending {'infra': 2}; waiting
+[dispatch] #7 PR #70: head, label, or human review changed before merge; not merging
+[dispatch] #7 PR #70: head, label, or human review changed before merge; not merging
+[dispatch] #7 PR #70: head, label, or human review changed before merge; not merging
+[dispatch] PR #70: targets 'main', not 'stable'; not merging
+[dispatch] PR #70: targets None, not 'stable'; not merging
+[dispatch] PR #70: agent/curate-2026-10-08 waiting for review at head
+[dispatch] PR #71: agent/lessons-2026-10-08 waiting for review at head
+[dispatch] #7 PR #70: state changed during eligibility check; not merging
+[dispatch] #7 PR #70: CI pending {'pass': 1, 'pending': 1}; waiting
+[dispatch] #7 PR #70: CI pending {'pass': 1, 'pending': 1}; waiting
+[dispatch] #7 PR #70: state changed during eligibility check; not merging
+[dispatch] #31 PR #100: merged into main (merge, ticket #31)
+[dispatch] #31: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #99 PR #200: merged into main (squash, ticket #99)
+[dispatch] #99: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #7 PR #70: CI pending {'pending': 1}; waiting
+[dispatch] #7 PR #70: CI pending {'pending': 2}; waiting
+[dispatch] #7 PR #70: CI pending {'pass': 1, 'pending': 1}; waiting
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed again)
+[dispatch] agent/7: existing PR #17 targets 'main', not 'stable'; not pushing
+[dispatch] agent/7: existing PR #17 targets None, not 'stable'; not pushing
+[dispatch] #9: PR #102 rebased onto current main, re-gated, and re-approved at 249b2174e44d
+[dispatch] #31: PR #100 merged onto current main, re-gated, and re-approved at 7dd49204639a
+[dispatch] PR #70: targets 'stable', not 'release'; not refreshing
+[dispatch] PR #70: targets None, not 'release'; not refreshing
+[dispatch] #7: PR #100 rebased onto current main, re-gated, and re-approved at 0e13dc923c30
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 1s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 2s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 2.5s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python -c import time; time.sleep(60) -> /tmp/tmpd47dkqvm/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited -15 after 0s (idle_timeout fired: stuck)
+[dispatch] upstream sync: staged 2 commit(s) at 67fcc155fcde as #42 (agent/42 at 2a4149e4054d, gate not run: merge conflict)
+[dispatch] upstream sync: staged 1 commit(s) at 2a4dc0aaa01d as #42 (agent/42 at a33d1f2faefa, gate PASS)
+[dispatch] upstream sync: 1 commit(s) behind; waiting on sync ticket #7
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python -c import pathlib, time; p = pathlib.Path('.factory'); p.mkdir(exist_ok=True); (p / 'handoff-7.md').write_text('done'); time.sleep(60) -> /tmp/tmpwet_zwhb/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited -15 after 1s (exit_grace fired: hung_after_done)
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python -c import pathlib, subprocess, time; pathlib.Path('work.txt').write_text('x'); subprocess.run(['git', 'add', 'work.txt'], check=True); subprocess.run(['git', 'commit', '-qm', 'work'], check=True); time.sleep(60) -> /tmp/tmpbk_9jktd/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited -15 after 1s (exit_grace fired: hung_after_done)
+[dispatch] #9 PR #90: refused (ticket #9 is an initiative record); not merging
+[dispatch] #7 worker: sh -c printf 'assert False\n' > tests/test_old.py -> /tmp/tmpcy5yc47h/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] worker: sh -c printf 'worker edit\n' > checks/oracle.txt -> /tmp/tmphapwpqvc/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: sh -c printf 'worker edit\n' > checks/oracle.txt -> /tmp/tmpntukucz6/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #8: handoff request 8/1 published to unassigned
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (gate))
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] PR #80: skipped, elected claim belongs to host tank
+[dispatch] #79 PR #80: frontier failed: Command '['gh', 'pr', 'close', '80', '--repo', 'example/project']' returned non-zero exit status 1.; leaving for human
+[dispatch] #79 PR #80: not factory-owned (unverified); not in frontier
+[dispatch] #79 PR #80: not factory-owned (unverified); not in frontier
+[dispatch] #79 PR #80: refused (ticket #79 is an initiative record)
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 3 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 1 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79 PR #80: changed while the manager was thinking; decision discarded
+[dispatch] PR #80: skipped, elected claim belongs to host ultron
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (gate))
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: escalating to human (pr_stale: PR #80: no activity for 327 days (stale_days = 7))
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (gate))
+[dispatch] #79: gate and review passed at aaaaaaaaaaaa; waiting for manager approval (manager.review = all)
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (unit))
+[dispatch] #79 PR #80: CI pending; waiting
+[dispatch] #79: escalating to human (pr_stale: PR #80: no activity for 327 days (stale_days = 7))
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (unit))
+[dispatch] #79 PR #80: red CI predates ticket #79's release to ready-for-agent; waiting for a worker
+[dispatch] #79: gate and review passed at aaaaaaaaaaaa; waiting for manager approval (manager.review = all)
+[dispatch] #79: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #79: escalating to human (manager_exhausted: PR #80: manager rounds exhausted before approval)
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (ci))
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpr_fdwq9_/worker.py -> /tmp/tmpr_fdwq9_/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpa029ic9l/worker.py -> /tmp/tmpa029ic9l/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp5pv1trba/worker.py -> /tmp/tmp5pv1trba/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: PR #70 rebased onto current main, re-gated, and re-approved at 15b0fc439d72
+[dispatch] #79: escalating to human (gate_failed: gate failed after 3 attempts)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: 2 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 1 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (gate_failed: gate failed after 3 attempts)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: 2 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 2 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 1 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (manager_human: PR #80: manager requires a human: needs a product call)
+[dispatch] #79: escalating to human (manager_exhausted: PR #80: manager rounds exhausted before approval)
+[dispatch] #79: escalating to human (gate_failed: gate failed after 3 attempts)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: 2 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 1 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (gate_failed: gate failed after 3 attempts)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 3 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (gate_failed: gate failed after 3 attempts)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 2 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 1 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (manager_human: PR #80: manager requires a human: needs a product call)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #7: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #9: owner requeue opened generation 1 (fresh); round budgets restart
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python -c print('Authentication failed'); raise SystemExit(1) -> /tmp/tmpsjck4qoc/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 1 after 0s
+[dispatch] #9 worker `default` unavailable (auth_failed: Authentication failed)
+[dispatch] #9: worker `default` is unavailable: auth_failed: Authentication failed; unclaimed, retry once the worker is healthy
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpsjck4qoc/append_worker.py -> /tmp/tmpsjck4qoc/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 worker `default` available again
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at 180b9090533e)
+[dispatch] #9: owner requeue opened generation 1 (fresh); round budgets restart
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp6qdy5om1/append_worker.py -> /tmp/tmp6qdy5om1/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9: escalating to human (lease_refused: agent/9 push refused: leased 6d4ada6f436a078abb0cf74c41ec354057ffcf02, remote now 6d4ada6f436a078abb0cf74c41ec354057ffcf02; the leased remote head was absent from the worktree before the worker and its history was not rewritten; worktree kept at /tmp/tmp6qdy5om1/root/.factory/wt-9)
+[dispatch] #9: owner requeue opened generation 1 (fresh); round budgets restart
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python -c print('Authentication failed'); raise SystemExit(1) -> /tmp/tmpqiag4keg/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 1 after 0s
+[dispatch] #9 worker `default` unavailable (auth_failed: Authentication failed)
+[dispatch] #9: worker `default` is unavailable: auth_failed: Authentication failed; unclaimed, retry once the worker is healthy
+[dispatch] #9: escalating to human (lease_refused: diverged history; agent/9: kept HEAD 725e76cef6c76cd9b430cde5b4eb73bf2518cec3, origin/agent/9 6d4ada6f436a078abb0cf74c41ec354057ffcf02; worktree kept at /tmp/tmpqiag4keg/root/.factory/wt-9)
+[dispatch] #9: owner requeue opened generation 1 (fresh); round budgets restart
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpexspnw8_/append_worker.py -> /tmp/tmpexspnw8_/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at 6bc7854ecf2b)
+[dispatch] #9: owner requeue opened generation 1 (fresh); round budgets restart
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpcz47ffe8/fresh_worker.py -> /tmp/tmpcz47ffe8/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at 0e78cd4571a6)
+[dispatch] #9: escalating to human (refresh_conflict: PR #102: rebase onto moved main conflicts (after 3 conflict-resolution round(s)); worktree /tmp/tmpqzve3469/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #9: PR #102 rebase onto main conflicts in shared.txt; requeued to a worker
+[dispatch] #9: escalating to human (gate_failed: gate failed)
+[dispatch] #9: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #9: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpefx939_7/append_worker.py -> /tmp/tmpefx939_7/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpefx939_7/append_worker.py -> /tmp/tmpefx939_7/root/.factory/logs/9-attempt-4.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpefx939_7/append_worker.py -> /tmp/tmpefx939_7/root/.factory/logs/9-attempt-5.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9: escalating to human (review_revise: REVISE verdict after 2 review round(s))
+[dispatch] #9: owner requeue opened generation 2 (resume); round budgets restart
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpefx939_7/append_worker.py -> /tmp/tmpefx939_7/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpefx939_7/append_worker.py -> /tmp/tmpefx939_7/root/.factory/logs/9-attempt-4.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpefx939_7/append_worker.py -> /tmp/tmpefx939_7/root/.factory/logs/9-attempt-5.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9: escalating to human (review_revise: REVISE verdict after 2 review round(s))
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed again)
+[dispatch] #7: approval skipped (factory-held)
+[dispatch] #7: approval skipped (factory-held)
+[dispatch] #7: approval skipped (factory-held)
+[dispatch] #7: approval skipped (factory-held)
+[dispatch] #7: approval withdrawal failed; factory-approved may remain
+[dispatch] #7: approval withdrawn (factory-held)
+[dispatch] #7: skipped (assigned)
+[dispatch] #7: skipped (state changed since frontier query)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #1000: done (approved at aaaaaaaaaaaa)
+[dispatch] #1000: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: escalating to human (ci_failed: CI failed)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpqep5kuj2/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpomxmota_/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpx4fi1u7h/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmp1x7tidct/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmp6ybu4s36/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpmsico9dd/repo/.factory/wt-7; local HEAD 0ddd6a46bc362789678f62fb4b263e3c63d8bef2; remote agent/7 1a05ea5ae453cc9eeb2f397ad383cd1276fee020; local commits not on remote: 0ddd6a46bc362789678f62fb4b263e3c63d8bef2, 7c2db905417bc6fb280ed5c65360364556b99867; resume agent/7 after merging main)
+[dispatch] #7: done (approved at acc6044f3e8a)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpcy1_yyrb/untrusted/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpcy1_yyrb/obsolete/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: host claim heartbeat stopped (ownership lost)
+[dispatch] #7: PR #70 gate failed twice after rebase onto main; requeued to a worker
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: host claim heartbeat stopped (ownership lost)
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (ci_failed: CI failed on PR #70)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (ci_failed: CI failed on PR #70)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (ci_failed: CI failed on PR #70)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (host label (thor))
+[dispatch] #7: skipped (host label (thor))
+[dispatch] #7: skipped (assigned)
+[dispatch] #7: skipped (assigned)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: escalating to human (ci_failed: CI failed on PR #70)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (claim failed, exit 1); retry next pass
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (state changed since frontier query)
+[dispatch] #7: skipped (worker executable not on PATH: /home/mike/.local/share/uv/tools/factory/bin/python); retry next pass
+[dispatch] #7: refused (baseline changed)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: skipped (claim failed, exit 1); retry next pass
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: worker launch failed (worker disappeared); unclaimed, fix PATH or [workers] (`factory doctor`)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+stats: 1/3 ticketsstats: 2/3 ticketsstats: 3/3 tickets
+stats: 1/3 ticketsstats: 2/3 ticketsstats: 3/3 tickets
+no needs-triage issues
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+[dispatch] #7: handoff request 7/1 published to @bob
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #8: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] PR #102: skipped, elected claim belongs to host ultron
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] land: skipped, land host is tank
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] land: skipped, land host is tank
+[dispatch] #9: PR #102 rebased onto current main, re-gated, and re-approved at 8c86e251af9f
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] land: skipped, land host is tank
+[dispatch] #9: PR #102 rebased onto current main, re-gated, and re-approved at 8c86e251af9f
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] PR #102: skipped, elected claim belongs to host ultron
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] PR #101: skipped, elected claim belongs to host ultron
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] land: skipped, land host is tank
+[dispatch] land: skipped, land host is tank
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+learned from tickets #1:
+- Run tests.
+wrote /tmp/tmpyn0g5m67/.factory-lessons.md; review and commit it
+[dispatch] PR #42: refreshing agent/lessons-2026-11-04-t10 after strict-base merge refusal
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 promotion failed (ValueError: refresh left agent/lessons-2026-11-04-t10 unchanged at aabf8fdc9194bf4ba12a1065e955b335236f55de)
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 blocked at aabf8fdc9194 (refresh failed); resolve the blocker and push a new head to retry promotion
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 blocked at aabf8fdc9194 (refresh failed); resolve the blocker and push a new head to retry promotion
+[dispatch] PR #42: refreshing agent/lessons-2026-11-04-t10 (behind main)
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 promotion failed (ValueError: refresh left agent/lessons-2026-11-04-t10 unchanged at aabf8fdc9194bf4ba12a1065e955b335236f55de)
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 blocked at aabf8fdc9194 (refresh failed); resolve the blocker and push a new head to retry promotion
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 blocked at aabf8fdc9194 (refresh failed); resolve the blocker and push a new head to retry promotion
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+CURATE rejected: candidate review gate_failed (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+CURATE rejected: candidate review gate_failed (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+CURATE rejected: candidate review state_changed (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+opened a chore PR from agent/lessons-2026-11-23-t7
+opened a chore PR from agent/curate-2026-11-23-t7
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: not_tested (learn token budget exceeded (1001 > 1000))
+curate evaluation: not_tested (learn token budget exceeded (1001 > 1000))
+CURATE rejected: learn token budget exceeded (1001 > 1000)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+opened a chore PR from agent/curate-2026-11-23-t7
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: kept
+curate evaluation: rejected (variant was not no-worse on every metric and better on one)
+opened a chore PR from agent/lessons-2026-11-23-t7
+CURATE rejected: variant was not no-worse on every metric and better on one
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+CURATE rejected: candidate review REVISE (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+[dispatch] learn candidate agent/curate-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] learn candidate agent/curate-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+CURATE rejected: candidate review unparsed_verdict (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+[dispatch] learn candidate agent/curate-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] learn candidate agent/curate-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+CURATE rejected: candidate review unparsed_verdict (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+CURATE rejected: candidate review state_changed (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: kept
+curate evaluation: rejected (variant was not no-worse on every metric and better on one)
+lessons rejected: candidate review REVISE (see learn-candidate-review journal row)
+CURATE rejected: variant was not no-worse on every metric and better on one
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: kept
+curate evaluation: rejected (variant was not no-worse on every metric and better on one)
+[dispatch] learn candidate agent/lessons-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] learn candidate agent/lessons-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+lessons rejected: candidate review unparsed_verdict (see learn-candidate-review journal row)
+CURATE rejected: variant was not no-worse on every metric and better on one
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: kept
+curate evaluation: rejected (variant was not no-worse on every metric and better on one)
+[dispatch] learn candidate agent/lessons-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] learn candidate agent/lessons-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+lessons rejected: candidate review unparsed_verdict (see learn-candidate-review journal row)
+CURATE rejected: variant was not no-worse on every metric and better on one
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: kept
+curate evaluation: rejected (variant was not no-worse on every metric and better on one)
+lessons rejected: candidate review state_changed (see learn-candidate-review journal row)
+CURATE rejected: variant was not no-worse on every metric and better on one
+learned from tickets #7:
+- harmful
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+new file mode 100644
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1 @@
++helpful
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+opened a chore PR from agent/curate-2026-11-23-t7
+learned from tickets #7:
+- harmful
+lessons evaluation: rejected (variant regressed)
+[dispatch] worker: /usr/bin/true -> /tmp/tmp382fc9su/repo/.factory/learn-7-xtluez7c/worker-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpm85ppks8/repo/.factory/learn-7-bs445qq8/worker-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpm85ppks8/repo/.factory/learn-7-bs445qq8/worker-review-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpm85ppks8/repo/.factory/learn-7-o3pze_w8/worker-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpm85ppks8/repo/.factory/learn-7-o3pze_w8/worker-2.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpm85ppks8/repo/.factory/learn-7-o3pze_w8/worker-3.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpm85ppks8/repo/.factory/learn-7-h6dg4xm2/worker-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #43)
+[dispatch] learn: skipped (open lessons PR #43)
+[dispatch] learn: skipped (open lessons PR #43)
+[dispatch] learn: 10 tickets finished since the last learn; running --last 10
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+{"event": "score", "ticket": 1, "attempt": 1, "transcript": "/tmp/tmpexojary7/session-1.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 2, "attempt": 1, "transcript": "/tmp/tmpexojary7/session-2.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 3, "attempt": 1, "transcript": "/tmp/tmpexojary7/session-3.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+{"event": "score", "ticket": 1, "attempt": 1, "transcript": "/tmp/tmpmx5xtqrj/session-1.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 2, "attempt": 1, "transcript": "/tmp/tmpmx5xtqrj/session-2.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 3, "attempt": 1, "transcript": "/tmp/tmpmx5xtqrj/session-3.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+[dispatch] PR #468: agent/revert-lessons-431 waiting for review at 8bccb2405f62
+[dispatch] PR #468: agent/revert-lessons-431 waiting for review at 176361b519d5
+[dispatch] PR #468: agent/revert-lessons-431 waiting for review at e1b73d9d5a4f
+[dispatch] PR #468: agent/lessons-new waiting for review at e1b73d9d5a4f
+[dispatch] PR #468: agent/curate-new waiting for review at e1b73d9d5a4f
+[dispatch] PR #468: agent/revert-lessons-431 CI fail; not merging
+[dispatch] PR #468: agent/revert-lessons-431 gate failed at e1b73d9d5a4f
+[dispatch] PR #468: merged agent/curate-restoration into main
+[dispatch] PR #468: promotion open (baseline n=0)
+[dispatch] PR #468: merged agent/revert-lessons-431 into main
+[dispatch] PR #468: agent/revert-lessons-431 waiting for review at e1b73d9d5a4f
+[dispatch] PR #468: agent/revert-lessons-431 waiting for review at e1b73d9d5a4f
+[dispatch] PR #468: merged agent/revert-lessons-431 into main
+real mutation CLI unreviewed: exit 1
+files: factory/example.py
+mutants: 3 sampled (seed 197, cap 200), 3 on changed lines first, 3 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+factory/example.py:1: core/NumberReplacer `unused = 1` -> `unused = 2`
+factory/example.py:1: core/NumberReplacer `unused = 1` -> `unused = 0`
+ran 3 of 3 mutants in 1s: 0 timeouts (included in killed); 1 killed, 2 survived; 2 survived
+Using CPython 3.12.14 interpreter at: /home/mike/.local/share/uv/tools/factory/bin/python
+Creating virtual environment at: /tmp/mutation-cli-tmp-fnlyv_aw/uv-project-env
+warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 30 packages in 54ms
+
+real mutation CLI accepted: exit 0
+files: factory/example.py
+mutants: 3 sampled (seed 197, cap 200), 3 on changed lines first, 3 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+factory/example.py:1: core/NumberReplacer `unused = 1` -> `unused = 2`
+  accepted equivalent: Only literal 1 reaches this assignment; unused is not read by the fixture. (reviewer: Synthetic CLI fixture reviewer)
+factory/example.py:1: core/NumberReplacer `unused = 1` -> `unused = 0`
+  accepted equivalent: Only literal 1 reaches this assignment; unused is not read by the fixture. (reviewer: Synthetic CLI fixture reviewer)
+ran 3 of 3 mutants in 0s: 0 timeouts (included in killed); 1 killed, 2 survived; 2 survived
+
+real mutation CLI stale: exit 1
+files: factory/example.py
+mutants: 3 sampled (seed 197, cap 200), 3 on changed lines first, 3 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+ran 3 of 3 mutants in 0s: 0 timeouts (included in killed); 3 killed; 0 survived
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 0'
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 2'
+
+real mutation CLI missing identity: exit 1
+files: factory/example.py
+mutants: 3 sampled (seed 197, cap 200), 3 on changed lines first, 3 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+ran 3 of 3 mutants in 0s: 0 timeouts (included in killed); 3 killed; 0 survived
+stale equivalent: factory/example.py:1: core/ObsoleteReplacer 'unused = 1' -> 'unused = 0'
+
+real mutation CLI missing identity: exit 1
+files: factory/example.py
+mutants: 3 sampled (seed 197, cap 200), 3 on changed lines first, 3 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+ran 3 of 3 mutants in 0s: 0 timeouts (included in killed); 3 killed; 0 survived
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 99'
+
+real mutation CLI source stale: exit 1
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 0'
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 2'
+
+real mutation CLI source stale: exit 1
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 0'
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 2'
+
+real mutation CLI source stale: exit 1
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 0'
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 2'
+
+real mutation CLI source stale: exit 1
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 0'
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 2'
+
+real mutation CLI zero candidates: exit 1
+files: factory/example.py
+mutants: 0 sampled (seed 197, cap 200), 0 on changed lines first, 1 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+ran 0 of 0 mutants in 0s: 0 timeouts (included in killed); none; 0 survived
+stale equivalent: factory/example.py:1: core/NumberReplacer '# reviewed comment' -> '# obsolete replacement'
+
+[dispatch] #7: mutation proof base moved during refresh; retrying next pass
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: mutation proof base moved during manager FIX; retrying next pass
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: mutation proof base moved during ticket review; retrying next pass
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: mutation proof base moved during ticket re-review; retrying next pass
+======================================================================
+ERROR: test_incomplete_exit_zero_is_recorded_incomplete_and_fails (test_mutation_proof.ProducerTest.test_incomplete_exit_zero_is_recorded_incomplete_and_fails)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 2141, in _communicate
+    self.wait(timeout=self._remaining_time(endtime))
+  File "/tmp/factory-903/profile-fixed.py", line 31, in wait
+    self.measure_record['lifetime_seconds'] = time.monotonic() - self.measure_start
+                                              ^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1139, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1143, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1200, in _execute_mock_call
+    result = next(effect)
+             ^^^^^^^^^^^^
+StopIteration
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/tmp/factory-903/matched.AaPsnt/tree/tests/test_mutation_proof.py", line 164, in test_incomplete_exit_zero_is_recorded_incomplete_and_fails
+    code, output, _ = self.runner(["--blocking"], clock=NOT_STARTED_CLOCK)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/factory-903/matched.AaPsnt/tree/tests/test_mutation_proof.py", line 123, in runner
+    code = mutation.main(argv)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/tmp/factory-903/matched.AaPsnt/tree/scripts/mutation.py", line 485, in main
+    code = _main(argv, outcome, proof_base if proof_path else BASE, proof=bool(proof_path))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/factory-903/matched.AaPsnt/tree/scripts/mutation.py", line 528, in _main
+    lines = scope_lines(base, computed) if proof else changed_lines()
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/factory-903/matched.AaPsnt/tree/scripts/mutation.py", line 118, in scope_lines
+    scope = mutation_scope.compute(base)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/factory-903/matched.AaPsnt/tree/factory/mutation_scope.py", line 231, in compute
+    head = resolve("HEAD", cwd)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/factory-903/matched.AaPsnt/tree/factory/mutation_scope.py", line 90, in resolve
+    oid = _git(cwd, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").strip()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/factory-903/matched.AaPsnt/tree/factory/mutation_scope.py", line 78, in _git
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/factory-903/matched.AaPsnt/tree/tests/test_mutation_proof.py", line 73, in process
+    return REAL_RUN(cmd, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 548, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 1118, in __exit__
+    self.wait()
+  File "/tmp/factory-903/profile-fixed.py", line 31, in wait
+    self.measure_record['lifetime_seconds'] = time.monotonic() - self.measure_start
+                                              ^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1139, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1143, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1200, in _execute_mock_call
+    result = next(effect)
+             ^^^^^^^^^^^^
+StopIteration
+
+----------------------------------------------------------------------
+Ran 1451 tests in 500.247s
+
+FAILED (errors=1)

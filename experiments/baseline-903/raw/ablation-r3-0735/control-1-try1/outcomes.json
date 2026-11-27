@@ -1,0 +1,58 @@
+{
+  "arm": "control",
+  "seconds": 1613.096418708039,
+  "tests_run": 2272,
+  "failures": 5,
+  "errors": 1,
+  "skipped": 12,
+  "success": false,
+  "load_before": [
+    2.26025390625,
+    2.61181640625,
+    2.46044921875
+  ],
+  "load_after": [
+    3.0126953125,
+    2.95556640625,
+    2.76318359375
+  ],
+  "python": "3.12.13 (main, Mar  3 2026, 15:35:03) [Clang 21.1.4 ]",
+  "timestamp_before": 1795534514.304148,
+  "timestamp_after": 1795536128.154696,
+  "hostname": "ultron",
+  "tmpdir": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/",
+  "arm_detail": "no intervention",
+  "failure_ids": [
+    "test_interrupts.InterruptsTest.test_blocked_only_runner_keeps_its_handler",
+    "test_interrupts.InterruptsTest.test_deliverable_setup_failure_restores_mask_and_disposition (mode='blocked', step='unblock')",
+    "test_interrupts.InterruptsTest.test_deliverable_sigint_resets_children_and_restores_runner [blocked]",
+    "test_interrupts.InterruptsTest.test_detached_launcher_state_reaches_children [blocked]",
+    "test_interrupts.InterruptsTest.test_spawn_failure_restores_mask_and_disposition [blocked]"
+  ],
+  "error_ids": [
+    "test_host_mutation_slots.HostMutationSlotsTest.test_interrupted_gate_keeps_slot_until_mutation_finishes (signal=<Signals.SIGINT: 2>)"
+  ],
+  "skipped_ids": [
+    "test_b1_build.SandboxTest.test_every_required_denial_holds_inside",
+    "test_b1_build.SandboxTest.test_stop_request_and_limit_mismatch",
+    "test_b1_build.SandboxTest.test_time_memory_and_file_limits_end_the_payload",
+    "test_codebase.HistoryExtractionTest.test_coverage_exclusion_is_not_a_file_deletion",
+    "test_codebase.HistoryExtractionTest.test_empty_manifests_remain_inventory_but_parse_errors_preserve_history",
+    "test_codebase.HistoryExtractionTest.test_git_object_snapshot_excludes_links_runtime_and_host_preprocessing",
+    "test_codebase.HistoryExtractionTest.test_real_history_tracks_edit_move_delete_cache_and_publication_boundary",
+    "test_runner_runtime.RunnerRuntimeTest.test_non_utf8_process_name_preserves_only_confirmed_live_review_users",
+    "test_workspace_trace_viewport.WorkspaceTraceMountedTest.test_cancelled_or_clickless_pan_does_not_swallow_a_later_click",
+    "test_workspace_trace_viewport.WorkspaceTraceMountedTest.test_mounted_zoom_and_fullscreen_redraw_wires",
+    "test_workspace_trace_viewport.WorkspaceTraceMountedTest.test_pinned_chains_survive_mouse_and_keyboard_viewport_controls",
+    "test_workspace_trace_viewport.WorkspaceTraceMountedTest.test_pinned_chains_survive_pan_but_background_click_and_escape_clear"
+  ],
+  "tracebacks": {
+    "test_interrupts.InterruptsTest.test_blocked_only_runner_keeps_its_handler": "Traceback (most recent call last):\n  File \"/Users/mike/tmp/r3-0735/wt/tests/test_interrupts.py\", line 216, in test_blocked_only_runner_keeps_its_handler\n    self.assertIsNot(handler, signal.SIG_IGN)\nAssertionError: unexpectedly identical: <Handlers.SIG_IGN: 1>\n",
+    "test_interrupts.InterruptsTest.test_deliverable_setup_failure_restores_mask_and_disposition (mode='blocked', step='unblock')": "Traceback (most recent call last):\n  File \"/Users/mike/tmp/r3-0735/wt/tests/test_interrupts.py\", line 241, in test_deliverable_setup_failure_restores_mask_and_disposition\n    self.assertEqual(child_sigint(), INHERITED[mode])\nAssertionError: {'ignored': True, 'default': False, 'blocked': True} != {'ignored': False, 'default': True, 'blocked': True}\n- {'blocked': True, 'default': False, 'ignored': True}\n?                              ^^^^              ^^^\n\n+ {'blocked': True, 'default': True, 'ignored': False}\n?                              ^^^              ^^^^\n\n",
+    "test_interrupts.InterruptsTest.test_deliverable_sigint_resets_children_and_restores_runner [blocked]": "Traceback (most recent call last):\n  File \"/Users/mike/tmp/r3-0735/wt/tests/test_interrupts.py\", line 209, in test_deliverable_sigint_resets_children_and_restores_runner\n    self.assertEqual(child_sigint(), INHERITED[mode])\nAssertionError: {'ignored': True, 'default': False, 'blocked': True} != {'ignored': False, 'default': True, 'blocked': True}\n- {'blocked': True, 'default': False, 'ignored': True}\n?                              ^^^^              ^^^\n\n+ {'blocked': True, 'default': True, 'ignored': False}\n?                              ^^^              ^^^^\n\n",
+    "test_interrupts.InterruptsTest.test_detached_launcher_state_reaches_children [blocked]": "Traceback (most recent call last):\n  File \"/Users/mike/tmp/r3-0735/wt/tests/test_interrupts.py\", line 191, in test_detached_launcher_state_reaches_children\n    self.assertEqual(child_sigint(), INHERITED[mode])\nAssertionError: {'ignored': True, 'default': False, 'blocked': True} != {'ignored': False, 'default': True, 'blocked': True}\n- {'blocked': True, 'default': False, 'ignored': True}\n?                              ^^^^              ^^^\n\n+ {'blocked': True, 'default': True, 'ignored': False}\n?                              ^^^              ^^^^\n\n",
+    "test_interrupts.InterruptsTest.test_spawn_failure_restores_mask_and_disposition [blocked]": "Traceback (most recent call last):\n  File \"/Users/mike/tmp/r3-0735/wt/tests/test_interrupts.py\", line 265, in test_spawn_failure_restores_mask_and_disposition\n    self.assertEqual(child_sigint(), INHERITED[mode])\nAssertionError: {'ignored': True, 'default': False, 'blocked': True} != {'ignored': False, 'default': True, 'blocked': True}\n- {'blocked': True, 'default': False, 'ignored': True}\n?                              ^^^^              ^^^\n\n+ {'blocked': True, 'default': True, 'ignored': False}\n?                              ^^^              ^^^^\n\n",
+    "test_host_mutation_slots.HostMutationSlotsTest.test_interrupted_gate_keeps_slot_until_mutation_finishes (signal=<Signals.SIGINT: 2>)": "Traceback (most recent call last):\n  File \"/Users/mike/tmp/r3-0735/wt/tests/test_host_mutation_slots.py\", line 232, in test_interrupted_gate_keeps_slot_until_mutation_finishes\n    p1.wait(timeout=10)\n  File \"/Users/mike/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/subprocess.py\", line 1264, in wait\n    return self._wait(timeout=timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/mike/.local/share/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/subprocess.py\", line 2045, in _wait\n    raise TimeoutExpired(self.args, timeout)\nsubprocess.TimeoutExpired: Command '['/Users/mike/tmp/r3-0735/wt/.venv/bin/python', '-c', '\\nimport sys\\nfrom pathlib import Path\\nfrom unittest import mock\\nfrom factory import config, gate\\nroot, prefix, timeout = sys.argv[1:4]\\ndef proof(cmd, base, duration=None):\\n    passed, output = gate.run(cmd)\\n    return passed, output, \"PASS\" if passed else \"FAIL\", \"\"\\nwith mock.patch.object(config, \"repo_root\", return_value=Path(root)), \\\\\\n     mock.patch.object(gate, \"MUTATION_SLOT_PREFIX\", Path(prefix), create=True), \\\\\\n     mock.patch.object(gate, \"toolchain\", return_value=dict(rocm=\"n/a\", kernel=\"test\", amdgpu=\"n/a\")), \\\\\\n     mock.patch.object(gate, \"run_mutation_proof\", side_effect=proof):\\n    raise SystemExit(gate.main([\"--tier\", \"pr\", \"--check-timeout\", timeout,\\n                               \"--report\", str(Path(root) / \"report.md\"), *sys.argv[4:]]))\\n', '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/factory-slots-test-dn2zfvdl/repo-0', '/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/factory-slots-test-dn2zfvdl/host-mutation', '10']' timed out after 10 seconds\n"
+  },
+  "harness_rc": 1
+}

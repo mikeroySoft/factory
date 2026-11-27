@@ -1,0 +1,25 @@
+{
+  "arm": "git-cache",
+  "seconds": 1677.4196057500085,
+  "tests_run": 2272,
+  "failures": 119,
+  "errors": 95,
+  "skipped": 12,
+  "success": false,
+  "load_before": [
+    3.2236328125,
+    3.26708984375,
+    3.091796875
+  ],
+  "load_after": [
+    2.0087890625,
+    2.45703125,
+    2.66650390625
+  ],
+  "python": "3.12.13 (main, Mar  3 2026, 15:35:03) [Clang 21.1.4 ]",
+  "timestamp_before": 1795545457.02019,
+  "timestamp_after": 1795547134.568181,
+  "hostname": "ultron",
+  "tmpdir": "/var/folders/bj/mg95_4md1_v1fqsnxkx8lqs80000gn/T/",
+  "arm_detail": "PATH prepended with git-cache wrapper"
+}

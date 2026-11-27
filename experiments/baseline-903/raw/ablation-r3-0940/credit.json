@@ -1,0 +1,22 @@
+{
+  "seconds": {
+    "control-1": 1599.2727845420013
+  },
+  "spread": 0.0,
+  "arms": {
+    "git-cache": {
+      "measured": false,
+      "credited": 0.0
+    },
+    "scratch-throttle": {
+      "measured": false,
+      "credited": 0.0
+    },
+    "ram-apfs": {
+      "measured": false,
+      "credited": 0.0
+    }
+  },
+  "total_credited": 0.0,
+  "verdict": "INCONCLUSIVE"
+}

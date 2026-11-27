@@ -1,0 +1,15 @@
+r3-0815 relaunch of r3-0735 #903 ablation (Ultron); driver /Users/mike/tmp/r3-0735/driver.sh; scratch tree /Users/mike/tmp/r3-0735/wt at 69b50b7de964e09ab429cb68b067299ad06c3cec
+signal fix commit: c67eb7e1 (agent/903)
+pause: r3-0735 (relaunch r3-0815) #903 ablation pause by District PM 2026-11-24T08:09:46-0800
+in-flight factory pass at launch: none (last log line: === skip: paused (/Users/mike/.local/state/factory-guard/factory.pause) Tue Nov 24 08:00:29 PST 2026)
+VM: VMware Fusion vmware-vmx pid 42612 left running
+shas before:
+e071ebe909c9b2c1fea62bad01545406307952ae664416029dea9361444f026b  .config/factory/config.toml
+ac6661ba52ea87d7bf27c9b8d2c5c167eb7c4f73573b35b402d6e367775a7651  wt/uv.lock
+0a4268b2809dc8633192f399d7838c7cdfe865726a06147e818d4c26b0f1ad2b  harness/ablation_run.py
+07a766ef65a38b34e5fe2ca7b1251c925b1d875ef142a80430112c9fee18a98b  harness/arm_runner.py
+babdbaf8d51fb5b08cf6527e3b5490f13ea7e52de08575e3aaf225dc82dc0c1d  harness/analyze.py
+3b51050d50bab22a4beebdac65c7b0eeeaa0b1cea5d144daf565e3494ad63045  harness/test_analyze.py
+8c2d8f067f87181336c99a3101c2d720c8357b68036001396be331eb4c27d161  harness/gitbin/git
+8e1c38cabecf7c9405fc7a4d60ec035e4f1da64a1dd0a3adf68724779335b598  harness/throttle-site/sitecustomize.py
+2cc64296b677d49a68346ac5f4eff827fde49aca830017d72418fd203d1c1717  driver.sh

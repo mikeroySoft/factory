@@ -1,0 +1,2 @@
+{"label": "git-cache", "vm": {"control-1": 25.86, "git-cache": 25.71}, "neighbors": ["control-1"], "ok": true}
+outcome_matches_control1=no

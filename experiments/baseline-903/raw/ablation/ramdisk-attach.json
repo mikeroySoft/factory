@@ -1,0 +1,8 @@
+{
+  "action": "attach",
+  "device": "/dev/disk19",
+  "mount": "/Volumes/RamDisk903",
+  "timestamp": "2026-11-24T14:50:37Z",
+  "sectors": 4194304,
+  "bytes": 2147483648
+}

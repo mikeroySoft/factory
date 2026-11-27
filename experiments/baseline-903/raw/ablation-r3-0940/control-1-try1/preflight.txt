@@ -1,0 +1,18 @@
+2026-11-24T09:42:00-0800
+vm.loadavg: { 2.44 2.03 2.26 }
+ 9:42  up 6 days, 33 mins, 5 users, load averages: 2.44 2.03 2.26
+vm_cpu_mean3=28.76
+--- benito/factory processes
+  533     1 06-00:32:10   0.0 /Users/mike/dev/mikeroysoft/benito-app/.derivedData/BenitoServer/Build/Products/Debug/Benito Server.app/Contents/MacOS/Benito Server
+ 1096     1 06-00:31:54   0.0 /Users/mike/Library/Application Support/Benito/bin/benito-server
+ 1108     1 06-00:31:54   0.0 /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m http.server 8091 --bind 0.0.0.0 --directory /Users/mike/dev/mi
+ 1674  1096 06-00:31:38   0.0 /usr/bin/dns-sd -R Benito _benito._tcp local 8082 version=0.1.0
+--- top cpu
+  PID  %CPU COMMAND
+42612  24.3 /Applications/VMware Fusion.app/Contents/Library/vmware-vmx -E en -s vmx.stdio.keep=TRUE -# product=64;name=VMware Fusion;version=13.6.3;buildnumber
+ 1125  15.2 /Users/mike/Library/Application Support/iStat Menus 7/iStat Menus Menubar.app/Contents/MacOS/iStat Menus Menubar
+ 1120   6.6 /Library/Application Support/Universal Audio/Apollo/UA Mixer Engine.app/Contents/MacOS/UA Mixer Engine -silent
+  893   4.6 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+  746   3.2 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking
+  194   3.1 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon
+  937   2.7 /Applications/Spotify.app/Contents/MacOS/Spotify

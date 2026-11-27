@@ -1,0 +1,112 @@
+{
+  "bwrap": {
+    "count": 1,
+    "launch_seconds": 0.00019049993716180325,
+    "inclusive_lifetime_seconds": 0.0024398008827120066
+  },
+  "env": {
+    "count": 28,
+    "launch_seconds": 0.007173698861151934,
+    "inclusive_lifetime_seconds": 5.727755279047415
+  },
+  "failed-runner": {
+    "count": 2,
+    "launch_seconds": 0.00031710811890661716,
+    "inclusive_lifetime_seconds": 0.001860613003373146
+  },
+  "gcc": {
+    "count": 3,
+    "launch_seconds": 0.000605044886469841,
+    "inclusive_lifetime_seconds": 0.009957714006304741
+  },
+  "gh": {
+    "count": 432,
+    "launch_seconds": 0.11622710130177438,
+    "inclusive_lifetime_seconds": 7.159984907368198
+  },
+  "git": {
+    "count": 22133,
+    "launch_seconds": 4.995889060199261,
+    "inclusive_lifetime_seconds": 37.222877003252506
+  },
+  "journalctl": {
+    "count": 1,
+    "launch_seconds": 0.00019464711658656597,
+    "inclusive_lifetime_seconds": 0.0011637010611593723
+  },
+  "ld": {
+    "count": 3,
+    "launch_seconds": 0.0007004821673035622,
+    "inclusive_lifetime_seconds": 0.003778879065066576
+  },
+  "ldconfig": {
+    "count": 25,
+    "launch_seconds": 0.004560847766697407,
+    "inclusive_lifetime_seconds": 0.057870154501870275
+  },
+  "node": {
+    "count": 25,
+    "launch_seconds": 0.0066210858058184385,
+    "inclusive_lifetime_seconds": 2.2359694249462336
+  },
+  "omp": {
+    "count": 4,
+    "launch_seconds": 0.0009677738416939974,
+    "inclusive_lifetime_seconds": 0.0424210752826184
+  },
+  "printf": {
+    "count": 3,
+    "launch_seconds": 0.0006605740636587143,
+    "inclusive_lifetime_seconds": 0.0019107270054519176
+  },
+  "ps": {
+    "count": 37,
+    "launch_seconds": 0.006802942370995879,
+    "inclusive_lifetime_seconds": 0.40615025837905705
+  },
+  "python": {
+    "count": 1364,
+    "launch_seconds": 0.3428033876698464,
+    "inclusive_lifetime_seconds": 685.9730998161249
+  },
+  "reviewer": {
+    "count": 3,
+    "launch_seconds": 0.0008071139454841614,
+    "inclusive_lifetime_seconds": 0.0333798797801137
+  },
+  "sh": {
+    "count": 4,
+    "launch_seconds": 0.0010562287643551826,
+    "inclusive_lifetime_seconds": 0.006428748834878206
+  },
+  "shell": {
+    "count": 1,
+    "launch_seconds": 0.00015393411740660667,
+    "inclusive_lifetime_seconds": 0.014498518081381917
+  },
+  "systemctl": {
+    "count": 35,
+    "launch_seconds": 0.007740870118141174,
+    "inclusive_lifetime_seconds": 0.10854980372823775
+  },
+  "systemd-run": {
+    "count": 7,
+    "launch_seconds": 0.001656652195379138,
+    "inclusive_lifetime_seconds": 0.016271174885332584
+  },
+  "tar": {
+    "count": 125,
+    "launch_seconds": 0.03394558350555599,
+    "inclusive_lifetime_seconds": 0.11623132275417447
+  },
+  "true": {
+    "count": 1,
+    "launch_seconds": 0.0002570580691099167,
+    "inclusive_lifetime_seconds": 0.0013694451190531254
+  },
+  "uv": {
+    "count": 11,
+    "launch_seconds": 0.0028053142596036196,
+    "inclusive_lifetime_seconds": 1.6904133544303477
+  }
+}

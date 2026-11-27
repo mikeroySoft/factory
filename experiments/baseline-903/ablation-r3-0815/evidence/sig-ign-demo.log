@@ -1,0 +1,2 @@
+background child, no reset: getsignal(SIGINT) = 1
+background child, after _restore_default_signals: getsignal(SIGINT) = <built-in function default_int_handler>

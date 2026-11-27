@@ -1,0 +1,20 @@
+2026-11-24T09:06:28-0800
+vm.loadavg: { 1.85 2.50 2.87 }
+ 9:06  up 5 days, 23:57, 5 users, load averages: 1.85 2.50 2.87
+vm_cpu_mean3=23.00
+--- benito/factory processes
+  533     1 05-23:56:38   0.0 /Users/mike/dev/mikeroysoft/benito-app/.derivedData/BenitoServer/Build/Products/Debug/Benito Server.app/Contents/MacOS/Benito Server
+ 1096     1 05-23:56:22   0.0 /Users/mike/Library/Application Support/Benito/bin/benito-server
+ 1108     1 05-23:56:22   0.0 /opt/homebrew/Cellar/python@3.14/3.14.8/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python -m http.server 8091 --bind 0.0.0.0 --directory /Users/mike/dev/mi
+ 1674  1096 05-23:56:06   0.0 /usr/bin/dns-sd -R Benito _benito._tcp local 8082 version=0.1.0
+43459     1       00:08   0.0 /bin/bash -c echo "=== pass $(date)"; /Users/mike/.local/bin/factory triage; /Users/mike/.local/bin/factory dispatch; rc=$?; /Users/mike/.local/bin/factory watch; echo "=== end rc=$rc $(date
+43474 43459       00:06  93.9 /Users/mike/.local/share/uv/tools/factory/bin/python /Users/mike/.local/bin/factory dispatch
+--- top cpu
+  PID  %CPU COMMAND
+43474  93.9 /Users/mike/.local/share/uv/tools/factory/bin/python /Users/mike/.local/bin/factory dispatch
+42612  24.0 /Applications/VMware Fusion.app/Contents/Library/vmware-vmx -E en -s vmx.stdio.keep=TRUE -# product=64;name=VMware Fusion;version=13.6.3;buildnumber
+ 1120   5.4 /Library/Application Support/Universal Audio/Apollo/UA Mixer Engine.app/Contents/MacOS/UA Mixer Engine -silent
+  893   4.0 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+  746   3.6 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking
+  693   2.6 /Library/Developer/PrivateFrameworks/CoreDevice.framework/Versions/A/XPCServices/CoreDeviceService.xpc/Contents/MacOS/CoreDeviceService
+ 1146   1.7 /Applications/SABnzbd.app/Contents/MacOS/SABnzbd

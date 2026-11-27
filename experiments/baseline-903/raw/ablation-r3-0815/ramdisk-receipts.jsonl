@@ -1,0 +1,4 @@
+{"action":"attach","device":"/dev/disk18","mount":"/Volumes/RamDisk0735","time":"2026-11-24T08:39:39-0800","bytes":4294967296}
+{"action":"detach","device":"/dev/disk18","mount":"/Volumes/RamDisk0735","time":"2026-11-24T09:06:38-0800","forced":false,"still_present":false}
+{"action":"attach","device":"/dev/disk18","mount":"/Volumes/RamDisk0735","time":"2026-11-24T09:06:54-0800","bytes":4294967296}
+{"action":"detach","device":"/dev/disk18","mount":"/Volumes/RamDisk0735","time":"2026-11-24T09:33:21-0800","forced":false,"still_present":false}

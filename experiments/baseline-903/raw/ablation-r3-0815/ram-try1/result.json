@@ -1,0 +1,25 @@
+{
+  "arm": "ram",
+  "seconds": 1608.6828845830169,
+  "tests_run": 2272,
+  "failures": 2,
+  "errors": 0,
+  "skipped": 12,
+  "success": false,
+  "load_before": [
+    3.5390625,
+    2.89404296875,
+    2.5703125
+  ],
+  "load_after": [
+    1.85009765625,
+    2.49609375,
+    2.87109375
+  ],
+  "python": "3.12.13 (main, Mar  3 2026, 15:35:03) [Clang 21.1.4 ]",
+  "timestamp_before": 1795538379.16171,
+  "timestamp_after": 1795539987.974543,
+  "hostname": "ultron",
+  "tmpdir": "/Volumes/RamDisk0735/",
+  "arm_detail": "TMPDIR=/Volumes/RamDisk0735/"
+}

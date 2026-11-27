@@ -1,0 +1,8 @@
+{
+  "baseline_code": 0,
+  "gate_code": 0,
+  "gate_start_offset": 337.15563366701826,
+  "baseline_done": 1718.4135982079897,
+  "both_done": 2007.815507500025,
+  "note": "Real full-suite gate load; no mutant saturation. Phase offset matches historical check entries, not baseline-specific receipts."
+}

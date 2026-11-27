@@ -1,0 +1,6 @@
+{
+  "revision": "69b50b7de964e09ab429cb68b067299ad06c3cec",
+  "checked_files": 270,
+  "mismatches": [],
+  "note": "Shared clone has empty index; verified actual file blobs against target tree, not index status."
+}

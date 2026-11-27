@@ -1,0 +1,4 @@
+run	arm	seconds	verdict	tests fail err load_before(1/5/15) / load_after	vm_cpu_before/after	ended
+control-1-try1	control	1599	clean	2272 0 0 2.29 2.02 2.25 / 1.97 2.67 2.64	28.76/22.96	10:09
+git-cache-try1	git-cache	1680	INVALID_outcome	2272 119 95 2.27 2.68 2.64 / 3.19 3.26 3.08	28.43/23.03	10:37
+git-cache-try2	git-cache	1677	INVALID_outcome	2272 119 95 3.22 3.27 3.09 / 2.01 2.46 2.67	28.16/23.26	11:05

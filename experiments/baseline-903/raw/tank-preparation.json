@@ -1,0 +1,87 @@
+{
+  "workers": [
+    {
+      "worker": 0,
+      "clone_seconds": 0.0058195218443870544,
+      "copy_seconds": 0.04530715104192495
+    },
+    {
+      "worker": 1,
+      "clone_seconds": 0.005167343886569142,
+      "copy_seconds": 0.02633519913069904
+    },
+    {
+      "worker": 2,
+      "clone_seconds": 0.0057102839928120375,
+      "copy_seconds": 0.027362734079360962
+    },
+    {
+      "worker": 3,
+      "clone_seconds": 0.004832474980503321,
+      "copy_seconds": 0.02719916496425867
+    },
+    {
+      "worker": 4,
+      "clone_seconds": 0.005513926036655903,
+      "copy_seconds": 0.026700559072196484
+    },
+    {
+      "worker": 5,
+      "clone_seconds": 0.00566651695407927,
+      "copy_seconds": 0.026676819194108248
+    },
+    {
+      "worker": 6,
+      "clone_seconds": 0.006579807959496975,
+      "copy_seconds": 0.02754256594926119
+    },
+    {
+      "worker": 7,
+      "clone_seconds": 0.005753171164542437,
+      "copy_seconds": 0.02756813494488597
+    },
+    {
+      "worker": 8,
+      "clone_seconds": 0.006142266094684601,
+      "copy_seconds": 0.026210852898657322
+    },
+    {
+      "worker": 9,
+      "clone_seconds": 0.006983929080888629,
+      "copy_seconds": 0.028232420096173882
+    },
+    {
+      "worker": 10,
+      "clone_seconds": 0.006450677989050746,
+      "copy_seconds": 0.02734616701491177
+    },
+    {
+      "worker": 11,
+      "clone_seconds": 0.009338322095572948,
+      "copy_seconds": 0.0445127219427377
+    },
+    {
+      "worker": 12,
+      "clone_seconds": 0.007359058130532503,
+      "copy_seconds": 0.04600956104695797
+    },
+    {
+      "worker": 13,
+      "clone_seconds": 0.008592533878982067,
+      "copy_seconds": 0.04727877210825682
+    },
+    {
+      "worker": 14,
+      "clone_seconds": 0.005209241062402725,
+      "copy_seconds": 0.02768871607258916
+    },
+    {
+      "worker": 15,
+      "clone_seconds": 0.00536726601421833,
+      "copy_seconds": 0.028954996960237622
+    }
+  ],
+  "parent_input_blocks": 0,
+  "parent_output_blocks": 0,
+  "note": "Warm-cache preparation only; no sampling, proof exclusion or fingerprint validation. Outside reported baseline timer."
+}

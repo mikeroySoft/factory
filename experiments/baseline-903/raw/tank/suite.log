@@ -1,0 +1,1579 @@
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7 PR #70: merged into main (squash, ticket #7)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7 PR #70: merged into main (squash, ticket #7)
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: escalating to human (review_revise: REVISE verdict after 257 review round(s))
+[dispatch] #7: escalating to human (review_revise: REVISE verdict after 2 review round(s))
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #10000: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: escalating to human (review_revise: REVISE verdict after 0 review round(s))
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7: escalating to human (review_revise: PR #70: fresh review requested changes after rebase onto moved main; `factory-approved` label removed)
+[dispatch] #7: escalating to human (pr_checks_failed: PR #70: fresh review requested changes after rebase onto moved main; `factory-approved` label removed)
+[dispatch] #7: escalating to human (review_revise: PR #70: review rejected the refreshed head; `factory-approved` label removed)
+[dispatch] #7: escalating to human (protected_paths: PR #70: PR gate blocked by protected paths; `factory-approved` label removed)
+[dispatch] #7: escalating to human (review_revise: PR #70: review round budget exhausted after refresh; `factory-approved` label removed)
+[dispatch] #7: escalating to human (review_revise: PR #70: review round budget exhausted after refresh; `factory-approved` label removed)
+[dispatch] #10000: escalating to human (review_revise: REVISE verdict after 2 review round(s))
+Brief Jev rerank failed; using noun order
+Traceback (most recent call last):
+  File "/tmp/factory-903/matched.AaPsnt/tree/factory/brief.py", line 95, in rerank
+    with urllib.request.urlopen(request, timeout=15) as response:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1139, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1143, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/mike/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/unittest/mock.py", line 1198, in _execute_mock_call
+    raise effect
+OSError: offline
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+{"event": "score", "ticket": 10, "attempt": 1, "transcript": "/tmp/tmpfeaf9oo6/.factory/transcripts/10/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #1, #2, #3, #4, #5, #6, #7, #8, #9, #10:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t10
+learned from tickets #11, #12, #13, #14, #15, #16, #17, #18, #19, #20:
+- Run `make test` before the gate.
+opened a chore PR from agent/lessons-2026-11-23-t20
+{"event": "score", "ticket": 1, "attempt": 1, "transcript": "/tmp/tmp4to5_4kz/.factory/transcripts/1/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 2, "attempt": 1, "transcript": "/tmp/tmp4to5_4kz/.factory/transcripts/2/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 3, "attempt": 1, "transcript": "/tmp/tmp4to5_4kz/.factory/transcripts/3/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 4, "attempt": 1, "transcript": "/tmp/tmp4to5_4kz/.factory/transcripts/4/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 5, "attempt": 1, "transcript": "/tmp/tmp4to5_4kz/.factory/transcripts/5/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 6, "attempt": 1, "transcript": "/tmp/tmp4to5_4kz/.factory/transcripts/6/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 7, "attempt": 1, "transcript": "/tmp/tmp4to5_4kz/.factory/transcripts/7/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 8, "attempt": 1, "transcript": "/tmp/tmp4to5_4kz/.factory/transcripts/8/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 9, "attempt": 1, "transcript": "/tmp/tmp4to5_4kz/.factory/transcripts/9/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 10, "attempt": 1, "transcript": "/tmp/tmp4to5_4kz/.factory/transcripts/10/s.jsonl", "gate_first_pass": true, "tool_calls": 4, "edits": 0, "retries": 1, "efficiency": 0.5, "call_errors": [false, false, false, false], "compliance": 0.7, "judge_model": "qwen3:30b"}
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpqdxf71ac/worker.py -> /tmp/tmpqdxf71ac/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: worker killed by budget_min (budget_exceeded) before gate; last gate passed; worktree kept at /tmp/tmpqdxf71ac/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (budget: worker killed by budget_min (budget_exceeded) before gate; last gate passed; worktree kept at /tmp/tmpvlesk3ri/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (budget: worker killed by budget_exceeded (budget_exceeded) before gate; last gate passed; worktree kept at /tmp/tmpvlesk3ri/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (budget: worker killed by budget_exceeded (budget_exceeded) before gate; last gate passed; worktree kept at /tmp/tmpvlesk3ri/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+[dispatch] #7: escalating to human (gate_failed: gate failed after worker)
+  warning: 2 source file(s) produced zero nodes and are absent from the graph: Cargo.toml, pyproject.toml. A re-run will retry them (empties are no longer cached); if it persists, please report the file(s) (#1666).
+  warning: 1 source file(s) produced zero nodes and are absent from the graph: pyproject.toml. A re-run will retry them (empties are no longer cached); if it persists, please report the file(s) (#1666).
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #3 worker: /home/mike/.local/share/uv/tools/factory/bin/python -c import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(6) /tmp/tmpdjzdpvph/child.pid -> /tmp/tmpdjzdpvph/worker.log
+[dispatch] #3: pipeline raised KeyboardInterrupt('dispatcher interrupted')
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #1: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #1: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #1: pipeline raised TicketFailed('#1 pipeline failed')
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python -c import json, os, sys; d = os.environ.get('GH_CONFIG_DIR'); json.dump({'tokens': [k for k in ('GH_TOKEN', 'GITHUB_TOKEN') if k in os.environ], 'dir': d, 'entries': os.listdir(d) if d and os.path.isdir(d) else None}, open(sys.argv[1], 'w')); print('```json\n{"verdict":"APPROVE","findings":[]}\n```\nVERDICT: APPROVE') /tmp/tmpewrec049/seen.json -> /tmp/tmpewrec049/worker.log
+[dispatch] worker exited 0 after 0s
+[dispatch] command failed (exit 128); stderr tail:
+fatal: '/tmp/tmpc_nbtnvz/origin.git/missing' does not appear to be a git repository
+fatal: Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.
+
+[dispatch] command failed (exit 1); stderr tail:
+To /tmp/tmpaezxskv6/origin.git
+ ! [rejected]        agent/curate-x -> agent/curate-x (non-fast-forward)
+error: failed to push some refs to '/tmp/tmpaezxskv6/origin.git'
+hint: Updates were rejected because the tip of your current branch is behind
+hint: its remote counterpart. If you want to integrate the remote changes,
+hint: use 'git pull' before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmphnqp6a5l/worker.py -> /tmp/tmphnqp6a5l/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp0735awbf/worker.py -> /tmp/tmp0735awbf/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp6q8g0frm/worker.py -> /tmp/tmp6q8g0frm/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpz3_e1olf/worker.py -> /tmp/tmpz3_e1olf/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpie5p4twk/worker.py -> /tmp/tmpie5p4twk/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpj8wbe53e/worker.py -> /tmp/tmpj8wbe53e/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at 23e01c7a0a27)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpkimthxxf/worker.py -> /tmp/tmpkimthxxf/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpmw5uk4mn/worker.py -> /tmp/tmpmw5uk4mn/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited -15 after 0s (budget_min fired: budget_exceeded)
+[dispatch] #7: escalating to human (budget: wall-clock budget (0 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpzwwcu55t/worker.py -> /tmp/tmpzwwcu55t/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpx42ne71y/worker.py -> /tmp/tmpx42ne71y/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 1 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpvx2xw3zp/worker.py -> /tmp/tmpvx2xw3zp/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpvx2xw3zp/worker.py -> /tmp/tmpvx2xw3zp/repo/.factory/logs/7-attempt-3.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at 55d81c8f5728)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpmios0pmo/worker.py -> /tmp/tmpmios0pmo/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at 01cf4f0012cb)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpfeha06vh/worker.py -> /tmp/tmpfeha06vh/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: done (approved at d70be21ff954)
+[dispatch] #7: escalating to human (protected_paths: worker removed or changed existing tests)
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpvqhs4jow/worker.py -> /tmp/tmpvqhs4jow/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpw4ndndq3/worker.py -> /tmp/tmpw4ndndq3/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: manager FIX failed (reviewer_unavailable: reviewer unavailable after manager FIX); ticket is already ready-for-human
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp1160pwbz/worker.py -> /tmp/tmp1160pwbz/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #7: restored unplanned dependency lockfile drift: uv.lock, web/package-lock.json
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp5ui52631/worker.py -> /tmp/tmp5ui52631/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #7: restored unplanned dependency lockfile drift: uv.lock
+[dispatch] #7: restored unplanned dependency lockfile drift: uv.lock
+[dispatch] #7: restored unplanned dependency lockfile drift: services/api/uv.lock
+[dispatch] #7: restored unplanned dependency lockfile drift: sub/uv.lock, uv.lock
+[dispatch] #7: done (approved at fb0ab167946b)
+[dispatch] #7: done (approved at 3c6f500c3f45)
+[dispatch] #7: done (approved at 73fd05deda26)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded)
+[dispatch] #7: done (approved at b5da145d6c8d)
+[dispatch] #7: refused (Factory claim author login tank-login does not match dispatcher login ultron-login)
+[dispatch] #7: refused (Factory claim author login ultron-login does not match dispatcher login tank-login)
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, District target aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target cccccccccccccccccccccccccccccccccccccccc
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] engine-stale: installed aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, District target bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[dispatch] engine-stale: yielding after land and review intake; no new tickets
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #7: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+eval default: not_tested (token budget exceeded (6 > 5))
+eval default: baseline
+eval default: baseline
+eval default: keep (train +0.000 (noise 0.000); lockbox +0.000 (noise 0.000))
+eval default: revert (train drop -1.000 beyond noise 0.000)
+[dispatch] #7 PR #42: worker eval keep claim missing for aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; run `cd /tmp/tmpp411nkcq/.factory/wt-7 && /home/mike/.local/share/uv/tools/factory/bin/python -m factory eval --profile prime`; not merging
+eval default: baseline
+eval default: revert (train drop -1.000 beyond noise 0.000)
+eval default: revert (train drop -1.000 beyond noise 0.000)
+eval default: baseline
+eval default: keep (train +1.000 (noise 0.000); lockbox +1.000 (noise 0.000))
+eval default: keep (train +0.000 (noise 0.000); lockbox +0.000 (noise 0.000))
+[dispatch] PR #1: would record review intake at head-1
+[dispatch] PR #2: would record review intake at head-2
+[dispatch] PR #6: would record review intake at head-6
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+[dispatch] PR #1: recording review intake at head-1
+[dispatch] PR #2: recording review intake at head-2
+[dispatch] PR #6: retrying review at head-6 after intake without a result
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+[dispatch] PR #1: retrying review at head-1 after intake without a result
+[dispatch] PR #2: retrying review at head-2 after intake without a result
+[dispatch] PR #6: retrying review at head-6 after intake without a result
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+[dispatch] PR #17: recording review intake at head-0
+[dispatch] PR #17: unresolved after 1 automated review attempt(s); would escalate to human
+[dispatch] PR #17: unresolved after 1 automated review attempt(s); escalating to human
+[dispatch] PR #17: recording review intake at head-0
+[dispatch] PR #17: recording review intake at head-1
+[dispatch] PR #17: unresolved after 2 automated review attempt(s); would escalate to human
+[dispatch] PR #17: unresolved after 2 automated review attempt(s); escalating to human
+[dispatch] PR #17: recording review intake at head-1
+[dispatch] PR #17: recording review intake at head-2
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at recorded-head
+[dispatch] PR #17: rejected malformed or failed reviewer output at recorded-head
+[dispatch] PR #17: recording review intake at head-17
+[dispatch] PR #17: diff too large to review at head-17
+[dispatch] PR #18: recording review intake at head-18
+learned from tickets #3:
+- Run `make test` before the gate.
+wrote /tmp/tmpv1qpr0dp/repo/.factory-lessons.md; review and commit it
+[dispatch] #7 PR #70: CI pending {'pending': 2}; waiting
+[dispatch] #7 PR #70: CI pending {'infra': 2}; waiting
+[dispatch] #7 PR #70: head, label, or human review changed before merge; not merging
+[dispatch] #7 PR #70: head, label, or human review changed before merge; not merging
+[dispatch] #7 PR #70: head, label, or human review changed before merge; not merging
+[dispatch] PR #70: targets 'main', not 'stable'; not merging
+[dispatch] PR #70: targets None, not 'stable'; not merging
+[dispatch] PR #70: agent/curate-2026-10-08 waiting for review at head
+[dispatch] PR #71: agent/lessons-2026-10-08 waiting for review at head
+[dispatch] #7 PR #70: state changed during eligibility check; not merging
+[dispatch] #7 PR #70: CI pending {'pass': 1, 'pending': 1}; waiting
+[dispatch] #7 PR #70: CI pending {'pass': 1, 'pending': 1}; waiting
+[dispatch] #7 PR #70: state changed during eligibility check; not merging
+[dispatch] #31 PR #100: merged into main (merge, ticket #31)
+[dispatch] #31: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #99 PR #200: merged into main (squash, ticket #99)
+[dispatch] #99: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #7 PR #70: CI pending {'pending': 1}; waiting
+[dispatch] #7 PR #70: CI pending {'pending': 2}; waiting
+[dispatch] #7 PR #70: CI pending {'pass': 1, 'pending': 1}; waiting
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed again)
+[dispatch] agent/7: existing PR #17 targets 'main', not 'stable'; not pushing
+[dispatch] agent/7: existing PR #17 targets None, not 'stable'; not pushing
+[dispatch] #9: PR #102 rebased onto current main, re-gated, and re-approved at c69101c3ad67
+[dispatch] #31: PR #100 merged onto current main, re-gated, and re-approved at bc3889200066
+[dispatch] PR #70: targets 'stable', not 'release'; not refreshing
+[dispatch] PR #70: targets None, not 'release'; not refreshing
+[dispatch] #7: PR #100 rebased onto current main, re-gated, and re-approved at b4c21746c813
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 1s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 2s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 0s
+[dispatch] #7: reviewer tooling failure (review_exit:1); retrying in 2.5s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python -c import time; time.sleep(60) -> /tmp/tmpy4onsrar/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited -15 after 0s (idle_timeout fired: stuck)
+[dispatch] upstream sync: staged 2 commit(s) at 9c461d21c32e as #42 (agent/42 at b7aa610e47a7, gate not run: merge conflict)
+[dispatch] upstream sync: staged 1 commit(s) at 1013091ff5ec as #42 (agent/42 at bf59dcf84161, gate PASS)
+[dispatch] upstream sync: 1 commit(s) behind; waiting on sync ticket #7
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python -c import pathlib, time; p = pathlib.Path('.factory'); p.mkdir(exist_ok=True); (p / 'handoff-7.md').write_text('done'); time.sleep(60) -> /tmp/tmpiuwuvuih/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited -15 after 1s (exit_grace fired: hung_after_done)
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python -c import pathlib, subprocess, time; pathlib.Path('work.txt').write_text('x'); subprocess.run(['git', 'add', 'work.txt'], check=True); subprocess.run(['git', 'commit', '-qm', 'work'], check=True); time.sleep(60) -> /tmp/tmp3clljld3/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited -15 after 1s (exit_grace fired: hung_after_done)
+[dispatch] #9 PR #90: refused (ticket #9 is an initiative record); not merging
+[dispatch] #7 worker: sh -c printf 'assert False\n' > tests/test_old.py -> /tmp/tmp8at6v5p8/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] worker: sh -c printf 'worker edit\n' > checks/oracle.txt -> /tmp/tmp81ptjs8w/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: sh -c printf 'worker edit\n' > checks/oracle.txt -> /tmp/tmpaxf4229z/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #8: handoff request 8/1 published to unassigned
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (gate))
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] PR #80: skipped, elected claim belongs to host tank
+[dispatch] #79 PR #80: frontier failed: Command '['gh', 'pr', 'close', '80', '--repo', 'example/project']' returned non-zero exit status 1.; leaving for human
+[dispatch] #79 PR #80: not factory-owned (unverified); not in frontier
+[dispatch] #79 PR #80: not factory-owned (unverified); not in frontier
+[dispatch] #79 PR #80: refused (ticket #79 is an initiative record)
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 3 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 1 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79 PR #80: changed while the manager was thinking; decision discarded
+[dispatch] PR #80: skipped, elected claim belongs to host ultron
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (gate))
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: escalating to human (pr_stale: PR #80: no activity for 327 days (stale_days = 7))
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (gate))
+[dispatch] #79: gate and review passed at aaaaaaaaaaaa; waiting for manager approval (manager.review = all)
+[dispatch] manage: viability skipped, triage host is tank
+[dispatch] #79: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (unit))
+[dispatch] #79 PR #80: CI pending; waiting
+[dispatch] #79: escalating to human (pr_stale: PR #80: no activity for 327 days (stale_days = 7))
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (unit))
+[dispatch] #79 PR #80: red CI predates ticket #79's release to ready-for-agent; waiting for a worker
+[dispatch] #79: gate and review passed at aaaaaaaaaaaa; waiting for manager approval (manager.review = all)
+[dispatch] #79: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #79: escalating to human (manager_exhausted: PR #80: manager rounds exhausted before approval)
+[dispatch] #79: escalating to human (ci_failed: PR #80: CI failed (ci))
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpvy8cz70k/worker.py -> /tmp/tmpvy8cz70k/repo/.factory/logs/7-attempt-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp3zkebcls/worker.py -> /tmp/tmp3zkebcls/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: escalating to human (budget: wall-clock budget (1 min) exceeded before bounce 1)
+[dispatch] #7 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmppz0b6wtr/worker.py -> /tmp/tmppz0b6wtr/repo/.factory/logs/7-attempt-1.log
+[dispatch] #7 worker exited 0 after 0s
+[dispatch] #7: PR #70 rebased onto current main, re-gated, and re-approved at d102a0d853b4
+[dispatch] #79: escalating to human (gate_failed: gate failed after 3 attempts)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: 2 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 1 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (gate_failed: gate failed after 3 attempts)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: 2 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 2 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 1 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (manager_human: PR #80: manager requires a human: needs a product call)
+[dispatch] #79: escalating to human (manager_exhausted: PR #80: manager rounds exhausted before approval)
+[dispatch] #79: escalating to human (gate_failed: gate failed after 3 attempts)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: 2 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 1 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (gate_failed: gate failed after 3 attempts)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 3 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (gate_failed: gate failed after 3 attempts)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 3 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: 2 feedback item(s) predate the owner's requeue; waiting for the fresh attempt
+[dispatch] #79: escalating to human (pr_feedback: PR #80: 1 unresolved feedback item(s) on head aaaaaaaaaaaa)
+[dispatch] #79: escalating to human (manager_human: PR #80: manager requires a human: needs a product call)
+[dispatch] #79: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #79: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #7: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #9: owner requeue opened generation 1 (fresh); round budgets restart
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python -c print('Authentication failed'); raise SystemExit(1) -> /tmp/tmprk4h6f3u/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 1 after 0s
+[dispatch] #9 worker `default` unavailable (auth_failed: Authentication failed)
+[dispatch] #9: worker `default` is unavailable: auth_failed: Authentication failed; unclaimed, retry once the worker is healthy
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmprk4h6f3u/append_worker.py -> /tmp/tmprk4h6f3u/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 worker `default` available again
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at 60f49150fdb1)
+[dispatch] #9: owner requeue opened generation 1 (fresh); round budgets restart
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp_houo6yb/append_worker.py -> /tmp/tmp_houo6yb/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9: escalating to human (lease_refused: agent/9 push refused: leased be6c1774f9e8aceff2405c10bdb620e9eb00d2b1, remote now be6c1774f9e8aceff2405c10bdb620e9eb00d2b1; the leased remote head was absent from the worktree before the worker and its history was not rewritten; worktree kept at /tmp/tmp_houo6yb/root/.factory/wt-9)
+[dispatch] #9: owner requeue opened generation 1 (fresh); round budgets restart
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python -c print('Authentication failed'); raise SystemExit(1) -> /tmp/tmpcv_t1fpj/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 1 after 0s
+[dispatch] #9 worker `default` unavailable (auth_failed: Authentication failed)
+[dispatch] #9: worker `default` is unavailable: auth_failed: Authentication failed; unclaimed, retry once the worker is healthy
+[dispatch] #9: escalating to human (lease_refused: diverged history; agent/9: kept HEAD 64fc3b67bdb2012bb7451b82dd40b50a98f07f07, origin/agent/9 be6c1774f9e8aceff2405c10bdb620e9eb00d2b1; worktree kept at /tmp/tmpcv_t1fpj/root/.factory/wt-9)
+[dispatch] #9: owner requeue opened generation 1 (fresh); round budgets restart
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmplyj57tts/append_worker.py -> /tmp/tmplyj57tts/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at ffd3d859381a)
+[dispatch] #9: owner requeue opened generation 1 (fresh); round budgets restart
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp79kobhm7/fresh_worker.py -> /tmp/tmp79kobhm7/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at 13dae01d6e0d)
+[dispatch] #9: escalating to human (refresh_conflict: PR #102: rebase onto moved main conflicts (after 3 conflict-resolution round(s)); worktree /tmp/tmpi0r8jyii/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #9: PR #102 rebase onto main conflicts in shared.txt; requeued to a worker
+[dispatch] #9: escalating to human (gate_failed: gate failed)
+[dispatch] #9: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #9: owner requeue opened generation 1 (resume); round budgets restart
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpmzx8zttb/append_worker.py -> /tmp/tmpmzx8zttb/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpmzx8zttb/append_worker.py -> /tmp/tmpmzx8zttb/root/.factory/logs/9-attempt-4.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpmzx8zttb/append_worker.py -> /tmp/tmpmzx8zttb/root/.factory/logs/9-attempt-5.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9: escalating to human (review_revise: REVISE verdict after 2 review round(s))
+[dispatch] #9: owner requeue opened generation 2 (resume); round budgets restart
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpmzx8zttb/append_worker.py -> /tmp/tmpmzx8zttb/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpmzx8zttb/append_worker.py -> /tmp/tmpmzx8zttb/root/.factory/logs/9-attempt-4.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpmzx8zttb/append_worker.py -> /tmp/tmpmzx8zttb/root/.factory/logs/9-attempt-5.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9: escalating to human (review_revise: REVISE verdict after 2 review round(s))
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #9: generation 1 starts fresh from origin/main
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed again)
+[dispatch] #7: approval skipped (factory-held)
+[dispatch] #7: approval skipped (factory-held)
+[dispatch] #7: approval skipped (factory-held)
+[dispatch] #7: approval skipped (factory-held)
+[dispatch] #7: approval withdrawal failed; factory-approved may remain
+[dispatch] #7: approval withdrawn (factory-held)
+[dispatch] #7: skipped (assigned)
+[dispatch] #7: skipped (state changed since frontier query)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at bbbbbbbbbbbb)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #1000: done (approved at aaaaaaaaaaaa)
+[dispatch] #1000: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: escalating to human (ci_failed: CI failed)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpsbychmhx/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpr2h9o9ut/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmplyswob80/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpjp61bcc9/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmp5b56ekbw/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpcw5qlt7a/repo/.factory/wt-7; local HEAD 188138a474d7ff1ba93bc3137b92cb5a3644d358; remote agent/7 ab08788468269d2931f642f99ae5d5c4491ad396; local commits not on remote: 188138a474d7ff1ba93bc3137b92cb5a3644d358, 958a72ed7b0808b79bed08df4408024a6c485c13; resume agent/7 after merging main)
+[dispatch] #7: done (approved at 5e1b941a7c21)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpkm95ob53/untrusted/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: escalating to human (dispatcher_error: own-host claim expired during an unfinished attempt with an open PR; worktree kept at /tmp/tmpkm95ob53/obsolete/tank/.factory/wt-7; local history unavailable; resume agent/7 after merging main)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: host claim heartbeat stopped (ownership lost)
+[dispatch] #7: PR #70 gate failed twice after rebase onto main; requeued to a worker
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: host claim heartbeat stopped (ownership lost)
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (ci_failed: CI failed on PR #70)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (ci_failed: CI failed on PR #70)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (ci_failed: CI failed on PR #70)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (host label (thor))
+[dispatch] #7: skipped (host label (thor))
+[dispatch] #7: skipped (assigned)
+[dispatch] #7: skipped (assigned)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: escalating to human (ci_failed: CI failed on PR #70)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (claim failed, exit 1); retry next pass
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (state changed since frontier query)
+[dispatch] #7: skipped (worker executable not on PATH: /home/mike/.local/share/uv/tools/factory/bin/python); retry next pass
+[dispatch] #7: refused (baseline changed)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: skipped (open PR)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: escalating to human (gate_failed: gate failed)
+[dispatch] #7: skipped (claim failed, exit 1); retry next pass
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (ultron))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: skipped (host claim (tank))
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: worker launch failed (worker disappeared); unclaimed, fix PATH or [workers] (`factory doctor`)
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+stats: 1/3 ticketsstats: 2/3 ticketsstats: 3/3 tickets
+stats: 1/3 ticketsstats: 2/3 ticketsstats: 3/3 tickets
+no needs-triage issues
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] frontier empty, nothing to do
+[dispatch] #7: handoff request 7/1 published to @bob
+no needs-triage issues
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #8: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] PR #102: skipped, elected claim belongs to host ultron
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] land: skipped, land host is tank
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] land: skipped, land host is tank
+[dispatch] #9: PR #102 rebased onto current main, re-gated, and re-approved at 2c289eca04e6
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] land: skipped, land host is tank
+[dispatch] #9: PR #102 rebased onto current main, re-gated, and re-approved at 9e2412663d99
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] PR #102: skipped, elected claim belongs to host ultron
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] PR #101: skipped, elected claim belongs to host ultron
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] land: skipped, land host is tank
+[dispatch] land: skipped, land host is tank
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: handoff retention incomplete (retained result storage is unavailable or unsafe); worktree kept, operator resolution required before cleanup
+learned from tickets #1:
+- Run tests.
+wrote /tmp/tmp472am5dh/.factory-lessons.md; review and commit it
+[dispatch] PR #42: refreshing agent/lessons-2026-11-04-t10 after strict-base merge refusal
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 promotion failed (ValueError: refresh left agent/lessons-2026-11-04-t10 unchanged at 66de60d39afd11fdb1e189789cab5e5839916bdf)
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 blocked at 66de60d39afd (refresh failed); resolve the blocker and push a new head to retry promotion
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 blocked at 66de60d39afd (refresh failed); resolve the blocker and push a new head to retry promotion
+[dispatch] PR #42: refreshing agent/lessons-2026-11-04-t10 (behind main)
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 promotion failed (ValueError: refresh left agent/lessons-2026-11-04-t10 unchanged at 66de60d39afd11fdb1e189789cab5e5839916bdf)
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 blocked at 66de60d39afd (refresh failed); resolve the blocker and push a new head to retry promotion
+[dispatch] PR #42: agent/lessons-2026-11-04-t10 blocked at 66de60d39afd (refresh failed); resolve the blocker and push a new head to retry promotion
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+CURATE rejected: candidate review gate_failed (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+CURATE rejected: candidate review gate_failed (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+CURATE rejected: candidate review state_changed (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+opened a chore PR from agent/lessons-2026-11-23-t7
+opened a chore PR from agent/curate-2026-11-23-t7
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: not_tested (learn token budget exceeded (1001 > 1000))
+curate evaluation: not_tested (learn token budget exceeded (1001 > 1000))
+CURATE rejected: learn token budget exceeded (1001 > 1000)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+opened a chore PR from agent/curate-2026-11-23-t7
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: kept
+curate evaluation: rejected (variant was not no-worse on every metric and better on one)
+opened a chore PR from agent/lessons-2026-11-23-t7
+CURATE rejected: variant was not no-worse on every metric and better on one
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+CURATE rejected: candidate review REVISE (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+[dispatch] learn candidate agent/curate-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] learn candidate agent/curate-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+CURATE rejected: candidate review unparsed_verdict (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+[dispatch] learn candidate agent/curate-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] learn candidate agent/curate-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+CURATE rejected: candidate review unparsed_verdict (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+CURATE rejected: candidate review state_changed (see learn-candidate-review journal row)
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: kept
+curate evaluation: rejected (variant was not no-worse on every metric and better on one)
+lessons rejected: candidate review REVISE (see learn-candidate-review journal row)
+CURATE rejected: variant was not no-worse on every metric and better on one
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: kept
+curate evaluation: rejected (variant was not no-worse on every metric and better on one)
+[dispatch] learn candidate agent/lessons-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] learn candidate agent/lessons-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+lessons rejected: candidate review unparsed_verdict (see learn-candidate-review journal row)
+CURATE rejected: variant was not no-worse on every metric and better on one
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: kept
+curate evaluation: rejected (variant was not no-worse on every metric and better on one)
+[dispatch] learn candidate agent/lessons-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] learn candidate agent/lessons-2026-11-23-t7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+lessons rejected: candidate review unparsed_verdict (see learn-candidate-review journal row)
+CURATE rejected: variant was not no-worse on every metric and better on one
+learned from tickets #7:
+- Parser guidance.
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1 +1,2 @@
+ Existing standards.
++Helpful parser guidance.
+lessons evaluation: kept
+curate evaluation: rejected (variant was not no-worse on every metric and better on one)
+lessons rejected: candidate review state_changed (see learn-candidate-review journal row)
+CURATE rejected: variant was not no-worse on every metric and better on one
+learned from tickets #7:
+- harmful
+manager CURATE diff:
+diff --git a/AGENTS.md b/AGENTS.md
+new file mode 100644
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1 @@
++helpful
+lessons evaluation: rejected (variant was not no-worse on every metric and better on one)
+curate evaluation: kept
+opened a chore PR from agent/curate-2026-11-23-t7
+learned from tickets #7:
+- harmful
+lessons evaluation: rejected (variant regressed)
+[dispatch] worker: /usr/bin/true -> /tmp/tmpsijfw8gd/repo/.factory/learn-7-ukswhnfx/worker-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpp5zwgrpt/repo/.factory/learn-7-hi3n1rz6/worker-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpp5zwgrpt/repo/.factory/learn-7-hi3n1rz6/worker-review-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpp5zwgrpt/repo/.factory/learn-7-68avzauz/worker-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpp5zwgrpt/repo/.factory/learn-7-68avzauz/worker-2.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpp5zwgrpt/repo/.factory/learn-7-68avzauz/worker-3.log
+[dispatch] worker exited 0 after 0s
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python worker.py -> /tmp/tmpp5zwgrpt/repo/.factory/learn-7-0ft2tu_m/worker-1.log
+[dispatch] worker exited 0 after 0s
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #43)
+[dispatch] learn: skipped (open lessons PR #43)
+[dispatch] learn: skipped (open lessons PR #43)
+[dispatch] learn: 10 tickets finished since the last learn; running --last 10
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+{"event": "score", "ticket": 1, "attempt": 1, "transcript": "/tmp/tmp8obg6fql/session-1.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 2, "attempt": 1, "transcript": "/tmp/tmp8obg6fql/session-2.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 3, "attempt": 1, "transcript": "/tmp/tmp8obg6fql/session-3.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+[dispatch] learn: skipped (open lessons PR #42)
+{"event": "score", "ticket": 1, "attempt": 1, "transcript": "/tmp/tmpojzjqlww/session-1.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 2, "attempt": 1, "transcript": "/tmp/tmpojzjqlww/session-2.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+{"event": "score", "ticket": 3, "attempt": 1, "transcript": "/tmp/tmpojzjqlww/session-3.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 0.7, "judge_model": "qwen3:30b"}
+[dispatch] PR #468: agent/revert-lessons-431 waiting for review at 37876232ff34
+[dispatch] PR #468: agent/revert-lessons-431 waiting for review at 0ace468c785d
+[dispatch] PR #468: agent/revert-lessons-431 waiting for review at 95937a8941b0
+[dispatch] PR #468: agent/lessons-new waiting for review at 95937a8941b0
+[dispatch] PR #468: agent/curate-new waiting for review at 95937a8941b0
+[dispatch] PR #468: agent/revert-lessons-431 CI fail; not merging
+[dispatch] PR #468: agent/revert-lessons-431 gate failed at 95937a8941b0
+[dispatch] PR #468: merged agent/curate-restoration into main
+[dispatch] PR #468: promotion open (baseline n=0)
+[dispatch] PR #468: merged agent/revert-lessons-431 into main
+[dispatch] PR #468: agent/revert-lessons-431 waiting for review at 95937a8941b0
+[dispatch] PR #468: agent/revert-lessons-431 waiting for review at 95937a8941b0
+[dispatch] PR #468: merged agent/revert-lessons-431 into main
+real mutation CLI unreviewed: exit 1
+files: factory/example.py
+mutants: 3 sampled (seed 197, cap 200), 3 on changed lines first, 3 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+factory/example.py:1: core/NumberReplacer `unused = 1` -> `unused = 0`
+factory/example.py:1: core/NumberReplacer `unused = 1` -> `unused = 2`
+ran 3 of 3 mutants in 1s: 0 timeouts (included in killed); 1 killed, 2 survived; 2 survived
+Using CPython 3.12.14 interpreter at: /home/mike/.local/share/uv/tools/factory/bin/python
+Creating virtual environment at: /tmp/mutation-cli-tmp-gjbwpr2a/uv-project-env
+warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 30 packages in 44ms
+
+real mutation CLI accepted: exit 0
+files: factory/example.py
+mutants: 3 sampled (seed 197, cap 200), 3 on changed lines first, 3 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+factory/example.py:1: core/NumberReplacer `unused = 1` -> `unused = 0`
+  accepted equivalent: Only literal 1 reaches this assignment; unused is not read by the fixture. (reviewer: Synthetic CLI fixture reviewer)
+factory/example.py:1: core/NumberReplacer `unused = 1` -> `unused = 2`
+  accepted equivalent: Only literal 1 reaches this assignment; unused is not read by the fixture. (reviewer: Synthetic CLI fixture reviewer)
+ran 3 of 3 mutants in 0s: 0 timeouts (included in killed); 1 killed, 2 survived; 2 survived
+
+real mutation CLI stale: exit 1
+files: factory/example.py
+mutants: 3 sampled (seed 197, cap 200), 3 on changed lines first, 3 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+ran 3 of 3 mutants in 0s: 0 timeouts (included in killed); 3 killed; 0 survived
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 0'
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 2'
+
+real mutation CLI missing identity: exit 1
+files: factory/example.py
+mutants: 3 sampled (seed 197, cap 200), 3 on changed lines first, 3 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+ran 3 of 3 mutants in 0s: 0 timeouts (included in killed); 3 killed; 0 survived
+stale equivalent: factory/example.py:1: core/ObsoleteReplacer 'unused = 1' -> 'unused = 0'
+
+real mutation CLI missing identity: exit 1
+files: factory/example.py
+mutants: 3 sampled (seed 197, cap 200), 3 on changed lines first, 3 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+ran 3 of 3 mutants in 0s: 0 timeouts (included in killed); 3 killed; 0 survived
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 99'
+
+real mutation CLI source stale: exit 1
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 0'
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 2'
+
+real mutation CLI source stale: exit 1
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 0'
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 2'
+
+real mutation CLI source stale: exit 1
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 0'
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 2'
+
+real mutation CLI source stale: exit 1
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 0'
+stale equivalent: factory/example.py:1: core/NumberReplacer 'unused = 1' -> 'unused = 2'
+
+real mutation CLI zero candidates: exit 1
+files: factory/example.py
+mutants: 0 sampled (seed 197, cap 200), 0 on changed lines first, 1 workers
+baseline: 0s, per-mutant timeout 15s, 60s left before the deadline
+ran 0 of 0 mutants in 0s: 0 timeouts (included in killed); none; 0 survived
+stale equivalent: factory/example.py:1: core/NumberReplacer '# reviewed comment' -> '# obsolete replacement'
+
+[dispatch] #7: mutation proof base moved during refresh; retrying next pass
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: mutation proof base moved during manager FIX; retrying next pass
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: mutation proof base moved during ticket review; retrying next pass
+[dispatch] #7: done (approved at aaaaaaaaaaaa)
+[dispatch] #7: mutation proof base moved during ticket re-review; retrying next pass
+report: /tmp/tmpw1ozlqvo/report.md
+gate PASS
+report: /tmp/tmpw1ozlqvo/report.md
+gate PASS
+report: /tmp/tmpw1ozlqvo/report.md
+gate PASS
+report: /tmp/tmpw1ozlqvo/report.md
+gate PASS
+report: /tmp/tmpw1ozlqvo/report.md
+gate PASS
+report: /tmp/tmpw1ozlqvo/report.md
+gate PASS
+report: /tmp/tmpw1ozlqvo/report.md
+gate PASS
+report: /tmp/tmpw1ozlqvo/report.md
+gate PASS
+report: /tmp/tmpw1ozlqvo/report.md
+gate PASS
+[dispatch] active tickets: 1, capacity: 0
+[dispatch] at capacity, nothing to do
+[dispatch] #7: skipped (worker executable not on PATH: no-such-prime-agent-332); retry next pass
+[dispatch] worker: /home/mike/.local/share/uv/tools/factory/bin/python -c import json, os, sys; json.dump({k: os.environ.get(k) for k in ('DO_NOT_TRACK', 'PRIME_AGENT_TELEMETRY')}, open(sys.argv[1], 'w')) /tmp/tmp_b2mocak/seen.json -> /tmp/tmp_b2mocak/worker.log
+[dispatch] worker exited 0 after 0s
+[dispatch] PR #573: refreshing agent/lessons-2026-11-02-t517 (behind main)
+[dispatch] PR #573: refreshing agent/lessons-2026-11-02-t517 (behind main)
+[dispatch] #9: escalating to human (refresh_conflict: PR #102: rebase onto moved main conflicts (ticket is not open); worktree /tmp/tmp4smc89n7/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: escalating to human (refresh_conflict: PR #102: rebase onto moved main conflicts (after 3 conflict-resolution round(s)); worktree /tmp/tmp0r8oiuft/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: escalating to human (refresh_conflict: PR #102: rebase onto moved main conflicts (protected paths without `factory-protected-override`); worktree /tmp/tmpyiply_36/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: PR #102 rebase onto main conflicts in shared.txt; requeued to a worker
+[dispatch] #9: PR #102 rebase onto main conflicts in shared.txt; requeued to a worker
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmppdgi8s4u/resolver.py /tmp/tmppdgi8s4u/prompt-seen.md -> /tmp/tmppdgi8s4u/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at a2e9e75a1141)
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: PR #102 rebase onto main conflicts in shared.txt; requeued to a worker
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp0juvxcbt/resolver.py /tmp/tmp0juvxcbt/prompt-seen.md -> /tmp/tmp0juvxcbt/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at a3f6191d8484)
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: escalating to human (gate_failed: PR #102: gate failed twice after merge onto moved main (after 0 gate-resolution round(s)); worktree /tmp/tmpzg3nzpqd/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: escalating to human (gate_failed: PR #102: gate failed twice after rebase onto moved main (after 0 gate-resolution round(s)); worktree /tmp/tmp5p6x05oh/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: escalating to human (refresh_head: PR #102: gate re-run changed the refreshed head or worktree; `factory-approved` label removed)
+[dispatch] #9: escalating to human (gate_failed: PR #102: gate failed twice after rebase onto moved main (after 0 gate-resolution round(s)); worktree /tmp/tmplnj2xywb/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: manager FIX failed (gate_failed: gate failed after manager FIX); ticket is already ready-for-human
+[dispatch] #9: escalating to human (protected_paths: PR #102: gate failed after rebase onto moved main (protected or add-only paths without authority); `factory-approved` label removed)
+[dispatch] #9: escalating to human (refresh_empty: PR #102: nothing ahead of main after rebase; refusing to push; `factory-approved` label removed)
+[dispatch] #9: PR #102 gate failed twice after rebase onto main; requeued to a worker
+[dispatch] #9: escalating to human (refresh_head: PR #102: remote head changed while refreshed evidence was being produced; `factory-approved` label removed)
+[dispatch] #9: escalating to human (gate_failed: PR #102: gate failed after rebase onto moved main; `factory-approved` label removed)
+[dispatch] #9: escalating to human (gate_failed: PR #102: gate failed twice after rebase onto moved main (after 0 gate-resolution round(s)); worktree /tmp/tmpspaox1o7/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: escalating to human (gate_failed: PR #102: gate failed twice after rebase onto moved main (after 0 gate-resolution round(s)); worktree /tmp/tmpspaox1o7/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: escalating to human (gate_failed: PR #102: gate failed twice after rebase onto moved main (ticket is not open); worktree /tmp/tmpmf0gs5iq/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: PR #102 rebased onto current main, re-gated, and re-approved at ba5f33f2d8b3
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: escalating to human (gate_failed: PR #102: gate failed twice after rebase onto moved main (after 0 gate-resolution round(s)); worktree /tmp/tmpelc4vx9x/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: escalating to human (gate_failed: PR #102: gate failed twice after rebase onto moved main (after 3 gate-resolution round(s)); worktree /tmp/tmphv8ph_q2/root/.factory/wt-9; `factory-approved` label removed)
+[dispatch] #9: PR #102 gate failed twice after rebase onto main; requeued to a worker
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpkokccyx4/resolver.py /tmp/tmpkokccyx4/prompt-seen.md -> /tmp/tmpkokccyx4/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at e52cf9e9771f)
+[dispatch] #9 PR #102: merged into main (squash, ticket #9)
+[dispatch] #9: PR #102 rebased onto current main, re-gated, and re-approved at 55d00b4bf2e3
+warning: You appear to have cloned an empty repository.
+{"bar": null, "latest": "v0.0.1", "metrics": {"attempts": 1, "first_pass": 1.0, "first_passes": 1, "human_rate": 0.0, "human_ticket_rate": 0.0, "human_touches": 0, "tickets": 1}, "verdict": "would open release PR for v0.0.2 (release gate is not run by --dry-run); measured={\"attempts\": 1, \"first_pass\": 1.0, \"first_passes\": 1, \"human_rate\": 0.0, \"human_ticket_rate\": 0.0, \"human_touches\": 0, \"tickets\": 1} bar=null"}
+{"bar": null, "latest": "v0.0.1", "metrics": {"attempts": 1, "first_pass": 1.0, "first_passes": 1, "human_rate": 0.0, "human_ticket_rate": 0.0, "human_touches": 0, "tickets": 1}, "verdict": "would squash-merge release PR #8; measured={\"attempts\": 1, \"first_pass\": 1.0, \"first_passes\": 1, \"human_rate\": 0.0, \"human_ticket_rate\": 0.0, \"human_touches\": 0, \"tickets\": 1} bar=null"}
+{"bar": null, "latest": "v0.0.1", "metrics": {"attempts": 1, "first_pass": 1.0, "first_passes": 1, "human_rate": 0.0, "human_ticket_rate": 0.0, "human_touches": 0, "tickets": 1}, "verdict": "would tag v0.0.2 and advance stable; measured={\"attempts\": 1, \"first_pass\": 1.0, \"first_passes\": 1, \"human_rate\": 0.0, \"human_ticket_rate\": 0.0, \"human_touches\": 0, \"tickets\": 1} bar=null"}
+[dispatch] PR #17: reviewer launch failed (Command '['gh', 'api']' returned non-zero exit status 1.)
+[dispatch] #7: reviewer launch failed (Command '['git', 'archive', '53ccd7eb8e40e073579fbe808c144dd2738f70fb']' returned non-zero exit status 128.); fix PATH or [review] (`factory doctor`)
+[dispatch] #7: reviewer tooling failure (CalledProcessError: Command '['git', 'archive', '53ccd7eb8e40e073579fbe808c144dd2738f70fb']' returned non-zero exit status 128.); retrying in 1s
+[dispatch] #7: reviewer launch failed (Command '['git', 'archive', '53ccd7eb8e40e073579fbe808c144dd2738f70fb']' returned non-zero exit status 128.); fix PATH or [review] (`factory doctor`)
+[dispatch] #7: reviewer tooling failure (CalledProcessError: Command '['git', 'archive', '53ccd7eb8e40e073579fbe808c144dd2738f70fb']' returned non-zero exit status 128.); retrying in 2s
+[dispatch] #7: reviewer launch failed (Command '['git', 'archive', '53ccd7eb8e40e073579fbe808c144dd2738f70fb']' returned non-zero exit status 128.); fix PATH or [review] (`factory doctor`)
+tar: This does not look like a tar archive
+tar: Exiting with failure status due to previous errors
+[dispatch] #7: reviewer launch failed (Command '['tar', '-x', '-C', '/tmp/tmpq5wplmjl/review-tmp/factory-runner-review-dnxb4mci/snapshot']' returned non-zero exit status 2.); fix PATH or [review] (`factory doctor`)
+[dispatch] #7: reviewer tooling failure (CalledProcessError: Command '['tar', '-x', '-C', '/tmp/tmpq5wplmjl/review-tmp/factory-runner-review-dnxb4mci/snapshot']' returned non-zero exit status 2.); retrying in 1s
+tar: This does not look like a tar archive
+tar: Exiting with failure status due to previous errors
+[dispatch] #7: reviewer launch failed (Command '['tar', '-x', '-C', '/tmp/tmpq5wplmjl/review-tmp/factory-runner-review-4e_jlul7/snapshot']' returned non-zero exit status 2.); fix PATH or [review] (`factory doctor`)
+[dispatch] #7: reviewer tooling failure (CalledProcessError: Command '['tar', '-x', '-C', '/tmp/tmpq5wplmjl/review-tmp/factory-runner-review-4e_jlul7/snapshot']' returned non-zero exit status 2.); retrying in 2s
+tar: This does not look like a tar archive
+tar: Exiting with failure status due to previous errors
+[dispatch] #7: reviewer launch failed (Command '['tar', '-x', '-C', '/tmp/tmpq5wplmjl/review-tmp/factory-runner-review-00uaok_5/snapshot']' returned non-zero exit status 2.); fix PATH or [review] (`factory doctor`)
+```json
+{"verdict":"APPROVE","findings":[]}
+```
+VERDICT: APPROVE
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 1s
+[dispatch] #7: reviewer tooling failure (unparsed_verdict); retrying in 2s
+issue36   12-before  s1 rc=0 0.1s
+issue36   12-after   s1 rc=0 0.1s
+issue36   62-before  s1 rc=0 0.1s
+issue36   62-after   s1 rc=0 0.1s
+issue36   9-approve  s1 rc=0 0.1s
+issue36   8-approve  s1 rc=0 0.1s
+issue36   20-before  s1 rc=0 0.1s
+issue36   20-after   s1 rc=0 0.1s
+issue36   79-before  s1 rc=0 0.1s
+issue36   79-after   s1 rc=0 0.1s
+issue36   87-approve s1 rc=0 0.1s
+[dispatch] #610: skipped ({'reason': 'runner_storage_low', 'path': '/tmp/tmp6h4cd108', 'resource': 'bytes', 'available': 0, 'minimum': 1073741824}); runner infrastructure, retry next pass
+[dispatch] #610: skipped ({'reason': 'runner_storage_low', 'path': '/tmp/tmp6h4cd108', 'resource': 'inodes', 'available': 0, 'minimum': 10000}); runner infrastructure, retry next pass
+[dispatch] #610: skipped ({'reason': 'runner_storage_low', 'path': '/tmp/tmpzrbixajl', 'resource': 'bytes', 'available': 0, 'minimum': 1073741824}); runner infrastructure, retry next pass
+[dispatch] #610: skipped ({'reason': 'runner_storage_low', 'path': '/tmp/tmpzrbixajl', 'resource': 'bytes', 'available': 0, 'minimum': 1073741824}); runner infrastructure, retry next pass
+[dispatch] #610: skipped ({'reason': 'runner_storage_low', 'path': '/tmp/tmpzrbixajl', 'resource': 'bytes', 'available': 0, 'minimum': 1073741824}); runner infrastructure, retry next pass
+[dispatch] #610: skipped ({'reason': 'runner_storage_unavailable', 'path': '/tmp/tmpzrbixajl', 'detail': 'filesystem unavailable'}); runner infrastructure, retry next pass
+[dispatch] #610: skipped ({'reason': 'runner_storage_unavailable', 'path': '/tmp/tmpzrbixajl', 'detail': 'filesystem unavailable'}); runner infrastructure, retry next pass
+[dispatch] #610: skipped ({'reason': 'runner_storage_unavailable', 'path': '/tmp/tmpzrbixajl', 'detail': 'filesystem unavailable'}); runner infrastructure, retry next pass
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #7: deferred (experiment slot full (1 of 1 active) (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #8: held (Plan binding is invalid; admission would refuse it: linked ticket for initiative #50 is missing a Plan baseline)
+[dispatch] #6: held (blocked by #9)
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #7: deferred (experiment slot full (1 of 1 active) (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #8: held (Plan binding is invalid; admission would refuse it: linked ticket for initiative #50 is missing a Plan baseline)
+[dispatch] #6: held (blocked by #9)
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #7: deferred (experiment slot full (1 of 1 active) (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #8: held (Plan binding is invalid; admission would refuse it: linked ticket for initiative #50 is missing a Plan baseline)
+[dispatch] #6: held (blocked by #9)
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] frontier empty, nothing to do
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #21: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #22: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #23: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #22: deferred (no capacity left; accepted priority NEXT ranks after the selected tickets (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #3: deferred (no capacity left; accepted priority NOW ranks after the selected tickets (NOW in initiative #50 Plan baseline))
+[dispatch] active tickets: 1, capacity: 1
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #3: deferred (no capacity left; accepted priority NOW ranks after the selected tickets (NOW in initiative #50 Plan baseline))
+[dispatch] #7: skipped (state changed since frontier query)
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #5: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #3: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: deferred (no capacity left; accepted priority NEXT ranks after the selected tickets (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #7: deferred (experiment slot full (1 of 1 active) (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #8: held (Plan binding is invalid; admission would refuse it: linked ticket for initiative #50 is missing a Plan baseline)
+[dispatch] #6: held (blocked by #9)
+[dispatch] #5: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #3: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: deferred (no capacity left; accepted priority NEXT ranks after the selected tickets (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #7: deferred (experiment slot full (1 of 1 active) (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #8: held (Plan binding is invalid; admission would refuse it: linked ticket for initiative #50 is missing a Plan baseline)
+[dispatch] #6: held (blocked by #9)
+[dispatch] #3: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: deferred (no capacity left; accepted priority NEXT ranks after the selected tickets (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #7: deferred (experiment slot full (1 of 1 active) (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #8: held (Plan binding is invalid; admission would refuse it: linked ticket for initiative #50 is missing a Plan baseline)
+[dispatch] #6: held (blocked by #9)
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #3: held (already claimed)
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #3: held (already claimed)
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #3: held (already claimed)
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #3: held (already claimed)
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #3: held (already claimed)
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #3: held (already claimed)
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #3: held (already claimed)
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #3: held (already claimed)
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #3: held (already claimed)
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #3: held (already claimed)
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #3: held (already claimed)
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #3: held (already claimed)
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #3: held (already claimed)
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #3: held (already claimed)
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #3: held (already claimed)
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #3: held (already claimed)
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #3: held (already claimed)
+[dispatch] #4: selected (highest accepted priority LATER, oldest first (LATER in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #3: held (already claimed)
+[dispatch] active tickets: 0, capacity: 2
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #3: held (already claimed)
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #4: deferred (no capacity left; accepted priority LATER ranks after the selected tickets (LATER in initiative #50 Plan baseline))
+[dispatch] #3: held (already claimed)
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #2: deferred (no capacity left; accepted priority NEXT ranks after the selected tickets (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #1: selected (fairness after 3 consecutive explicit-priority admissions; oldest unknown-priority (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #2: deferred (no capacity left; accepted priority NEXT ranks after the selected tickets (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 3
+[dispatch] #3: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #5: selected (highest accepted priority NOW, oldest first (NOW in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #2: selected (highest accepted priority NEXT, oldest first (NEXT in initiative #50 Plan baseline))
+[dispatch] #1: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] #1: selected (oldest unknown-priority; no explicit priority is eligible (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #2: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+[dispatch] #3: deferred (no capacity left; unknown priority ranks after explicit priorities (unknown priority: no Plan baseline (ticket is not bound to an initiative)))
+learned from tickets #1, #2, #3:
+- Run the gate.
+wrote /tmp/tmpads8x7on/.factory-lessons.md; review and commit it
+[dispatch] #7 PR #9: CI pending {'infra': 1}; waiting
+no needs-triage issues
+[dispatch] watch: filed mikeroySoft/factory#101 for 9adc25254ac1 (factory runtime failure: lifecycle triage-ticket unparseable_decision)
+[dispatch] watch: filed mikeroySoft/factory#101 for 52c435bf0d4c (factory runtime failure: lifecycle manage later_failure)
+[dispatch] #60 issue #60: viability DEFER
+[dispatch] #61 issue #61: viability DEFER
+[dispatch] #62 issue #62: viability DEFER
+[dispatch] #63 issue #63: viability DEFER
+[dispatch] #64 issue #64: viability DEFER
+[dispatch] pr #43: would assess viability (needs-review)
+[dispatch] issue #42: would assess viability (needs-viability)
+[dispatch] #23 command failed (exit 1); stderr tail:
+fixture mutation failure
+
+[dispatch] #23 issue #23: viability failed: Command '['gh', 'issue', 'edit', '23', '--repo', 'acme/widgets', '--remove-label', 'needs-viability', '--add-label', 'needs-triage']' returned non-zero exit status 1.; inspect events.jsonl before re-arming
+[dispatch] #44 issue #44: viability BUILD
+[dispatch] #50 issue #50: changed during viability assessment; leaving untouched
+[dispatch] #51 issue #51: changed during viability assessment; leaving untouched
+[dispatch] #52 pr #52: changed during viability assessment; leaving untouched
+[dispatch] #23 pr #23: viability DEFER
+[dispatch] #21 issue #21: viability DONT_BUILD
+[dispatch] #22 issue #22: viability DEFER
+[dispatch] #23 command failed (exit 1); stderr tail:
+fixture mutation failure
+
+[dispatch] #23 issue #23: viability failed: Command '['gh', 'issue', 'edit', '23', '--repo', 'acme/widgets', '--remove-label', 'needs-viability', '--add-label', 'needs-triage']' returned non-zero exit status 1.; inspect events.jsonl before re-arming
+[dispatch] #24 command failed (exit 1); stderr tail:
+fixture mutation failure
+
+[dispatch] #24 issue #24: viability failed: Command '['gh', 'issue', 'comment', '24', '--repo', 'acme/widgets', '--body', 'Factory manager: issue viability\n\nDirection is sound [S1]\n\nSources:\n- [S1] https://github.invalid/acme/widgets/issues/24\n\nBUILD queues needs-triage for deeper investigation, not implementation.\n\nVERDICT: BUILD']' returned non-zero exit status 1.; inspect events.jsonl before re-arming
+[dispatch] #23 issue #23: viability request already recorded; inspect events.jsonl before re-arming
+[dispatch] #24 issue #24: viability request already recorded; inspect events.jsonl before re-arming
+[dispatch] #24 pr #24: viability BUILD
+[dispatch] #24 pr #24: viability request already recorded; inspect events.jsonl before re-arming
+[dispatch] #24 pr #24: viability DONT_BUILD
+[dispatch] #10 pr #10: viability BUILD
+[dispatch] #20 issue #20: viability BUILD
+[dispatch] active tickets: 1, capacity: 0
+[dispatch] at capacity, nothing to do
+[dispatch] #7 PR #70: CI pending {'pending': 1}; waiting
+[dispatch] #8 PR #80: no passing CI checks reported; refusing to merge
+[dispatch] active tickets: 0, capacity: 1
+[dispatch] frontier empty, nothing to do
+[dispatch] #7: refused (incomplete-source: ticket body was not returned)
+[dispatch] sync + merge stage: skipped (another dispatcher holds the merge lock)
+[dispatch] #7: skipped (worker executable not on PATH: no-such-worker-7f3a); retry next pass
+[dispatch] #7: skipped (in flight, lock held on /tmp/tmpmn5zq9t6/.factory/locks/7.lock)
+[dispatch] #7: skipped (lost lock race)
+[dispatch] #7: skipped (state changed since frontier query)
+[dispatch] watch: log band-log (factory control-band alarm: gate_failure_rate (1 of 1 beyond 3 sigma))
+[dispatch] watch: diagnose band-diagnose (factory control-band alarm: gate_failure_rate (1 of 1 beyond 3 sigma)): Likely shared port contention.
+[dispatch] watch: filed factory/engine#101 for band:2569704633ee (factory control-band alarm: gate_failures_by_test:comfyui::tests::status_reports_stopped_when_saved_comfyui_pid_is_gone (1 of 1 beyond 3 sigma))
+[dispatch] watch: closed factory/engine#101 for band:2569704633ee
+[dispatch] watch: filed mikeroySoft/factory#101 for 80201ad88106 (factory runtime failure: host triage triage_endpoint_unavailable)
+[dispatch] watch: filed mikeroySoft/factory#101 for 80201ad88106 (factory runtime failure: host triage triage_endpoint_unavailable)
+[dispatch] watch: closed mikeroySoft/factory#101 for 80201ad88106
+[dispatch] watch: filed mikeroySoft/factory#101 for 80201ad88106 (factory runtime failure: host triage triage_endpoint_unavailable)
+[dispatch] watch: commented on mikeroySoft/factory#101 for 80201ad88106
+[dispatch] watch: filed mikeroySoft/factory#101 for eb187d50db1e (factory runtime failure: lifecycle worker FileNotFoundError: 'omp')
+[dispatch] watch: filed mikeroySoft/factory#101 for 258ab710e674 (factory runtime failure: lifecycle manage KeyError: 'state')
+[dispatch] watch: filed mikeroySoft/factory#101 for eb187d50db1e (factory runtime failure: lifecycle worker, ticket, dispatcher FileNotFoundError: 'omp')
+[dispatch] watch: filed mikeroySoft/factory#102 for fdb30a58b9b3 (factory runtime failure: runtime events.jsonl identity_conflict, missing_enter)
+[dispatch] watch: filed mikeroySoft/factory#103 for a2c67a344a0b (factory runtime failure: runtime filesystem lock_unavailable)
+[dispatch] watch: filed mikeroySoft/factory#101 for 258ab710e674 (factory runtime failure: lifecycle manage KeyError: 'state')
+[dispatch] watch: filed mikeroySoft/factory#102 for 258ab710e674 (factory runtime failure: lifecycle manage KeyError: 'state')
+[dispatch] watch: filed mikeroySoft/factory#101 for escalation:gate_failed (factory runtime failure: escalation repeated gate_failed)
+[dispatch] watch: filed mikeroySoft/factory#101 for a258f7a7903c (factory runtime failure: lifecycle worker RuntimeError: boom 1)
+[dispatch] watch: filed mikeroySoft/factory#102 for 0ff40d6d04a4 (factory runtime failure: lifecycle worker RuntimeError: boom 2)
+[dispatch] watch: filed mikeroySoft/factory#103 for 5b8d5306818e (factory runtime failure: lifecycle worker RuntimeError: boom 3)
+[dispatch] watch: filed mikeroySoft/factory#104 for 7b2d953a547f (factory runtime failure: lifecycle worker RuntimeError: boom 4)
+[dispatch] watch: filed mikeroySoft/factory#105 for 9333f7d94102 (factory runtime failure: lifecycle worker RuntimeError: boom 5)
+[dispatch] watch: deferring d7734d26ceb3 to the next pass (cap 5)
+[dispatch] watch: filed mikeroySoft/factory#106 for d7734d26ceb3 (factory runtime failure: lifecycle worker RuntimeError: boom 6)
+[dispatch] watch: filed mikeroySoft/factory#101 for cb5da2d78fef (factory runtime failure: unit systemd factory-widgets-dashboard.service)
+[dispatch] watch: filed mikeroySoft/factory#102 for fdb30a58b9b3 (factory runtime failure: runtime events.jsonl unreadable)
+[dispatch] watch: closed acme/widgets#10 for old
+[dispatch] watch: closed acme/widgets#14 for stale
+[dispatch] watch: filed mikeroySoft/factory#101 for d48af590ae35 (factory runtime failure: runtime dashboard exit:1)
+[dispatch] watch: filed mikeroySoft/factory#101 for fdb30a58b9b3 (factory runtime failure: runtime events.jsonl invalid_json)
+[dispatch] watch: filed acme/engine#101 for 258ab710e674 (factory runtime failure: lifecycle manage KeyError: 'state')
+[dispatch] watch: filed mikeroySoft/factory#101 for 258ab710e674 (factory runtime failure: lifecycle manage KeyError: 'state')
+[dispatch] watch: filed mikeroySoft/factory#101 for 258ab710e674 (factory runtime failure: lifecycle manage KeyError: 'state')
+[dispatch] watch: commented on mikeroySoft/factory#101 for 258ab710e674
+[dispatch] watch: filed mikeroySoft/factory#101 for 258ab710e674 (factory runtime failure: lifecycle manage KeyError: 'state')
+[dispatch] watch: commented on mikeroySoft/factory#101 for 258ab710e674
+[dispatch] watch: closed mikeroySoft/factory#101 for 258ab710e674
+[dispatch] watch: filed mikeroySoft/factory#101 for 258ab710e674 (factory runtime failure: lifecycle manage KeyError: 'state')
+[dispatch] watch: commented on mikeroySoft/factory#101 for 258ab710e674
+[dispatch] #79: escalating to human (gate_failed: gate failed)
+[dispatch] #79: manager FIX waits for a healthy worker (worker `droid` is unavailable: auth_failed: Authentication failed); no round is spent
+[dispatch] #79: manager FIX waits for a healthy worker (worker `droid` is still unavailable); no round is spent
+[dispatch] #79: resuming the manager FIX that waited for a healthy worker
+[dispatch] #79: resumed manager FIX failed: Command '['gh', 'issue', 'edit']' returned non-zero exit status 1.; leaving for human
+[dispatch] #79: handoff request 79/1 published to @alice
+[dispatch] #79: escalating to human (gate_failed: gate failed)
+[dispatch] #79: resuming the manager FIX that waited for a healthy worker
+[dispatch] #79: escalating to human (gate_failed: gate failed)
+[dispatch] #79: manager FIX waits for a healthy worker (worker `droid` is unavailable: auth_failed: Authentication failed); no round is spent
+[dispatch] #79: manager FIX waits for a healthy worker (worker `droid` is still unavailable); no round is spent
+[dispatch] #79: resuming the manager FIX that waited for a healthy worker
+[dispatch] #79 PR #80: manager FIX waits for a healthy worker (worker `droid` is unavailable: auth_failed: Authentication failed); no round is spent
+[dispatch] #79 PR #80: manager FIX waits for a healthy worker (worker `droid` is still unavailable); no round is spent
+[dispatch] #79: resuming the manager FIX that waited for a healthy worker
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmp4xq8kyyo/commit_then_fail.py -> /tmp/tmp4xq8kyyo/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 1 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at 08db48a9f125)
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python -c print('Error during droid execution: Authentication failed'); raise SystemExit(1) -> /tmp/tmpy2s26lt8/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 1 after 0s
+[dispatch] #9 worker `droid` unavailable (auth_failed: Error during droid execution: Authentication failed); falling back to `default`
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpy2s26lt8/commit_worker.py -> /tmp/tmpy2s26lt8/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at 2aeba09a982e)
+[dispatch] worker `droid` available again
+[dispatch] worker `droid` unavailable (executable `factory-test-missing-worker` not found on the worker's PATH); falling back to `default`
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python -c print('Error during droid execution: Authentication failed'); raise SystemExit(1) -> /tmp/tmpeltxuy2n/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 1 after 0s
+[dispatch] #9 worker `droid` unavailable (auth_failed: Error during droid execution: Authentication failed); falling back to `default`
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpeltxuy2n/commit_worker.py -> /tmp/tmpeltxuy2n/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at 2aeba09a982e)
+[dispatch] worker `droid` available again
+[dispatch] #9 worker: sh -c exec factory-test-missing-worker -> /tmp/tmpwgetgg6r/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 127 after 0s
+[dispatch] #9 worker `droid` unavailable (executable_missing: sh: line 1: exec: factory-test-missing-worker: not found); falling back to `default`
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpwgetgg6r/commit_worker.py -> /tmp/tmpwgetgg6r/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at aa4bc09797c3)
+[dispatch] worker `default` unavailable (executable `factory-test-missing-wrapper` not found on the worker's PATH)
+[dispatch] #9 worker `droid` unavailable (executable_missing: [Errno 2] No such file or directory: '/home/mike/.local/share/uv/tools/factory/bin/python'); falling back to `default`
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpmd3mk10b/commit_worker.py -> /tmp/tmpmd3mk10b/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at aa4bc09797c3)
+[dispatch] #9 worker: env factory-test-profile-worker -> /tmp/tmpwz_21r4g/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at df84708ba1f0)
+[dispatch] worker `droid` unavailable (executable `factory-test-missing-worker` not found on the worker's PATH); falling back to `default`
+[dispatch] #9 worker: env /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpgf4i48f8/commit_worker.py -> /tmp/tmpgf4i48f8/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at df84708ba1f0)
+[dispatch] worker `droid` unavailable (executable `factory-test-missing-worker` not found on the worker's PATH); falling back to `default`
+[dispatch] worker `droid` available again (executable found; its login is unverified without a probe)
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python -c print('Error during droid execution: Authentication failed'); raise SystemExit(1) -> /tmp/tmpl29xifpt/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 1 after 0s
+[dispatch] #9 worker `default` unavailable (auth_failed: Error during droid execution: Authentication failed)
+[dispatch] #9: worker `default` is unavailable: auth_failed: Error during droid execution: Authentication failed; unclaimed, retry once the worker is healthy
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python -c print('Error during droid execution: Authentication failed'); raise SystemExit(1) -> /tmp/tmpsvt6x_ay/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 1 after 0s
+[dispatch] #9 worker `droid` unavailable (auth_failed: Error during droid execution: Authentication failed); falling back to `default`
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmpsvt6x_ay/commit_worker.py -> /tmp/tmpsvt6x_ay/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at 1e6861724542)
+[dispatch] worker `droid` unavailable (executable `factory-test-missing-worker` not found on the worker's PATH); falling back to `default`
+[dispatch] #9 worker: /home/mike/.local/share/uv/tools/factory/bin/python /tmp/tmphxiguq_m/commit_worker.py -> /tmp/tmphxiguq_m/root/.factory/logs/9-attempt-1.log
+[dispatch] #9 worker exited 0 after 0s
+[dispatch] #9 agent/9: PR already exists (#102)
+[dispatch] #9: done (approved at 1e6861724542)
+[dispatch] worker `prime` unavailable (probe exited 2: not logged in)
+[dispatch] #9: skipped (worker `prime` unavailable: probe exited 2: not logged in); retry next pass
+[dispatch] worker `droid` unavailable (probe exited 2: not logged in); falling back to `default`
+[dispatch] worker `droid` available again
+[dispatch] worker `droid` unavailable (probe exited 3: login expired); falling back to `default`
+{"event": "score", "ticket": 7, "attempt": 1, "transcript": "/tmp/tmp3_9ukpnd/.factory/transcripts/7/session.jsonl", "gate_first_pass": true, "tool_calls": 0, "edits": 0, "retries": 0, "efficiency": 1.0, "call_errors": [], "compliance": 1.0, "judge_model": "qwen3:30b"}
+[dispatch] #7: escalating to human (refresh_head: diverged history; agent/7: kept HEAD 68e6ea6948c4e8d243710eafdfa23188b87d6bd8, origin/agent/7 4afebae94b9062fce1a1359de7c1d5657e9a07ff; worktree kept at /tmp/tmp0sojlgqc/repo/.factory/wt-7)
+[dispatch] #7: escalating to human (refresh_head: diverged history; agent/7: kept HEAD 7e9ab2dc6edef9f575ce00102cb14254a8b72cb7, origin/agent/7 20a086b771024054c3b850adadddda065b4c3dbd; worktree kept at /tmp/tmpa6mxpv01/repo/.factory/wt-7)
+[dispatch] command failed (exit 255); stderr tail:
+Preparing worktree (new branch 'agent/7')
+fatal: a branch named 'agent/7' already exists
+
+----------------------------------------------------------------------
+Ran 2272 tests in 664.592s
+
+OK (skipped=4)

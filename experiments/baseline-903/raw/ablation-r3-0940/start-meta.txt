@@ -1,0 +1,15 @@
+r3-0940 #903 ablation (Ultron); driver /Users/mike/tmp/r3-0940/driver.sh; tree /Users/mike/tmp/r3-0735/wt at 69b50b7de964e09ab429cb68b067299ad06c3cec (clean); harness /Users/mike/tmp/r3-0735/harness (SIGINT/SIGQUIT fix kept)
+order: control-1 git-cache control-2 scratch-throttle control-3 ram-apfs control-4
+launch: python os.setsid + exec, env -i, nohup
+factory pass at launch: none
+VM: vmware-vmx pid 42612 left running
+shas before:
+e071ebe909c9b2c1fea62bad01545406307952ae664416029dea9361444f026b  .config/factory/config.toml
+ac6661ba52ea87d7bf27c9b8d2c5c167eb7c4f73573b35b402d6e367775a7651  wt/uv.lock
+0a4268b2809dc8633192f399d7838c7cdfe865726a06147e818d4c26b0f1ad2b  harness/ablation_run.py
+07a766ef65a38b34e5fe2ca7b1251c925b1d875ef142a80430112c9fee18a98b  harness/arm_runner.py
+181ac96df88f9ba1c8cc4cd2fad785b948b4e76da149c380a80273bd6ce3ae9d  harness/analyze.py
+6cea1ccbf6db0002f2f1afeab7dd456852d36c2eaccb92b861ae34a5a688a143  harness/test_analyze.py
+8c2d8f067f87181336c99a3101c2d720c8357b68036001396be331eb4c27d161  harness/gitbin/git
+8e1c38cabecf7c9405fc7a4d60ec035e4f1da64a1dd0a3adf68724779335b598  harness/throttle-site/sitecustomize.py
+d22f0d99cffa227855e101e646aede36135bf267f14cbfcad77df039f832d436  tmp/r3-0940/driver.sh
