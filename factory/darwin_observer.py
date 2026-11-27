@@ -100,6 +100,14 @@ def abi_supported(facts: tuple | None = None) -> bool:
         SUPPORTED_BYTEORDER, SUPPORTED_MAC)
 
 
+def abi_problem() -> str | None:
+    """Health diagnostic; non-Darwin hosts do not use this observer."""
+    facts = abi_facts()
+    if facts[0] == SUPPORTED_PLATFORM and not abi_supported(facts):
+        return f"unsupported darwin ABI: {facts!r}; native process observation unavailable"
+    return None
+
+
 def scan(context_env: str, uids=(), origins=()):
     """(processes, contexts, unknown_context_pids, complete)."""
     backend = _installed

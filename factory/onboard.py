@@ -500,6 +500,12 @@ def doctor(argv: list[str]) -> int:
         if args.json and fix is not None:
             rows[-1]["fix"] = fix
 
+    from factory import darwin_observer
+
+    abi_problem = darwin_observer.abi_problem()
+    if abi_problem:
+        report(False, "Darwin observer ABI", abi_problem)
+
     present = (cfg.root / CONFIG_NAME).exists()
     report(present, f"{CONFIG_NAME} present", "" if present else "run `factory init`")
     tracked = sh(["git", "ls-files", "--error-unmatch", CONFIG_NAME], cwd=cfg.root).returncode == 0
