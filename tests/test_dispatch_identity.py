@@ -358,5 +358,16 @@ class AgentPushLeaseTest(unittest.TestCase):
                                    "origin", f"{rebased}:refs/heads/agent/7"]])
 
 
+
+
+def setUpModule() -> None:
+    from unittest.mock import patch
+
+    abi = patch("factory.darwin_observer.abi_facts",
+                return_value=("darwin", "arm64", 8, "little", (27, 2)))
+    abi.start()
+    unittest.addModuleCleanup(abi.stop)
+
+
 if __name__ == "__main__":
     unittest.main()

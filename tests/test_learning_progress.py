@@ -258,3 +258,14 @@ class MeasuredRollbackTest(unittest.TestCase):
         learn.promote_pass([self.pr])
         self.assertEqual(self.merged(), [])
         self.assertFalse(any(cmd[:3] == ["gh", "pr", "merge"] for cmd in self.commands))
+
+
+def setUpModule() -> None:
+    from unittest.mock import patch
+
+    abi = patch("factory.darwin_observer.abi_facts",
+                return_value=("darwin", "arm64", 8, "little", (27, 2)))
+    abi.start()
+    unittest.addModuleCleanup(abi.stop)
+
+

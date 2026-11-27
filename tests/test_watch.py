@@ -830,5 +830,16 @@ class ControlBandWatchTest(unittest.TestCase):
         self.assertEqual(model.call_count, 1)
         self.assertEqual(self.gh.calls, [])
 
+
+
+def setUpModule() -> None:
+    from unittest.mock import patch
+
+    abi = patch("factory.darwin_observer.abi_facts",
+                return_value=("darwin", "arm64", 8, "little", (27, 2)))
+    abi.start()
+    unittest.addModuleCleanup(abi.stop)
+
+
 if __name__ == "__main__":
     unittest.main()

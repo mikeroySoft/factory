@@ -245,5 +245,16 @@ class DrainPassTest(unittest.TestCase):
                     "skipped: district drain (malformed flag, until 2026-11-03T13:00:00Z)\n"
                 ))
 
+
+
+def setUpModule() -> None:
+    from unittest.mock import patch
+
+    abi = patch("factory.darwin_observer.abi_facts",
+                return_value=("darwin", "arm64", 8, "little", (27, 2)))
+    abi.start()
+    unittest.addModuleCleanup(abi.stop)
+
+
 if __name__ == "__main__":
     unittest.main()

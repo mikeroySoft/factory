@@ -137,5 +137,16 @@ class WatchLifecycleTest(unittest.TestCase):
         self.assertFalse(any(row.get("closed") for row in lifecycle.read_events(dispatch.EVENTS)))
 
 
+
+
+def setUpModule() -> None:
+    from unittest.mock import patch
+
+    abi = patch("factory.darwin_observer.abi_facts",
+                return_value=("darwin", "arm64", 8, "little", (27, 2)))
+    abi.start()
+    unittest.addModuleCleanup(abi.stop)
+
+
 if __name__ == "__main__":
     unittest.main()
