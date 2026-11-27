@@ -143,7 +143,10 @@ class AuthorizationClaimDispositionTest(unittest.TestCase):
         create = next(index for index, command in enumerate(commands)
                       if command[:3] == ["gh", "issue", "create"])
         self.assertLess(transition, create)
-        self.assertTrue(any("Blocked by: #8" in command for command in commands))
+        self.assertTrue(any(
+            any("Blocked by: #8" in argument for argument in command)
+            for command in commands
+        ))
 
 
 class OrdinaryFrontierAuthorizationTest(unittest.TestCase):
