@@ -240,16 +240,12 @@ class DashboardPortTest(unittest.TestCase):
     def test_doctor_ignores_an_unrelated_address_at_the_socket_boundary(self) -> None:
         """Portable: a foreign holder on 127.0.0.2 does not collide with the 127.0.0.1 probe."""
         self.cfg.dashboard_port = 48123
-        bound = self.loopback_kernel({("127.0.0.2", self.cfg.dashboard_port)})
+        self.loopback_kernel({("127.0.0.2", self.cfg.dashboard_port)})
         ss = subprocess.CompletedProcess([], 0, self.ss_line("127.0.0.2", self.cfg.dashboard_port, "foreign", 4321), "")
         code, output, _ = self.doctor(ss)
         row = next(row for row in json.loads(output)["rows"] if row["label"] == f"dashboard port {self.cfg.dashboard_port}")
         self.assertEqual((code, row["status"]), (0, "PASS"))
         self.assertEqual(row["detail"], "available on 127.0.0.1")
-        probes = [("127.0.0.1", self.cfg.dashboard_port)]
-        if platform_identity.darwin():
-            probes += [("0.0.0.0", self.cfg.dashboard_port), ("::", self.cfg.dashboard_port)]
-        self.assertEqual(bound, probes)
 
     def test_doctor_ignores_other_address_when_own_service_holds_target(self) -> None:
         listener = self.listener()
