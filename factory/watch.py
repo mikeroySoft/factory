@@ -47,7 +47,11 @@ REPEAT_DAYS = 7  # ...inside this trailing window to count as a factory defect
 # PR's own failed checks; `pr_feedback` reports feedback on that PR; an already-fixed
 # ticket may produce `no_change`; `review_revise` means review still requests changes
 # after bounded review rounds, a manager FIX, or a merge-stage refresh/rebase.
-OUTCOME_CODES = {"budget", "gate_failed", "ci_failed", "pr_feedback", "no_change", "review_revise"}
+OUTCOME_CODES = {
+    "budget", "gate_failed", "ci_failed", "pr_feedback", "no_change", "review_revise",
+    "worker_no_progress", "review_findings_unresolved", "pr_checks_unresolved",
+    "mutation_survivors_unresolved", "add_only_authorization",
+}
 OBSERVED = "## Observed by"
 COMMENT_PREFIX = "factory watch: observed in `"
 MAX_OPEN = 200  # newest open `bug` issues of the engine repo searched for a fingerprint

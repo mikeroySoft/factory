@@ -489,7 +489,7 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             return
         reviewed_head = any(
             row.get("head") == lease and row.get("event") in {"review", "risk-check"}
-            for row in events
+            for row in generation.current(events, n).rows
         )
         if gate_head == lease and reviewed_head:
             findings = packet.read_text()
@@ -1142,6 +1142,14 @@ def _pending_add_only_row(events: list[dict], n: int) -> dict | None:
             continue
         if request.get("exhausted"):
             return None
+        recovery = next((
+            row for row in reversed(rows[index + 1:])
+            if row.get("event") in {"manager-request-failed", "manager-request-complete"}
+            and row.get("packet") == request.get("packet")
+            and row.get("round") == request.get("round")
+        ), None)
+        if recovery is not None:
+            return request if recovery["event"] == "manager-request-failed" else None
         managed = [
             row for row in rows[index + 1:]
             if row.get("event") == "manage"
@@ -1284,34 +1292,58 @@ def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
     packet = Path(request["packet"])
     if not packet.is_file():
         return
-    pending = pending_fix(events[events.index(request):], round=request["round"], pr=None)
-    if pending is not None:
-        resume_fix(n, issue, pending, round=request["round"])
-        dispatch.unclaim(n)
-        return
-    result = _manager_decision(
-        n, issue, request, events,
-        queue_failure=True, code="add_only_authorization",
-    )
-    if result is None:
-        return
-    decision, body, data = result
-    if decision == "HUMAN":
-        findings = packet.read_text()
+    failed = next((
+        row for row in reversed(events[events.index(request):])
+        if row.get("event") == "manager-request-failed"
+        and row.get("packet") == request["packet"] and row.get("round") == request["round"]
+    ), None)
+    if failed is not None:
+        # A partial SPLIT/REWRITE must never be replayed. Retry only its human handoff.
         dispatch.escalate(
-            n,
-            f"manager declined add-only authorization: {body}",
-            Path(request["log"]) if request.get("log") else None,
-            extra=findings,
-            code="add_only_authorization",
-            round_number=request["round"],
+            n, f"manager decision application failed: {failed['reason']}", None,
+            extra=packet.read_text(), code="manager_failed", round_number=request["round"],
+        )
+        dispatch.record(
+            "manager-request-complete", ticket=n, packet=str(packet), round=request["round"],
         )
         return
-    if decision == "FIX":
-        apply_fix(n, issue, data, packet, round=request["round"])
-    else:
-        apply(n, issue, decision, body, data, packet)
-    dispatch.unclaim(n)
+    try:
+        pending = pending_fix(events[events.index(request):], round=request["round"], pr=None)
+        if pending is not None:
+            resume_fix(n, issue, pending, round=request["round"])
+            dispatch.unclaim(n)
+            return
+        result = _manager_decision(
+            n, issue, request, events,
+            queue_failure=True, code="add_only_authorization",
+        )
+        if result is None:
+            return
+        decision, body, data = result
+        if decision == "HUMAN":
+            findings = packet.read_text()
+            dispatch.escalate(
+                n,
+                f"manager declined add-only authorization: {body}",
+                Path(request["log"]) if request.get("log") else None,
+                extra=findings,
+                code="add_only_authorization",
+                round_number=request["round"],
+            )
+            return
+        if decision == "FIX":
+            apply_fix(n, issue, data, packet, round=request["round"])
+        else:
+            apply(n, issue, decision, body, data, packet)
+        dispatch.unclaim(n)
+    except dispatch.WorkerUnavailable:
+        raise
+    except (CalledProcessError, OSError, ValueError) as exc:
+        dispatch.record(
+            "manager-request-failed", ticket=n, packet=str(packet), round=request["round"],
+            reason=dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc)),
+        )
+        raise
 
 
 def request_add_only_authorization(
@@ -1350,7 +1382,16 @@ def request_add_only_authorization(
             return
         pending = _pending_add_only_row(lifecycle.read_events(dispatch.EVENTS), n)
     if pending is not None:
-        _handle_add_only_request(n, issue, pending)
+        try:
+            _handle_add_only_request(n, issue, pending)
+        except dispatch.WorkerUnavailable:
+            raise
+        except (CalledProcessError, OSError, ValueError) as exc:
+            execution = lifecycle.current()
+            if execution is not None:
+                execution.outcome, execution.reason = "mechanism_failure", "github_command_failed"
+                execution.error = dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc))
+            dispatch.log(f"#{n}: manager request failed ({exc}); request remains queued")
 
 
 def manage_pass(dry_run: bool = False) -> None:
@@ -1425,6 +1466,10 @@ def escalation_pass(dry_run: bool = False) -> None:
                     except dispatch.WorkerUnavailable as exc:
                         execution.wait("worker_unavailable", mode="retry_next_pass", detail=str(exc))
                         dispatch.log(f"#{n}: manager FIX waits for a healthy worker ({exc}); no round is spent")
+                    except (CalledProcessError, OSError, ValueError) as exc:
+                        execution.outcome, execution.reason = "mechanism_failure", "github_command_failed"
+                        execution.error = dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc))
+                        dispatch.log(f"#{n}: manager request failed ({exc}); request remains queued")
                     continue
                 escalation = next((e for e in reversed(events) if e.get("event") == "escalate"
                                    and e.get("reason") != "manager_failed"), None)
