@@ -199,7 +199,7 @@ class RunnerRuntimeTest(unittest.TestCase):
                     root = self.base / "factory-runner-probe"
                     root.mkdir(exist_ok=True)
 
-                    def probe(argv, **kwargs):
+                    def probe(argv, command=command, failure=failure, **kwargs):
                         if argv[0] == command:
                             if failure == "timeout":
                                 raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
@@ -222,7 +222,7 @@ class RunnerRuntimeTest(unittest.TestCase):
                 root.mkdir(exist_ok=True)
                 child = os.getpid() + 100000
 
-                def probe(argv, **kwargs):
+                def probe(argv, source=source, child=child, root=root, **kwargs):
                     self.assertNotIn("+D", argv)
                     self.assertGreater(kwargs["timeout"], 0)
                     self.assertLessEqual(kwargs["timeout"], 10)
