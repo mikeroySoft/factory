@@ -52,3 +52,42 @@ class DashboardPortDarwinTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DashboardWildcardHostDarwinTest(unittest.TestCase):
+    fixture = DashboardPortDarwinTest.fixture
+
+    def test_doctor_wildcard_host_free_port(self):
+        from factory import onboard
+
+        for installed in (False, True):
+            with self.subTest(dashboard=installed):
+                case = self.fixture()
+                case.cfg.install.update(host="0.0.0.0", dashboard=installed)
+                listener = case.listener("0.0.0.0")
+                case.cfg.dashboard_port = listener.getsockname()[1]
+                listener.close()
+                with patch.object(onboard.platform_identity, "darwin", return_value=True):
+                    code, output, calls = case.doctor(subprocess.CompletedProcess([], 0, "", ""))
+                row = next(row for row in json.loads(output)["rows"]
+                           if row["label"] == f"dashboard port {case.cfg.dashboard_port}")
+                self.assertEqual((code, row["status"]), (0, "PASS"))
+                self.assertEqual(row["detail"], "available on 0.0.0.0")
+                self.assertFalse(any(cmd[0] == "ss" for cmd in calls))
+
+    def test_doctor_wildcard_host_occupied_port(self):
+        from factory import onboard
+
+        case = self.fixture()
+        case.cfg.install["host"] = "0.0.0.0"
+        listener = case.listener("0.0.0.0")
+        case.cfg.dashboard_port = listener.getsockname()[1]
+        ss = subprocess.CompletedProcess(
+            [], 0, case.ss_line("0.0.0.0", case.cfg.dashboard_port), ""
+        )
+        with patch.object(onboard.platform_identity, "darwin", return_value=True):
+            code, output, _ = case.doctor(ss)
+        row = next(row for row in json.loads(output)["rows"]
+                   if row["label"] == f"dashboard port {case.cfg.dashboard_port}")
+        self.assertEqual((code, row["status"]), (1, "FAIL"))
+        self.assertIn("on 0.0.0.0 is in use by an unknown process", row["detail"])
