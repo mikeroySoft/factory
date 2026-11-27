@@ -1425,10 +1425,14 @@ def escalation_pass(dry_run: bool = False) -> None:
     ])
     listed = {issue["number"] for issue in issues}
     for n in pending_numbers - listed:
-        issue = dispatch.gh_json([
-            "issue", "view", str(n), "--repo", cfg.repo,
-            "--json", "number,title,body,state,labels",
-        ])
+        try:
+            issue = dispatch.gh_json([
+                "issue", "view", str(n), "--repo", cfg.repo,
+                "--json", "number,title,body,state,labels",
+            ])
+        except (CalledProcessError, OSError, ValueError) as exc:
+            dispatch.log(f"#{n}: pending issue read failed ({exc}); request remains queued")
+            continue
         if issue.get("state") == "OPEN":
             issues.append(issue)
     for issue in issues:

@@ -96,7 +96,7 @@ class AuthorizationRecoveryTest(unittest.TestCase):
                     manage.request_add_only_authorization(8, issue8, self.paths, self.report, None)
                 self.cfg.manager = ["manager", "{prompt}"]
 
-                def github(args):
+                def github(args, failure=failure, issue8=issue8):
                     if args[:2] == ["issue", "list"]:
                         return []
                     if args[:3] == ["issue", "view", "7"]:
