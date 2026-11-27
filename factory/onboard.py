@@ -361,7 +361,7 @@ def _listener_conflicts(local: str, target: str) -> bool:
 
 
 def _wildcard_held(port: int) -> bool:
-    """Whether a wildcard listener covers `port`; raises OSError when it cannot tell."""
+    """Whether a wildcard listener covers IPv4 `port`; raises OSError when it cannot tell."""
     for family, address in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
         with socket.socket(family, socket.SOCK_STREAM) as probe:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -372,7 +372,9 @@ def _wildcard_held(port: int) -> bool:
             except OSError as exc:
                 if exc.errno != errno.EADDRINUSE:
                     raise
-                return True
+                # A dual-stack holder also collides with the IPv4 probe above.
+                # An IPv6-only collision does not cover the dashboard's IPv4 target.
+                return family == socket.AF_INET
     return False
 
 
@@ -396,8 +398,8 @@ def _dashboard_port_check(cfg: config.Config, host: str, port: int) -> tuple[boo
                 return False, dashboard_port_error(cfg, host, port, f"cannot be bound: {exc.strerror or exc}")
             collision = True
 
-        # Darwin has no `ss`. There, the target bind plus both wildcard probes
-        # succeeding is the positive evidence that nothing serves host:port.
+        # Darwin has no `ss`. The target bind and absence of an IPv4 wildcard
+        # collision are positive evidence that nothing serves the IPv4 host:port.
         # (A `0.0.0.0` host collides with its own held probe and stays closed.)
         if not collision and platform_identity.darwin():
             return True, f"available on {host}"
