@@ -497,8 +497,9 @@ def apply(n: int, issue: dict, decision: str, body: str, data: object, packet: P
             reason = (
                 f"manager FIX made no commit at {lease}; unresolved findings remain: {findings}"
             )
-            record_fix_failure(code, reason)
-            if not already_human:
+            if already_human:
+                record_fix_failure(code, reason)
+            else:
                 dispatch.escalate(n, reason, logfile, extra=findings, code=code)
             return
         fresh = dispatch.gh_json(
@@ -1171,6 +1172,7 @@ def pending_add_only_request(n: int, *, labels: set[str] | None = None) -> bool:
     """Wait for the manager unless the live issue already grants authorization."""
     request = _pending_add_only_row(lifecycle.read_events(dispatch.EVENTS), n)
     if request is not None and labels is not None and LABEL_ADD_ONLY_OVERRIDE in labels:
+        dispatch.unclaim(n, "--add-label", LABEL_AGENT)
         dispatch.record(
             "manager-request-complete", ticket=n, packet=request["packet"],
             round=request["round"], reason="human_authorized",
@@ -1287,76 +1289,91 @@ def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
     cfg = dispatch.cfg
     if not pending_add_only_request(n, labels={label["name"] for label in issue.get("labels", [])}):
         return
-    events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
-    commented = _ensure_request_comment(n, request, events)
-    events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
-    if not cfg.manager or not commented:
-        return
+    release_args = ("--add-label", LABEL_AGENT)
+    released = False
     try:
-        if human_activity(n, request, events):
+        events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
+        commented = _ensure_request_comment(n, request, events)
+        events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
+        if not cfg.manager or not commented:
             return
-    except (CalledProcessError, OSError, ValueError) as exc:
-        dispatch.log(f"#{n}: manager request takeover check failed ({exc}); request remains queued")
-        return
-    packet = Path(request["packet"])
-    if not packet.is_file():
-        return
-    failed = next((
-        row for row in reversed(events[events.index(request):])
-        if row.get("event") == "manager-request-failed"
-        and row.get("packet") == request["packet"] and row.get("round") == request["round"]
-    ), None)
-    if failed is not None:
-        # A partial SPLIT/REWRITE must never be replayed. Retry only its human handoff.
-        dispatch.escalate(
-            n, f"manager decision application failed: {failed['reason']}", None,
-            extra=packet.read_text(), code="manager_failed", round_number=request["round"],
-        )
-        dispatch.record(
-            "manager-request-complete", ticket=n, packet=str(packet), round=request["round"],
-        )
-        return
-    try:
-        pending = pending_fix(events[events.index(request):], round=request["round"], pr=None)
-        if pending is not None:
-            resume_fix(n, issue, pending, round=request["round"])
-            dispatch.unclaim(n)
+        try:
+            if human_activity(n, request, events):
+                return
+        except (CalledProcessError, OSError, ValueError) as exc:
+            dispatch.log(f"#{n}: manager request takeover check failed ({exc}); request remains queued")
             return
-        result = _manager_decision(
-            n, issue, request, events,
-            queue_failure=True, code="add_only_authorization",
-        )
-        if result is None:
+        packet = Path(request["packet"])
+        if not packet.is_file():
             return
-        decision, body, data = result
-        if decision == "HUMAN":
-            findings = packet.read_text()
+        failed = next((
+            row for row in reversed(events[events.index(request):])
+            if row.get("event") == "manager-request-failed"
+            and row.get("packet") == request["packet"] and row.get("round") == request["round"]
+        ), None)
+        if failed is not None:
+            # A partial SPLIT/REWRITE must never be replayed. Retry only its human handoff.
+            release_args = ()
             dispatch.escalate(
-                n,
-                f"manager declined add-only authorization: {body}",
-                Path(request["log"]) if request.get("log") else None,
-                extra=findings,
-                code="add_only_authorization",
-                round_number=request["round"],
+                n, f"manager decision application failed: {failed['reason']}", None,
+                extra=packet.read_text(), code="manager_failed", round_number=request["round"],
+            )
+            released = True
+            dispatch.record(
+                "manager-request-complete", ticket=n, packet=str(packet), round=request["round"],
             )
             return
-        if decision == "FIX":
-            apply_fix(n, issue, data, packet, round=request["round"])
-        else:
-            apply(n, issue, decision, body, data, packet)
-        dispatch.unclaim(n)
-    except dispatch.WorkerUnavailable:
-        raise
-    except (CalledProcessError, OSError, ValueError) as exc:
-        dispatch.record(
-            "manager-request-failed", ticket=n, packet=str(packet), round=request["round"],
-            reason=dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc)),
-        )
-        raise
+        try:
+            pending = pending_fix(events[events.index(request):], round=request["round"], pr=None)
+            if pending is not None:
+                resume_fix(n, issue, pending, round=request["round"])
+                return
+            result = _manager_decision(
+                n, issue, request, events,
+                queue_failure=True, code="add_only_authorization",
+            )
+            if result is None:
+                return
+            decision, body, data = result
+            if decision == "HUMAN":
+                findings = packet.read_text()
+                release_args = ()
+                dispatch.escalate(
+                    n,
+                    f"manager declined add-only authorization: {body}",
+                    Path(request["log"]) if request.get("log") else None,
+                    extra=findings,
+                    code="add_only_authorization",
+                    round_number=request["round"],
+                )
+                released = True
+                return
+            if decision == "FIX":
+                apply_fix(n, issue, data, packet, round=request["round"])
+            else:
+                if decision in {"CLOSE", "SPLIT"}:
+                    release_args = ()
+                    dispatch.unclaim(
+                        n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN,
+                    )
+                    released = True
+                apply(n, issue, decision, body, data, packet)
+        except dispatch.WorkerUnavailable:
+            raise
+        except (CalledProcessError, OSError, ValueError) as exc:
+            dispatch.record(
+                "manager-request-failed", ticket=n, packet=str(packet), round=request["round"],
+                reason=dispatch.stderr_tail(getattr(exc, "stderr", None) or str(exc)),
+            )
+            raise
+    finally:
+        if not released:
+            dispatch.unclaim(n, *release_args)
 
 
 def request_add_only_authorization(
-    n: int, issue: dict, paths: list[str], report: str, logfile: Path | None,
+    n: int, issue: dict, paths: list[str], report: str, logfile: Path | None, *,
+    rework: dict | None = None,
 ) -> None:
     """Queue and, when available, run the manager before an add-only failure escalates."""
     events = lifecycle.read_events(dispatch.EVENTS)
@@ -1378,6 +1395,7 @@ def request_add_only_authorization(
             "manager-request", ticket=n, code="add_only_authorization",
             paths=paths, packet=str(packet), log=str(logfile) if logfile else None,
             round=round_number, exhausted=exhausted,
+            **({"rework": rework} if rework is not None else {}),
         )
         if exhausted:
             dispatch.escalate(
