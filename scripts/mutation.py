@@ -387,8 +387,19 @@ def load_equivalents(path: str | None) -> dict[tuple, dict]:
     return resolve_equivalents(path, reviewed)
 
 
+def enclosing_scope(tree: ast.AST, line: int) -> tuple:
+    """Qualified lexical owner, including classes and outer functions."""
+    owners = sorted(
+        (node.lineno, type(node).__name__, node.name)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.lineno <= line <= node.end_lineno
+    )
+    return tuple((kind, name) for _, kind, name in owners)
+
+
 def resolve_equivalents(path: str | None, reviewed: dict[tuple, dict]) -> dict[tuple, dict]:
-    """The registry's last committed revision pins its reviewed source windows.
+    """The registry's last committed revision pins reviewed source and lexical owners.
 
     Untracked, ad-hoc registries have no reviewed window: keep them line-pinned,
     never guess a relocation from the candidate's own context.
@@ -419,25 +430,41 @@ def resolve_equivalents(path: str | None, reviewed: dict[tuple, dict]) -> dict[t
                 current = Path(file).read_text().splitlines()
             except (OSError, UnicodeError):
                 current = []
-            sources[file] = reference, current
-        reference, current = sources[file]
+            try:
+                trees = ast.parse("\n".join(reference)), ast.parse("\n".join(current))
+            except SyntaxError as exc:
+                raise ValueError(f"equivalent context requires valid Python: {file}") from exc
+            sources[file] = reference, current, trees
+        reference, current, (reference_tree, current_tree) = sources[file]
         expected = original.split("\n")
         start, end = line - 1, line - 1 + len(expected)
-        left, right = max(0, start - 3), min(len(reference), end + 3)
-        window = reference[left:right]
-        matches = [
-            offset + start - left + 1
-            for offset in range(len(current) - len(window) + 1)
-            if reference[start:end] == expected
-            and current[offset:offset + len(window)] == window
-            # Missing neighbours at BOF/EOF are boundaries, not wildcard context.
-            and (start >= 3 or offset == 0)
-            and (end + 3 <= len(reference) or offset + len(window) == len(current))
-        ]
+        scope = enclosing_scope(reference_tree, line)
+        if scope:
+            matches = [
+                offset + 1
+                for offset in range(len(current) - len(expected) + 1)
+                if reference[start:end] == expected
+                and current[offset:offset + len(expected)] == expected
+                and enclosing_scope(current_tree, offset + 1) == scope
+            ]
+        else:
+            # Module-level entries have no function identity; retain reviewed context.
+            left, right = max(0, start - 3), min(len(reference), end + 3)
+            window = reference[left:right]
+            matches = [
+                offset + start - left + 1
+                for offset in range(len(current) - len(window) + 1)
+                if reference[start:end] == expected
+                and current[offset:offset + len(window)] == window
+                and not enclosing_scope(current_tree, offset + start - left + 1)
+                # Missing neighbours at BOF/EOF are boundaries, not wildcard context.
+                and (start >= 3 or offset == 0)
+                and (end + 3 <= len(reference) or offset + len(window) == len(current))
+            ]
         if len(matches) != 1:
             print(f"stale equivalent: {file}:{line}: {operator} "
                   f"{original!r} -> {mutated!r} ({len(matches)} source/context matches)")
-            raise ValueError("expected exactly one reviewed source/context window")
+            raise ValueError("expected exactly one reviewed source/context identity")
         relocated = matches[0]
         if relocated != line:
             print(f"relocated equivalent: {file}:{line} -> {relocated}: {operator} "
