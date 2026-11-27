@@ -5,8 +5,8 @@ from pathlib import Path
 from unittest import mock
 
 import test_handoff as fixtures
-from factory import config
 
+from factory import config
 
 BOT = "mikeroysoft-grok"
 HOST = f'''[defaults.bot_owners]
@@ -64,22 +64,28 @@ class OwnerRolesTest(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.host.write_text(text)
-                with mock.patch.dict("os.environ", self.cli.env):
-                    with self.assertRaisesRegex(config.ConfigError, "approved bot login"):
-                        config.load(self.cli.repo, worktree=True)
+                with (
+                    mock.patch.dict("os.environ", self.cli.env),
+                    self.assertRaisesRegex(config.ConfigError, "approved bot login"),
+                ):
+                    config.load(self.cli.repo, worktree=True)
 
     def test_repository_cannot_supply_bot_mapping(self):
         path = self.cli.repo / config.CONFIG_NAME
         path.write_text(path.read_text() + HOST.replace("defaults.bot_owners", "bot_owners"))
-        with mock.patch.dict("os.environ", self.cli.env):
-            with self.assertRaisesRegex(config.ConfigError, "bot_owners.*host-only"):
-                config.load(self.cli.repo, worktree=True)
+        with (
+            mock.patch.dict("os.environ", self.cli.env),
+            self.assertRaisesRegex(config.ConfigError, "bot_owners.*host-only"),
+        ):
+            config.load(self.cli.repo, worktree=True)
 
     def test_mapping_requires_bot_fallback_for_unknown_roles(self):
         self.host.write_text(HOST.replace(f'fallback = "{BOT}"\n', ""))
-        with mock.patch.dict("os.environ", self.cli.env):
-            with self.assertRaisesRegex(config.ConfigError, "fallback"):
-                config.load(self.cli.repo, worktree=True)
+        with (
+            mock.patch.dict("os.environ", self.cli.env),
+            self.assertRaisesRegex(config.ConfigError, "fallback"),
+        ):
+            config.load(self.cli.repo, worktree=True)
 
     def test_fixture_mentions_only_the_bot(self):
         self.cli.state["issue"]["body"] = "**Decision owner**\nFactory PM"
