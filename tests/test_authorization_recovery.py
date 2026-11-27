@@ -6,7 +6,7 @@ import unittest
 from datetime import UTC, datetime
 from unittest import mock
 
-from factory import config, dispatch, lifecycle, manage, watch
+from factory import config, dispatch, manage, watch
 from tests import test_authorization_request as authorization_tests
 
 
@@ -79,6 +79,23 @@ class AuthorizationRecoveryTest(unittest.TestCase):
         self.request()
         self.assertFalse(manage.pending_add_only_request(7))
         self.assertEqual(len(self.manager_calls), 1)
+
+    def test_unavailable_fix_worker_stays_pending_without_an_application_failure(self):
+        self.manager_output = (
+            'DECISION: FIX\n{"worker":"ci-fix","guidance":"Repair the current PR."}'
+        )
+        with mock.patch.object(dispatch, "run", side_effect=self.command_result), \
+                mock.patch.object(manage, "selectable_workers", return_value={"ci-fix": []}), \
+                mock.patch.object(manage, "human_activity", return_value=False), \
+                mock.patch.object(manage, "apply", side_effect=dispatch.WorkerUnavailable("offline")), \
+                self.assertRaises(dispatch.WorkerUnavailable):
+            manage.request_add_only_authorization(
+                7, self.issue, self.paths, self.report, self.logfile,
+            )
+        rows = self.events()
+        self.assertTrue(manage.pending_add_only_request(7))
+        self.assertEqual([r["decision"] for r in rows if r.get("event") == "manage-pending"], ["FIX"])
+        self.assertFalse(any(r.get("event") == "manager-request-failed" for r in rows))
 
 
 class ManagerReviewEvidenceTest(unittest.TestCase):
