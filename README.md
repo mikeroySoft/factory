@@ -1321,8 +1321,9 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    It re-enumerates named files to account for changed operator occurrence numbers
    and relocates a unique identical source/mutation span after inserted or deleted
    lines. Columns and relative span must still match; changed/deleted source is not
-   replayed, and multiple identical targets fail as ambiguous rather than selecting
-   the wrong occurrence. Replay orders related test modules by the smallest
+   replayed. Unchanged files use the proof's committed source to disambiguate exact
+   positions; otherwise duplicate or collapsed targets fail as ambiguous rather
+   than selecting the wrong occurrence. Replay orders related test modules by the smallest
    matching feature-map row first, then module name, ahead of unrelated tests,
    and stops at the first failure. Declaring a survivor still requires every
    discovered test to pass. Full-proof test ordering is unchanged.

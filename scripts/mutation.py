@@ -563,6 +563,9 @@ def replay(path: str, duration: float | None) -> int:
             cosmic_ray.commands.init([Path(p) for p, source in sources.items() if source], db, {})
             candidates = [item.mutations[0] for item in db.work_items]
         selected = []
+        unchanged = {}
+        scope = record.get("scope")
+        head = scope.get("head") if isinstance(scope, dict) else None
         ambiguous = False
         for entry in entries:
             matches = []
@@ -582,6 +585,19 @@ def replay(path: str, duration: float | None) -> int:
                 _, _, _, original, mutated = mutation_key(candidate, SimpleNamespace(diff=diff))
                 if (original, mutated) == (entry["original"], entry["mutated"]):
                     matches.append(candidate)
+            if (len(matches) > 1 and isinstance(head, str)
+                    and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head)):
+                file = entry["file"]
+                if file not in unchanged:
+                    previous = subprocess.run(
+                        ["git", "show", f"{head}:{file}"],
+                        capture_output=True, text=True, check=False,
+                    )
+                    unchanged[file] = previous.returncode == 0 and previous.stdout == sources[file]
+                if unchanged[file]:
+                    matches = [candidate for candidate in matches
+                               if list(candidate.start_pos) == entry["start_pos"]
+                               and list(candidate.end_pos) == entry["end_pos"]]
             if len(matches) > 1:
                 print(f"replay incomplete: {entry['file']}:{entry['line']}: ambiguous survivor "
                       "(multiple identical source targets)")
@@ -590,6 +606,13 @@ def replay(path: str, duration: float | None) -> int:
                 print(f"{entry['file']}:{entry['line']}: no longer applies (the source line changed)")
             else:
                 selected.append(matches[0])
+        targets = collections.Counter(
+            (m.module_path, m.operator_name, m.occurrence) for m in selected
+        )
+        if any(count > 1 for count in targets.values()):
+            print("replay incomplete: ambiguous survivor (recorded targets collapsed onto one occurrence)")
+            ambiguous = True
+            selected = [m for m in selected if targets[m.module_path, m.operator_name, m.occurrence] == 1]
         if not selected:
             return 1 if ambiguous else 0
         workers = min(WORKERS, len(selected))
