@@ -175,6 +175,29 @@ class MutationReplayTransportTest(proof_callers.ProofCallerCases):
             gate.read_mutation_proof(data, 0, scope), ("FAIL", "oversized completion record")
         )
 
+    def test_large_sidecar_count_preserves_value_not_integer_identity(self) -> None:
+        self.configure()
+        count = 2049
+        entries = [survivors()[0]] * count
+
+        def produce(child):
+            env = child.kwargs["env"]
+            scope = mutation_scope.compute(env[mutation.PROOF_BASE_ENV])
+            record = mutation.proof_record(
+                mode="blocking", status="complete", reason="blocking-survivors", exit_code=1,
+                files=sorted(scope.lines), scope=scope.receipt(), planned=count, ran=count,
+                survived=count, blocking_survivors=count, survivors=entries,
+            )
+            mutation.write_proof(env[mutation.PROOF_ENV], record)
+            return "large survivor diagnostic\n", 1
+
+        result = self.invoke([produce])
+        self.assertEqual(self.summary(result), witness.BLOCKED)
+        durable = self.root / ".factory" / f"mutation-{self.head}.json"
+        saved = json.loads(durable.read_text())
+        self.assertEqual(saved["survivors"], entries)
+        self.assertEqual(saved["counts"]["survived"], count)
+
 
 for _name in [name for name in dir(proof_callers.ProofCallerCases) if name.startswith("test_")]:
     if _name not in MutationReplayTransportTest.__dict__:
