@@ -22,6 +22,7 @@ from unittest import mock
 
 from factory import config, dispatch, gate, manage, onboard
 from scripts import mutation
+from tests import test_refresh_conflict as refresh_suite
 
 HEAD = "a" * 40
 NEW_HEAD = "b" * 40
@@ -1201,6 +1202,261 @@ class RestoreFailureTest(unittest.TestCase):
             restore_dispatch(self.bindings({"boom": 1}), self.saved, target)
         self.assertEqual(target.before, "orig-before")
         self.assertEqual(target.after_set, "stale")
+
+
+class WorkerModelProvenanceTest(unittest.TestCase):
+    """Use real attempts, claims, review publication and a retained agent PR."""
+
+    setUp = refresh_suite.RefreshConflictTest.setUp
+    patched, events = refresh_suite.RefreshConflictTest.patched, refresh_suite.RefreshConflictTest.events
+
+    def prepare(self) -> None:
+        self.cfg.workers = config.Config(self.root, "acme/widgets").workers
+        self.cfg.reviewer = ["reviewer", "--model", "primary/model"]
+        self.cfg.second_reviewer = ["reviewer", "--model", "second/model"]
+        self.cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
+        self.github.issue_labels = {config.LABEL_AGENT, config.LABEL_CHORE}
+        self.github.assignees = []
+        self.github.pr_labels = set()
+        self.prompts = []
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(self.patched())
+        stack.enter_context(mock.patch.object(dispatch, "run_worker", side_effect=self.work))
+        stack.enter_context(mock.patch.object(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n")))
+        stack.enter_context(mock.patch.object(dispatch.risk, "classify", return_value=("High", ["high:dispatch"])))
+        self.reviewer = stack.enter_context(mock.patch.object(dispatch, "run_reviewer", side_effect=self.review))
+
+    def work(self, argv, wt, logfile, handoff, *_args, **_kwargs):
+        spec = self.cfg.worker_spec(config.LABEL_CHORE, wt / ".factory-prompt.md", wt)
+        self.assertEqual(argv, spec.argv)
+        subprocess.run(
+            [sys.executable, str(self.tmp / "resolver.py"), str(self.prompt_seen)],
+            cwd=wt, check=True, capture_output=True,
+        )
+        change = wt / "work.txt"
+        change.write_text(change.read_text() + "change\n" if change.exists() else "change\n")
+        logfile.write_text("worker completed\n")
+        handoff.parent.mkdir(exist_ok=True)
+        handoff.write_text("## Changed\n- Work complete.\n## Unverified\nNone.\n")
+        return 0, None
+
+    def review(self, _wt, prompt, head, *, reviewer=None, **_kwargs):
+        self.prompts.append(prompt)
+        model = config.command_model(reviewer or self.cfg.reviewer)
+        return {
+            "verdict": "APPROVE", "findings": "VERDICT: APPROVE", "usage": {"model": model},
+            "accepted": True, "parsed": True, "reason": "APPROVE", "returncode": 0,
+            "actual_head": head, "attempts": 1, "counts": {"important": 0, "nit": 0, "pre-existing": 0},
+            "outside_diff_findings": 0, "rejection_reason": None,
+        }
+
+    def test_builtin_chore_model_survives_requeue_and_post_decision_claim(self) -> None:
+        self.prepare()
+        for mode in ("existing-pr", "factory-requeue", "owner-decision"):
+            with self.subTest(mode=mode):
+                if mode == "factory-requeue":
+                    dispatch.record("risk-requeue", ticket=9, pr=102, head=self.github.head(),
+                                    round=1, packet="Rework retained PR")
+                elif mode == "owner-decision":
+                    dispatch.escalate(9, "previous attempt failed", None, code="gate_failed")
+                    dispatch.record("manage", ticket=9, decision="HUMAN", round=1)
+                self.github.issue_labels = {config.LABEL_AGENT, config.LABEL_CHORE}
+                self.github.assignees = []
+                self.github.pr_labels = set()
+                dispatch.configure(self.cfg)
+                dispatch.process_ticket(self.github.issue(), 30, False, forced=True)
+                attempt = self.events("attempt")[-1]
+                model = attempt["worker_model"]
+                self.assertTrue(model, "configured launch must record an explicit worker model")
+                self.assertNotEqual(model, "unknown")
+                head = self.github.head()
+                self.assertEqual(attempt["head"], head)
+                check = self.events("risk-check")[-1]
+                self.assertEqual(check["models"], ["primary/model", "second/model", model])
+                self.assertTrue(dispatch._head_evidence_matches(
+                    dispatch.lifecycle.read_events(dispatch.EVENTS), 9, head,
+                ))
+                self.assertIn(config.LABEL_APPROVED, self.github.pr_labels)
+                for prompt in self.prompts[-2:]:
+                    self.assertIn(f"worker={model}", prompt)
+                self.assertIn(f"worker={model}", (dispatch.FACTORY / "review-9.md").read_text())
+        self.assertEqual(len(self.events("claimed")), 3)
+        self.assertEqual(self.events("generation")[-1]["generation"], 1)
+
+    def test_missing_worker_provenance_escalates_before_reviewer_launch(self) -> None:
+        self.prepare()
+        self.cfg.workers[config.LABEL_CHORE] = ["implicit-worker", "{prompt}"]
+        dispatch.process_ticket(self.github.issue(), 30, False, forced=True)
+        self.reviewer.assert_not_called()
+        self.assertEqual(self.events("escalate")[-1]["code"], "missing_worker_provenance")
+        self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+        self.assertIn("worker_model", (dispatch.FACTORY / "review-9.md").read_text())
+
+    def test_configured_worker_identity_is_not_replaced_by_later_configuration(self) -> None:
+        self.prepare()
+        self.cfg.workers[config.LABEL_CHORE] = ["worker", "--model", "configured/model", "{prompt}"]
+        dispatch.process_ticket(self.github.issue(), 30, False, forced=True)
+        self.cfg.workers[config.LABEL_CHORE] = ["worker", "--model", "different/model"]
+        head = self.github.head()
+        verdict, findings, _ = dispatch.pr_gate_and_review(
+            dispatch.FACTORY / "wt-9", 9, "- mutation: PASS", head, {},
+        )
+        self.assertEqual(verdict, "APPROVE")
+        self.assertIn("worker=configured/model", findings)
+        self.assertNotIn("different/model", findings)
+
+    def test_missing_provenance_manager_fix_publishes_and_escalates(self) -> None:
+        self.prepare()
+        self.cfg.workers[config.LABEL_CHORE] = ["implicit-worker", "{prompt}"]
+        dispatch.ensure_worktree(9)
+        packet = self.tmp / "packet.md"
+        packet.write_text("Fix retained PR")
+        manage.apply(9, self.github.issue(), "FIX", "",
+                     {"worker": config.LABEL_CHORE, "guidance": "Fix it"}, packet)
+        self.reviewer.assert_not_called()
+        self.assertEqual(self.events("escalate")[-1]["code"], "missing_worker_provenance")
+        self.assertIn("worker_model", (dispatch.FACTORY / "review-9.md").read_text())
+
+    def test_missing_provenance_refresh_publishes_and_escalates(self) -> None:
+        self.prepare()
+        # First resolve the retained PR's conflict, then move main without conflict.
+        self.cfg.workers[config.LABEL_CHORE] = ["implicit-worker", "{prompt}"]
+        dispatch.process_ticket(self.github.issue(), 30, False, forced=True)
+        (self.origin / "later.txt").write_text("main moved\n")
+        refresh_suite.git(self.origin, "add", "later.txt")
+        refresh_suite.git(self.origin, "commit", "-qm", "move main")
+        self.assertFalse(dispatch.refresh_pr_branch(9, 102, False))
+        self.reviewer.assert_not_called()
+        self.assertEqual(self.events("escalate")[-1]["code"], "missing_worker_provenance")
+        self.assertIn("worker_model", (dispatch.FACTORY / "review-9.md").read_text())
+
+    def test_missing_provenance_after_review_bounce_does_not_reuse_old_model(self) -> None:
+        self.prepare()
+
+        def revise_then_drop_model(*args, **kwargs):
+            result = self.review(*args, **kwargs)
+            result.update(verdict="REVISE", findings="VERDICT: REVISE",
+                          counts={"important": 1, "nit": 0, "pre-existing": 0})
+            if config.command_model(kwargs.get("reviewer") or self.cfg.reviewer) == "second/model":
+                self.cfg.workers[config.LABEL_CHORE] = ["implicit-worker", "{prompt}"]
+            return result
+
+        self.reviewer.side_effect = revise_then_drop_model
+        dispatch.process_ticket(self.github.issue(), 30, False, forced=True)
+        self.assertEqual(self.reviewer.call_count, 2)
+        self.assertEqual(len(self.events("attempt")), 2)
+        self.assertIsNone(self.events("attempt")[-1]["worker_model"])
+        self.assertEqual(self.events("escalate")[-1]["code"], "missing_worker_provenance")
+        self.assertIn("worker_model", (dispatch.FACTORY / "review-9.md").read_text())
+
+    def test_unknown_exact_attempt_cannot_borrow_another_heads_model(self) -> None:
+        self.prepare()
+        for model in (None, "", "unknown", " UNKNOWN "):
+            with self.subTest(model=model):
+                rows = high_events()
+                rows[1]["worker_model"] = model
+                rows.append({"event": "attempt", "ticket": 7, "head": NEW_HEAD,
+                             "worker_model": "other/model"})
+                self.assertFalse(dispatch._head_evidence_matches(rows, 7, HEAD))
+                with mock.patch.object(dispatch.lifecycle, "read_events", return_value=rows):
+                    self.assertIsNone(dispatch._worker_model_for_head(7, HEAD))
+        rows = high_events()
+        rows[1]["head"] = NEW_HEAD  # refresh keeps the original worker's identity
+        rows.append({"event": "refreshed", "ticket": 7, "gate_head": HEAD,
+                     "actual_head": HEAD, "gate": "PASS"})
+        rows.append({"event": "claimed", "ticket": 7})
+        self.assertTrue(dispatch._head_evidence_matches(rows, 7, HEAD))
+
+
+class WorkerProvenanceBoundaryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        bindings, cwd = dispatch_bindings(), os.getcwd()
+        self.addCleanup(restore_dispatch, bindings, cwd)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        cfg = config.Config(self.root, "acme/widgets")
+        cfg.reviewer = ["reviewer", "--model", "primary/model"]
+        cfg.second_reviewer = ["reviewer", "--model", "second/model"]
+        cfg.checks = [config.Check("mutation", ["mutation"], when="pr")]
+        dispatch.configure(cfg)
+        self.reports = []
+
+    def review(self, _wt, n, report, head, *, role="primary", **_kwargs):
+        self.reports.append(report)
+        pending = dispatch._PENDING_SECOND_REVIEWS if role == "second" else dispatch._PENDING_REVIEWS
+        pending[n] = {"verdict": "APPROVE", "model": f"{role}/model"}
+        return "APPROVE", f"{role} accepted {head}"
+
+    def test_review_and_merge_prefer_exact_head_over_newer_lexically_lower_head(self) -> None:
+        head = "c" * 40
+        rows = high_events(head=head)
+        rows.append({"event": "attempt", "ticket": 7, "head": "b" * 40,
+                     "worker_model": "later/model"})
+        for row in rows:
+            dispatch.record(row["event"], **{key: value for key, value in row.items() if key != "event"})
+        self.assertEqual(dispatch._worker_model_for_head(7, head), "worker/model")
+        self.assertTrue(dispatch._head_evidence_matches(dispatch.lifecycle.read_events(dispatch.EVENTS), 7, head))
+        with mock.patch.object(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n")), \
+                mock.patch.object(dispatch, "review", side_effect=self.review), \
+                mock.patch.object(dispatch, "run", return_value=mock.Mock(stdout="M\tfactory/dispatch.py\n")):
+            verdict, findings, failed = dispatch.pr_gate_and_review(self.root, 7, "attempt", head, {})
+        provenance = "High-risk model provenance: worker=worker/model, primary=primary/model, second=second/model."
+        self.assertEqual((verdict, failed), ("APPROVE", False))
+        self.assertIn(provenance, findings)
+        self.assertTrue(dispatch._PENDING_RISK[7]["packet"].startswith(provenance + "\n\n"))
+        self.assertEqual(len(self.reports), 2)
+        for report in self.reports:
+            self.assertIn("worker=worker/model, primary=primary/model, second=second/model", report)
+            self.assertNotIn("later/model", report)
+
+    def test_refreshed_head_uses_latest_ticket_attempt_without_cross_ticket_or_claim_fallback(self) -> None:
+        rows = [
+            {"event": "attempt", "ticket": 7, "head": HEAD, "worker_model": "old/model"},
+            {"event": "attempt", "ticket": 7, "head": NEW_HEAD, "worker_model": "latest/model"},
+            {"event": "claimed", "ticket": 7},
+            {"event": "attempt", "ticket": 8, "head": "d" * 40, "worker_model": "foreign/model"},
+        ]
+        for model in ("latest/model", None, "unknown"):
+            with self.subTest(model=model):
+                rows[1]["worker_model"] = model
+                expected = "latest/model" if model == "latest/model" else None
+                self.assertEqual(dispatch._worker_model_for_head(7, "c" * 40, rows), expected)
+        self.assertIsNone(dispatch._worker_model_for_head(9, HEAD, rows))
+
+    def test_non_high_review_does_not_require_or_read_worker_provenance(self) -> None:
+        for tier in ("Low", "Medium"):
+            with self.subTest(tier=tier), \
+                    mock.patch.object(dispatch, "risk_for_head", return_value=(tier, [])), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(True, "- mutation: PASS\n")), \
+                    mock.patch.object(dispatch, "_worker_model_for_head", side_effect=AssertionError("High only")), \
+                    mock.patch.object(dispatch, "review", return_value=("APPROVE", "accepted")) as reviewer:
+                self.assertEqual(
+                    dispatch.pr_gate_and_review(self.root, 7, "attempt", HEAD, {}),
+                    ("APPROVE", "accepted", False),
+                )
+                reviewer.assert_called_once()
+                self.assertNotIn(7, dispatch._PENDING_RISK)
+
+    def test_missing_identity_preserves_actual_pr_gate_status_and_suppresses_both_reviewers(self) -> None:
+        for ok in (True, False):
+            with self.subTest(ok=ok), \
+                    mock.patch.object(dispatch, "risk_for_head", return_value=("High", ["high:dispatch"])), \
+                    mock.patch.object(dispatch, "run_gate", return_value=(ok, f"- mutation: {'PASS' if ok else 'FAIL'}\n")), \
+                    mock.patch.object(dispatch, "review") as reviewer:
+                verdict, findings, failed = dispatch.pr_gate_and_review(self.root, 7, "attempt", HEAD, {})
+                self.assertEqual((verdict, failed), (None, False))
+                self.assertIn("missing_worker_provenance:", findings)
+                self.assertIn("worker_model from the worker attempt", findings)
+                self.assertEqual(dispatch._PENDING_RISK[7], {
+                    "head": HEAD, "failure_code": "missing_worker_provenance", "packet": findings,
+                })
+                check = dispatch.lifecycle.read_events(dispatch.EVENTS)[-1]
+                self.assertEqual(check["reason"], "missing_worker_provenance")
+                self.assertIsNone(check["worker_model"])
+                self.assertEqual(check["pr_gate"], "PASS" if ok else "FAIL")
+                reviewer.assert_not_called()
 
 
 if __name__ == "__main__":

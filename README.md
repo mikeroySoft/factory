@@ -820,10 +820,24 @@ unassigned after its latest escalation, with none of those rows after it, was re
 by a human. A journal with no `generation` row is generation 0 and counts exactly as
 before.
 
+`requeue_agent` restores the host labels present at the latest `ready-for-human`
+transition, unless the ticket already has a host pin. It reads GitHub's shared label
+events one projected, bounded page at a time, so either host can requeue, large event
+payloads do not block preparation, and later manager failures do not hide the pin.
+Unpinned tickets stay unpinned; unavailable history refuses preparation.
+
 `requeue_agent` takes an optional `intent`. With `resume` (the default, and what a
-plain relabel means), the branch, worktree and refresh context are kept. With `fresh`,
-`agent/<n>` is recut from main at the generation's first claim, and the superseded local
-and remote heads stay under create-only
+plain relabel means), the branch, worktree and refresh context are kept. Before
+reusing a worktree (or its local branch), dispatch fetches origin and explicitly
+fetches the remote ticket branch even with a main-only fetch refspec, then
+fast-forwards a clean local ancestor to `origin/agent/<n>`, journaling `worktree-fast-forward`
+with `from_head` and `to_head`. Equal heads and unpublished local-ahead commits
+are kept. Dirty or diverged worktrees escalate before the worker or gate, naming
+both heads and preserving the worktree; generated `.factory/` and
+`.factory-prompt.md` artifacts do not count as worker edits. The lease and
+`claimed.base` use the synchronized head. No reset or recut is used for resume.
+With `fresh`, `agent/<n>` is recut from main at the generation's first claim,
+and the superseded local and remote heads stay under create-only
 `refs/factory-evidence/<n>-generation-<g>-{local,remote}-<sha12>` refs, so replaying an
 interrupted restart never replaces them. A `generation-restart` row (`local`, `remote`,
 `base`) is the receipt: later claims of the generation reuse the recut worktree instead
@@ -1142,6 +1156,19 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    runs only pr checks (release ones SKIP) and `--tier release` only release
    checks, with no built-ins. This attempt gate is what the worker and the
    dispatcher run after each attempt, and what the merge-stage refresh re-runs.
+   Attempt-tier reports record the starting `Head SHA` and retain a `## <check>
+   test evidence` section for passing unittest checks: the `Ran N tests` summary
+   and skipped-test identities with reasons, without the failure-output tail
+   limit. Direct Python and `uv run` Python invocations with only the recognized uv
+   flags (`--frozen`, `--no-managed-python`, `--no-project`, `--offline`) use an
+   injected unittest result class. Its `addSkip` callback records each test identity
+   and reason; `stopTestRun` records `testsRun` in a gate-created temporary JSON file
+   passed through `FACTORY_UNITTEST_RESULT`. The report reads this file, never
+   stdout diagnostics or progress text. Other commands (including coverage, pytest,
+   and uv commands with value-taking or unknown options) are left unchanged.
+   PR creation preserves bodies up to 60,000 characters; larger
+   bodies carry that prefix and a truncation notice. The full gate report remains
+   in the worktree.
    Repositories may opt into mechanical repairs with `[gate].fixups`, an array of
    argv arrays (for example `fixups = [["cargo", "xtask", "manifest"]]`). Factory
    never infers commands. Before escalating the last failed worker gate (including
@@ -1210,9 +1237,12 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    failure leaves an already-`ready-for-human` ticket on its existing escalation
    instead of posting another escalation comment or consuming another manager
    round.
-   `APPROVE` adds the `factory-approved` label only while the remote PR still
-   points to the exact commit that passed the gate and review. The successful
-   label operation and gate/review commit are recorded in `.factory/events.jsonl`.
+   `APPROVE` skips PRs carrying `factory-held`, draft or not, without adding
+   `factory-approved` or recording approval. After a hold is removed, approval
+   still requires the exact remote commit that passed the gate and review.
+   A hold observed in the post-label check withdraws the label without recording
+   approval. Successful label operations and gate/review commits are recorded
+   in `.factory/events.jsonl`.
    The optional `[review].policy` path defaults to `REVIEW.md`. Factory reads it
    from the base ref, never the worker head, so add that path to
    `[gate].protected_paths`. The policy can define bug/security/spec passes,
@@ -1239,6 +1269,16 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    Default-off code qualifies as Low only for wholly added Python module-level
    guards and new literal-false flag declarations, with no unguarded executable
    additions or existing flag bindings. Uncertain cases stay Medium.
+
+   Worker identity comes from the recorded launch spec (`attempt.worker_model`),
+   never the current worker configuration. Both High review packets and the
+   published result name the worker and reviewer models; the same journal lookup
+   governs review and merge eligibility, including requeues, owner claims and
+   refreshed heads. The built-in chore worker pins Droid's `gpt-6-sol`.
+   Missing worker provenance stops review before either reviewer launches and
+   machine-escalates as `missing_worker_provenance`, naming the missing
+   `worker_model` and requesting an explicit model plus a new worker attempt.
+   This is not an additional approval gate for runs with recorded identity.
 
    A High PR merges without human approval when the full current-head gate
    (including all PR-tier checks) passes, both reviewers approve, and mutation
@@ -1313,9 +1353,23 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    identity has not changed. Matching survivors remain in the report as
    **accepted equivalent**, with the argument and reviewer, but do not block.
    Invalid entries fail in both blocking and report-only modes. Before selecting
-   mutants, every entry's complete `original` source must still match at its
-   recorded `file:line`; rewritten, moved, deleted or unreadable source makes the
-   entry stale and fails either mode, even with no changed mutable files.
+   mutants, committed registries resolve each entry from the registry's last
+   committed revision, the protected review snapshot. Within a function or class,
+   matching uses the complete `original` text and qualified lexical owner
+   (including enclosing classes and outer functions). Inserting code above a
+   mutant or changing neighbouring lines does not invalidate that identity.
+   Exactly one source match must remain in the same owner; renamed owners,
+   rewritten/deleted source and ambiguous matches fail closed. Module-level
+   entries retain exact three-line before/after context and BOF/EOF boundaries.
+   Unreadable or invalid Python files and shallow history also fail closed.
+   Resolved lines govern every exact operator/original/mutated identity comparison
+   without editing the registry. Each relocation reports old/new lines, operator,
+   source and context revision. Ad-hoc uncommitted registries remain line-pinned.
+   The attempt gate runs `mutation-equivalents` validation for configured
+   `scripts/mutation.py --equivalents FILE` commands, even when mutation itself
+   belongs to the PR tier. Relocations are journaled as `equivalent-relocation`
+   events. To validate without enumerating or running mutants:
+   `python scripts/mutation.py --equivalents mutation-equivalents.json --check-equivalents`.
    An exact reviewed mutant that was tested and killed also fails either mode.
    When every changed-line candidate was sampled and completed, an entry on any
    enumerated changed line with no matching surviving identity is also stale
@@ -1327,10 +1381,10 @@ label timelines. Correction reads stop at 50 reviews, 50 threads of 50 comments,
    an ordinary worker diff. The registry ships empty (`[]`); #541 adds its own
    reviewed entries pinned to its gated head. No survivor is pre-approved by this
    mechanism.
-   The built-in OMP worker pins `openai-codex/gpt-5.6-sol`; custom worker
-   profiles must also name a model. `factory doctor` warns when any of the
-   worker, primary-reviewer, or second-reviewer models is missing or not
-   distinct, or when the second reviewer cannot launch.
+   The built-in OMP worker pins `openai-codex/gpt-6.1-sol`; custom worker
+   profiles must also name a model. `factory doctor` FAILs missing worker models
+   and warns when primary/second-reviewer models are missing or not distinct,
+   or when the second reviewer cannot launch.
    `factory stats --by-risk` and the dashboard report human interventions,
    human-wait minutes, rounds, disagreement rate, and escape rate per tier.
 
@@ -1466,13 +1520,13 @@ review_rounds = 1                # REVISE -> worker -> re-review cycles
 # cost_pattern = 'Total cost:\s*\$([0-9.]+)'   # $ from the worker log (Claude Code prints this)
 
 [workers]                        # ticket label/profile -> argv; {prompt} file, {cwd} worktree
-default = ["omp", "-p", "--model", "openai-codex/gpt-5.6-sol", "--cwd", "{cwd}", "@{prompt}"]
-chore   = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+default = ["omp", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "{cwd}", "@{prompt}"]
+chore   = ["droid", "exec", "--model", "gpt-6-sol", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 
 # A differently named OMP-compatible worker selected by a separate pilot label:
 # [workers.prime]
 # when = { label = "harness-pilot" }
-# command = ["factory-prime-agent", "-p", "--cwd", "{cwd}", "@{prompt}", "--mode", "json"]
+# command = ["factory-prime-agent", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "{cwd}", "@{prompt}", "--mode", "json"]
 # transcript = "omp-session"
 # version = "0.10.0"
 # env = { DO_NOT_TRACK = "1", PRIME_AGENT_TELEMETRY = "0", PRIME_AGENT_CODING_AGENT_DIR = "{root}/.factory/prime-agent" }
@@ -1553,6 +1607,28 @@ Missing installed identity or a missing/invalid target does not establish stalen
 Other District metadata stays outside pipeline configuration; `doctor` accepts it
 only under `defaults`. An `engine` table under a per-repository host section
 still produces a host-config warning.
+
+To cap concurrent PR-tier mutation checks across repositories on one host:
+
+```toml
+[defaults.gate]
+mutation_slots = 1
+```
+
+`gate.mutation_slots` is a positive integer, host-only; a
+`[repo."owner/name".gate]` host override is also accepted. Use the same limit for
+all repositories sharing the host. Unset preserves uncapped behavior.
+Checks named `mutation`, declaring `proof = "mutation-v1"`, or invoking the exact
+`scripts/mutation.py` token acquire one of `/tmp/factory-mutation-<slot>.lock`
+with `flock`, independently of `gate.lock`, the repository, and `TMPDIR`.
+Both report-only and blocking proof runs use slots; other checks and tiers do not.
+The mutation subprocess inherits its slot descriptor, so interrupting or killing
+the gate cannot admit another run while that child survives. Each slot is released
+when the check returns, fails, or times out (or when an orphaned child exits).
+Do not remove the lock files while gates run. The report records
+`Mutation slot wait: <check> <seconds>s` separately; waiting does not consume the
+check timeout or mutation duration.
+Contention is also recorded as a `mutation_slot` lifecycle wait.
 
 `[engine] yield_for_update = true` in `.factory.toml` opts a repository into
 yielding when stale (default false). For the whole shared host, set:
@@ -1711,8 +1787,17 @@ labels from the authenticated dispatcher only before the recorded escalation
 comment; human removals and later edits still hold automatic management.
 
 Expired claims are admitted through the frontier only when no other hold exists.
-A human assignee or an open `agent/<ticket>` PR with an expired claim remains a
-hold after heartbeats stop, so completed work awaiting CI/review/merge is not run again.
+A human assignee remains a hold. An open `agent/<ticket>` PR also remains a hold
+for foreign claims or completed attempts. When the elected own-host claim expires
+without completion or escalation, the next pass instead escalates to `ready-for-human`
+under the ticket lock and posts a nonce-bearing `Factory requeue` comment.
+Missing local attempt evidence is recoverable, including a kill before `claimed`
+is journaled. New `claimed` receipts bind to the claim nonce, not GitHub creation
+time; legacy completion receipts use the owner's local heartbeat clock.
+Recovery rechecks heartbeat/election, keeps the PR and worktree intact, and reports
+the local HEAD, remote branch head and unpushed commit SHAs when readable (otherwise
+explicitly unavailable). It never resets or recreates the worktree. The next owner
+must merge main before resuming gate/review and publishing the retained commits.
 Each heartbeat revalidates the elected host and nonce. A displaced owner stops
 renewing rather than reviving an expired claim ahead of its replacement.
 Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
@@ -1781,6 +1866,30 @@ failure lists each hit as `path:line: [matched term] line`.
 extra = ["\\bbluefin\\b", "\\.example-corp\\.com\\b"]
 ```
 
+Every worker profile pins `--model` in argv, including non-OMP workers;
+`factory doctor` FAILs implicit profiles even when `usage.model` is configured.
+`claimed`, `attempt` and worker `llm-usage` rows record this admission-time
+identity as `worker_model`. Runtime `usage.model` is only a cross-check:
+disagreement emits `worker-model-mismatch` with the pinned and reported IDs.
+OMP transcript providers qualify that comparison but do not rewrite the raw
+`model` used for pricing, token grouping or local-token attribution. Without
+a reported provider, an unqualified model may match the pinned model's suffix.
+Missing runtime usage leaves pinned identity intact; history is never amended.
+
+`factory stats --week [--json]` reports post-FIX outcomes by `worker_model`:
+merged, re-escalated, pending and merged/resolved. The cohort is manager FIX
+decisions in the seven-day window, followed through the available journal end.
+The first worker usage/attempt identifies execution (including fallback or a
+direct manager FIX without a claim); otherwise the first claim supplies identity.
+Later retries never replace it or fill missing historical models. A new FIX
+leaves an unresolved earlier round pending. Missing-model and no-worker cohorts
+remain separate. This is observational, not controlled: case mix can differ;
+the historical default-worker baseline is 6/35 merged (17%).
+Terminal FIX failures count as re-escalated. On already-human tickets, a
+`decision` receipt (`stage = "manager"`, `chosen = "FIX_FAILED"`) supplies that
+outcome without repeating escalation or spending another manager round.
+Older log-only failures lack this evidence and remain unresolved in the journal.
+
 Each worker attempt journals one `llm-usage` event (`stage = "worker"`) with
 `model`, `prompt_tokens` (cached included), `completion_tokens`,
 `cached_tokens`, `cost`, and `local`; anything the worker does not report is
@@ -1797,7 +1906,7 @@ those totals to the worker's claim label; workers with neither source remain
 
 ```toml
 [workers.claude]   # Claude Code `-p --output-format json` prints one result object (paths checked on 2.1.292)
-command = ["claude-worker", "--output-format", "json", "{prompt}"]
+command = ["claude-worker", "--model", "claude-opus-5-5", "--output-format", "json", "{prompt}"]
 
 [workers.claude.usage]
 match = { type = "result" }
@@ -3265,6 +3374,7 @@ two MCP tools call that same function. Nothing else composes these label edits.
 | `requeue_agent` | `number`, `intent?` (`resume` or `fresh`), `comment?` | issue open and `ready-for-human`; not an `upstream sync:` issue (`routing_refused`) | add `ready-for-agent`, remove `ready-for-human`, unassign the actor; opens a [ticket generation](#owner-requeues-and-ticket-generations) |
 | `resolve_and_close` | `number`, `reason` (`completed` or `not planned`), `comment?` | issue open | close with that reason |
 | `add_needs_triage` | `number`, `comment?` | issue open, no pipeline label (`needs-triage`, `ready-for-agent`, `ready-for-human`, `needs-info`), not an `upstream sync:` issue | add `needs-triage` |
+| `approve_pr` | PR `number`, `ruling_id?` (string) | PR open, not draft or `factory-held`, targets configured `main`, no changes-requested review; existing exact-head gate, independent review and required manager evidence | add only `factory-approved` through `decisions.apply` → `_approve` → `_approval_policy` |
 
 Preconditions run against the exact target the proposal binds to, so `apply`'s
 stale-target check guarantees they still held when the effect ran. Refusals are
@@ -3273,6 +3383,15 @@ structured `{ok: false, error: {code, message}}` with the same `code` on both pa
 `decisions` code. Every proposal records `caller` (`dashboard` or `mcp`) and
 `action` (`{name, args}`); the `human-decision` journal rows for `prepared`,
 `started` and the final status, and the receipt, carry both.
+
+For agent re-approval, prepare `{"action": "approve_pr", "args": {"number": 257,
+"ruling_id": "r3-0740"}}` with `factory_prepare_action` and the registered
+`repository`, then pass the returned `proposal_id` and `confirmation` to
+`factory_apply_action`. `ruling_id` is optional audit context, not an approval
+waiver; it is stored in the action arguments on journal rows and receipts.
+No label arrays, comments or other effects are accepted. The approval event
+records the authenticated GitHub actor and `source: "mcp"`; approval policy
+is checked again at apply.
 
 ## Read-only Factory Manager console (`factory chat`)
 

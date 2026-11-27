@@ -652,7 +652,7 @@ def _approval_policy(cfg: Config, target: dict) -> None:
         or not isinstance(head, str)
         or _SHA.fullmatch(head) is None
         or target.get("state") != "OPEN"
-        or target.get("draft")
+        or target.get("draft") or "factory-held" in target.get("labels", [])
         or target.get("base") != cfg.main
         or target.get("review_decision") == "CHANGES_REQUESTED"
     ):
@@ -813,8 +813,8 @@ def prepare(
             target_by_key[key] = target, raw
             targets.append(target)
         target, raw = target_by_key[key]
-        if guard is not None:
-            guard(target)
+        _prepare_action_request(
+            cfg, request, target, action=action, guard=guard, deadline=deadline)
         if kind == "pr":
             ticket = target.get("ticket") or number
             locks.add(("ticket", ticket))
@@ -921,6 +921,55 @@ def _lock_file(directory: int, name: str) -> int:
         os.close(fd)
         raise DecisionError("decision lock is unsafe", "unsafe_storage")
     return fd
+
+
+def _prepare_action_request(cfg, request, target, action, guard, deadline):
+    if guard is not None:
+        guard(target)
+    if not action or action.get("name") not in {"requeue_agent"} or any(
+        label.startswith("host:") for label in target["labels"]
+    ):
+        return
+    # Shared provider history, not the MCP host's potentially older local journal.
+    # Project before capture and cap each page, not the ticket's complete history.
+    events = []
+    page = 1
+    while True:
+        rows = _read_json(cfg, [
+            "gh", "api", "--hostname", "github.com", "--method", "GET",
+            f"repos/{cfg.repo}/issues/{request['number']}/events",
+            "-f", "per_page=100", "-f", f"page={page}",
+            "--jq", ('if type == "array" and all(.[]; type == "object") '
+                     'then map({event, label: {name: .label.name}}) '
+                     'else error("invalid issue events") end'),
+        ], deadline)
+        if not isinstance(rows, list):
+            raise DecisionError("provider returned invalid issue events", "provider_unavailable")
+        if not rows:
+            break
+        events.extend(rows)
+        page += 1
+    pins = set()
+    for row in reversed(events):
+        if not isinstance(row, dict):
+            raise DecisionError("provider returned invalid issue event", "provider_unavailable")
+        kind = row.get("event")
+        if kind not in {"labeled", "unlabeled"}:
+            continue
+        label = row.get("label")
+        if not isinstance(label, dict) or not isinstance(label.get("name"), str):
+            raise DecisionError("provider returned invalid label event", "provider_unavailable")
+        name = label["name"]
+        if (kind, name) == ("labeled", LABEL_HUMAN):
+            # Named requeue alone may restore provider-observed host labels after
+            # generic request normalization; the exact additions stay in the preview.
+            request["add"].extend(sorted(pins))
+            return
+        if name.startswith("host:"):
+            {
+                "labeled": pins.discard,
+                "unlabeled": pins.add,
+            }.get(kind)(name)
 
 
 @contextmanager
@@ -1086,16 +1135,16 @@ def _approve(cfg: Config, step: dict, deadline: float) -> dict:
         fresh = _pr_target(cfg, target["number"], deadline)[0]
     except DecisionError as exc:
         raise _AmbiguousCommand("approval result could not be revalidated") from exc
-    if (
-        fresh.get("head") != target.get("head")
-        or fresh.get("base") != target.get("base")
-        or fresh.get("state") != "OPEN"
-        or fresh.get("draft")
-        or fresh.get("review_decision") == "CHANGES_REQUESTED"
-        or LABEL_APPROVED not in fresh.get("labels", [])
-    ):
+    try:
+        _approval_policy(cfg, fresh)
+        if (
+            fresh.get("head") != target.get("head")
+            or LABEL_APPROVED not in fresh.get("labels", [])
+        ):
+            raise DecisionError("PR changed while approval was applied", "stale_target")
+    except (DecisionError, OSError) as exc:
         _withdraw_approval(cfg, target, deadline)
-        raise _FailedStep("PR changed while approval was applied; approval label withdrawn")
+        raise _FailedStep("approval revalidation failed; approval label withdrawn") from exc
     try:
         lifecycle.append(cfg.factory / "events.jsonl", {
             "at": _format_time(_now()),
@@ -1106,7 +1155,7 @@ def _approve(cfg: Config, step: dict, deadline: float) -> dict:
             "gate_head": target["head"],
             "review_head": target["head"],
             "actor": step.get("actor"),
-            "source": "human-decision",
+            "source": {"mcp": "mcp"}.get(step.get("caller"), "human-decision"),
         })
     except OSError as exc:
         try:
@@ -1231,7 +1280,7 @@ def apply(cfg: Config, proposal_id: str, confirmation: object) -> dict:
                 for step in document["steps"]:
                     try:
                         if step.get("kind") == "approve":
-                            step = {**step, "actor": actor}
+                            step = {**step, "actor": actor, "caller": preview.get("caller")}
                             step_results.append(_approve(cfg, step, deadline))
                         elif step.get("kind") == "command":
                             step_results.append(_mutation(cfg, step, deadline))

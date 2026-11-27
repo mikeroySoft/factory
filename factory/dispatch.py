@@ -649,6 +649,35 @@ def elected_host_claim(claims: list[dict]) -> dict | None:
     return elected
 
 
+def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
+    """An expired own-host election without evidence of completion or escalation."""
+    elected = elected_host_claim(claims)
+    if (not elected or elected["host"] != cfg.host_name
+            or "requeue" in elected or live_host_claims(claims)):
+        return None
+    events = lifecycle.read_events(EVENTS)
+    # New attempts bind directly to the nonce; GitHub and host clocks need not agree.
+    attempt = next((row for row in reversed(events)
+                    if row.get("ticket") == n and row.get("event") == "claimed"
+                    and row.get("claim_nonce") in (None, elected["nonce"])), None)
+    if attempt is None or not (execution := attempt.get("execution_id")):
+        return elected
+    for row in events:
+        if row.get("execution_id") != execution:
+            continue
+        # Old journals lack the nonce. Only completion after this owner's last
+        # heartbeat (both from the owning host's clock) can establish completion.
+        if (attempt.get("claim_nonce") is None
+                and datetime.fromisoformat(row["at"]) < elected["heartbeat"].replace(microsecond=0)):
+            continue
+        if row.get("event") in {"approved", "escalate", "merged"}:
+            return None
+        if (row.get("event") == "lifecycle" and row.get("kind") == "exit"
+                and row.get("outcome") not in {"unknown", "interrupted", "mechanism_failure"}):
+            return None
+    return elected
+
+
 def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     if live := live_host_claims(claims):
         return f"host claim ({live[0]['host']})"
@@ -664,7 +693,7 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
         if "requeue" not in elected_host_claim(claims) and gh_json(
             ["pr", "list", "--repo", REPO, "--state", "open",
              "--head", f"agent/{n}", "--json", "number"]
-        ):
+        ) and interrupted_host_claim(n, claims) is None:
             return "open PR"
     return None
 
@@ -688,6 +717,9 @@ def delete_host_claim(n: int, claim: dict) -> None:
 
 
 def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement: int | None = None) -> dict:
+    if replacement is None and interrupted_host_claim(n, claims) is not None:
+        # Keep the elected nonce for escalation, including when @me was already removed.
+        return issue
     claims = [row for row in claims if row["id"] != replacement]
     live_ids = {row["id"] for row in live_host_claims(claims)}
     stale = [row for row in claims if row["id"] not in live_ids]
@@ -2154,22 +2186,41 @@ def _launch_failure(wt: Path, logfile: Path, offset: int, launch_head: str, code
     return "auth_failed", stderr_tail(line.strip())[-200:]
 
 
-def ensure_worktree(n: int) -> Path:
-    wt = FACTORY / f"wt-{n}"
-    if wt.is_dir():
-        return wt
+class WorktreeRefused(RuntimeError):
+    """A reused ticket worktree cannot safely continue from the fetched branch."""
+
+
+def ensure_worktree(n: int, *, preserved: str | None = None) -> Path:
+    wt, branch = FACTORY / f"wt-{n}", f"agent/{n}"
     with _REMOTE_REFS:
         run(["git", "fetch", "origin"], cwd=ROOT)
-    branch = f"agent/{n}"
-    if run(["git", "rev-parse", "--verify", branch], cwd=ROOT, check=False).returncode == 0:
-        run(["git", "worktree", "add", str(wt), branch], cwd=ROOT)
+        remote = _remote_agent_head(ROOT, n)
+        if remote:
+            run(["git", "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], cwd=ROOT)
+    if not wt.is_dir():
+        if run(["git", "rev-parse", "--verify", branch], cwd=ROOT, check=False).returncode == 0:
+            run(["git", "worktree", "add", str(wt), branch], cwd=ROOT)
+        else:
+            # Another host may have pushed the branch. Start from that copy, never main.
+            start = f"origin/{branch}"
+            if run(["git", "rev-parse", "--verify", start], cwd=ROOT, check=False).returncode != 0:
+                start = f"origin/{cfg.main}"
+            run(["git", "worktree", "add", str(wt), "-b", branch, start], cwd=ROOT)
+    head = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    context = f"{branch}: kept HEAD {head}, origin/{branch} {remote or '(none)'}; worktree kept at {wt}"
+    if run([
+        "git", "status", "--porcelain", "--untracked-files=all", "--", ".",
+        ":(exclude).factory-prompt.md", ":(exclude).factory",
+    ], cwd=wt).stdout:
+        raise WorktreeRefused(f"uncommitted changes; {context}")
+    # A fresh generation may replace exactly the head its restart preserved, not adopt it.
+    if not remote or head == remote or remote == preserved:
         return wt
-    # No local copy: the branch may have been pushed from another worktree,
-    # another host, or by a human. Start from the remote copy, never main.
-    start = f"origin/{branch}"
-    if run(["git", "rev-parse", "--verify", start], cwd=ROOT, check=False).returncode != 0:
-        start = f"origin/{cfg.main}"
-    run(["git", "worktree", "add", str(wt), "-b", branch, start], cwd=ROOT)
+    if run(["git", "merge-base", "--is-ancestor", head, remote], cwd=wt, check=False).returncode == 0:
+        run(["git", "merge", "--ff-only", remote], cwd=wt)
+        record("worktree-fast-forward", ticket=n, from_head=head, to_head=remote)
+    elif run(["git", "merge-base", "--is-ancestor", remote, head], cwd=wt, check=False).returncode:
+        raise WorktreeRefused(f"diverged history; {context}")
     return wt
 
 
@@ -2491,7 +2542,7 @@ ESCALATION_CODES = frozenset({
     "approval_missing", "ci_failed", "ci_runner", "refresh_head", "refresh_conflict",
     "refresh_empty", "gh_failed", "review_intake", "manager_failed",
     "manager_exhausted", "manager_human", "pr_feedback", "pr_stale",
-    "lease_refused", "dispatcher_error", "no_change", "risk_disagreement",
+    "lease_refused", "dispatcher_error", "no_change", "risk_disagreement", "missing_worker_provenance",
 })
 
 
@@ -3265,17 +3316,15 @@ def _moved_main_proof(
     return _is_ancestor(wt, snapshot, proof_base) and _is_ancestor(wt, proof_base, current)
 
 
-def _worker_model_for_head(n: int, head: str) -> str | None:
-    events = lifecycle.read_events(EVENTS)
-    exact = next((
-        event.get("worker_model") for event in reversed(events)
+def _worker_model_for_head(n: int, head: str, events: list[dict] | None = None) -> str | None:
+    attempts = [
+        event for event in (lifecycle.read_events(EVENTS) if events is None else events)
         if event.get("event") == "attempt" and event.get("ticket") == n
-        and event.get("head") == head
-    ), None)
-    return exact or next((
-        event.get("worker_model") for event in reversed(events)
-        if event.get("event") == "attempt" and event.get("ticket") == n
-    ), None)
+    ]
+    source = next((event for event in reversed(attempts) if event.get("head") == head),
+                  attempts[-1] if attempts else {})
+    model = source.get("worker_model")
+    return model if isinstance(model, str) and model.strip() and model.strip().lower() != "unknown" else None
 
 
 def _worker_finished_for_head(n: int, head: str) -> bool:
@@ -3346,7 +3395,7 @@ def pr_gate_and_review(
         ):
             pr_runs[head] = run_gate(
                 wt, f"{n}-pr", tier="pr", blocking_mutation=policy_tier == "High",
-                base=caller_base, mutation_proof=proof, mutation_duration=duration,
+                base=caller_base, mutation_proof=proof, mutation_duration=duration if duration is not None else cfg.mutation_duration if proof else None,
             )
             ok, pr_report = pr_runs[head]
             if not ok and fixups and cfg.fixups:
@@ -3398,7 +3447,7 @@ def pr_gate_and_review(
                     base_commit = current_base
                     pr_runs[head] = run_gate(
                         wt, f"{n}-pr", tier="pr", blocking_mutation=True,
-                        base=caller_base, mutation_proof=True, mutation_duration=duration,
+                        base=caller_base, mutation_proof=True, mutation_duration=duration if duration is not None else cfg.mutation_duration,
                     )
                     ok, pr_report = pr_runs[head]
                     verdict, proof_scope = (
@@ -3441,6 +3490,25 @@ def pr_gate_and_review(
                         pr_gate="FAIL", **proof_fields,
                     )
                 return "REVISE", pr_report, True
+    worker_model = None
+    match policy_tier:
+        case "High":
+            worker_model = _worker_model_for_head(n, head)
+            if worker_model is None:
+                findings = (
+                    f"missing_worker_provenance: High-risk review at {head} requires "
+                    "worker_model from the worker attempt; configure an explicit worker --model "
+                    "and run a new attempt."
+                )
+                _PENDING_RISK[n] = {"head": head, "failure_code": "missing_worker_provenance", "packet": findings}
+                record("risk-check", ticket=n, head=head, reason="missing_worker_provenance",
+                       worker_model=None, pr_gate="PASS" if ok else "FAIL")
+                return None, findings, False
+            report += (
+                f"\n\n## High-risk model provenance\nworker={worker_model}, "
+                f"primary={config.command_model(cfg.reviewer)}, "
+                f"second={config.command_model(cfg.second_reviewer)}\n"
+            )
     primary, primary_findings = review(wt, n, report, head)
     primary_row = _PENDING_REVIEWS.get(n) or {}
     if primary_row and primary_row.get("verdict") is None:
@@ -3452,7 +3520,6 @@ def pr_gate_and_review(
 
     primary_model = primary_row.get("model")
     configured_second_model = config.command_model(cfg.second_reviewer)
-    worker_model = _worker_model_for_head(n, head)
     configured_models = (primary_model, configured_second_model, worker_model)
     if any(model is None for model in configured_models) or len(set(configured_models)) != 3:
         findings = (
@@ -3489,7 +3556,8 @@ def pr_gate_and_review(
         primary=primary, second=second, models=list(models), pr_gate="PASS" if ok else "FAIL",
         **proof_fields,
     )
-    packet = risk_disagreement_packet(
+    provenance = f"High-risk model provenance: worker={worker_model}, primary={models[0]}, second={models[1]}."
+    packet = provenance + "\n\n" + risk_disagreement_packet(
         head, rules, primary, primary_findings, second, second_findings,
         mutation, pr_report or "mutation check missing", changed,
     )
@@ -3514,7 +3582,7 @@ def pr_gate_and_review(
         return "REJECT", packet, False
     if "REVISE" in (primary, second) or disagreement:
         return "REVISE", packet, False
-    return "APPROVE", f"{primary_findings}\n\n{second_findings}", False
+    return "APPROVE", f"{provenance}\n\n{primary_findings}\n\n{second_findings}", False
 
 
 
@@ -3631,6 +3699,8 @@ def push_and_pr(
             record("pr-opened", ticket=ticket, pr=existing[0]["number"])
         return True
     body_file = FACTORY / f"pr-body-{branch.removeprefix('agent/')}.md"
+    if len(body) > 60_000:
+        body = body[:60_000] + "\n\n[truncated: PR body excerpt; full gate report retained in the worktree]\n"
     body_file.write_text(body)
     created = run(
         [
@@ -4003,7 +4073,6 @@ def _head_evidence_matches(
     ):
         return False
     gate = None
-    worker_model = None
     reviews: dict[str, dict] = {}
     mutation = None
     pr_gate = None
@@ -4017,7 +4086,6 @@ def _head_evidence_matches(
             or event.get("event") == "gate-fixup" and event.get("head") == head
         ):
             gate = event.get("gate") == "PASS" and event.get("actual_head") == head
-            worker_model = event.get("worker_model") or worker_model
         elif event.get("event") == "review" and event.get("head") == head:
             reviews[event.get("role") or "primary"] = event
         elif event.get("event") == "risk-check" and event.get("head") == head:
@@ -4026,11 +4094,7 @@ def _head_evidence_matches(
             scope = event.get("mutation_scope")
             bound = isinstance(scope, str) and re.fullmatch(r"[0-9a-f]{64}", scope)
             mutation_proof = event.get("mutation_proof") if bound else None
-    if worker_model is None:
-        worker_model = next((
-            event.get("worker_model") for event in reversed(events)
-            if event.get("event") == "attempt" and event.get("ticket") == n
-        ), None)
+    worker_model = _worker_model_for_head(n, head, events)
     primary = reviews.get("primary") or {}
     primary_ok = (
         primary.get("accepted") is True
@@ -4071,8 +4135,8 @@ def approve_pr(n: int, head: str) -> bool:
 
     With `manager.review = "all"` the label additionally waits for a manager APPROVE
     bound to `head`; until the PR frontier obtains one this returns True without
-    labelling (nothing is wrong, so callers must not escalate). A refreshed head is a
-    new head and needs a fresh decision; nothing is ever re-bound.
+    labelling (nothing is wrong, so callers must not escalate). A held PR likewise
+    returns True without approval. A refreshed head needs a fresh decision.
     """
     events = lifecycle.read_events(EVENTS)
     if not _head_evidence_matches(events, n, head):
@@ -4080,8 +4144,11 @@ def approve_pr(n: int, head: str) -> bool:
     if cfg.manager and cfg.manager_review == "all" and not manager_approval(events, n, head):
         log(f"#{n}: gate and review passed at {head[:12]}; waiting for manager approval (manager.review = all)")
         return True
-    fields = "number,state,headRefOid,baseRefName,reviewDecision,files"
+    fields = "number,state,headRefOid,baseRefName,reviewDecision,files,labels"
     pr = gh_json(["pr", "view", f"agent/{n}", "--repo", REPO, "--json", fields])
+    if any(label["name"] == "factory-held" for label in pr.get("labels", [])):
+        log(f"#{n}: approval skipped (factory-held)")
+        return True
     changed_paths = [
         item["path"] for item in pr.get("files", [])
         if isinstance(item, dict) and isinstance(item.get("path"), str)
@@ -4111,18 +4178,25 @@ def approve_pr(n: int, head: str) -> bool:
     if changed.returncode:
         return False
     fresh = gh_json(["pr", "view", str(pr["number"]), "--repo", REPO, "--json", fields])
+    held = any(label["name"] == "factory-held" for label in fresh.get("labels", []))
     if (
-        fresh.get("state") != "OPEN"
+        held
+        or fresh.get("state") != "OPEN"
         or fresh.get("headRefOid") != head
         or fresh.get("baseRefName") != cfg.main
         or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
     ):
-        run(
+        withdrawn = run(
             ["gh", "pr", "edit", str(pr["number"]), "--repo", REPO,
              "--remove-label", FACTORY_APPROVED],
             check=False,
         )
-        return False
+        if withdrawn.returncode:
+            log(f"#{n}: approval withdrawal failed; {FACTORY_APPROVED} may remain")
+            return False
+        if held:
+            log(f"#{n}: approval withdrawn (factory-held)")
+        return held
     if not manager_approval(events, n, head):
         from factory import trace
 
@@ -4508,7 +4582,12 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
     if target.get("baseRefName") != cfg.main:
         log(f"PR #{pr}: targets {target.get('baseRefName')!r}, not {cfg.main!r}; not refreshing")
         return False
-    wt = ensure_worktree(n)
+    try:
+        wt = ensure_worktree(n)
+    except WorktreeRefused as exc:
+        run(["gh", "pr", "edit", str(pr), "--repo", REPO, "--remove-label", FACTORY_APPROVED], check=False)
+        escalate(n, str(exc), None, code="refresh_head")
+        return False
 
     def restore_pr_head(refreshed_head: str) -> str:
         """Keep the unpushed candidate as evidence before restoring the live PR head."""
@@ -4768,12 +4847,18 @@ def refresh_pr_branch(n: int, pr: int, carries_upstream: bool) -> bool:
         defer_mutation_proof(n, head, "refresh")
         return False
     pending = _PENDING_REVIEWS.get(n)
-    unavailable = pending is not None and pending.get("verdict") is None
+    failure = _PENDING_RISK.get(n, {})
+    failure_code = failure.get("failure_code", "reviewer_unavailable")
+    unavailable = (
+        pending is not None and pending.get("verdict") is None
+        or "failure_code" in failure
+    )
     pr_comment(n, findings)
     if unavailable:
         withdraw(
-            f"reviewer unavailable after {verb} onto moved main",
-            "reviewer_unavailable",
+            failure["packet"] if failure else f"reviewer unavailable after {verb} onto moved main",
+            failure_code,
+            extra=findings,
         )
         return False
     if verdict != "APPROVE":
@@ -5373,6 +5458,16 @@ def worker_round(
     transcript = _transcript(session_dir, wall)
     timeout = {"timeout": fired, "reason": TIMEOUT_REASONS[fired]} if fired else {}
     usage = worker_usage(logfile, cfg.worker_usage.get(worker), transcript)
+    reported_model = usage.get("model")
+    if spec.model and reported_model:
+        provider = usage.get("provider")
+        reported_identity = f"{provider}/{reported_model}" if provider and "/" in spec.model else reported_model
+        matches = reported_identity == spec.model or (
+            not provider and reported_model == spec.model.partition("/")[2]
+        )
+        if not matches:
+            record("worker-model-mismatch", ticket=n, attempt=attempt,
+                   reported_model=reported_model, reported_provider=provider, **identity)
     record(
         "llm-usage", ticket=n, stage="worker", attempt=attempt,
         local=_usage_local(usage), **identity, **usage,
@@ -5515,6 +5610,10 @@ def transcript_usage(path: Path) -> dict:
             usage[key] = usage.get(key, 0) + value
         if isinstance(message.get("model"), str):
             usage["model"] = message["model"]
+            provider = message.get("provider")
+            usage.pop("provider", None)
+            if isinstance(provider, str) and provider:
+                usage["provider"] = provider
     return usage
 
 
@@ -5684,6 +5783,31 @@ def process_ticket(
                 execution.outcome = "not_admitted"
                 execution.reason = "state_changed"
                 return
+            if cfg.host_name and (interrupted := interrupted_host_claim(n, claims)):
+                # Admission reads can race a heartbeat or another host's replacement.
+                current = host_claims(n)
+                owner = interrupted_host_claim(n, current)
+                if (owner is not None and owner["nonce"] == interrupted["nonce"]
+                        and host_claim_hold(n, fresh, current) is None
+                        and gh_json(["pr", "list", "--repo", REPO, "--state", "open",
+                                     "--head", f"agent/{n}", "--json", "number"])):
+                    evidence = "local history unavailable"
+                    if (wt / ".git").exists():
+                        head = run(["git", "rev-parse", "HEAD"], cwd=wt, check=False).stdout.strip()
+                        remote = _remote_agent_head(wt, n, check=False)
+                        evidence = f"local HEAD {head or '(unavailable)'}; remote agent/{n} {remote or '(none)'}"
+                        if head and remote and remote != "(unavailable)":
+                            commits = run(["git", "log", "--format=%H", f"{remote}..{head}"],
+                                          cwd=wt, check=False)
+                            unpublished = (commits.stdout.strip().replace("\n", ", ") or "(none)"
+                                           if commits.returncode == 0 else "(unavailable)")
+                            evidence += f"; local commits not on remote: {unpublished}"
+                    escalate(
+                        n, f"own-host claim expired during an unfinished attempt with an open PR; "
+                        f"worktree kept at {wt}; {evidence}; resume agent/{n} after merging {cfg.main}",
+                        None, code="dispatcher_error",
+                    )
+                    return
             labels = {label["name"] for label in fresh["labels"]}
             observe_owner_requeue(n, fresh)
             profile = cfg.worker_key(labels)
@@ -5750,13 +5874,15 @@ def process_ticket(
                 wt = restart_worktree(n, ticket_generation.number)
                 receipt = generation.current(lifecycle.read_events(EVENTS), n).restart
             else:
-                wt = ensure_worktree(n)
+                wt = ensure_worktree(n, preserved=receipt["remote"]) if receipt else ensure_worktree(n)
             replay_base = run(["git", "rev-parse", "HEAD"], cwd=wt).stdout.strip()
             record(
                 "claimed", ticket=n, title=title, labels=sorted(labels),
                 worker=worker_key, worker_version=cfg.worker_version.get(worker_key),
+                worker_model=cfg.worker_model(worker_key),
                 priority=tier, priority_source=why, experiment=schedule.is_experiment(fresh),
                 base=replay_base, generation=ticket_generation.number,
+                claim_nonce=host_claim.comment["nonce"] if host_claim is not None else None,
                 issue={key: fresh.get(key) for key in ("title", "body", "comments")},
             )
             if admitted := issue.get("_factory_admitted"):
@@ -5856,13 +5982,14 @@ def process_ticket(
                 )
                 return
             if verdict is None:
+                failure_code = current_risk.get("failure_code", "reviewer_unavailable")
                 log(
-                    f"#{n}: reviewer unavailable; not a REVISE verdict after "
+                    f"#{n}: review unavailable ({failure_code}); not a REVISE verdict after "
                     f"{cfg.review_rounds} review round(s)"
                 )
                 escalate(
-                    n, "reviewer unavailable after retries", logfile,
-                    code="reviewer_unavailable",
+                    n, current_risk["packet"] if current_risk else "reviewer unavailable after retries",
+                    logfile, extra=findings, code=failure_code,
                 )
                 return
             # Durable charges survive pass boundaries; a deferred round is paid before requeue.
@@ -5954,9 +6081,10 @@ def process_ticket(
                     return
                 risk_disagreement_head = current_disagreement_head
                 if verdict is None:
+                    failure_code = current_risk.get("failure_code", "reviewer_unavailable")
                     escalate(
-                        n, "reviewer unavailable after retries", logfile,
-                        code="reviewer_unavailable",
+                        n, current_risk["packet"] if current_risk else "reviewer unavailable after retries",
+                        logfile, extra=findings, code=failure_code,
                     )
                     return
             if verdict != "APPROVE" and pr_failed:
@@ -5976,7 +6104,7 @@ def process_ticket(
             log(f"#{n}: refused ({exc})")
             execution.outcome, execution.reason = "not_admitted", "host_setup"
             return False
-        except LeaseRefused as exc:
+        except (LeaseRefused, WorktreeRefused) as exc:
             escalate(n, str(exc), None, code="lease_refused")
         except WorkerUnavailable as exc:
             # Host defect like a missing executable (#662): the claim goes back, no attempt is spent.

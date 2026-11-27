@@ -120,6 +120,7 @@ flowchart TB
   NT -->|"untriaged watch issue, newest evidence 24 hours old, issue closed completed: watch.run_pass"| HUMAN
 
   %% Recovery
+  RFA -->|"expired own-host claim without completion and open PR (including missing local receipt): dispatch.process_ticket"| ESC
   ESC -->|"ready-for-agent swapped for ready-for-human: dispatch.escalate"| RFH
   ESC -->|"resume interrupted escalation cleanup on a healthy pass: dispatch._recover_escalation"| RFH
   UPSTREAM -->|"new sync ticket on a staged agent/N candidate; never moves main: dispatch.sync_pass"| RFA
@@ -226,6 +227,11 @@ Every reason string passed to `dispatch.escalate`, the
 `withdraw` helper in `dispatch.refresh_pr_branch`, or recorded as an `escalate`
 event. `{}` is a runtime value.
 
+High-risk review passes through a dynamic diagnostic when the recorded attempt
+lacks `worker_model`. Ticket, refresh and manager FIX paths machine-escalate with
+`missing_worker_provenance` before reviewer launch; configure an explicit worker
+model and run a new worker attempt.
+
 | Code | Reason | Edge |
 |------|--------|------|
 | `dispatch.escalate` | ``worker killed by {} (budget_exceeded) before gate; last gate passed; worktree kept at {}`` | Budget-killed worker after the current generation's last passing gate → escalate (`budget`, not `gate_failed`) |
@@ -246,6 +252,7 @@ event. `{}` is a runtime value.
 | `dispatch.process_ticket` | ``High-risk machine checks disagreed on two successive heads`` | Non-actionable disagreement → one worker rework; next-head non-actionable disagreement → escalate (`risk_disagreement`) |
 | `dispatch.process_ticket` | ``approval evidence, head, or human review state changed before approval`` | review → escalate |
 | `dispatch.process_ticket` | ``dispatcher error: {}; worktree kept at {}`` | any post-claim exception → escalate (`dispatcher_error`), then re-raised; a `LeaseRefused` from `dispatch.push_agent` escalates as `lease_refused` with its own message |
+| `dispatch.process_ticket` | ``own-host claim expired during an unfinished attempt with an open PR; worktree kept at {}; local HEAD {}; remote agent/{} {}; resume agent/{} after merging {}`` | Elected own-host attempt interrupted before completion, including missing local receipts → escalate (`dispatcher_error`) with a nonce-bearing requeue comment; keep PR/worktree and report retained local history (unpushed SHAs when readable, unavailable otherwise) |
 | `dispatch.merge_pass_locked` | ``PR #{}: CI failed ({}); `{}` label removed`` | CI fail → escalate |
 | `dispatch.runner_unavailable` | ``PR #{}: CI runner unavailable ({}) in run {}; `{}` kept`` | CI no runner after rerun → escalate |
 | `dispatch.merge_pass_locked` | ``PR #{}: missing approval evidence bound to {}; `{}` label removed`` | CI pass, missing evidence → escalate |
@@ -284,3 +291,16 @@ event. `{}` is a runtime value.
 | `manage.apply` | ``FIX worktree head {} is not the PR head {} plus the worker's own commits; worktree kept at {}`` | manager FIX → escalate (`refresh_head`) |
 | `manage.apply` | ``FIX could not push the worker's own commits: origin/agent/{} moved since {}; worktree kept at {}`` | manager FIX → escalate (`lease_refused`) |
 | `manage.escalation_pass` | ``manager_failed`` | manager decision → human |
+
+### Reused-worktree refusals
+
+`dispatch.ensure_worktree` raises `dispatch.WorktreeRefused` before any worker
+or gate runs. The reason is passed unchanged to `dispatch.escalate`:
+
+- `uncommitted changes; agent/{}: kept HEAD {}, origin/agent/{} {}; worktree kept at {}`
+- `diverged history; agent/{}: kept HEAD {}, origin/agent/{} {}; worktree kept at {}`
+
+`dispatch.process_ticket` records these as `lease_refused`.
+`dispatch.refresh_pr_branch` removes `factory-approved` and records them as
+`refresh_head`. Both paths retain the worktree and name both SHAs (or `(none)`
+for an unpublished remote branch); neither discards changes or recuts the branch.

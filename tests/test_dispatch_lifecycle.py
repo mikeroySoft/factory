@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from factory import __version__, lifecycle
+from tests.venv_helpers import create_venv
 
 GH = '''#!/usr/bin/env python3
 import json, os, subprocess, sys
@@ -163,7 +164,6 @@ class LocalCLI(unittest.TestCase):
 
     def test_run_gate_uses_installed_runner_and_discards_stale_report(self):
         import shutil
-        import venv
         from unittest import mock
 
         from factory import config, dispatch
@@ -189,19 +189,19 @@ class LocalCLI(unittest.TestCase):
         stale.write_text("STALE REPORT\n")
 
         runner = self.base / "runner"
-        venv.EnvBuilder(with_pip=False).create(runner)
-        runner_python = runner / "bin" / "python"
+        runner_python = create_venv(runner)
         purelib = subprocess.run(
             [
                 str(runner_python),
                 "-c",
                 "import sysconfig; print(sysconfig.get_path('purelib'))",
             ],
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
-        ).stdout.strip()
-        shutil.copytree(Path(dispatch.__file__).parent, Path(purelib) / "factory")
+        )
+        self.assertEqual(purelib.returncode, 0, purelib.stderr)
+        shutil.copytree(Path(dispatch.__file__).parent, Path(purelib.stdout.strip()) / "factory")
 
         dispatch.configure(config.load(self.repo))
         with mock.patch.object(dispatch.sys, "executable", str(runner_python)), \
@@ -1150,6 +1150,12 @@ class LeaseRefusedCLI(unittest.TestCase):
         tree = self.git("rev-parse", "HEAD^{tree}").stdout.strip()
         sha = self.git("commit-tree", tree, "-p", "HEAD", "-m", "Update branch").stdout.strip()
         self.git("push", "--force", "origin", f"{sha}:refs/heads/agent/7")
+        # Move the remote after resume synchronization and lease capture, not before.
+        self.git("push", "origin", "--delete", "agent/7")
+        self.worker.write_text(self.worker.read_text() + (
+            "\nimport subprocess\n"
+            f"subprocess.run(['git', 'push', 'origin', '{sha}:refs/heads/agent/7'], check=True)\n"
+        ))
         return sha
 
     def gh_calls(self, *prefix):

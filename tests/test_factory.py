@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +27,7 @@ atexit.register(shutil.rmtree, XDG, ignore_errors=True)
 from datetime import UTC
 
 from factory import __version__, config, lifecycle, manage, runtime_events
+from tests.venv_helpers import create_venv
 
 # A worker runs this suite inside the dispatcher's handoff env; an inherited context would
 # redirect every fixture's lifecycle rows (gate timeouts, review verdicts...) into the live
@@ -172,16 +172,16 @@ def installed_factory(environment: Path) -> tuple[Path, Path]:
     """Create a disposable environment containing this Factory snapshot."""
     import tomlkit
 
-    venv.EnvBuilder(with_pip=False).create(environment)
-    python = environment / "bin" / "python"
+    python = create_venv(environment)
     env = {
         k: v for k, v in os.environ.items()
         if k not in ("PYTHONPATH", "PYTHONSAFEPATH", "PYTHONHOME")
     }
     site = subprocess.run(
         [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
-        env=env, capture_output=True, text=True, check=True,
+        env=env, capture_output=True, text=True, check=False,
     )
+    assert site.returncode == 0, site.stderr
     package = Path(site.stdout.strip()) / "factory"
     shutil.copytree(ROOT / "factory", package, ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(
@@ -293,8 +293,10 @@ print(json.dumps({
             self.assertIsNone(cfg.upstream)
             self.assertEqual(cfg.checks, [])
             self.assertEqual(cfg.factory, repo / ".factory")
-            self.assertEqual(cfg.worker({"chore"}, Path("/p"), Path("/w"))[0], "droid")
-            self.assertEqual(cfg.worker(set(), Path("/p"), Path("/w")), ["omp", "-p", "--cwd", "/w", "@/p"])
+            self.assertEqual(cfg.worker({"chore"}, Path("/p"), Path("/w")),
+                             ["droid", "exec", "--model", "gpt-6-sol", "-f", "/p", "--auto", "medium", "--cwd", "/w"])
+            self.assertEqual(cfg.worker(set(), Path("/p"), Path("/w")),
+                             ["omp", "-p", "--model", "openai-codex/gpt-6.1-sol", "--cwd", "/w", "@/p"])
 
     def test_overrides_and_worktree_root(self) -> None:
         toml = """
@@ -525,7 +527,7 @@ class HostConfigTest(unittest.TestCase):
                 )
             )
             empty = tmp / "empty"
-            venv.EnvBuilder(with_pip=False).create(empty)
+            create_venv(empty)
             xdg = tmp / "xdg"
             host = xdg / "factory" / "config.toml"
             host.parent.mkdir(parents=True)
@@ -2503,6 +2505,65 @@ class DispatchTest(unittest.TestCase):
                 ))
 
             self.assertEqual(selected_base["value"], "stable")
+
+    def test_push_and_pr_bounds_oversized_body(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            dispatch.FACTORY.mkdir()
+            prefix = "Closes #7\n\n## Gate report\n\nHead SHA: abc123\n\n- test: PASS\n\n"
+            small = prefix + "Ran 1 test\n"
+            large = prefix + ("test_hardware (test_gpu.GpuTest.test_hardware) ... skipped 'needs GPU'\n" * 2000)
+            bodies = []
+
+            def fake_run(cmd, *args, **kwargs):
+                stdout = "1\n" if cmd[:3] == ["git", "rev-list", "--count"] else ""
+                if cmd[:3] == ["gh", "pr", "create"]:
+                    body = Path(cmd[cmd.index("--body-file") + 1]).read_text()
+                    self.assertLessEqual(len(body), 65_536)
+                    bodies.append(body)
+                return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+            with mock.patch.object(dispatch, "run", side_effect=fake_run), \
+                    mock.patch.object(dispatch, "gh_json", return_value=[]):
+                for body in (small, large):
+                    self.assertTrue(dispatch.push_and_pr(repo, "agent/7", "feature", body))
+
+            self.assertEqual(bodies[0], small)
+            self.assertTrue(bodies[1].startswith(prefix))
+            self.assertIn("truncated", bodies[1])
+
+    def test_push_and_pr_truncates_only_above_excerpt_boundary(self) -> None:
+        from unittest import mock
+
+        from factory import dispatch
+
+        with tempfile.TemporaryDirectory() as d:
+            repo = make_repo(Path(d))
+            dispatch.configure(config.Config(root=repo, repo="acme/widgets"))
+            dispatch.FACTORY.mkdir()
+            published = []
+
+            def fake_run(cmd, *args, **kwargs):
+                if cmd[:3] == ["gh", "pr", "create"]:
+                    published.append(Path(cmd[cmd.index("--body-file") + 1]).read_text())
+                stdout = "1\n" if cmd[:3] == ["git", "rev-list", "--count"] else ""
+                return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+            with mock.patch.object(dispatch, "run", side_effect=fake_run), \
+                    mock.patch.object(dispatch, "gh_json", return_value=[]):
+                for size in (59_999, 60_000, 60_001):
+                    with self.subTest(size=size):
+                        body = "x" * size
+                        self.assertTrue(dispatch.push_and_pr(repo, "agent/7", "feature", body))
+                        expected = body if size <= 60_000 else body[:60_000] + (
+                            "\n\n[truncated: PR body excerpt; full gate report retained in the worktree]\n"
+                        )
+                        self.assertEqual(published[-1], expected)
 
     def test_push_and_pr_does_not_push_existing_wrong_or_missing_base(self) -> None:
         from unittest import mock

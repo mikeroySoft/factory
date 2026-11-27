@@ -168,6 +168,13 @@ class HostClaimRaceTest(unittest.TestCase):
         }
         for name, value in patches.items():
             self.enterContext(mock.patch.object(module, name, value))
+        # Pre-existing PRs in this harness represent completed attempts. Tests
+        # of interruption publish their claim/PR after constructing the dispatcher.
+        if self.github.open_prs and (owner := module.elected_host_claim(module.host_claims(7))) \
+                and owner["host"] == host:
+            execution = f"fixture-completed-{owner['nonce']}"
+            module.record("claimed", ticket=7, claim_nonce=owner["nonce"], execution_id=execution)
+            module.record("approved", ticket=7, execution_id=execution)
         return module
 
     def launch(self, host):

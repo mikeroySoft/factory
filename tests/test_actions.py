@@ -35,6 +35,8 @@ class ActionPathsTest(unittest.TestCase):
         self.dashboard.repository_config.return_value = self.cfg
 
     def transport(self, argv: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["gh", "api"] and any(arg.endswith("/events") for arg in argv):
+            return subprocess.CompletedProcess(argv, 0, "[]", "")
         if argv[:2] == ["gh", "api"]:
             return subprocess.CompletedProcess(argv, 0, "alice\n", "")
         if argv[:3] == ["gh", "issue", "view"]:

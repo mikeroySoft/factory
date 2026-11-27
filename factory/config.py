@@ -62,9 +62,9 @@ LABELS = {
 # Word-bounded strong signals only: bare words like "internal"/"private" are ordinary English.
 DEFAULT_LEAK_PATTERN = (r"\.(?:corp|internal|intranet|lan)\b|\bconfidential\b|\bproprietary\b"
                         r"|\bjira\b|\bconfluence\b|\.atlassian\.net\b")
-DEFAULT_WORKER = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]
-DEFAULT_WORKER_MODEL = "openai-codex/gpt-5.6-sol"
-DEFAULT_CHORE_WORKER = ["droid", "exec", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
+DEFAULT_WORKER_MODEL = "openai-codex/gpt-6.1-sol"
+DEFAULT_WORKER = ["omp", "-p", "--model", DEFAULT_WORKER_MODEL, "--cwd", "{cwd}", "@{prompt}"]
+DEFAULT_CHORE_WORKER = ["droid", "exec", "--model", "gpt-6-sol", "-f", "{prompt}", "--auto", "medium", "--cwd", "{cwd}"]
 DEFAULT_REVIEWER = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1", "{prompt}"]
 DEFAULT_SECOND_REVIEWER = ["omp", "-p", "--no-session", "--model", "openai-codex/gpt-6-astra", "{prompt}"]
 DEFAULT_LLM_URL = "http://127.0.0.1:11434/v1/chat/completions"
@@ -80,7 +80,7 @@ ENGINE_REPO = "mikeroySoft/factory"  # factory's own source repo: `[watch].engin
 # `worker_wrap` is host-only: a committed `[worker_wrap]` is refused, never merged.
 # `leak_scan.extra` is read from both and concatenated: host terms only add to the scan.
 HOST_TABLES = frozenset({"triage", "workers", "worker_wrap", "manager", "install", "prices"})
-HOST_KEYS = {"dashboard": ("port",), "gate": ("lock",),
+HOST_KEYS = {"dashboard": ("port",), "gate": ("lock", "mutation_duration", "mutation_slots"),
              "review": ("command", "second_command", "json_mode")}
 HOST_SCALARS = ("host_name", "triage_host", "land_host", "release_host", "claim_ttl")
 
@@ -99,7 +99,7 @@ KNOWN_KEYS = {
     "release": ("auto", "version_file", "min_tickets", "bar_min_tickets",
                 "bar_floor_human_rate", "bar_floor_first_pass"),
     "eval": ("max_cases", "max_tokens", "budget_min", "profile", "schedule"),
-    "gate": ("timeout", "lock", "check", "fixups", "protected_paths", "add_only_paths"),
+    "gate": ("timeout", "mutation_duration", "mutation_slots", "lock", "check", "fixups", "protected_paths", "add_only_paths"),
     "leak_scan": ("pattern", "exclude", "extra"),
     "triage": ("url", "model", "timeout", "service", "max_tokens", "chat_template_kwargs"),
     "journal": ("max_mb", "retention"),
@@ -252,6 +252,8 @@ class Config:
     protected_paths: list[str] = field(default_factory=list)
     add_only_paths: list[str] = field(default_factory=list)
     check_timeout: int = 1200
+    mutation_duration: float | None = None  # total seconds for an opted PR mutation proof check
+    mutation_slots: int | None = None  # host-wide concurrent PR mutation runs; None = uncapped
     lock: Path = Path("/tmp/factory.lock")  # host-wide: one GPU, many repos
     leak_pattern: str | None = DEFAULT_LEAK_PATTERN
     leak_exclude: list[str] = field(default_factory=list)
@@ -324,21 +326,13 @@ class Config:
         return expand([*self.worker_wrap, *self.workers[worker]], prompt=str(prompt), cwd=str(cwd),
                       root=str(self.root), repo=self.repo, home=str(Path.home()))
 
-    def launch_command(self, worker: str) -> list[str]:
-        """The profile's command as launched: the built-in OMP default carries its pinned model."""
-        command = self.workers[worker]
-        if command == DEFAULT_WORKER:
-            return [*command[:2], "--model", DEFAULT_WORKER_MODEL, *command[2:]]
-        return list(command)
-
     def worker_model(self, worker: str) -> str | None:
         """Explicit model of the launched command, or None when the command leaves it implicit."""
         return self.worker_spec(worker, Path("{prompt}"), Path("{cwd}")).model
 
     def worker_spec(self, worker: str, prompt: Path, cwd: Path) -> WorkerSpec:
         """Everything one launch of `worker` uses; selection, audit and launch read this value."""
-        argv = expand([*self.worker_wrap, *self.launch_command(worker)], prompt=str(prompt), cwd=str(cwd),
-                      root=str(self.root), repo=self.repo, home=str(Path.home()))
+        argv = self.worker_command(worker, prompt, cwd)
         return WorkerSpec(
             profile=worker,
             argv=argv,
@@ -384,9 +378,10 @@ def command_model(command: list[str]) -> str | None:
     """Explicit ``--model`` value, or None when the command leaves it implicit."""
     for index, value in enumerate(command):
         if value == "--model" and index + 1 < len(command):
-            return command[index + 1]
+            model = command[index + 1]
+            return model if model and not model.startswith("-") else None
         if value.startswith("--model="):
-            return value.split("=", 1)[1]
+            return value.split("=", 1)[1] or None
     return None
 
 
@@ -924,6 +919,22 @@ def load(start: Path | None = None, *, worktree: bool = False) -> Config:
         cfg.collaboration = collaboration_settings(raw["collaboration"])
     cfg.prices = price_table(raw.get("prices", {}))
     cfg.check_timeout = int(gate.get("timeout", cfg.check_timeout))
+    if "mutation_duration" in gate:
+        duration = gate["mutation_duration"]
+        if (
+            isinstance(duration, bool) or not isinstance(duration, (int, float))
+            or not math.isfinite(duration) or duration <= 60
+        ):
+            raise ConfigError("gate.mutation_duration must be finite and greater than the 60s cleanup reserve")
+        cfg.mutation_duration = duration
+    if "mutation_slots" in raw_repo.get("gate", {}):
+        raise ConfigError(f"{path}: gate.mutation_slots is host-only; set it in "
+                          f'{host_config_path()} [defaults.gate] or [repo."<slug>".gate]')
+    if "mutation_slots" in gate:
+        slots = gate["mutation_slots"]
+        if type(slots) is not int or slots < 1:
+            raise ConfigError("gate.mutation_slots must be a positive integer")
+        cfg.mutation_slots = slots
     fixups = gate.get("fixups", [])
     if not isinstance(fixups, list) or any(
         not isinstance(argv, list) or not argv

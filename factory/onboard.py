@@ -663,6 +663,9 @@ def doctor(argv: list[str]) -> int:
 
     for label, argv_t in cfg.workers.items():
         report(which(argv_t[0]) is not None, f"worker `{label}`: {argv_t[0]}", on_path)
+        model = cfg.worker_model(label)
+        report(model is not None, f"worker `{label}` model",
+               model or "model is not explicit; pin --model in the worker command")
         probe = cfg.worker_probe.get(label)
         report(True if probe else None, f"worker `{label}` login check", f"probe: {probe[0]}" if probe else (
             f"no `[workers.{label}] probe`: its login is unverified until a launch fails, "
