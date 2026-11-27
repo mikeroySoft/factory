@@ -88,12 +88,12 @@ class DashboardPortBindTest(unittest.TestCase):
         self.assertEqual((code, row["status"], row["detail"]), (0, "PASS", "available on 127.0.0.1"))
 
     def test_missing_ss_never_decides_the_port_verdict(self) -> None:
-        """Real holders, missing `ss`: only native bind evidence (Darwin) may pass a free specific port."""
+        """Real holders, missing `ss`: native bind evidence (Darwin) may pass a free port on either host."""
         with socket.socket() as unused:
             unused.bind(("127.0.0.1", 0))
             free = unused.getsockname()[1]
         cases = [("free", "127.0.0.1", free, platform_identity.darwin()),
-                 ("free, wildcard host", "0.0.0.0", free, False)]
+                 ("free, wildcard host", "0.0.0.0", free, platform_identity.darwin())]
         for name, family, address, v6only, reuseport in (
             ("specific 127.0.0.1", socket.AF_INET, "127.0.0.1", None, False),
             ("specific 127.0.0.1 SO_REUSEPORT", socket.AF_INET, "127.0.0.1", None, True),
@@ -109,7 +109,7 @@ class DashboardPortBindTest(unittest.TestCase):
             ) as sh:
                 ok, detail = onboard._dashboard_port_check(self.cfg, host, port)
                 if native_free:
-                    self.assertEqual((ok, detail), (True, "available on 127.0.0.1"))
+                    self.assertEqual((ok, detail), (True, f"available on {host}"))
                     sh.assert_not_called()
                 else:
                     self.assertFalse(ok)
