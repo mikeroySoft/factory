@@ -62,6 +62,31 @@ class MutationReplaySidecarBoundsTest(proof_callers.ProofCallerCases):
             (self.root / ".factory" / f"mutation-{self.head}.json").exists()
         )
 
+    def test_valid_sidecar_exactly_sixteen_mib_reaches_replay(self) -> None:
+        self.configure()
+        overhead = len(json.dumps([{**SURVIVOR, "original": ""}], sort_keys=True).encode())
+        original = "o" * (SIDECAR_LIMIT - overhead)
+        sizes: list[int] = []
+
+        result = self.invoke([survivor_step(original, sizes)])
+
+        self.assertEqual(sizes, [SIDECAR_LIMIT])
+        self.assertEqual(self.summary(result), witness.BLOCKED)
+        durable = self.root / ".factory" / f"mutation-{self.head}.json"
+        self.assertEqual(json.loads(durable.read_text())["survivors"][0]["original"], original)
+
+    def test_sidecar_one_byte_over_sixteen_mib_is_not_persisted(self) -> None:
+        self.configure()
+        overhead = len(json.dumps([{**SURVIVOR, "original": ""}], sort_keys=True).encode())
+        sizes: list[int] = []
+
+        result = self.invoke([survivor_step("o" * (SIDECAR_LIMIT - overhead + 1), sizes)])
+
+        self.assertEqual(sizes, [SIDECAR_LIMIT + 1])
+        self.assertEqual(self.summary(result), witness.BLOCKED)
+        self.assertIn("invalid survivors sidecar: oversized survivors sidecar", self.review_reports[0])
+        self.assertFalse((self.root / ".factory" / f"mutation-{self.head}.json").exists())
+
 
 for _name in [name for name in dir(proof_callers.ProofCallerCases) if name.startswith("test_")]:
     if _name not in MutationReplaySidecarBoundsTest.__dict__:

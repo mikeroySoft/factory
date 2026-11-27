@@ -503,6 +503,25 @@ def stale_equivalents(reviewed: dict[tuple, dict], disproven: set[tuple]) -> boo
     return bool(stale)
 
 
+def replay_line_map(previous: str, current: str) -> dict[int, int]:
+    """Map unchanged rows only when forward and reverse diff alignment agree."""
+    before, after = previous.splitlines(), current.splitlines()
+    forward = {
+        old + offset + 1: new + offset + 1
+        for old, new, size in difflib.SequenceMatcher(None, before, after, autojunk=False).get_matching_blocks()
+        for offset in range(size)
+    }
+    backward = {
+        len(before) - old - offset: len(after) - new - offset
+        for old, new, size in difflib.SequenceMatcher(
+            None, before[::-1], after[::-1], autojunk=False,
+        ).get_matching_blocks()
+        for offset in range(size)
+    }
+    # Identical inserted/deleted runs can align either way: do not guess an identity.
+    return {old: new for old, new in forward.items() if backward.get(old) == new}
+
+
 def replay(path: str, duration: float | None) -> int:
     """Diagnostic only: relocate unique exact source identities, never write proof."""
     import cosmic_ray.commands
@@ -563,7 +582,7 @@ def replay(path: str, duration: float | None) -> int:
             cosmic_ray.commands.init([Path(p) for p, source in sources.items() if source], db, {})
             candidates = [item.mutations[0] for item in db.work_items]
         selected = []
-        unchanged = {}
+        line_maps = {}
         scope = record.get("scope")
         head = scope.get("head") if isinstance(scope, dict) else None
         ambiguous = False
@@ -588,16 +607,21 @@ def replay(path: str, duration: float | None) -> int:
             if (len(matches) > 1 and isinstance(head, str)
                     and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head)):
                 file = entry["file"]
-                if file not in unchanged:
+                if file not in line_maps:
                     previous = subprocess.run(
                         ["git", "show", f"{head}:{file}"],
                         capture_output=True, text=True, check=False,
                     )
-                    unchanged[file] = previous.returncode == 0 and previous.stdout == sources[file]
-                if unchanged[file]:
+                    line_maps[file] = (
+                        replay_line_map(previous.stdout, sources[file])
+                        if previous.returncode == 0 else {}
+                    )
+                rows = line_maps[file]
+                start_row, end_row = entry["start_pos"][0], entry["end_pos"][0]
+                if start_row in rows and end_row in rows:
                     matches = [candidate for candidate in matches
-                               if list(candidate.start_pos) == entry["start_pos"]
-                               and list(candidate.end_pos) == entry["end_pos"]]
+                               if candidate.start_pos[0] == rows[start_row]
+                               and candidate.end_pos[0] == rows[end_row]]
             if len(matches) > 1:
                 print(f"replay incomplete: {entry['file']}:{entry['line']}: ambiguous survivor "
                       "(multiple identical source targets)")

@@ -37,6 +37,7 @@ CHECK_TIMEOUT = 1200  # seconds; overridable via --check-timeout
 MUTATION_PROOF_ENV = "FACTORY_MUTATION_PROOF"
 MUTATION_PROOF_BASE_ENV = "FACTORY_MUTATION_PROOF_BASE"  # the caller base, resolved by the gate
 MUTATION_PROOF_MAX_BYTES = 64 * 1024
+MUTATION_SURVIVORS_MAX_BYTES = 16 * 1024 * 1024
 MUTATION_RESERVE = 60  # scripts/mutation.py's cleanup reserve; an explicit total must exceed it
 MUTATION_PROOF_COUNTS = ("planned", "ran", "killed", "survived", "timeouts", "blocking_survivors",
                          "not_started", "cut_short", "broken")
@@ -171,12 +172,14 @@ def _proof_survivors(value: object, files: list[str], count: int) -> bool:
         start, end = survivor["start_pos"], survivor["end_pos"]
         if (
             survivor["file"] not in files
-            or type(survivor["line"]) is not int or survivor["line"] < 1
+            or isinstance(survivor["line"], bool)
+            or not isinstance(survivor["line"], int)
             or not isinstance(survivor["operator"], str) or not survivor["operator"]
             or not isinstance(start, list) or len(start) != 2
             or not isinstance(end, list) or len(end) != 2
-            or any(type(part) is not int for part in (*start, *end))
-            or start[0] < 1 or start[1] < 0 or end[0] < 1 or end[1] < 0
+            or any(isinstance(part, bool) or not isinstance(part, int)
+                   for part in (*start, *end))
+            or start[0] < 1 or start[1] < 0 or end[1] < 0
             or survivor["line"] != start[0] or start >= end
             or not isinstance(survivor["original"], str)
             or not isinstance(survivor["mutated"], str)
@@ -204,8 +207,11 @@ def read_mutation_proof(
         record = json.loads(data)
     except ValueError:
         return "FAIL", "malformed completion record"
-    allowed = MUTATION_PROOF_KEYS | {"survivors", "survivors_sha256"}
-    if not isinstance(record, dict) or not MUTATION_PROOF_KEYS <= record.keys() <= allowed:
+    if (
+        not isinstance(record, dict)
+        or not MUTATION_PROOF_KEYS <= record.keys()
+        or record.keys() - MUTATION_PROOF_KEYS - {"survivors", "survivors_sha256"}
+    ):
         return "FAIL", "malformed completion record"
     counts, files = _proof_counts(record["counts"]), record["files"]
     if (
@@ -296,12 +302,11 @@ def _read_survivors_file(path: Path) -> bytes:
         import stat
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError("survivors sidecar is not a regular file")
-        data = bytearray()
-        while chunk := os.read(fd, min(1024 * 1024, 16 * 1024 * 1024 + 1 - len(data))):
-            data.extend(chunk)
-            if len(data) > 16 * 1024 * 1024:
-                raise ValueError("oversized survivors sidecar")
-        return bytes(data)
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            data = stream.read(MUTATION_SURVIVORS_MAX_BYTES + 1)
+        if len(data) > MUTATION_SURVIVORS_MAX_BYTES:
+            raise ValueError("oversized survivors sidecar")
+        return data
     finally:
         os.close(fd)
 
@@ -504,7 +509,6 @@ def _proof_run(
     if (
         (status == "PASS" or why.startswith("complete with "))
         and record is not None
-        and record.get("status") == "complete"
         and "survivors" in record
     ):
         proof = Path(".factory") / f"mutation-{expected.head}.json"
@@ -512,7 +516,7 @@ def _proof_run(
         fd, temporary = tempfile.mkstemp(prefix=f".{proof.name}.", dir=proof.parent)
         try:
             with os.fdopen(fd, "w") as stream:
-                json.dump(record, stream, sort_keys=True)
+                json.dump(record, stream)
             os.replace(temporary, proof)
         finally:
             try:
