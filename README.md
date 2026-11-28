@@ -1710,10 +1710,11 @@ least **1000 GraphQL points** for a bulk pass (up to 1000 PRs/issues with nested
 connections), **100 GraphQL points** for explicit `--ticket` dispatch, and
 **100 REST (`core`) requests**. An engine-update yield still uses the bulk floor
 because it runs landing and review intake. Below either floor,
-or if the budget cannot be verified, it skips the whole pass (exit 0), logs the
-reason and reset time when available, and journals `pass-skipped` with reason
-`github_rate_limit` and code `rate_limited` or `gh_read_failed`. Dry-run budget
-preflight logs without journaling. This is a pass-start safety margin, not a
+it skips the whole pass (exit 0), logs the reason and reset time when available,
+and journals `pass-skipped` with reason `github_rate_limit` and code `rate_limited`.
+Malformed budgets use `pass-skipped` / `gh_read_failed`; failed commands use the
+`gh-read-skipped` receipt described below. Dry-run budget preflight logs without
+journaling. This is a pass-start safety margin, not a
 reservation: other hosts and clients can consume the shared account's budget
 after the check.
 
@@ -1732,7 +1733,9 @@ API budget is exhausted. Probe failures are recorded, not treated as proof of
 rate limiting. Expected missing PRs, releases, compare branches and unsupported
 issue-dependency endpoints retain their callers' absence handling; a 404 on
 required resources (including Actions jobs) is a read failure, not evidence of
-failed CI. Writes and programming errors keep their existing failure paths.
+failed CI. Empty `gh pr checks` results with the provider's “no checks reported”
+or “no required checks reported” diagnostic retain advisory review and
+`no_passing_ci` merge handling. Writes and programming errors keep their existing failure paths.
 Once a merge succeeds, a failed metadata read cannot erase its receipt or permit
 a second merge in the same pass.
 
@@ -1744,7 +1747,10 @@ Other read failures end the pass as `gh_reads_unavailable` once at least three
 reads were attempted and more than half failed. There are no inline retries.
 Each affected pass logs and journals `pass-summary` with attempted/failed reads,
 skip counts, per-code counts, and its stop reason; partial passes do not advance
-the last-successful-stage marker. Unattempted work remains for the next pass.
+the last-successful-stage marker. A started item refused by a pass-wide stop
+also gets one skip receipt and count, without another failed read or quota probe;
+later stages touching that same item do not double-count it. Unattempted work
+remains for the next pass.
 Dry-run/replay read accounting, including standalone manage, release and learn,
 neither journals failures nor reads or persists production backoff.
 Manager applications deferred by a read before any GitHub mutation journal

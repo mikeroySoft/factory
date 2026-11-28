@@ -58,6 +58,7 @@ class Pass:
         self.codes = {"rate_limited": 0, "gh_read_failed": 0}
         self.reason = None
         self.failed_tickets = set()
+        self.skipped_items = set()
         self.reset = None
         for row in lifecycle.read_events(journal) if persistent and backoff else ():
             if row.get("event") == "gh-read-backoff" and row.get("reset", 0) > time.time():
@@ -127,6 +128,7 @@ class Pass:
         with self.lock:
             if identity.get("ticket") is not None:
                 self.failed_tickets.add((identity.get("repo"), identity["ticket"]))
+            self.skipped_items.add((identity.get("repo"), identity["ticket"]))
             self.failed_reads += 1
             self.skipped += 1
             self.codes[code] += 1
@@ -176,6 +178,10 @@ def _expected_result(cmd, result, check):
         return False
     # Pending/failing CI states describe data, not a failed read.
     if cmd[1:3] == ["pr", "checks"] and result.returncode in (1, 8):
+        if result.returncode == 1 and not result.stdout and re.fullmatch(
+            r"no (?:required )?checks reported(?: on the .+ branch)?\s*", detail, re.IGNORECASE,
+        ):
+            return True
         try:
             return isinstance(json.loads(result.stdout), list)
         except (ValueError, TypeError):
@@ -189,8 +195,19 @@ def run(cmd, invoke, *, env=None, check=True):
         return invoke()
     identity = _identity(cmd)
     with state.lock:
-        if state.stopped or (identity.get("repo"), identity["ticket"]) in state.failed_tickets:
-            raise ReadFailed(state.reason or "gh_read_failed")
+        key = (identity.get("repo"), identity["ticket"])
+        if state.stopped or key in state.failed_tickets:
+            code = "rate_limited" if state.reason == "rate_limited" else "gh_read_failed"
+            if key not in state.skipped_items:
+                state.skipped_items.add(key)
+                state.skipped += 1
+                state.codes[code] += 1
+                state.emit("gh-read-skipped", code=code, reason=state.reason, deferred=True,
+                           command=cmd[1:3], **identity)
+            execution = lifecycle.current()
+            if execution:
+                execution.outcome, execution.reason = "mechanism_failure", code
+            raise ReadFailed(state.reason or code)
         read = is_read(cmd)
         if read:
             state.reads += 1

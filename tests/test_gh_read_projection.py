@@ -26,7 +26,7 @@ class ReadCompletionTest(unittest.TestCase):
                         ))
                         gh_reads.run(["gh", "issue", "edit", str(number)], invoke)
                 self.assertEqual(reads.reason, "gh_reads_unavailable")
-                self.assertEqual((reads.reads, reads.failed_reads, reads.skipped), (3, 2, 2))
+                self.assertEqual((reads.reads, reads.failed_reads, reads.skipped), (3, 2, 3))
             invoke.assert_not_called()
             [summary] = [row for row in lifecycle.read_events(journal) if row.get("event") == "pass-summary"]
             self.assertEqual(summary["reason"], "gh_reads_unavailable")

@@ -1022,9 +1022,10 @@ def review_intake_pass(dry_run: bool) -> None:
                 if login is None:
                     # The dispatcher's login, plus the human's (dashboard identity) when
                     # `[install].dispatch_env` runs the dispatcher as a separate account.
-                    login = {gh_json(["api", "user"])["login"].casefold()}
+                    identities = {gh_json(["api", "user"])["login"].casefold()}
                     if cfg.install.get("dispatch_env"):
-                        login.add(gh_json(["api", "user"], env=config.dashboard_env(cfg))["login"].casefold())
+                        identities.add(gh_json(["api", "user"], env=config.dashboard_env(cfg))["login"].casefold())
+                    login = identities
                 opted_in = any(request.get("login", "").casefold() in login for request in requests)
             # GitHub consumes review requests on submission; keep tracking admitted PRs.
             if not opted_in and not any(
