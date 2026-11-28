@@ -111,6 +111,20 @@ class MutationReplayPersistenceTest(proof_callers.ProofCallerCases):
         self.assertEqual(result["report_status"], "FAIL")
         self.assertFalse(self.replay_path().exists())
 
+    def test_skip_with_empty_survivors_is_not_persisted(self) -> None:
+        self.changed = "M\tdocs/guide.md\n"
+        self.configure()
+        result = self.invoke([
+            proof_callers.produced(
+                status="skip", reason="no-applicable-files", files=[],
+                planned=0, ran=0, killed=0, survivors=[],
+            )
+        ])
+
+        self.assertEqual(result["report_status"], "SKIP")
+        self.assertFalse(self.replay_path().exists())
+        self.assertNotIn("mutation replay:", self.review_reports[0])
+
     def test_finished_zero_survivor_record_is_persisted_exactly(self) -> None:
         self.configure()
         result = self.invoke([proof_callers.produced(survivors=[])])

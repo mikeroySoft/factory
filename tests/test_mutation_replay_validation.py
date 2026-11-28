@@ -239,6 +239,13 @@ class MutationReplayValidationTest(proof_callers.ProofCallerCases):
         self.assertEqual(result["report_status"], "PASS")
         self.assertEqual(json.loads(self.replay_path().read_text())["survivors"], entries)
 
+    def test_matching_zero_line_and_start_row_are_rejected(self) -> None:
+        self.configure()
+        self.assertEqual(
+            self.verdict([{**SURVIVOR, "line": 0, "start_pos": [0, 0], "end_pos": [0, 1]}]),
+            ("FAIL", "malformed survivors metadata"),
+        )
+
     def test_start_row_above_line_and_negative_multiline_end_column_are_rejected(self) -> None:
         self.configure()
         for changes in (
