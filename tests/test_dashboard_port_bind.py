@@ -87,6 +87,30 @@ class DashboardPortBindTest(unittest.TestCase):
         code, row = self.port_row(ss)
         self.assertEqual((code, row["status"], row["detail"]), (0, "PASS", "available on 127.0.0.1"))
 
+    def test_doctor_ignores_an_ipv6_only_wildcard_holder(self) -> None:
+        try:
+            self.cfg.dashboard_port = self.holder(socket.AF_INET6, "::", v6only=1)
+        except OSError as exc:
+            if exc.errno in (errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT,
+                             errno.ENOPROTOOPT, errno.EADDRNOTAVAIL):
+                self.skipTest(f"IPv6 wildcard unavailable: {exc}")
+            raise
+        self.assertIsNone(bind_error(socket.AF_INET, "127.0.0.1", self.cfg.dashboard_port))
+        ss = subprocess.CompletedProcess(
+            [], 0, self.ss_line("[::]", self.cfg.dashboard_port, "foreign", 4321), ""
+        )
+        code, row = self.port_row(ss)
+        self.assertEqual((code, row["status"], row["detail"]),
+                         (0, "PASS", "available on 127.0.0.1"))
+
+        with patch.object(platform_identity, "darwin", return_value=True):
+            code, output, calls = self.doctor(subprocess.CompletedProcess([], 127, "", "ss: not found"))
+        row = next(row for row in json.loads(output)["rows"]
+                   if row["label"] == f"dashboard port {self.cfg.dashboard_port}")
+        self.assertEqual((code, row["status"], row["detail"]),
+                         (0, "PASS", "available on 127.0.0.1"))
+        self.assertFalse(any(cmd[0] == "ss" for cmd in calls))
+
     def test_missing_ss_never_decides_the_port_verdict(self) -> None:
         """Real holders, missing `ss`: only native bind evidence (Darwin) may pass a free specific port."""
         with socket.socket() as unused:
