@@ -198,28 +198,20 @@ def read_mutation_proof(
     the observed returncode (the gate reports a timeout as 124, a signal as negative), and
     a skip or complete record whose scope or files differ from `expected`, the gate's own
     factory.mutation_scope computation for the caller's base."""
-    status, why, _ = _validated_mutation_proof(data, returncode, expected)
-    return status, why
-
-
-def _validated_mutation_proof(
-    data: bytes | None, returncode: int, expected: mutation_scope.Scope,
-) -> tuple[str, str, dict | None]:
-    """Return the verdict and a completed, validated record; skips/errors have no record."""
     if data is None:
-        return "FAIL", "missing completion record", None
+        return "FAIL", "missing completion record"
     if len(data) > MUTATION_PROOF_MAX_BYTES:
-        return "FAIL", "oversized completion record", None
+        return "FAIL", "oversized completion record"
     try:
         record = json.loads(data)
     except ValueError:
-        return "FAIL", "malformed completion record", None
+        return "FAIL", "malformed completion record"
     if (
         not isinstance(record, dict)
         or not MUTATION_PROOF_KEYS <= record.keys()
         or record.keys() - MUTATION_PROOF_KEYS - {"survivors", "survivors_truncated"}
     ):
-        return "FAIL", "malformed completion record", None
+        return "FAIL", "malformed completion record"
     counts, files = _proof_counts(record["counts"]), record["files"]
     if (
         record["protocol"] != "factory-mutation-proof"
@@ -229,33 +221,33 @@ def _validated_mutation_proof(
         or counts is None
         or not isinstance(files, list) or not all(isinstance(path, str) and path for path in files)
     ):
-        return "FAIL", "malformed or unsupported completion record", None
+        return "FAIL", "malformed or unsupported completion record"
     if "survivors_truncated" in record and (
         record["survivors_truncated"] is not True or not counts["survived"]
         or "survivors" in record
     ):
-        return "FAIL", "malformed survivors metadata", None
+        return "FAIL", "malformed survivors metadata"
     if "survivors" in record and not _proof_survivors(
         record["survivors"], files, counts["survived"],
     ):
-        return "FAIL", "malformed survivors metadata", None
+        return "FAIL", "malformed survivors metadata"
     if record["exit"] != returncode:
-        return "FAIL", f"record exit {record['exit']} contradicts observed exit {returncode}", None
+        return "FAIL", f"record exit {record['exit']} contradicts observed exit {returncode}"
     if record["mode"] != "blocking":
-        return "FAIL", f"{record['mode']} run is not blocking mutation proof", None
+        return "FAIL", f"{record['mode']} run is not blocking mutation proof"
     status, reason = record["status"], record["reason"]
     if status not in {"skip", "complete"}:
-        return "FAIL", f"{status} ({reason})", None
+        return "FAIL", f"{status} ({reason})"
     if record["scope"] != expected.receipt():
-        return "FAIL", f"stale or mismatched scope: record {record['scope']!r}, gate {expected.receipt()!r}", None
+        return "FAIL", f"stale or mismatched scope: record {record['scope']!r}, gate {expected.receipt()!r}"
     applicable = expected.line_count
     if status == "skip":
         if (applicable == 0 and reason == "no-applicable-files" and not files
                 and not any(counts.values()) and returncode == 0):
-            return SKIP_NO_FACTORY_CODE, "no added or modified factory/*.py destination lines", None
-        return "FAIL", f"contradictory skip record ({applicable} applicable changed lines)", None
+            return SKIP_NO_FACTORY_CODE, "no added or modified factory/*.py destination lines"
+        return "FAIL", f"contradictory skip record ({applicable} applicable changed lines)"
     if files != sorted(expected.lines):
-        return "FAIL", "record files differ from the applicable files", None
+        return "FAIL", "record files differ from the applicable files"
     blocking = counts["blocking_survivors"]
     expected_reason = ("blocking-survivors" if blocking
                        else "no-mutation-candidates" if counts["planned"] == 0
@@ -270,16 +262,16 @@ def _validated_mutation_proof(
         and reason == expected_reason
         and returncode == (1 if blocking else 0)
     ):
-        return "FAIL", "contradictory complete record", None
+        return "FAIL", "contradictory complete record"
     if blocking:
-        return "FAIL", f"complete with {blocking} blocking survivors", record
+        return "FAIL", f"complete with {blocking} blocking survivors"
     if counts["planned"] == 0:
         return "PASS", (f"complete: 0 mutation candidates enumerated on {applicable} applicable "
-                        f"changed lines (not a skip)"), record
+                        f"changed lines (not a skip)")
     # Timeout-scored kills are the runner's legacy scoring, disclosed rather than re-judged.
     return "PASS", (f"complete: ran {counts['ran']} of {counts['planned']} mutants, "
                     f"{counts['killed']} killed ({counts['timeouts']} by timeout), "
-                    f"{counts['survived']} survived"), record
+                    f"{counts['survived']} survived")
 
 
 def _read_proof_file(path: Path) -> bytes | None:
@@ -467,7 +459,12 @@ def _proof_run(
             cmd, proof_path=path, proof_base=expected.base, **limit,
         )
         data = _read_proof_file(path)
-        status, why, record = _validated_mutation_proof(data, proc.returncode, expected)
+        status, why = read_mutation_proof(data, proc.returncode, expected)
+        record = (
+            json.loads(data)
+            if status in {"PASS", SKIP_NO_FACTORY_CODE} or why.startswith("complete with ")
+            else {}
+        )
     try:
         after = mutation_scope.compute(expected.base)
         changed = mutation_scope.tracked_mismatches(expected.head, Path.cwd())
@@ -475,13 +472,13 @@ def _proof_run(
         after, changed = exc, []
     if status != "FAIL" and after != expected:
         status, why = "FAIL", "HEAD or the applicable scope changed during the run"
-        record = None
+        record = {}
     elif status != "FAIL" and changed:
         status, why = "FAIL", f"tracked inputs changed during the run: {', '.join(changed[:20])}"
-        record = None
+        record = {}
     output = f"{proc.stdout}{proc.stderr}"
     if (
-        record
+        record.get("status") == "complete"
         and ("survivors" in record or "survivors_truncated" in record)
     ):
         proof = Path(".factory") / f"mutation-{expected.head}.json"
