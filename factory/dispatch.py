@@ -676,6 +676,43 @@ def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
     return elected
 
 
+def dead_claim_escalation(n: int, claim: dict) -> tuple[dict | None, list[dict]]:
+    """Local journal evidence bound to this elected nonce, never a foreign claim."""
+    if claim["host"] != cfg.host_name:
+        return None, []
+    rows = [row for row in lifecycle.read_events(EVENTS) if row.get("ticket") == n]
+    attempt = next((row for row in reversed(rows)
+                    if row.get("event") == "claimed"
+                    and row.get("claim_nonce") == claim["nonce"]), {})
+    for index in range(len(rows) - 1, -1, -1):
+        row = rows[index]
+        if row.get("event") != "escalate":
+            continue
+        if row.get("claim_nonce") == claim["nonce"] or (
+            row.get("claim_nonce") is None and attempt.get("execution_id")
+            and row.get("execution_id") == attempt["execution_id"]
+        ):
+            return row, rows[index + 1:]
+    return None, []
+
+
+def repair_claim_requeue(n: int, claims: list[dict]) -> None:
+    elected = elected_host_claim(claims)
+    if not elected or "requeue" in elected or live_host_claims(claims):
+        return
+    escalation, _ = dead_claim_escalation(n, elected)
+    if escalation is None:
+        return
+    body = f"Factory requeue: nonce={elected['nonce']}\n{escalation.get('reason', '')}"
+    try:
+        gh_json(["api", f"repos/{REPO}/issues/{n}/comments", "--method", "POST",
+                 "-f", f"body={body}"])
+    except subprocess.CalledProcessError as exc:
+        log(f"#{n}: requeue marker pending: {stderr_tail(exc.stderr)}")
+        return
+    elected["requeue"] = escalation.get("reason", "")
+
+
 def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     if live := live_host_claims(claims):
         return f"host claim ({live[0]['host']})"
@@ -687,8 +724,13 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     if claims:
         if any(row["login"].casefold() != host_claim_login() for row in issue.get("assignees", [])):
             return "assigned"
-        # Only a later election can supersede the expired owner's transition.
-        if "requeue" not in elected_host_claim(claims) and gh_json(
+        elected = elected_host_claim(claims)
+        escalation, later = dead_claim_escalation(n, elected)
+        superseded = escalation is not None and any(
+            row.get("event") == "generation" and row.get("cause") == "owner_requeue"
+            and row.get("source") == "requeue_agent" for row in later
+        )
+        if "requeue" not in elected and not superseded and gh_json(
             ["pr", "list", "--repo", REPO, "--state", "open",
              "--head", f"agent/{n}", "--json", "number"]
         ) and interrupted_host_claim(n, claims) is None:
@@ -862,7 +904,7 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
         delete_host_claim(n, owned)
 
 
-def frontier() -> list[dict]:
+def frontier(*, repair_markers: bool = True) -> list[dict]:
     """Open `ready-for-agent` issues; an ineligible one carries `held` naming why, never ranked."""
     issues = gh_json(
         [
@@ -882,9 +924,12 @@ def frontier() -> list[dict]:
     )
     for issue in issues:
         n = issue["number"]
+        claims = host_claims(n) if cfg.host_name else []
+        if cfg.host_name and repair_markers:
+            repair_claim_requeue(n, claims)
         if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
             issue["held"] = "initiative record"
-        elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
+        elif cfg.host_name and (held := host_claim_hold(n, issue, claims)):
             issue["held"] = held
         elif issue["assignees"] and not (cfg.host_name and claims):
             issue["held"] = "assigned"
@@ -2540,14 +2585,15 @@ def escalate(
         if refreshed_head is not None
         else {}
     )
+    claims = host_claims(n) if cfg.host_name else []
+    elected = elected_host_claim(claims)
     record(
         "escalate", ticket=n, code=code, reason=reason,
         log=str(log_path) if log_path else None, packet=str(packet), round=round_number,
+        claim_nonce=elected["nonce"] if elected and elected["host"] == cfg.host_name else None,
         **evidence,
     )
     _ESCALATED.add(n)
-    claims = host_claims(n) if cfg.host_name else []
-    elected = elected_host_claim(claims)
     unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if elected:
@@ -6008,6 +6054,11 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
     from factory import schedule
 
     with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True) as execution:
+        if cfg.host_name and not dry_run:
+            pending = {row["ticket"] for row in lifecycle.read_events(EVENTS)
+                       if row.get("event") == "escalate" and type(row.get("ticket")) is int}
+            for n in sorted(pending):
+                repair_claim_requeue(n, host_claims(n))
         active = active_tickets()
         capacity = MAX_ACTIVE - len(active)
         log(f"active tickets: {len(active)}, capacity: {max(capacity, 0)}")
@@ -6038,7 +6089,8 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
     try:
         for remaining in range(capacity, 0, -1):
             with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True):
-                rows = [issue for issue in frontier() if issue["number"] not in picked]
+                rows = [issue for issue in (frontier(repair_markers=False) if dry_run else frontier())
+                        if issue["number"] not in picked]
                 if all(issue.get("held") for issue in rows):
                     if not picked:
                         log("frontier empty, nothing to do")

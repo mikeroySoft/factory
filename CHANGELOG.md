@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Owning hosts retry missing escalation requeue markers from nonce-bound journal evidence. Later owner `requeue_agent` generations supersede the same dead local claim even while marker posting is unavailable; foreign claim rules remain unchanged (#965).
 - Mutation equivalents inside functions and classes re-match by exact source and qualified enclosing scope after line shifts, without requiring unchanged neighbouring lines or a protected registry edit. Operator and replacement text remain exact; renamed scopes and ambiguous matches fail closed. Module-level context checks and protected-path rules are unchanged (#928).
 - Tools-enabled reviewer calibration sends prompts through stdin instead of argv, avoiding E2BIG on large diffs (#940).
 - Worker argv now pins the built-in OMP default to `openai-codex/gpt-6.1-sol` and Droid chore to `gpt-6-sol`. Doctor fails any implicit worker model; claimed, attempt and worker usage rows retain argv identity while runtime model/provider discrepancies journal a mismatch without changing raw usage accounting. `factory stats --week` reports post-FIX merged/re-escalated/pending counts and resolved merge rates by model, including direct manager FIX execution, terminal failure receipts for already-human tickets without repeated escalation, explicit missing-history buckets and the observational 6/35 baseline caveat (#535).
