@@ -69,9 +69,9 @@ class MergePassTest(unittest.TestCase):
     def _ticket(pr: dict) -> int:
         return int(pr["headRefName"].removeprefix("agent/"))
 
-    def _evidence(self, pr: dict, *, event: str = "approved", **approval) -> None:
-        ticket = self._ticket(pr)
-        head = pr["headRefOid"]
+    def _evidence(self, candidate: dict, *, event: str = "approved", **approval) -> None:
+        ticket = self._ticket(candidate)
+        head = candidate["headRefOid"]
         dispatch.record(
             "attempt", ticket=ticket, head=head, actual_head=head, gate="PASS",
         )
@@ -81,7 +81,7 @@ class MergePassTest(unittest.TestCase):
         )
         fields = {
             "ticket": ticket,
-            "pr": pr["number"],
+            "pr": candidate["number"],
             "head": head,
             "gate_head": head,
             "review_head": head,

@@ -11,7 +11,6 @@ from unittest import mock
 
 from factory import config, dispatch, gh_reads, lifecycle
 
-
 APPROVAL = (
     '```json\n{"verdict":"APPROVE","findings":[]}\n```\n'
     "VERDICT: APPROVE"
