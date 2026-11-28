@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from factory import gh_reads, lifecycle
+from factory import gh_reads, lifecycle, runtime_events
 
 
 class DeferredItemTest(unittest.TestCase):
@@ -22,7 +22,7 @@ class DeferredItemTest(unittest.TestCase):
                     visited = []
                     for number in gh_reads.items(range(1, 7)):
                         visited.append(number)
-                        with gh_reads.item(number):
+                        with lifecycle.scope(journal, "ticket", ticket=number), gh_reads.item(number):
                             command = ["gh", "issue", "view", str(number)]
                             gh_reads.run(command, lambda number=number: subprocess.CompletedProcess(
                                 command, int(number < 3), "{}", "connection refused" if number < 3 else "",
@@ -38,7 +38,13 @@ class DeferredItemTest(unittest.TestCase):
             rows = lifecycle.read_events(journal)
             skips = [row for row in rows if row.get("event") == "gh-read-skipped"]
             self.assertEqual([(row["ticket"], row["code"]) for row in skips], [
-                (1, "gh_read_failed"), (2, "gh_read_failed"), (3, "gh_reads_unavailable"),
+                (1, "gh_read_failed"), (2, "gh_read_failed"), (3, "gh_read_failed"),
             ])
+            self.assertEqual((skips[-1]["reason"], skips[-1]["deferred"]),
+                             ("gh_reads_unavailable", True))
             [summary] = [row for row in rows if row.get("event") == "pass-summary"]
             self.assertEqual((summary["reads"], summary["failed_reads"], summary["skipped"]), (3, 2, 3))
+            execution = next(row for row in runtime_events.project(journal)["executions"]
+                             if row["ticket"] == 3)
+            self.assertEqual((execution["outcome"], execution["reason"]),
+                             ("mechanism_failure", "gh_read_failed"))
