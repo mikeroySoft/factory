@@ -46,6 +46,23 @@ class HostClaimMutationTest(unittest.TestCase):
 
         self.assertEqual((self.github.issue, self.github.comments), before)
 
+    def test_owner_cleanup_releases_stale_foreign_comment_but_preserves_its_pin(self):
+        tank = self.dispatcher("tank")
+        foreign = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3))
+        self.github.add_claim("tank", datetime.now(UTC))
+
+        tank.unclaim(7)
+
+        self.assertNotIn(foreign, self.github.comments)
+        self.assertEqual(self.github.comments, [])
+        self.assertEqual(self.github.issue["assignees"], [])
+        self.assertEqual(self.github.issue["labels"],
+                         [{"name": "ready-for-agent"}, {"name": "host:ultron"}])
+        self.assertEqual(tank.frontier()[0]["held"], "host label (ultron)")
+        self.assertFalse(any("--remove-label" in args
+                             and args[args.index("--remove-label") + 1] == "host:ultron"
+                             for _, args in self.github.calls))
+
     def test_heartbeat_exits_cleanly_when_its_comment_has_been_released(self):
         tank = self.dispatcher("tank")
         self.github.add_claim("tank", datetime.now(UTC))

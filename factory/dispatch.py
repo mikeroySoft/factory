@@ -679,9 +679,8 @@ def interrupted_host_claim(n: int, claims: list[dict]) -> dict | None:
 def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
     if live := live_host_claims(claims):
         return f"host claim ({live[0]['host']})"
-    stale_hosts = {claim["host"] for claim in claims}
     foreign = {label["name"][5:] for label in issue.get("labels", [])
-               if label["name"].startswith("host:")} - stale_hosts - {cfg.host_name}
+               if label["name"].startswith("host:")} - {cfg.host_name}
     if foreign:
         return f"host label ({', '.join(sorted(foreign))})"
     if claims:
@@ -697,8 +696,9 @@ def host_claim_hold(n: int, issue: dict, claims: list[dict]) -> str | None:
 
 
 def delete_host_claim(n: int, claim: dict) -> None:
-    remove_label = not any(row["host"] == claim["host"] and row["id"] != claim["id"]
-                           for row in host_claims(n))
+    remove_label = claim["host"] == cfg.host_name and not any(
+        row["host"] == claim["host"] and row["id"] != claim["id"] for row in host_claims(n)
+    )
     if remove_label:
         # Keep the comment as durable TTL recovery evidence until label cleanup succeeds.
         run(["gh", "issue", "edit", str(n), "--repo", REPO,
