@@ -50,13 +50,13 @@ class GitHubReadTransportTest(unittest.TestCase):
             mock.patch("factory.gh_reads.subprocess.run", return_value=probe) as run,
             redirect_stdout(output),
             gh_reads.scope(self.journal, "transport", persistent=False) as state,
+            gh_reads.item(7),
         ):
-            with gh_reads.item(7):
-                gh_reads.run(
-                    cmd,
-                    lambda: subprocess.CompletedProcess(cmd, 1, "", diagnostic),
-                    env=env,
-                )
+            gh_reads.run(
+                cmd,
+                lambda: subprocess.CompletedProcess(cmd, 1, "", diagnostic),
+                env=env,
+            )
         return state, run, output.getvalue()
 
     def test_read_classifier_requires_gh_and_distinguishes_graphql_queries(self) -> None:

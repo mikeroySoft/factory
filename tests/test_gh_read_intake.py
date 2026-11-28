@@ -197,7 +197,7 @@ class GhReadIntakeTest(unittest.TestCase):
             [(row["pr"], row["verdict"]) for row in self.events("review-result")],
             [(18, "APPROVE")],
         )
-        created = [cmd for cmd, _env in self.calls if cmd[:3] == ["gh", "issue", "create"]
+        created = [cmd for cmd, _env in self.calls if cmd[:3] == ["gh", "issue", "create"]]
         self.assertEqual(len(created), 1)
         self.assertIn("PR #17: unresolved after 1 automated review attempt(s)", created[0])
 

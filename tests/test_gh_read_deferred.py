@@ -24,7 +24,7 @@ class DeferredItemTest(unittest.TestCase):
                         visited.append(number)
                         with lifecycle.scope(journal, "ticket", ticket=number), gh_reads.item(number):
                             command = ["gh", "issue", "view", str(number)]
-                            gh_reads.run(command, lambda number=number: subprocess.CompletedProcess(
+                            gh_reads.run(command, lambda number=number, command=command: subprocess.CompletedProcess(
                                 command, int(number < 3), "{}", "connection refused" if number < 3 else "",
                             ))
                             gh_reads.run(["gh", "issue", "edit", str(number)], write)
