@@ -2465,6 +2465,16 @@ class DispatchTest(unittest.TestCase):
 
         self.enterContext(mock.patch.object(dispatch, "gh_json", side_effect=github))
         self.enterContext(mock.patch.object(dispatch, "github_preflight", return_value=None))
+        real_run = dispatch._run
+
+        def readiness(cmd, *args, **kwargs):
+            if cmd[:3] == ["gh", "pr", "checks"]:
+                return subprocess.CompletedProcess(cmd, 0, "[]", "")
+            if cmd[:3] == ["gh", "pr", "view"] and cmd[-2:] == ["--json", "headRefOid"]:
+                return subprocess.CompletedProcess(cmd, 0, "{}", "")
+            return real_run(cmd, *args, **kwargs)
+
+        self.enterContext(mock.patch.object(dispatch, "_run", side_effect=readiness))
 
     def test_push_and_pr_targets_configured_nondefault_branch(self) -> None:
         from unittest import mock

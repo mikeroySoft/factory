@@ -1706,12 +1706,58 @@ nor consumes local approval evidence, removes `factory-approved`, or escalates
 them. PRs without a claim retain ordinary eligibility checks.
 
 Before any GitHub mutation, dispatch reads `gh api rate_limit` and requires at
-least **100 remaining** in both GraphQL and REST (`core`). Below either floor,
-or if the budget cannot be verified, it skips the whole pass (exit 0), logs the
-reason and reset time when available, and journals `pass-skipped` with reason
-`github_rate_limit`. Dry runs log without journaling. This is a pass-start
-safety margin, not a reservation: other hosts and clients can consume the shared
-account's budget after the check.
+least **1000 GraphQL points** for a bulk pass (up to 1000 PRs/issues with nested
+connections), **100 GraphQL points** for explicit `--ticket` dispatch, and
+**100 REST (`core`) requests**. An engine-update yield still uses the bulk floor
+because it runs landing and review intake. Below either floor,
+it skips the whole pass (exit 0), logs the reason and reset time when available,
+and journals `pass-skipped` with reason `github_rate_limit` and code `rate_limited`.
+Malformed budgets use `pass-skipped` / `gh_read_failed`; failed commands use the
+`gh-read-skipped` receipt described below. Dry-run budget preflight logs without
+journaling. This is a pass-start safety margin, not a
+reservation: other hosts and clients can consume the shared account's budget
+after the check.
+
+During engine passes, a failed `gh` read aborts only its ticket/PR/signal. It does
+not initiate label edits, claim release, or escalation; writes already completed
+before the failure remain intact. The next pass retries from fresh evidence;
+single-host assignments are resumed only with local journaled read-failure and
+claim evidence and a freshly verified matching dispatcher identity. Heartbeats
+use independent read scopes and retry at their next interval without cancelling
+the active ticket; reported quota backoff still applies.
+`gh-read-skipped` records the bounded, token-redacted stderr, exit code, ticket,
+and a bounded-time `gh api rate_limit` probe using the same credentials/host.
+Explicit rate-limit/HTTP 429 diagnostics use code `rate_limited`; network,
+authentication and other read errors use `gh_read_failed`, even if an unrelated
+API budget is exhausted. Probe failures are recorded, not treated as proof of
+rate limiting. Expected missing PRs, releases, compare branches and unsupported
+issue-dependency endpoints retain their callers' absence handling; a 404 on
+required resources (including Actions jobs) is a read failure, not evidence of
+failed CI. Empty `gh pr checks` results with the provider's “no checks reported”
+or “no required checks reported” diagnostic retain advisory review and
+`no_passing_ci` merge handling. Writes and programming errors keep their existing failure paths.
+Once a merge succeeds, a failed metadata read cannot erase its receipt or permit
+a second merge in the same pass.
+
+A rate limit ends the pass immediately. A reported resource reset or Retry-After
+is journaled as `gh-read-backoff`; subsequent passes make no GitHub calls until
+that time, including when a rejected query leaves a small nonzero budget.
+Without a reported reset, the next scheduled pass can try again.
+Other read failures end the pass as `gh_reads_unavailable` once at least three
+reads were attempted and more than half failed. There are no inline retries.
+Each affected pass logs and journals `pass-summary` with attempted/failed reads,
+skip counts, per-code counts, and its stop reason; partial passes do not advance
+the last-successful-stage marker. A started item refused by a pass-wide stop
+also gets one skip receipt and count, without another failed read or quota probe;
+later stages touching that same item do not double-count it. Unattempted work
+remains for the next pass.
+Dry-run/replay read accounting, including standalone manage, release and learn,
+neither journals failures nor reads or persists production backoff.
+Manager applications deferred by a read before any GitHub mutation journal
+`manage-deferred`, leaving the escalation round eligible next pass without a
+terminal human handoff. Applications that already attempted a mutation are
+never replayed automatically. Watch treats both read-failure codes as host
+conditions subject to `[watch].host_failure_minutes`, not immediate engine bugs.
 
 Dispatch inspects paginated repository labels at pass start. Any `host:*` label
 requires `host_name`. When `host_name` is unset, dispatch also scans all paginated

@@ -117,24 +117,39 @@ class ManagerCloseJournalTest(unittest.TestCase):
         for command in ("pr view", "pr comment", "pr close", "issue comment", "issue edit", "issue close"):
             with self.subTest(command=command):
                 error = "discarded prefix\n" + "x " * 1200 + f"\nGraphQL denied {TOKEN}\n"
-                rows, _ = self.run_manager(*self.scenario(
+                rows, state = self.run_manager(*self.scenario(
                     pr={"number": 9, "state": "OPEN", "baseRefName": "main"},
                     child=command == "issue close", fail=command, error=error,
                 ))
                 terminal = next(row for row in rows if row.get("kind") == "exit" and row.get("stage") == "manage")
-                self.assertEqual((terminal["outcome"], terminal["reason"]),
-                                 ("mechanism_failure", "github_command_failed"))
-                self.assertIn("GraphQL denied [REDACTED]", terminal.get("error", ""))
-                self.assertLessEqual(len(terminal["error"]), 2000)
-                self.assertNotIn("discarded prefix", terminal["error"])
+                if command == "pr view":
+                    self.assertEqual((terminal["outcome"], terminal["reason"]),
+                                     ("mechanism_failure", "gh_read_failed"))
+                    [skipped] = [row for row in rows if row.get("event") == "gh-read-skipped"]
+                    self.assertEqual((skipped["code"], skipped["returncode"], skipped["ticket"]),
+                                     ("gh_read_failed", 1, 7))
+                    detail = skipped["stderr_tail"]
+                    self.assertEqual(state["comments"], [])
+                    self.assertEqual(state["issue"]["state"], "OPEN")
+                    self.assertEqual(state["issue"]["labels"], [{"name": config.LABEL_HUMAN}])
+                    self.assertEqual(state["pr"]["state"], "OPEN")
+                else:
+                    self.assertEqual((terminal["outcome"], terminal["reason"]),
+                                     ("mechanism_failure", "github_command_failed"))
+                    detail = terminal["error"]
+                self.assertIn("GraphQL denied [REDACTED]", detail)
+                self.assertLessEqual(len(detail), 2000)
+                self.assertNotIn("discarded prefix", detail)
                 self.assertNotIn(TOKEN, json.dumps(rows))
 
     def test_failed_apply_without_stderr_keeps_exception_diagnosis(self):
         rows, _ = self.run_manager(*self.scenario(fail="pr view"))
         terminal = next(row for row in rows if row.get("kind") == "exit" and row.get("stage") == "manage")
         self.assertEqual((terminal["outcome"], terminal["reason"]),
-                         ("mechanism_failure", "github_command_failed"))
-        self.assertTrue(terminal.get("error"))
+                         ("mechanism_failure", "gh_read_failed"))
+        [skipped] = [row for row in rows if row.get("event") == "gh-read-skipped"]
+        self.assertEqual((skipped["code"], skipped["returncode"]), ("gh_read_failed", 1))
+        self.assertEqual((skipped["command"], skipped["ticket"]), (["pr", "view"], 7))
 
     def test_merged_or_other_base_pr_requires_human_without_mutation(self):
         for pr in ({"number": 9, "state": "MERGED", "baseRefName": "main"},

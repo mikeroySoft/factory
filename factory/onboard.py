@@ -19,7 +19,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from factory import __version__, claims, config, lifecycle, platform_identity
+from factory import __version__, claims, config, gh_reads, lifecycle, platform_identity
 from factory.config import BANDS_NAME, CONFIG_NAME, LABELS, ConfigError
 
 TEMPLATES = Path(__file__).with_name("templates")
@@ -39,12 +39,22 @@ def sh(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, check=False)
+    return gh_reads.run(
+        cmd,
+        lambda: subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, check=False),
+        env=env,
+        check=False,
+    )
 
 
 def gh_login(env: dict[str, str]) -> str:
     """`gh api user` login under `env`; raise if the lookup fails."""
-    proc = subprocess.run(["gh", "api", "user", "--jq", ".login"], env=env, capture_output=True, text=True, check=True)
+    cmd = ["gh", "api", "user", "--jq", ".login"]
+    proc = gh_reads.run(
+        cmd,
+        lambda: subprocess.run(cmd, env=env, capture_output=True, text=True, check=True),
+        env=env,
+    )
     return proc.stdout.strip()
 
 

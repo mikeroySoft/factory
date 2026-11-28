@@ -39,7 +39,7 @@ from functools import cache
 from pathlib import Path
 from urllib.parse import quote
 
-from factory import __version__, brief, config, generation, lifecycle, risk, runner
+from factory import __version__, brief, config, generation, gh_reads, lifecycle, risk, runner
 from factory.claims import HostSetupError, host_setup_problem, repository_host_problem
 from factory.config import (
     LABEL_ADD_ONLY_OVERRIDE,
@@ -233,7 +233,9 @@ def run(
     A failed checked command logs its redacted stderr tail, then raises as before.
     """
     try:
-        return _run(cmd, cwd, check, stdout, stderr, env, timeout)
+        return gh_reads.run(
+            cmd, lambda: _run(cmd, cwd, check, stdout, stderr, env, timeout), env=env, check=check,
+        )
     except subprocess.CalledProcessError as exc:
         tail = stderr_tail(exc.stderr)
         if tail:
@@ -757,21 +759,31 @@ class HostClaim:
         self.n = n
         self.comment = comment
         self.stopped = threading.Event()
-        self.thread = threading.Thread(target=self.heartbeat, daemon=True)
+        context = contextvars.copy_context()
+        self.thread = threading.Thread(target=context.run, args=(self.heartbeat,), daemon=True)
 
     def body(self) -> str:
         return (f"Factory claim: host={cfg.host_name} nonce={self.comment['nonce']} "
                 f"at={datetime.now(UTC).isoformat()}")
 
     def heartbeat(self) -> None:
+        retry_at = None
         while not self.stopped.wait(cfg.claim_ttl_seconds / 4):
             try:
-                owned = owned_host_claim(self.n)
-                if owned is None or owned["nonce"] != self.comment["nonce"]:
-                    log(f"#{self.n}: host claim heartbeat stopped (ownership lost)")
-                    return
-                run(["gh", "api", f"repos/{REPO}/issues/comments/{self.comment['id']}",
-                     "--method", "PATCH", "-f", f"body={self.body()}"])
+                if retry_at is not None and time.time() < retry_at:
+                    continue
+                with (
+                    gh_reads.scope(EVENTS, "claim-heartbeat", isolated=True, backoff=False) as reads,
+                    gh_reads.item(self.n),
+                    lifecycle.scope(EVENTS, "claim-heartbeat", ticket=self.n, lazy=True),
+                ):
+                    owned = owned_host_claim(self.n)
+                    if owned is None or owned["nonce"] != self.comment["nonce"]:
+                        log(f"#{self.n}: host claim heartbeat stopped (ownership lost)")
+                        return
+                    run(["gh", "api", f"repos/{REPO}/issues/comments/{self.comment['id']}",
+                         "--method", "PATCH", "-f", f"body={self.body()}"])
+                retry_at = reads.reset
             except (OSError, subprocess.CalledProcessError) as exc:
                 log(f"#{self.n}: host claim heartbeat failed ({exc})")
 
@@ -816,6 +828,11 @@ def acquire_host_claim(n: int, issue: dict, claims: list[dict], *, forced: bool 
         log(f"#{n}: refused ({exc})")
         record("claim_lost", ticket=n, host=cfg.host_name, reason=str(exc))
         return None
+    except gh_reads.ReadFailed:
+        # An incomplete election read is not evidence that we lost. Leave durable
+        # claim/label evidence untouched for the next pass's ownership recovery.
+        claim.stop()
+        raise
     except BaseException:
         claim.release()
         raise
@@ -836,6 +853,47 @@ def owned_host_claim(n: int, claims: list[dict] | None = None) -> dict | None:
     ):
         return elected
     return None
+
+
+def recoverable_single_host_assignment(n: int, issue: dict) -> bool:
+    """A local claim interrupted by a failed read may resume only as the same GitHub user."""
+    if cfg.host_name or not issue.get("assignees"):
+        return False
+    claim_execution = None
+    interrupted = False
+    for row in lifecycle.read_events(EVENTS):
+        if (
+            row.get("event") == "decision"
+            and row.get("ticket") == n
+            and row.get("stage") == "claim"
+        ):
+            execution_id = row.get("execution_id")
+            claim_execution = (
+                execution_id
+                if row.get("chosen") == "claimed" and isinstance(execution_id, str)
+                else None
+            )
+            interrupted = False
+        elif (
+            claim_execution is not None
+            and row.get("event") == "ticket-read-deferred"
+            and row.get("ticket") == n
+            and row.get("execution_id") == claim_execution
+        ):
+            interrupted = True
+    if not interrupted:
+        return False
+    identity = None
+    with gh_reads.item(n):
+        current = gh_json(["api", "user"])
+        if isinstance(current, dict) and isinstance(current.get("login"), str):
+            identity = current["login"].casefold()
+    return bool(identity) and all(
+        isinstance(assignee, dict)
+        and isinstance(assignee.get("login"), str)
+        and assignee["login"].casefold() == identity
+        for assignee in issue["assignees"]
+    )
 
 
 def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool = False) -> None:
@@ -862,6 +920,7 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
         delete_host_claim(n, owned)
 
 
+@gh_reads.guarded(lambda: EVENTS, "frontier", fallback=list)
 def frontier() -> list[dict]:
     """Open `ready-for-agent` issues; an ineligible one carries `held` naming why, never ranked."""
     issues = gh_json(
@@ -880,20 +939,31 @@ def frontier() -> list[dict]:
             "number,title,body,labels,assignees,createdAt",
         ]
     )
-    for issue in issues:
+    checked = []
+    for issue in gh_reads.items(issues):
         n = issue["number"]
-        if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
-            issue["held"] = "initiative record"
-        elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
-            issue["held"] = held
-        elif issue["assignees"] and not (cfg.host_name and claims):
-            issue["held"] = "assigned"
-        elif blockers := open_blockers(n, issue.get("body", "")):
-            issue["held"] = f"blocked by {', '.join(f'#{b}' for b in blockers)}"
-        else:
-            continue
-        log(f"#{n}: skipped ({issue['held']})")
-    return issues
+        checked.append(issue)
+        # Fail closed if any eligibility read aborts this item.
+        issue["held"] = "GitHub read unavailable"
+        with gh_reads.item(n):
+            if any(label.get("name") == config.LABEL_INITIATIVE for label in issue.get("labels", [])):
+                issue["held"] = "initiative record"
+            elif _pending_escalation(n):
+                del issue["held"]
+                continue
+            elif cfg.host_name and (held := host_claim_hold(n, issue, claims := host_claims(n))):
+                issue["held"] = held
+            elif issue["assignees"] and not (
+                (cfg.host_name and claims) or recoverable_single_host_assignment(n, issue)
+            ):
+                issue["held"] = "assigned"
+            elif blockers := open_blockers(n, issue.get("body", "")):
+                issue["held"] = f"blocked by {', '.join(f'#{b}' for b in blockers)}"
+            else:
+                del issue["held"]
+                continue
+            log(f"#{n}: skipped ({issue['held']})")
+    return checked
 
 
 def _pr_author_login(pr: dict) -> str:
@@ -929,6 +999,7 @@ def latest_head_review_verdict(events: list[dict], n: int, pr: int, head: str) -
     return verdict if isinstance(verdict, str) and verdict else None
 
 
+@gh_reads.guarded(lambda: EVENTS, "review-intake")
 def review_intake_pass(dry_run: bool) -> None:
     """Review opted-in PR revisions, and `factory learn` PRs, without running the issue/merge pipeline."""
     if cfg.host_name is not None and cfg.triage_host is not None and cfg.host_name != cfg.triage_host:
@@ -939,87 +1010,89 @@ def review_intake_pass(dry_run: bool) -> None:
         "--json", "number,state,isDraft,isCrossRepository,headRefName,headRefOid,baseRefOid,labels,reviewRequests,author",
     ])
     login = None
-    for pr in prs:
-        if pr["state"] != "OPEN" or pr["isDraft"]:
-            continue
-        # Branch-name admission is for the dispatcher's own chore PRs; a fork can name its branch anything.
-        opted_in = any(label["name"] == LABEL_REVIEW for label in pr["labels"]) or (
-            not pr.get("isCrossRepository") and bool(LESSONS_BRANCH.match(pr.get("headRefName") or "")))
-        requests = pr["reviewRequests"]
-        if not opted_in and requests:
-            if login is None:
-                # The dispatcher's login, plus the human's (dashboard identity) when
-                # `[install].dispatch_env` runs the dispatcher as a separate account.
-                login = {gh_json(["api", "user"])["login"].casefold()}
-                if cfg.install.get("dispatch_env"):
-                    login.add(gh_json(["api", "user"], env=config.dashboard_env(cfg))["login"].casefold())
-            opted_in = any(request.get("login", "").casefold() in login for request in requests)
-        # GitHub consumes review requests on submission; keep tracking admitted PRs.
-        if not opted_in and not any(
-            e.get("event") == "review-result" and e.get("pr") == pr["number"]
-            and e.get("verdict") in {"REQUEST_CHANGES", "APPROVE"}
-            for e in lifecycle.read_events(EVENTS)
-        ):
-            continue
-        n, head = pr["number"], pr["headRefOid"]
-        with nullcontext() if dry_run else ticket_lock(n).open("w") as lock:
-            if not dry_run:
-                try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    continue
-            history = [e for e in lifecycle.read_events(EVENTS) if e.get("pr") == n]
-            if not dry_run:
-                review_readiness(n, head, history)
-            if any(e.get("event") == "review-result" and e.get("verdict") == "APPROVE"
-                   for e in history):
+    for pr in gh_reads.items(prs):
+        with gh_reads.item(pr=pr["number"]):
+            if pr["state"] != "OPEN" or pr["isDraft"]:
                 continue
-            if any(e.get("event") == "escalate" for e in history):
+            # Branch-name admission is for the dispatcher's own chore PRs; a fork can name its branch anything.
+            opted_in = any(label["name"] == LABEL_REVIEW for label in pr["labels"]) or (
+                not pr.get("isCrossRepository") and bool(LESSONS_BRANCH.match(pr.get("headRefName") or "")))
+            requests = pr["reviewRequests"]
+            if not opted_in and requests:
+                if login is None:
+                    # The dispatcher's login, plus the human's (dashboard identity) when
+                    # `[install].dispatch_env` runs the dispatcher as a separate account.
+                    identities = {gh_json(["api", "user"])["login"].casefold()}
+                    if cfg.install.get("dispatch_env"):
+                        identities.add(gh_json(["api", "user"], env=config.dashboard_env(cfg))["login"].casefold())
+                    login = identities
+                opted_in = any(request.get("login", "").casefold() in login for request in requests)
+            # GitHub consumes review requests on submission; keep tracking admitted PRs.
+            if not opted_in and not any(
+                e.get("event") == "review-result" and e.get("pr") == pr["number"]
+                and e.get("verdict") in {"REQUEST_CHANGES", "APPROVE"}
+                for e in lifecycle.read_events(EVENTS)
+            ):
                 continue
-            attempts = [e for e in history if e.get("event") == "review-intake"]
-            if len(attempts) >= cfg.review_rounds + 1:
-                reason = f"PR #{n}: unresolved after {len(attempts)} automated review attempt(s)"
-                log(f"{reason}; {'would escalate' if dry_run else 'escalating'} to human")
+            n, head = pr["number"], pr["headRefOid"]
+            with nullcontext() if dry_run else ticket_lock(n).open("w") as lock:
                 if not dry_run:
-                    packet = FACTORY / "escalations" / f"review-{n}.md"
-                    packet.parent.mkdir(parents=True, exist_ok=True)
-                    packet.write_text(
-                        f"# {reason}\n\nhttps://github.com/{REPO}/pull/{n}\n\n"
-                        f"Current head: `{head}`\n\n"
-                        + "\n\n".join(
-                            f"Head: `{e['head']}`\n\n{e.get('findings', 'Review admitted')}"
-                            for e in history
-                            if e.get("event") in {"review-intake", "review-result"}
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                history = [e for e in lifecycle.read_events(EVENTS) if e.get("pr") == n]
+                if not dry_run:
+                    review_readiness(n, head, history)
+                if any(e.get("event") == "review-result" and e.get("verdict") == "APPROVE"
+                       for e in history):
+                    continue
+                if any(e.get("event") == "escalate" for e in history):
+                    continue
+                attempts = [e for e in history if e.get("event") == "review-intake"]
+                if len(attempts) >= cfg.review_rounds + 1:
+                    reason = f"PR #{n}: unresolved after {len(attempts)} automated review attempt(s)"
+                    log(f"{reason}; {'would escalate' if dry_run else 'escalating'} to human")
+                    if not dry_run:
+                        packet = FACTORY / "escalations" / f"review-{n}.md"
+                        packet.parent.mkdir(parents=True, exist_ok=True)
+                        packet.write_text(
+                            f"# {reason}\n\nhttps://github.com/{REPO}/pull/{n}\n\n"
+                            f"Current head: `{head}`\n\n"
+                            + "\n\n".join(
+                                f"Head: `{e['head']}`\n\n{e.get('findings', 'Review admitted')}"
+                                for e in history
+                                if e.get("event") in {"review-intake", "review-result"}
+                            )
                         )
-                    )
-                    url = run([
-                        "gh", "issue", "create", "--repo", REPO,
-                        "--title", reason, "--label", LABEL_HUMAN,
-                        "--body-file", str(packet),
-                    ]).stdout.strip().splitlines()[-1]
-                    record("escalate", pr=n, head=head,
-                           ticket=int(url.rstrip("/").rsplit("/", 1)[-1]),
-                           code="review_intake", reason=reason, packet=str(packet), round=1)
-                continue
-            if any(e.get("event") == "review-result" and e.get("head") == head
-                   for e in history):
-                continue
-            already_admitted = any(
-                e.get("event") == "review-intake" and e.get("head") == head
-                for e in history
-            )
-            if already_admitted:
-                log(f"PR #{n}: {'would retry' if dry_run else 'retrying'} review at {head} after intake without a result")
-            else:
-                log(f"PR #{n}: {'would record' if dry_run else 'recording'} review intake at {head}")
-            if not dry_run:
-                if not already_admitted:
-                    record("review-intake", pr=n, head=head)
-                review_external_pr(
-                    n, pr["baseRefOid"], head, pr.get("headRefName") or "",
-                    author=_pr_author_login(pr),
+                        url = run([
+                            "gh", "issue", "create", "--repo", REPO,
+                            "--title", reason, "--label", LABEL_HUMAN,
+                            "--body-file", str(packet),
+                        ]).stdout.strip().splitlines()[-1]
+                        record("escalate", pr=n, head=head,
+                               ticket=int(url.rstrip("/").rsplit("/", 1)[-1]),
+                               code="review_intake", reason=reason, packet=str(packet), round=1)
+                    continue
+                if any(e.get("event") == "review-result" and e.get("head") == head
+                       for e in history):
+                    continue
+                already_admitted = any(
+                    e.get("event") == "review-intake" and e.get("head") == head
+                    for e in history
                 )
-                review_readiness(n, head, lifecycle.read_events(EVENTS))
+                if already_admitted:
+                    log(f"PR #{n}: {'would retry' if dry_run else 'retrying'} review at {head} after intake without a result")
+                else:
+                    log(f"PR #{n}: {'would record' if dry_run else 'recording'} review intake at {head}")
+                if not dry_run:
+                    if not already_admitted:
+                        record("review-intake", pr=n, head=head)
+                    review_external_pr(
+                        n, pr["baseRefOid"], head, pr.get("headRefName") or "",
+                        author=_pr_author_login(pr),
+                    )
+                    review_readiness(n, head, lifecycle.read_events(EVENTS))
 
 
 def review_readiness(n: int, head: str, history: list[dict]) -> None:
@@ -2549,6 +2622,14 @@ def escalate(
     claims = host_claims(n) if cfg.host_name else []
     elected = elected_host_claim(claims)
     unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN)
+    _publish_escalation(n, reason, log_path, packet, round_number, elected)
+
+
+def _publish_escalation(
+    n: int, reason: str, log_path: Path | None, packet: Path, round_number: int,
+    elected: dict | None,
+) -> None:
+    wt = FACTORY / f"wt-{n}"
     body = f"Factory dispatcher escalating: {reason}.\n\nEscalation packet: `{packet}`"
     if elected:
         first, _, rest = body.partition("\n")
@@ -2564,6 +2645,44 @@ def escalate(
             body += "\n\n" + text[text.index("## Mechanical fixups"):][-2000:]
     posted = run(["gh", "issue", "comment", str(n), "--repo", REPO, "--body", body], check=False)
     comment_receipt(n, "escalation", posted.stdout if posted.returncode == 0 else "", round=round_number)
+
+
+def _pending_escalation(n: int) -> dict | None:
+    rows = generation.current(lifecycle.read_events(EVENTS), n).rows
+    at = next((index for index in range(len(rows) - 1, -1, -1)
+               if rows[index].get("event") == "escalate"), None)
+    if at is None:
+        return None
+    escalation = rows[at]
+    execution_id = escalation.get("execution_id")
+    if not execution_id:
+        return None
+    after = rows[at + 1:]
+    deferred = any(row.get("event") == "ticket-read-deferred"
+                   and row.get("execution_id") == execution_id for row in after)
+    completed = any(
+        (row.get("event") == "escalation-recovered"
+         and row.get("escalation_execution_id") == execution_id)
+        or row.get("event") in {"manage", "human-decision"}
+        for row in after
+    )
+    return escalation if deferred and not completed else None
+
+
+def _recover_escalation(n: int, escalation: dict, claims: list[dict]) -> None:
+    elected = elected_host_claim(claims)
+    if elected and owned_host_claim(n, claims) is None:
+        log(f"#{n}: escalation cleanup deferred (claim owned by another host)")
+        return
+    unclaim(n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN, check=True)
+    rows = generation.current(lifecycle.read_events(EVENTS), n).rows
+    if not any(row.get("event") == "comment" and row.get("kind") == "escalation"
+               and row.get("round") == escalation["round"] for row in rows):
+        _publish_escalation(
+            n, escalation["reason"], Path(escalation["log"]) if escalation.get("log") else None,
+            Path(escalation["packet"]), escalation["round"], elected,
+        )
+    record("escalation-recovered", ticket=n, escalation_execution_id=escalation["execution_id"])
 
 
 def _review_plan(n: int) -> str:
@@ -3853,6 +3972,7 @@ def newest_clean_upstream_commit(wt: Path, tip: str) -> str | None:
     return None
 
 
+@gh_reads.guarded(lambda: EVENTS, "sync")
 def sync_pass(dry_run: bool) -> None:
     """Stage upstream main as a sync ticket when upstream moved; one ticket at a time.
 
@@ -4803,6 +4923,7 @@ def cleanup_after_merge(n: int, head: str) -> None:
     # unlinking it under a live holder lets the next opener lock a second inode.
 
 
+@gh_reads.guarded(lambda: EVENTS, "landing")
 def land_pass(dry_run: bool) -> None:
     """Under one lock: upstream sync (stages a sync ticket, never moves main), then
     the merge stage (at most ONE approved, green, up-to-date factory PR per pass).
@@ -4846,6 +4967,7 @@ def land_pass(dry_run: bool) -> None:
             execution.resource("released", lock_path, scope="repository")
 
 
+@gh_reads.guarded(lambda: EVENTS, "merge")
 def merge_pass_locked(dry_run: bool) -> None:
     """Ticket PR merge stage; `factory learn` PRs in the same listing go to `learn.promote_pass` first."""
     prs = gh_json(
@@ -4867,156 +4989,219 @@ def merge_pass_locked(dry_run: bool) -> None:
     except Exception as exc:  # noqa: BLE001 - a lessons merge failure never blocks ticket merges
         log(f"promotion: failed ({type(exc).__name__}: {exc})")
     candidates = []
-    for pr in prs:
-        m = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
-        if not m or pr["isDraft"]:
-            continue
-        if pr.get("baseRefName") != cfg.main:
-            log(f"PR #{pr['number']}: targets {pr.get('baseRefName')!r}, not {cfg.main!r}; not merging")
-            continue
-        if FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}:
-            continue
-        if pr["reviewDecision"] == "CHANGES_REQUESTED":
-            log(f"PR #{pr['number']}: human requested changes; not merging")
-            continue
-        candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
-    for pr_num, n, listed_head in sorted(candidates):
-        if cfg.host_name is not None:
-            elected = elected_host_claim(host_claims(n))
-            if elected is not None and elected["host"] != cfg.host_name:
-                log(f"PR #{pr_num}: skipped, elected claim belongs to host {elected['host']}")
+    for pr in gh_reads.items(prs):
+        with gh_reads.item(pr=pr["number"]):
+            m = re.fullmatch(r"agent/(\d+)", pr["headRefName"])
+            if not m or pr["isDraft"]:
                 continue
-        with nullcontext() if dry_run else lifecycle.scope(
-            EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
-        ) as execution:
-            if initiative_kind(n):
-                log(f"PR #{pr_num}: refused (ticket #{n} is an initiative record); not merging")
-                if execution:
-                    execution.outcome, execution.reason = "not_eligible", "initiative"
+            if pr.get("baseRefName") != cfg.main:
+                log(f"PR #{pr['number']}: targets {pr.get('baseRefName')!r}, not {cfg.main!r}; not merging")
                 continue
-            verdict = latest_head_review_verdict(
-                lifecycle.read_events(EVENTS), n, pr_num, listed_head,
-            )
-            if verdict in {"REQUEST_CHANGES", "REVISE"}:
-                log(f"PR #{pr_num}: journaled {verdict} at {listed_head}; not merging")
-                if dry_run:
+            if FACTORY_APPROVED not in {label["name"] for label in pr["labels"]}:
+                continue
+            if pr["reviewDecision"] == "CHANGES_REQUESTED":
+                log(f"PR #{pr['number']}: human requested changes; not merging")
+                continue
+            candidates.append((pr["number"], int(m.group(1)), pr.get("headRefOid")))
+    for pr_num, n, listed_head in gh_reads.items(sorted(candidates)):
+        with gh_reads.item(n, pr=pr_num):
+            if cfg.host_name is not None:
+                elected = elected_host_claim(host_claims(n))
+                if elected is not None and elected["host"] != cfg.host_name:
+                    log(f"PR #{pr_num}: skipped, elected claim belongs to host {elected['host']}")
                     continue
-                record_merge_decision(
-                    n, pr_num, "review_revise",
-                    f"journaled {verdict} at {listed_head}; approval is no longer eligible",
-                    listed_head, listed_head, [],
-                )
-                run(
-                    [
-                        "gh",
-                        "pr",
-                        "edit",
-                        str(pr_num),
-                        "--repo",
-                        REPO,
-                        "--remove-label",
-                        FACTORY_APPROVED,
-                    ],
-                    check=False,
-                )
-                escalate(
-                    n,
-                    f"PR #{pr_num}: journaled {verdict} at {listed_head}; "
-                    f"`{FACTORY_APPROVED}` label removed",
-                    None, code="review_revise",
-                )
-                if execution:
-                    execution.outcome, execution.reason = "project_escalation", "review_revise"
-                continue
-            checks = triage_cancelled(pr_num, pr_checks(pr_num, listed_head), dry_run, n, listed_head)
-            buckets: dict[str, int] = {}
-            for c in checks:
-                buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
-            failed = [c["name"] for c in checks if c["bucket"] == "fail"]
-            if failed:
-                if dry_run:
-                    log(f"PR #{pr_num}: would escalate (CI failed: {', '.join(failed)})")
+            with nullcontext() if dry_run else lifecycle.scope(
+                EVENTS, "merge-eligibility", ticket=n, lock=FACTORY / "locks" / "merge.lock"
+            ) as execution:
+                if initiative_kind(n):
+                    log(f"PR #{pr_num}: refused (ticket #{n} is an initiative record); not merging")
+                    if execution:
+                        execution.outcome, execution.reason = "not_eligible", "initiative"
                     continue
-                record_merge_decision(
-                    n, pr_num, "remove stale factory-approved label",
-                    f"CI failed ({', '.join(failed)}); approval is no longer eligible",
-                    listed_head, listed_head, checks,
+                verdict = latest_head_review_verdict(
+                    lifecycle.read_events(EVENTS), n, pr_num, listed_head,
                 )
-                run(
-                    [
-                        "gh",
-                        "pr",
-                        "edit",
-                        str(pr_num),
-                        "--repo",
-                        REPO,
-                        "--remove-label",
-                        FACTORY_APPROVED,
-                    ],
-                    check=False,
-                )
-                escalate(
-                    n,
-                    f"PR #{pr_num}: CI failed ({', '.join(failed)}); "
-                    f"`{FACTORY_APPROVED}` label removed",
-                    None, code="ci_failed",
-                )
-                continue
-            starved = [c for c in checks if c["bucket"] == "infra"]
-            if starved and runner_unavailable(n, pr_num, starved, dry_run):
-                if not dry_run:
+                if verdict in {"REQUEST_CHANGES", "REVISE"}:
+                    log(f"PR #{pr_num}: journaled {verdict} at {listed_head}; not merging")
+                    if dry_run:
+                        continue
                     record_merge_decision(
-                        n, pr_num, "ci-infra", "CI runner infrastructure is unavailable",
+                        n, pr_num, "review_revise",
+                        f"journaled {verdict} at {listed_head}; approval is no longer eligible",
+                        listed_head, listed_head, [],
+                    )
+                    run(
+                        [
+                            "gh",
+                            "pr",
+                            "edit",
+                            str(pr_num),
+                            "--repo",
+                            REPO,
+                            "--remove-label",
+                            FACTORY_APPROVED,
+                        ],
+                        check=False,
+                    )
+                    escalate(
+                        n,
+                        f"PR #{pr_num}: journaled {verdict} at {listed_head}; "
+                        f"`{FACTORY_APPROVED}` label removed",
+                        None, code="review_revise",
+                    )
+                    if execution:
+                        execution.outcome, execution.reason = "project_escalation", "review_revise"
+                    continue
+                checks = triage_cancelled(pr_num, pr_checks(pr_num, listed_head), dry_run, n, listed_head)
+                buckets: dict[str, int] = {}
+                for c in checks:
+                    buckets[c["bucket"]] = buckets.get(c["bucket"], 0) + 1
+                failed = [c["name"] for c in checks if c["bucket"] == "fail"]
+                if failed:
+                    if dry_run:
+                        log(f"PR #{pr_num}: would escalate (CI failed: {', '.join(failed)})")
+                        continue
+                    record_merge_decision(
+                        n, pr_num, "remove stale factory-approved label",
+                        f"CI failed ({', '.join(failed)}); approval is no longer eligible",
                         listed_head, listed_head, checks,
                     )
-                continue
-            if buckets.get("pending") or starved:
-                log(f"PR #{pr_num}: CI pending {buckets}; waiting")
-                if execution:
-                    execution.outcome, execution.reason = "not_eligible", "ci_pending"
-                    execution.wait("ci_pending", mode="eligibility", pr=pr_num)
-                continue
-            if not buckets.get("pass"):
-                log(f"PR #{pr_num}: no passing CI checks reported; refusing to merge")
-                if execution:
-                    execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
-                    execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
-                continue
-            fields = "number,state,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision,title,files"
-            fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
-            labels = {label["name"] for label in fresh.get("labels", [])}
-            head = fresh.get("headRefOid")
-            if (
-                fresh.get("state") != "OPEN"
-                or fresh.get("headRefName") != f"agent/{n}"
-                or fresh.get("baseRefName") != cfg.main
-                or fresh.get("isDraft")
-                or FACTORY_APPROVED not in labels
-                or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
-            ):
-                log(f"PR #{pr_num}: state changed during eligibility check; not merging")
-                continue
-            if not head or head != listed_head:
-                log(f"PR #{pr_num}: head changed during CI check; retrying next pass")
-                continue
-            behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]
-            from factory import eval as eval_suite
-
-            changed_paths = [
-                item["path"] for item in fresh.get("files", [])
-                if isinstance(item, dict) and isinstance(item.get("path"), str)
-            ]
-            eval_command = (
-                f"{shlex.quote(sys.executable)} -m factory eval "
-                f"--profile {shlex.quote(cfg.eval_profile)}"
-            )
-            if dry_run:
+                    run(
+                        [
+                            "gh",
+                            "pr",
+                            "edit",
+                            str(pr_num),
+                            "--repo",
+                            REPO,
+                            "--remove-label",
+                            FACTORY_APPROVED,
+                        ],
+                        check=False,
+                    )
+                    escalate(
+                        n,
+                        f"PR #{pr_num}: CI failed ({', '.join(failed)}); "
+                        f"`{FACTORY_APPROVED}` label removed",
+                        None, code="ci_failed",
+                    )
+                    continue
+                starved = [c for c in checks if c["bucket"] == "infra"]
+                if starved and runner_unavailable(n, pr_num, starved, dry_run):
+                    if not dry_run:
+                        record_merge_decision(
+                            n, pr_num, "ci-infra", "CI runner infrastructure is unavailable",
+                            listed_head, listed_head, checks,
+                        )
+                    continue
+                if buckets.get("pending") or starved:
+                    log(f"PR #{pr_num}: CI pending {buckets}; waiting")
+                    if execution:
+                        execution.outcome, execution.reason = "not_eligible", "ci_pending"
+                        execution.wait("ci_pending", mode="eligibility", pr=pr_num)
+                    continue
+                if not buckets.get("pass"):
+                    log(f"PR #{pr_num}: no passing CI checks reported; refusing to merge")
+                    if execution:
+                        execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
+                        execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
+                    continue
+                fields = "number,state,headRefName,headRefOid,baseRefName,isDraft,labels,reviewDecision,title,files"
+                fresh = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
+                labels = {label["name"] for label in fresh.get("labels", [])}
+                head = fresh.get("headRefOid")
+                if (
+                    fresh.get("state") != "OPEN"
+                    or fresh.get("headRefName") != f"agent/{n}"
+                    or fresh.get("baseRefName") != cfg.main
+                    or fresh.get("isDraft")
+                    or FACTORY_APPROVED not in labels
+                    or fresh.get("reviewDecision") == "CHANGES_REQUESTED"
+                ):
+                    log(f"PR #{pr_num}: state changed during eligibility check; not merging")
+                    continue
+                if not head or head != listed_head:
+                    log(f"PR #{pr_num}: head changed during CI check; retrying next pass")
+                    continue
+                behind = gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]
+                from factory import eval as eval_suite
+    
+                changed_paths = [
+                    item["path"] for item in fresh.get("files", [])
+                    if isinstance(item, dict) and isinstance(item.get("path"), str)
+                ]
+                eval_command = (
+                    f"{shlex.quote(sys.executable)} -m factory eval "
+                    f"--profile {shlex.quote(cfg.eval_profile)}"
+                )
+                if dry_run:
+                    if behind:
+                        log(f"PR #{pr_num}: would refresh (behind main)")
+                    elif (
+                        cfg.eval_schedule
+                        and "files" in fresh
+                        and not eval_suite.merge_allowed(changed_paths, head, lifecycle.read_events(EVENTS))
+                    ):
+                        candidate_command = (
+                            f"cd {shlex.quote(str(FACTORY / f'wt-{n}'))} && "
+                            f"{eval_command}"
+                        )
+                        command = candidate_command
+                        if not eval_suite.baseline_ready(cfg):
+                            command = (
+                                f"cd {shlex.quote(str(ROOT))} && "
+                                f"{eval_command} && {candidate_command}"
+                            )
+                        log(f"PR #{pr_num}: would refuse (worker eval keep claim missing for {head}); run `{command}`")
+                    else:
+                        events = lifecycle.read_events(EVENTS)
+                        approved = _head_evidence_matches(
+                            events, n, head, changed_paths=changed_paths,
+                        ) and any(
+                            e.get("event") == "approved"
+                            and e.get("ticket") == n
+                            and e.get("pr") == pr_num
+                            and e.get("head") == head
+                            and e.get("gate_head") == head
+                            and e.get("review_head") == head
+                            for e in events
+                        )
+                        log(
+                            f"PR #{pr_num}: would "
+                            f"{'merge' if approved else 'refuse (missing SHA-bound approval evidence)'}"
+                        )
+                    return
+                run(["git", "fetch", "origin", cfg.main, f"agent/{n}"], cwd=ROOT)
+                if UPSTREAM is None:
+                    carries_upstream = False
+                else:
+                    run(["git", "fetch", UPSTREAM, cfg.main], cwd=ROOT)
+                    mb = run(
+                        ["git", "merge-base", f"origin/agent/{n}", f"{UPSTREAM}/{cfg.main}"],
+                        cwd=ROOT,
+                    ).stdout.strip()
+                    carries_upstream = (
+                        run(
+                            ["git", "merge-base", "--is-ancestor", mb, f"origin/{cfg.main}"],
+                            cwd=ROOT,
+                            check=False,
+                        ).returncode
+                        != 0
+                    )
                 if behind:
-                    log(f"PR #{pr_num}: would refresh (behind main)")
-                elif (
+                    record_merge_decision(
+                        n, pr_num, "refresh branch",
+                        f"approval head {head} is stale because the branch is behind {cfg.main}",
+                        head, head, checks,
+                    )
+                    if refresh_pr_branch(n, pr_num, carries_upstream):
+                        execution.outcome = "refreshed"
+                    return
+                events = lifecycle.read_events(EVENTS)
+                if (
                     cfg.eval_schedule
                     and "files" in fresh
-                    and not eval_suite.merge_allowed(changed_paths, head, lifecycle.read_events(EVENTS))
+                    and not eval_suite.merge_allowed(changed_paths, head, events)
                 ):
                     candidate_command = (
                         f"cd {shlex.quote(str(FACTORY / f'wt-{n}'))} && "
@@ -5028,200 +5213,145 @@ def merge_pass_locked(dry_run: bool) -> None:
                             f"cd {shlex.quote(str(ROOT))} && "
                             f"{eval_command} && {candidate_command}"
                         )
-                    log(f"PR #{pr_num}: would refuse (worker eval keep claim missing for {head}); run `{command}`")
-                else:
-                    events = lifecycle.read_events(EVENTS)
-                    approved = _head_evidence_matches(
-                        events, n, head, changed_paths=changed_paths,
-                    ) and any(
-                        e.get("event") == "approved"
-                        and e.get("ticket") == n
-                        and e.get("pr") == pr_num
-                        and e.get("head") == head
-                        and e.get("gate_head") == head
-                        and e.get("review_head") == head
-                        for e in events
+                    log(f"PR #{pr_num}: worker eval keep claim missing for {head}; run `{command}`; not merging")
+                    execution.outcome, execution.reason = "not_eligible", "eval_required"
+                    execution.wait(
+                        "eval_required", mode="eligibility", pr=pr_num, head=head, command=command,
                     )
-                    log(
-                        f"PR #{pr_num}: would "
-                        f"{'merge' if approved else 'refuse (missing SHA-bound approval evidence)'}"
+                    continue
+                approved = _head_evidence_matches(
+                    events, n, head, changed_paths=changed_paths,
+                ) and any(
+                    e.get("event") == "approved"
+                    and e.get("ticket") == n
+                    and e.get("pr") == pr_num
+                    and e.get("head") == head
+                    and e.get("gate_head") == head
+                    and e.get("review_head") == head
+                    for e in events
+                )
+                if not approved:
+                    record_merge_decision(
+                        n, pr_num, "remove stale factory-approved label",
+                        f"approval evidence is missing or stale for head {head}",
+                        head, None, checks,
                     )
-                return
-            run(["git", "fetch", "origin", cfg.main, f"agent/{n}"], cwd=ROOT)
-            if UPSTREAM is None:
-                carries_upstream = False
-            else:
-                run(["git", "fetch", UPSTREAM, cfg.main], cwd=ROOT)
-                mb = run(
-                    ["git", "merge-base", f"origin/agent/{n}", f"{UPSTREAM}/{cfg.main}"],
-                    cwd=ROOT,
-                ).stdout.strip()
-                carries_upstream = (
                     run(
-                        ["git", "merge-base", "--is-ancestor", mb, f"origin/{cfg.main}"],
-                        cwd=ROOT,
+                        ["gh", "pr", "edit", str(pr_num), "--repo", REPO,
+                         "--remove-label", FACTORY_APPROVED],
                         check=False,
-                    ).returncode
-                    != 0
-                )
-            if behind:
-                record_merge_decision(
-                    n, pr_num, "refresh branch",
-                    f"approval head {head} is stale because the branch is behind {cfg.main}",
-                    head, head, checks,
-                )
-                if refresh_pr_branch(n, pr_num, carries_upstream):
-                    execution.outcome = "refreshed"
-                return
-            events = lifecycle.read_events(EVENTS)
-            if (
-                cfg.eval_schedule
-                and "files" in fresh
-                and not eval_suite.merge_allowed(changed_paths, head, events)
-            ):
-                candidate_command = (
-                    f"cd {shlex.quote(str(FACTORY / f'wt-{n}'))} && "
-                    f"{eval_command}"
-                )
-                command = candidate_command
-                if not eval_suite.baseline_ready(cfg):
-                    command = (
-                        f"cd {shlex.quote(str(ROOT))} && "
-                        f"{eval_command} && {candidate_command}"
                     )
-                log(f"PR #{pr_num}: worker eval keep claim missing for {head}; run `{command}`; not merging")
-                execution.outcome, execution.reason = "not_eligible", "eval_required"
-                execution.wait(
-                    "eval_required", mode="eligibility", pr=pr_num, head=head, command=command,
-                )
-                continue
-            approved = _head_evidence_matches(
-                events, n, head, changed_paths=changed_paths,
-            ) and any(
-                e.get("event") == "approved"
-                and e.get("ticket") == n
-                and e.get("pr") == pr_num
-                and e.get("head") == head
-                and e.get("gate_head") == head
-                and e.get("review_head") == head
-                for e in events
-            )
-            if not approved:
-                record_merge_decision(
-                    n, pr_num, "remove stale factory-approved label",
-                    f"approval evidence is missing or stale for head {head}",
-                    head, None, checks,
-                )
-                run(
-                    ["gh", "pr", "edit", str(pr_num), "--repo", REPO,
-                     "--remove-label", FACTORY_APPROVED],
-                    check=False,
-                )
-                escalate(
-                    n,
-                    f"PR #{pr_num}: missing approval evidence bound to {head}; "
-                    f"`{FACTORY_APPROVED}` label removed",
-                    None, code="approval_missing",
-                )
-                execution.outcome, execution.reason = "project_escalation", "state_changed"
-                continue
-            latest_checks = triage_cancelled(pr_num, pr_checks(pr_num, head), False, n, head)
-            latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
-            latest_starved = [c for c in latest_checks if c["bucket"] == "infra"]
-            if latest_failed:
-                record_merge_decision(
-                    n, pr_num, "remove stale factory-approved label",
-                    f"CI failed after eligibility check ({', '.join(latest_failed)})",
-                    head, head, latest_checks,
-                )
-                run(
-                    ["gh", "pr", "edit", str(pr_num), "--repo", REPO,
-                     "--remove-label", FACTORY_APPROVED],
-                    check=False,
-                )
-                escalate(
-                    n,
-                    f"PR #{pr_num}: CI failed ({', '.join(latest_failed)}); "
-                    f"`{FACTORY_APPROVED}` label removed",
-                    None, code="ci_failed",
-                )
-                continue
-            if latest_starved and runner_unavailable(n, pr_num, latest_starved, False):
-                record_merge_decision(
-                    n, pr_num, "ci-infra", "CI runner infrastructure became unavailable",
-                    head, head, latest_checks,
-                )
-                continue
-            if any(c["bucket"] in ("pending", "infra") for c in latest_checks):
-                execution.outcome, execution.reason = "not_eligible", "ci_pending"
-                execution.wait("ci_pending", mode="eligibility", pr=pr_num)
-                continue
-            if not any(c["bucket"] == "pass" for c in latest_checks):
-                execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
-                execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
-                continue
-            if gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]:
-                record_merge_decision(
-                    n, pr_num, "refresh branch",
-                    f"approval head {head} became stale because the branch moved behind {cfg.main}",
-                    head, head, latest_checks,
-                )
-                if refresh_pr_branch(n, pr_num, carries_upstream):
-                    execution.outcome = "refreshed"
-                return
-            final = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
-            final_labels = {label["name"] for label in final.get("labels", [])}
-            if (
-                final.get("state") != "OPEN"
-                or final.get("headRefName") != f"agent/{n}"
-                or final.get("headRefOid") != head
-                or final.get("baseRefName") != cfg.main
-                or final.get("isDraft")
-                or FACTORY_APPROVED not in final_labels
-                or final.get("reviewDecision") == "CHANGES_REQUESTED"
-            ):
-                log(f"PR #{pr_num}: head, label, or human review changed before merge; not merging")
-                continue
-            method = "--merge" if carries_upstream else "--squash"
-            body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
-            with lifecycle.scope(EVENTS, "merge", ticket=n):
-                run(
-                    [
-                        "gh",
-                        "pr",
-                        "merge",
-                        str(pr_num),
-                        "--repo",
-                        REPO,
-                        method,
-                        "--match-head-commit",
-                        head,
-                        "--subject",
-                        final["title"],
-                        "--body",
-                        body,
-                    ]
-                )
+                    escalate(
+                        n,
+                        f"PR #{pr_num}: missing approval evidence bound to {head}; "
+                        f"`{FACTORY_APPROVED}` label removed",
+                        None, code="approval_missing",
+                    )
+                    execution.outcome, execution.reason = "project_escalation", "state_changed"
+                    continue
+                latest_checks = triage_cancelled(pr_num, pr_checks(pr_num, head), False, n, head)
+                latest_failed = [c["name"] for c in latest_checks if c["bucket"] == "fail"]
+                latest_starved = [c for c in latest_checks if c["bucket"] == "infra"]
+                if latest_failed:
+                    record_merge_decision(
+                        n, pr_num, "remove stale factory-approved label",
+                        f"CI failed after eligibility check ({', '.join(latest_failed)})",
+                        head, head, latest_checks,
+                    )
+                    run(
+                        ["gh", "pr", "edit", str(pr_num), "--repo", REPO,
+                         "--remove-label", FACTORY_APPROVED],
+                        check=False,
+                    )
+                    escalate(
+                        n,
+                        f"PR #{pr_num}: CI failed ({', '.join(latest_failed)}); "
+                        f"`{FACTORY_APPROVED}` label removed",
+                        None, code="ci_failed",
+                    )
+                    continue
+                if latest_starved and runner_unavailable(n, pr_num, latest_starved, False):
+                    record_merge_decision(
+                        n, pr_num, "ci-infra", "CI runner infrastructure became unavailable",
+                        head, head, latest_checks,
+                    )
+                    continue
+                if any(c["bucket"] in ("pending", "infra") for c in latest_checks):
+                    execution.outcome, execution.reason = "not_eligible", "ci_pending"
+                    execution.wait("ci_pending", mode="eligibility", pr=pr_num)
+                    continue
+                if not any(c["bucket"] == "pass" for c in latest_checks):
+                    execution.outcome, execution.reason = "not_eligible", "no_passing_ci"
+                    execution.wait("no_passing_ci", mode="eligibility", pr=pr_num)
+                    continue
+                if gh_json(["api", f"repos/{REPO}/compare/{cfg.main}...{head}"])["behind_by"]:
+                    record_merge_decision(
+                        n, pr_num, "refresh branch",
+                        f"approval head {head} became stale because the branch moved behind {cfg.main}",
+                        head, head, latest_checks,
+                    )
+                    if refresh_pr_branch(n, pr_num, carries_upstream):
+                        execution.outcome = "refreshed"
+                    return
+                final = gh_json(["pr", "view", str(pr_num), "--repo", REPO, "--json", fields])
+                final_labels = {label["name"] for label in final.get("labels", [])}
+                if (
+                    final.get("state") != "OPEN"
+                    or final.get("headRefName") != f"agent/{n}"
+                    or final.get("headRefOid") != head
+                    or final.get("baseRefName") != cfg.main
+                    or final.get("isDraft")
+                    or FACTORY_APPROVED not in final_labels
+                    or final.get("reviewDecision") == "CHANGES_REQUESTED"
+                ):
+                    log(f"PR #{pr_num}: head, label, or human review changed before merge; not merging")
+                    continue
+                method = "--merge" if carries_upstream else "--squash"
+                body = f"Closes #{n}\n\n{signoff()}" if cfg.signoff else f"Closes #{n}"
+                with lifecycle.scope(EVENTS, "merge", ticket=n):
+                    run(
+                        [
+                            "gh",
+                            "pr",
+                            "merge",
+                            str(pr_num),
+                            "--repo",
+                            REPO,
+                            method,
+                            "--match-head-commit",
+                            head,
+                            "--subject",
+                            final["title"],
+                            "--body",
+                            body,
+                        ]
+                    )
+                    try:
+                        merged_pr = gh_json([
+                            "pr", "view", str(pr_num), "--repo", REPO, "--json", "mergeCommit",
+                        ])
+                        merge_commit = merged_pr.get("mergeCommit") if isinstance(merged_pr, dict) else None
+                        merge_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+                    except (
+                        gh_reads.ReadFailed, subprocess.CalledProcessError,
+                        json.JSONDecodeError, OSError,
+                    ):
+                        merge_sha = None
+                    record(
+                        "merged", ticket=n, pr=pr_num, method=method[2:], head=head,
+                        merge_sha=merge_sha,
+                    )
+                    record_merge_decision(
+                        n, pr_num, "merge now", f"gate, review, approval, and CI passed for {head}",
+                        head, head, latest_checks, merge_sha=merge_sha,
+                    )
+                execution.outcome = "merged"
+                log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
                 try:
-                    merged_pr = gh_json([
-                        "pr", "view", str(pr_num), "--repo", REPO, "--json", "mergeCommit",
-                    ])
-                    merge_commit = merged_pr.get("mergeCommit") if isinstance(merged_pr, dict) else None
-                    merge_sha = merge_commit.get("oid") if isinstance(merge_commit, dict) else None
-                except (subprocess.CalledProcessError, json.JSONDecodeError, OSError):
-                    merge_sha = None
-                record(
-                    "merged", ticket=n, pr=pr_num, method=method[2:], head=head,
-                    merge_sha=merge_sha,
-                )
-                record_merge_decision(
-                    n, pr_num, "merge now", f"gate, review, approval, and CI passed for {head}",
-                    head, head, latest_checks, merge_sha=merge_sha,
-                )
-            execution.outcome = "merged"
-            log(f"PR #{pr_num}: merged into {cfg.main} ({method[2:]}, ticket #{n})")
-            cleanup_after_merge(n, head)
-            return
+                    cleanup_after_merge(n, head)
+                except gh_reads.ReadFailed:
+                    log(f"PR #{pr_num}: merged; cleanup deferred after a failed GitHub read")
+                return
 
 
 def _handoff_done(path: Path) -> bool:
@@ -5517,6 +5647,7 @@ def _protected_gate_guidance(report: str, labels: set[str]) -> str | None:
         f"can add label `{LABEL_ADD_ONLY_OVERRIDE}` to clear it."
     )
 
+@gh_reads.guarded(lambda: EVENTS, "ticket")
 def process_ticket(
     issue: dict, budget_min: int, dry_run: bool, forced: bool = False,
     admission_id: str | None = None,
@@ -5612,12 +5743,41 @@ def process_ticket(
             shared_context = ""
             if cfg.host_name:
                 claims, shared_context = host_claim_state(n, require_shared_login=True)
+            if pending := _pending_escalation(n):
+                fresh_labels = {label["name"] for label in fresh["labels"]}
+                recoverable = (
+                    fresh["state"].upper() == "OPEN"
+                    and LABEL_AGENT in fresh_labels
+                    and LABEL_HUMAN not in fresh_labels
+                    and not issue.get("held")
+                )
+                if recoverable and fresh["assignees"]:
+                    if cfg.host_name:
+                        recoverable = all(
+                            assignee.get("login", "").casefold() == host_claim_login()
+                            for assignee in fresh["assignees"]
+                        )
+                    else:
+                        recoverable = recoverable_single_host_assignment(n, fresh)
+                if not recoverable:
+                    execution.outcome, execution.reason = "not_admitted", "state_changed"
+                    return
+                _recover_escalation(n, pending, claims)
+                execution.outcome, execution.reason = "project_escalation", pending["code"]
+                return
+            if cfg.host_name:
                 fresh = release_stale_claims(n, fresh, claims)
+            recovering_assignment = (
+                not forced and recoverable_single_host_assignment(n, fresh)
+            )
+            assigned_elsewhere = bool(fresh["assignees"]) and not (
+                (cfg.host_name and claims) or recovering_assignment
+            )
             if not forced and (
                 fresh["state"].upper() != "OPEN"
                 # Authenticated claims arbitrate a shared bot assignment below;
                 # stale recovery must not clear a replacement's assignment.
-                or (fresh["assignees"] and not (cfg.host_name and claims))
+                or assigned_elsewhere
                 or LABEL_AGENT not in {label["name"] for label in fresh["labels"]}
             ):
                 log(f"#{n}: skipped (state changed since frontier query)")
@@ -5938,6 +6098,9 @@ def process_ticket(
             else:
                 escalate(n, "approval evidence, head, or human review state changed before approval", logfile,
                          code="approval_drift")
+        except gh_reads.ReadFailed as exc:
+            execution.outcome, execution.reason = "mechanism_failure", exc.code
+            raise
         except HostSetupError as exc:
             log(f"#{n}: refused ({exc})")
             execution.outcome, execution.reason = "not_admitted", "host_setup"
@@ -5967,6 +6130,10 @@ def process_ticket(
                 execution.outcome, execution.reason = "unknown", f"{type(exc).__name__}: {exc}"
             raise
         finally:
+            failure = sys.exception()
+            if claimed and isinstance(failure, gh_reads.ReadFailed):
+                execution.outcome, execution.reason = "mechanism_failure", failure.code
+                record("ticket-read-deferred", ticket=n, code=failure.code)
             if host_claim is not None:
                 host_claim.stop()
                 _HOST_CLAIMS.pop(n, None)
@@ -5994,6 +6161,7 @@ def fairness_session() -> dict:
     return {"timer_invocation": invocation, "engine_version": __version__, "engine_commit": config.engine_commit()}
 
 
+@gh_reads.guarded(lambda: EVENTS, "dispatch")
 def ticket_pass(budget_min: int, dry_run: bool) -> None:
     """Claim up to capacity frontier tickets in accepted-priority order and work them concurrently.
 
@@ -6036,7 +6204,7 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
 
     pool = ThreadPoolExecutor(max_workers=capacity)
     try:
-        for remaining in range(capacity, 0, -1):
+        for remaining in gh_reads.items(range(capacity, 0, -1)):
             with nullcontext() if dry_run else lifecycle.scope(EVENTS, "scheduling", lazy=True):
                 rows = [issue for issue in frontier() if issue["number"] not in picked]
                 if all(issue.get("held") for issue in rows):
@@ -6071,7 +6239,7 @@ def ticket_pass(budget_min: int, dry_run: bool) -> None:
     except BaseException as error:
         # Ctrl-C reaches only this thread: stop the claimed pipelines too (each within WATCH_POLL).
         # A ranking failure (an Exception) leaves them to finish.
-        if not isinstance(error, Exception):
+        if not isinstance(error, (Exception, gh_reads.ReadFailed)):
             _CANCEL.set()
         raise
     finally:
@@ -6106,9 +6274,10 @@ def pin_root() -> list[str]:
     return paths
 
 
-def github_preflight(dry_run: bool) -> int | None:
+def github_preflight(dry_run: bool, *, bulk: bool = True) -> int | None:
     """No GitHub mutations until both API budgets and repository host setup are safe."""
     detail = ""
+    code = "gh_read_failed"
     try:
         resources = gh_json(["api", "rate_limit"])["resources"]
         for name in ("graphql", "core"):
@@ -6116,15 +6285,23 @@ def github_preflight(dry_run: bool) -> int | None:
             remaining = budget["remaining"]
             if type(remaining) is not int or remaining < 0:
                 raise ValueError(f"invalid {name} remaining budget")
-            if remaining < 100:
-                detail = f"{name} has {remaining} remaining (floor 100), reset {budget.get('reset', 'unknown')}"
+            # Bulk PR/issue listings request up to 1000 nodes with nested connections.
+            floor = 1000 if bulk and name == "graphql" else 100
+            if remaining < floor:
+                detail = f"{name} has {remaining} remaining (floor {floor}), reset {budget.get('reset', 'unknown')}"
+                code = "rate_limited"
+                reset = budget.get("reset")
+                reads = gh_reads.current()
+                if not dry_run and reads is not None and type(reset) is int and reset > time.time():
+                    reads.reason, reads.reset = code, reset
+                    reads.emit("gh-read-backoff", code=code, reset=reset)
                 break
     except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError) as exc:
         detail = f"cannot read GitHub rate limits ({exc})"
     if detail:
-        log(f"dispatch: skipped, GitHub rate limit: {detail}")
+        log(f"dispatch: skipped ({code}): {detail}")
         if not dry_run:
-            record("pass-skipped", reason="github_rate_limit", detail=detail)
+            record("pass-skipped", reason="github_rate_limit", code=code, detail=detail)
         return 0
     try:
         problem = repository_host_problem(REPO, cfg.host_name, gh_json, include_comments=cfg.host_name is None)
@@ -6173,11 +6350,19 @@ def main(argv: list[str]) -> int:
     yield_for_update = stale and cfg.engine_yield_for_update
 
     # Lazy: an idle pass (nothing claimed, merged, waited on or failed) journals no lifecycle rows.
-    with nullcontext() if args.dry_run else lifecycle.scope(
-        EVENTS, "dispatcher", dispatcher=True, lazy=True,
-        engine_version=__version__, engine_commit=installed,
+    with gh_reads.scope(EVENTS, "dispatch", persistent=not args.dry_run) as reads, (
+        nullcontext() if args.dry_run else lifecycle.scope(
+            EVENTS, "dispatcher", dispatcher=True, lazy=True,
+            engine_version=__version__, engine_commit=installed,
+        )
     ):
-        if (preflight := github_preflight(args.dry_run)) is not None:
+        if reads.stopped:
+            return 0
+        preflight = (
+            github_preflight(args.dry_run, bulk=False)
+            if args.ticket and not yield_for_update else github_preflight(args.dry_run)
+        )
+        if preflight is not None:
             return preflight
         if stale:
             log(f"engine-stale: installed {installed}, District target {target}")
@@ -6208,10 +6393,11 @@ def main(argv: list[str]) -> int:
                 ]
             )
             result = 1 if process_ticket(issue, args.budget_min, args.dry_run, forced=True) is False else 0
-            if not args.dry_run and result == 0:
+            if not args.dry_run and result == 0 and not reads.failed_reads and not reads.stopped:
                 lifecycle.record_stage_success(EVENTS, "dispatch")
             return result
 
+        @gh_reads.guarded(lambda: EVENTS, "release")
         def release_step(open_pr: bool) -> None:
             if not cfg.release_auto or args.dry_run:
                 return
@@ -6232,7 +6418,7 @@ def main(argv: list[str]) -> int:
         review_intake_pass(args.dry_run)
         if yield_for_update:
             log("engine-stale: yielding after land and review intake; no new tickets")
-            if not args.dry_run:
+            if not args.dry_run and not reads.failed_reads and not reads.stopped:
                 lifecycle.record_stage_success(EVENTS, "dispatch")
             return 0
         from factory.learn import learn_pass
@@ -6242,6 +6428,7 @@ def main(argv: list[str]) -> int:
         ticket_pass(args.budget_min, args.dry_run)
         learn_pass(args.dry_run)
         release_step(open_pr=True)
-        if not args.dry_run:
+        if not args.dry_run and not reads.failed_reads and not reads.stopped:
             lifecycle.record_stage_success(EVENTS, "dispatch")
         return 0
+    return 0
