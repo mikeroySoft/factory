@@ -1745,11 +1745,15 @@ host can remove an existing claim's `@me`, host label and comment, even after ex
 An in-process claim must also match the elected nonce before cleanup. Tickets
 assigned before host claims were enabled retain the original `@me` release path.
 If the label/assignee edit fails, unclaim retains its comment and host label so
-another host can recover the assignment after TTL expiry. Successful host-label
+the owning host can retry cleanup; cross-host recovery requires explicit removal
+of the foreign host label, even after TTL expiry. Successful host-label
 removals journal `claim-label-removed` receipts. The manager ignores those exact
 labels from the authenticated dispatcher only before the recorded escalation
 comment; human removals and later edits still hold automatic management.
 
+Foreign `host:<name>` labels hold selection regardless of claim expiry or release
+by an owner requeue marker. Only the labeled host can be selected while its label
+remains; TTL expiry alone never authorizes another host to take over.
 Expired claims are admitted through the frontier only when no other hold exists.
 A human assignee remains a hold. An open `agent/<ticket>` PR also remains a hold
 for foreign claims or completed attempts. When the elected own-host claim expires
@@ -1768,7 +1772,8 @@ Every refresh requeue publishes an authenticated `Factory requeue: nonce=<uuid>`
 issue comment with the refresh instructions, including when the owner releases
 its claim. The next host can consume that context even after the claim is deleted.
 Deferred actionable review rework uses the same ownership-aware release and shares
-its findings, so another host can resume the existing PR after the lease expires.
+its findings, so another host can resume the existing PR after the lease expires
+and an operator explicitly removes any foreign host label.
 Shared instructions take precedence over this host's local requeue journal. Local
 risk-disagreement history carries forward only when its instructions match the
 selected context; an intervening foreign requeue cannot trigger early escalation.
@@ -1782,18 +1787,23 @@ just because loser cleanup failed. A claim created at or after that lease expire
 starts a new election, so an old requeue cannot release newer completed work.
 Assigned stale claims stay intact until a replacement wins and assigns, so admission
 or claim failures cannot strand the shared `@me` assignment without recovery evidence.
-Dispatch then rechecks the heartbeat, removes stale comments/labels without clearing
+Dispatch then rechecks the heartbeat, removes stale comments without clearing
 the shared assignment, and records `claim-released` with the old host and last heartbeat.
+Automated label cleanup removes only the executing host's label, never another
+host's label.
 The elected owner revalidates its nonce before cleanup; a losing contender still
 deleting its live claim cannot block retirement of old stale ownership. Owner
 unclaim also retires older stale claims before deleting its own comment, so
 leftover claims cannot strand a later refresh requeue or escalation/relabel.
-Unassigned stale claims can be released before election. A foreign host label without
-a claim comment remains a hold; inspect it before removing it.
-Cleanup removes the host label before deleting its last claim comment, so a
-failed label edit retains TTL recovery evidence for the next pass. Another
-same-host contender keeps its label. If comment deletion fails with the comment
-still present, cleanup restores the label and surfaces the error.
+Unassigned stale claims can be released before election. Foreign host labels
+remain holds even without claim comments. Failed contender cleanup can leave
+such a label behind after its claim expires or is released; another host cannot
+strip it to recover. An operator must inspect the retained label and explicitly
+remove it to permit cross-host selection, or resume dispatch on the labeled host.
+For the executing host's own label, cleanup removes the label before deleting its
+last claim comment, so a failed label edit retains recovery evidence for the next
+pass. Another same-host contender keeps its label. If comment deletion fails with
+the comment still present, cleanup restores the label and surfaces the error.
 Hosts need synchronized clocks and current GitHub reads. This comment-based
 lease is not a fencing token for a disconnected worker that outlives its TTL.
 With `host_name` unset and no repository host evidence, ticket assignment retains
