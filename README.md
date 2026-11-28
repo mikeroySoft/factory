@@ -1519,6 +1519,11 @@ command = ["omp", "-p", "--no-session", "--model", "anthropic/claude-fable-5-1",
 # policy = "REVIEW.md"  # read from the base ref
 # second_command is host-only; it overrides Factory's code default for High-risk reviews.
 
+# For executables named `omp`, Factory removes the prompt-bearing arguments from
+# argv and sends their full text on stdin through a temporary 0600 file, removed
+# after the run. Other executables still receive {prompt} on argv; json_mode
+# changes output parsing, not prompt transport.
+
 [manager]                         # optional; unset command disables it
 command = ["omp", "-p", "--cwd", "{cwd}", "@{prompt}"]   # {prompt} = manager prompt file
 
@@ -1880,9 +1885,11 @@ Findings must each cite `path:line`; malformed output or a failed reviewer
 publishes nothing. Branch advancement cannot retarget the supplied diff or review.
 The same base-ref `[review].policy`, structured tally, nit cap, and
 Important-only blocking rule apply to this lane.
-Prompts exceeding 120 KiB (UTF-8, including the diff) are skipped before reviewer
-execution and recorded as `unknown` with reason `prompt_too_large`; intake
-continues with the next PR. The recorded revision is not automatically retried.
+For reviewers whose executable is not named `omp`, prompts exceeding 120 KiB
+(UTF-8, including the diff) are skipped before reviewer execution and recorded
+as `unknown` with reason `prompt_too_large`; intake continues with the next PR.
+The recorded revision is not automatically retried. Reviewers named `omp`
+receive the full prompt and diff on stdin without this size limit.
 Dispatch records SHA-specific required-CI readiness for admitted PRs and escalates
 exhausted review attempts to a human issue. This lane does not change contributor
 branches or merge external PRs.
