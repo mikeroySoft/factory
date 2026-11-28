@@ -4808,7 +4808,7 @@ def _producer_only_landing() -> bool:
 
 
 def _local_landing_heads() -> set[tuple[int, int, str]]:
-    """Producer routing uses only this host's complete, exact-head approval evidence."""
+    """Route recorded local approvals, including rejections needing withdrawal."""
     events = lifecycle.read_events(EVENTS)
     return {
         (e["pr"], e["ticket"], e["head"])
@@ -4818,9 +4818,6 @@ def _local_landing_heads() -> set[tuple[int, int, str]]:
         and isinstance(e.get("ticket"), int)
         and isinstance(e.get("head"), str)
         and e.get("gate_head") == e["head"] == e.get("review_head")
-        and _head_evidence_matches(events, e["ticket"], e["head"])
-        and latest_head_review_verdict(events, e["ticket"], e["pr"], e["head"])
-        not in {"REQUEST_CHANGES", "REVISE"}
     }
 
 
