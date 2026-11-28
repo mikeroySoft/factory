@@ -55,7 +55,7 @@ class HostClaimTransitionTest(unittest.TestCase):
     dispatcher = Harness.dispatcher
     launch = Harness.launch
 
-    def test_failed_unassignment_retains_claim_for_ttl_recovery(self):
+    def test_failed_unassignment_retains_claim_until_human_unpins_ttl_recovery(self):
         tank = self.dispatcher("tank")
         claim = self.github.add_claim("tank", datetime.now(UTC))
         before = copy.deepcopy((self.github.issue, self.github.comments))
@@ -84,6 +84,14 @@ class HostClaimTransitionTest(unittest.TestCase):
         with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
             clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
             [issue] = ultron.frontier()
+            self.assertEqual(issue.get("held"), "host label (tank)")
+            ultron.process_ticket(issue, 1, False)
+            self.assertEqual((self.github.issue, self.github.comments), before)
+            self.assertEqual(self.launched, [])
+            self.github.run("human", [
+                "gh", "issue", "edit", "7", "--remove-label", "host:tank",
+            ])
+            [issue] = ultron.frontier()
             self.assertNotIn("held", issue)
             ultron.process_ticket(issue, 1, False)
         self.assertEqual(self.launched, ["ultron"])
@@ -100,12 +108,14 @@ class HostClaimTransitionTest(unittest.TestCase):
         self.github.add_claim("tank", datetime.now(UTC))
         tank.escalate(7, "gate failed", None, code="gate_failed")
         self.assertEqual(self.github.issue["assignees"], [])
-        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-human"}])
+        self.assertEqual(self.github.issue["labels"],
+                         [{"name": "host:old"}, {"name": "ready-for-human"}])
         with mock.patch.object(manage, "dispatch", tank), \
                 mock.patch.object(manage.handoff, "dispatch", tank):
             manage.escalation_pass()
         self.assertEqual(self.github.manager_runs, 1)
-        self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+        self.assertEqual(self.github.issue["labels"],
+                         [{"name": "host:old"}, {"name": "ready-for-agent"}])
         decisions = [row["decision"] for row in lifecycle.read_events(tank.EVENTS)
                      if row.get("event") == "manage"]
         self.assertEqual(decisions, ["RETRY"])

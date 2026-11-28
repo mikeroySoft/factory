@@ -55,6 +55,10 @@ class HostClaimCleanupTest(unittest.TestCase):
                        if row["body"].startswith("Factory requeue:"))
         self.assertEqual(requeue["body"].splitlines()[0],
                          f"Factory requeue: nonce={winner['nonce']}")
+        self.assertEqual(ultron.frontier()[0].get("held"), "host label (tank)")
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:tank",
+        ])
         [issue] = ultron.frontier()
         self.assertNotIn("held", issue)
         received = []
@@ -72,7 +76,7 @@ class HostClaimCleanupTest(unittest.TestCase):
         self.assertEqual(len(ultron.host_claims(7)), 1)
         for clock in clocks:
             clock.now.return_value += timedelta(hours=3)
-        self.assertEqual(tank.frontier()[0].get("held"), "open PR")
+        self.assertEqual(tank.frontier()[0].get("held"), "host label (ultron)")
 
     def test_foreign_live_requeue_survives_failed_loser_cleanup(self):
         self.requeue_with_abandoned_loser(after_expiry=False)
@@ -95,7 +99,7 @@ class HostClaimCleanupTest(unittest.TestCase):
         with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
             clock.now.return_value = now
             [issue] = ultron.frontier()
-            self.assertEqual(issue.get("held"), "open PR")
+            self.assertEqual(issue.get("held"), "host label (loser, old, tank)")
             ultron.process_ticket(issue, 1, False)
             self.assertEqual(self.launched, [])
             self.assertIn(replacement, self.github.comments)

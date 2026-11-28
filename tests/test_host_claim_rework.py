@@ -35,7 +35,7 @@ class HostClaimReworkTest(unittest.TestCase):
         self.assertEqual(dispatch.host_claims(7), [])
         self.assertIn("Resolve shared.py conflict", dispatch.host_claim_state(7)[1])
 
-    def test_foreign_deferred_rework_keeps_live_owner_then_resumes_after_expiry(self):
+    def test_foreign_deferred_rework_requires_human_unpin_after_expiry(self):
         self.configure("ultron")
         old = self.github.add_claim("tank", datetime.now(UTC))
         self.github.open_prs = [{"number": 70}]
@@ -48,10 +48,16 @@ class HostClaimReworkTest(unittest.TestCase):
         self.assertEqual(dispatch.host_claim_hold(7, self.github.issue, dispatch.host_claims(7)),
                          "host claim (tank)")
         self.assertIn(before_claim, self.github.comments)
+        self.assertIn({"name": "host:tank"}, self.github.issue["labels"])
         self.assertNotIn({"name": "ready-for-human"}, self.github.issue["labels"])
         with mock.patch.object(dispatch, "datetime", wraps=datetime) as clock:
             clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
             claims, context = dispatch.host_claim_state(7)
+            self.assertEqual(dispatch.host_claim_hold(7, self.github.issue, claims),
+                             "host label (tank)")
+            self.assertIn({"name": "host:tank"}, self.github.issue["labels"])
+            # A human, not deferred rework or TTL expiry, authorizes reassignment.
+            self.github.issue["labels"].remove({"name": "host:tank"})
             self.assertIsNone(dispatch.host_claim_hold(7, self.github.issue, claims))
             self.assertIn("Resolve shared.py conflict", context)
 

@@ -106,7 +106,7 @@ class HostClaimRevisionTest(unittest.TestCase):
         self.github.issue["labels"].append({"name": "host:thor"})
         tank = self.dispatcher("tank")
         [issue] = tank.frontier()
-        self.assertEqual(issue.get("held"), "host label (thor)")
+        self.assertEqual(issue.get("held"), "host label (thor, ultron)")
         before = copy.deepcopy((self.github.issue, self.github.comments))
         tank.process_ticket(issue, 1, False)
         self.assertEqual((self.github.issue, self.github.comments), before)
@@ -135,6 +135,9 @@ class HostClaimRevisionTest(unittest.TestCase):
         # remain assigned even if another stale releaser is still in flight.
         self.github.issue["assignees"] = []
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:old",
+        ])
         for module in (tank, ultron):
             clock = self.enterContext(mock.patch.object(module, "datetime", wraps=datetime))
             clock.now.return_value = now
@@ -173,6 +176,9 @@ class HostClaimRevisionTest(unittest.TestCase):
         self.github.open_prs = [{"number": 70}]
         tank = self.dispatcher("tank")
         clock = self.enterContext(mock.patch.object(tank, "datetime", wraps=datetime))
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:ultron",
+        ])
         clock.now.return_value = now
 
         [issue] = tank.frontier()
@@ -189,6 +195,9 @@ class HostClaimRevisionTest(unittest.TestCase):
         for module in (tank, ultron):
             clock = self.enterContext(mock.patch.object(module, "datetime", wraps=datetime))
             clock.now.return_value = now
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:old",
+        ])
         read = tank.gh_json
         claim_reads = 0
 
@@ -234,6 +243,9 @@ class HostClaimRevisionTest(unittest.TestCase):
         self.github.add_claim("ultron", datetime.now(UTC) - timedelta(seconds=5))
         self.github.issue["assignees"].append({"login": "human"})
         tank = self.dispatcher("tank", claim_ttl="1s")
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:ultron",
+        ])
         [issue] = tank.frontier()
         self.assertEqual(issue.get("held"), "assigned")
         before = copy.deepcopy((self.github.issue, self.github.comments))
@@ -269,6 +281,9 @@ class HostClaimRevisionTest(unittest.TestCase):
 
         tank = self.dispatcher("tank")
         old = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3))
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:ultron",
+        ])
         for refusal in ("state", "worker", "plan"):
             with self.subTest(refusal=refusal):
                 issue = copy.deepcopy(self.github.issue)
@@ -281,7 +296,7 @@ class HostClaimRevisionTest(unittest.TestCase):
                 self.github.issue["state"] = "OPEN"
                 self.assertEqual(self.launched, [])
                 self.assertEqual(self.github.comments, [old])
-                self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
+                self.assertNotIn({"name": "host:ultron"}, self.github.issue["labels"])
                 self.assertNotIn("held", tank.frontier()[0])
         tank.process_ticket(tank.frontier()[0], 1, False)
         self.assertEqual(self.launched, ["tank"])
@@ -291,6 +306,9 @@ class HostClaimRevisionTest(unittest.TestCase):
     def test_stale_assignment_remains_recoverable_when_claim_creation_or_assignment_fails(self):
         tank = self.dispatcher("tank")
         old = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3))
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:ultron",
+        ])
         run = tank.run
         for failing_arg in ("--color", "--add-assignee"):
             with self.subTest(failing_arg=failing_arg):
@@ -306,6 +324,7 @@ class HostClaimRevisionTest(unittest.TestCase):
                     else:
                         tank.process_ticket(tank.frontier()[0], 1, False)
                 self.assertEqual(self.launched, [])
+                self.assertNotIn({"name": "host:ultron"}, self.github.issue["labels"])
                 self.assertEqual(self.github.comments, [old])
                 self.assertNotIn("held", tank.frontier()[0])
         tank.process_ticket(tank.frontier()[0], 1, False)
@@ -381,6 +400,9 @@ class HostClaimRevisionTest(unittest.TestCase):
         self.github.add_claim("tank", datetime.now(UTC) - timedelta(hours=3))
         self.github.open_prs = [{"number": 70}]
         tank = self.dispatcher("tank")
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:ultron",
+        ])
 
         [issue] = tank.frontier()
         self.assertEqual(issue.get("held"), "open PR")
@@ -422,7 +444,13 @@ class HostClaimRevisionTest(unittest.TestCase):
         for module in (tank, ultron):
             clock = self.enterContext(mock.patch.object(module, "datetime", wraps=datetime))
             clock.now.return_value = after_ttl
-            self.assertNotIn("held", module.frontier()[0])
+            if module is tank:
+                self.assertNotIn("held", module.frontier()[0])
+            else:
+                self.assertEqual(module.frontier()[0].get("held"), "host label (tank)")
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:tank",
+        ])
         context = []
 
         def worker(*args, **kwargs):
@@ -436,7 +464,8 @@ class HostClaimRevisionTest(unittest.TestCase):
         self.assertIn("CI failed on PR #70", context[0])
         for module in (tank, ultron):
             module.datetime.now.return_value += timedelta(hours=3)
-            self.assertEqual(module.frontier()[0].get("held"), "open PR")
+            self.assertEqual(module.frontier()[0].get("held"),
+                             "open PR" if module is ultron else "host label (ultron)")
 
     def test_pre_host_assignment_can_be_released_and_redispatched(self):
         tank = self.dispatcher("tank")
@@ -517,6 +546,9 @@ class HostClaimRevisionTest(unittest.TestCase):
                         "api", "repos/local/claims/issues/7/comments", "--method", "POST",
                         "-f", f"body=Factory requeue: nonce={nonce}\nObsolete refresh instructions",
                     ])
+                    self.github.run("human", [
+                        "gh", "issue", "edit", "7", "--remove-label", "host:thor",
+                    ])
                 self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3))
                 self.github.open_prs = [{"number": 70}]
                 if transition == "refresh":
@@ -550,6 +582,9 @@ class HostClaimRevisionTest(unittest.TestCase):
 
         old = self.github.add_claim("old", datetime.now(UTC) - timedelta(hours=3))
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:old",
+        ])
         issues = [module.frontier()[0] for module in (tank, ultron)]
         self.assertTrue(all("held" not in issue for issue in issues))
         self.github.fresh_barrier = threading.Barrier(2)
@@ -647,7 +682,12 @@ class HostClaimRevisionTest(unittest.TestCase):
                     ])
                 self.assertNotIn(old, self.github.comments)
                 self.assertEqual(self.github.issue["assignees"], [])
-                self.assertEqual(self.github.issue["labels"], [{"name": "ready-for-agent"}])
+                self.assertEqual(self.github.issue["labels"],
+                                 [{"name": "ready-for-agent"}, {"name": "host:old"}])
+                self.assertEqual(ultron.frontier()[0].get("held"), "host label (old)")
+                self.github.run("human", [
+                    "gh", "issue", "edit", "7", "--remove-label", "host:old",
+                ])
                 self.assertNotIn("held", ultron.frontier()[0])
                 ultron.process_ticket(ultron.frontier()[0], 1, False)
                 with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
@@ -714,6 +754,10 @@ class HostClaimOwnershipTest(unittest.TestCase):
         for host in ("old", "ultron", "old"):
             self.github.add_claim(host, datetime.now(UTC) - timedelta(hours=3))
         self.github.next_id = 1000
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:old",
+            "--remove-label", "host:ultron",
+        ])
         read = tank.gh_json
 
         def serialized_read(args):
@@ -749,7 +793,7 @@ class HostClaimOwnershipTest(unittest.TestCase):
         self.assertEqual(self.github.comments, [replacement])
         self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
         self.assertEqual(self.github.issue["labels"],
-                         [{"name": "ready-for-agent"}, {"name": "host:tank"}])
+                         [{"name": "ready-for-agent"}, {"name": "host:tank"}, {"name": "host:old"}])
 
     def test_ready_label_removed_during_election_prevents_worker_launch(self):
         tank = self.dispatcher("tank")

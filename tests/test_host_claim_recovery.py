@@ -27,20 +27,26 @@ class HostClaimRecoveryTest(unittest.TestCase):
 
         return mock.patch.object(module, "run", side_effect=refuse)
 
-    def test_stale_label_failure_is_recovered_by_next_dispatch_pass(self):
+    def test_stale_foreign_label_pins_until_human_removal(self):
         old = self.github.add_claim("ultron", datetime.now(UTC) - timedelta(hours=3))
         self.github.issue["assignees"] = []
         tank = self.dispatcher("tank")
 
-        with self.refuse_host_label_removal(tank), self.assertRaises(subprocess.CalledProcessError):
-            tank.process_ticket(tank.frontier()[0], 1, False)
+        with self.refuse_host_label_removal(tank):
+            for _ in range(2):
+                [issue] = tank.frontier()
+                self.assertEqual(issue["held"], "host label (ultron)")
+                tank.process_ticket(issue, 1, False)
 
         self.assertIn(old, self.github.comments)
         self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
         self.assertEqual(self.launched, [])
+        # A human explicitly authorizes the takeover by removing the pin.
+        self.github.issue["labels"].remove({"name": "host:ultron"})
         [issue] = tank.frontier()
         self.assertNotIn("held", issue)
-        tank.process_ticket(issue, 1, False)
+        with self.refuse_host_label_removal(tank):
+            tank.process_ticket(issue, 1, False)
 
         self.assertEqual(self.launched, ["tank"])
         self.assertEqual(self.github.issue["labels"],
@@ -51,7 +57,7 @@ class HostClaimRecoveryTest(unittest.TestCase):
         self.assertEqual([(row["host"], row["last_heartbeat"]) for row in released],
                          [("ultron", old["created_at"])])
 
-    def test_losing_contender_label_failure_does_not_strand_foreign_label(self):
+    def test_losing_contender_label_failure_requires_human_removal_for_takeover(self):
         tank, ultron = self.dispatcher("tank"), self.dispatcher("ultron")
         read = ultron.gh_json
         raced = False
@@ -76,11 +82,18 @@ class HostClaimRecoveryTest(unittest.TestCase):
         self.assertEqual(self.github.issue["assignees"], [{"login": "@me"}])
         self.assertIn("tank", ultron.frontier()[0]["held"])
 
-        # The winner finishes normally. A later host recovers the abandoned loser.
+        # The winner can release only its own label, not the abandoned loser's pin.
         tank.unclaim(7)
         thor = self.dispatcher("thor")
         with mock.patch.object(thor, "datetime", wraps=datetime) as clock:
             clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
+            [issue] = thor.frontier()
+            self.assertEqual(issue["held"], "host label (ultron)")
+            thor.process_ticket(issue, 1, False)
+            self.assertEqual(self.launched, ["tank"])
+            self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
+            # A human removes the failed contender's pin before reassigning.
+            self.github.issue["labels"].remove({"name": "host:ultron"})
             [issue] = thor.frontier()
             self.assertNotIn("held", issue)
             thor.process_ticket(issue, 1, False)
@@ -89,7 +102,7 @@ class HostClaimRecoveryTest(unittest.TestCase):
                          [{"name": "ready-for-agent"}, {"name": "host:thor"}])
         self.assertEqual([row["host"] for row in thor.host_claims(7)], ["thor"])
 
-    def test_owner_unclaim_label_failure_is_recovered_on_foreign_requeue(self):
+    def test_owner_unclaim_label_failure_requires_human_removal_for_foreign_requeue(self):
         tank = self.dispatcher("tank")
         tank.process_ticket(tank.frontier()[0], 1, False)
         [owned] = tank.host_claims(7)
@@ -104,6 +117,13 @@ class HostClaimRecoveryTest(unittest.TestCase):
         ultron = self.dispatcher("ultron")
         with mock.patch.object(ultron, "datetime", wraps=datetime) as clock:
             clock.now.return_value = datetime.now(UTC) + timedelta(hours=3)
+            [issue] = ultron.frontier()
+            self.assertEqual(issue["held"], "host label (tank)")
+            ultron.process_ticket(issue, 1, False)
+            self.assertEqual(self.launched, ["tank"])
+            self.assertIn({"name": "host:tank"}, self.github.issue["labels"])
+            # Requeue evidence does not authorize another host to remove the pin.
+            self.github.issue["labels"].remove({"name": "host:tank"})
             [issue] = ultron.frontier()
             self.assertNotIn("held", issue)
             ultron.process_ticket(issue, 1, False)

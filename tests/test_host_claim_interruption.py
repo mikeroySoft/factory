@@ -75,7 +75,7 @@ class HostClaimInterruptionTest(unittest.TestCase):
         self.assertEqual(tank.frontier()[0].get("held"), "host claim (tank)")
         ultron = self.dispatcher("ultron")
         self.expire(ultron)
-        self.assertEqual(ultron.frontier()[0].get("held"), "open PR")
+        self.assertEqual(ultron.frontier()[0].get("held"), "host label (tank)")
 
     def test_completed_own_attempt_remains_held_after_expiry(self):
         tank = self.dispatcher("tank")

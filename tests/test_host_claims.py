@@ -203,13 +203,22 @@ class HostClaimRaceTest(unittest.TestCase):
         self.assertEqual(len(self.github.comments), 1)
         self.assertTrue(self.github.comments[0]["body"].startswith(f"Factory claim: host={winner} "))
 
-    def test_stale_claim_past_ttl_is_released_and_reclaimed(self):
+    def test_stale_claim_past_ttl_is_reclaimed_only_after_human_unpins(self):
         now = datetime(2026, 11, 2, tzinfo=UTC)
         old = self.github.add_claim("ultron", now - timedelta(seconds=5))
         tank = self.dispatcher("tank", claim_ttl="1s")
         clock = self.enterContext(mock.patch.object(tank, "datetime", wraps=datetime))
         clock.now.return_value = now
 
+        [stale] = tank.frontier()
+        self.assertEqual(stale["held"], "host label (ultron)")
+        tank.process_ticket(stale, 1, False)
+        self.assertEqual(self.launched, [])
+        self.assertIn(old, self.github.comments)
+        self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
+
+        # A human explicitly removes the persistent pin before takeover.
+        self.github.issue["labels"].remove({"name": "host:ultron"})
         [stale] = tank.frontier()
         self.assertNotIn("held", stale)
         tank.process_ticket(stale, 1, False)
@@ -236,12 +245,19 @@ class HostClaimRaceTest(unittest.TestCase):
         thor.process_ticket(live, 1, False)
         self.assertEqual(self.launched, ["tank"])
 
-    def test_claim_at_ttl_boundary_is_released(self):
+    def test_claim_at_ttl_boundary_keeps_foreign_pin_until_human_removal(self):
         now = datetime.now(UTC)
         self.github.add_claim("ultron", now - timedelta(seconds=1))
         tank = self.dispatcher("tank", claim_ttl="1s")
         with mock.patch.object(tank, "datetime", wraps=datetime) as clock:
             clock.now.return_value = now
+            [issue] = tank.frontier()
+            self.assertEqual(issue["held"], "host label (ultron)")
+            tank.process_ticket(issue, 1, False)
+            self.assertEqual(self.launched, [])
+            self.assertIn({"name": "host:ultron"}, self.github.issue["labels"])
+            # A human can authorize takeover once the claim has expired.
+            self.github.issue["labels"].remove({"name": "host:ultron"})
             [issue] = tank.frontier()
             self.assertNotIn("held", issue)
             tank.process_ticket(issue, 1, False)
