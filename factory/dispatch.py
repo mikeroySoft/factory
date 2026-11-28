@@ -706,15 +706,15 @@ def delete_host_claim(n: int, claim: dict) -> None:
         # Keep the comment as durable TTL recovery evidence until label cleanup succeeds.
         run(["gh", "issue", "edit", str(n), "--repo", REPO,
              "--remove-label", f"host:{claim['host']}"])
+        record("claim-label-removed", ticket=n, label=f"host:{claim['host']}")
     result = run(["gh", "api", f"repos/{REPO}/issues/comments/{claim['id']}",
                   "--method", "DELETE"], check=False)
     if result.returncode and any(row["id"] == claim["id"] for row in host_claims(n)):
         if remove_label:
             run(["gh", "issue", "edit", str(n), "--repo", REPO,
                  "--add-label", f"host:{claim['host']}"])
+            record("claim-label-restored", ticket=n, label=f"host:{claim['host']}")
         result.check_returncode()
-    if remove_label:
-        record("claim-label-removed", ticket=n, label=f"host:{claim['host']}")
 
 
 def release_stale_claims(n: int, issue: dict, claims: list[dict], *, replacement: int | None = None) -> dict:
@@ -866,6 +866,8 @@ def unclaim(n: int, *label_args: str, check: bool = False, assignee_last: bool =
     args = [*label_args, *assignee] if assignee_last else [*assignee, *label_args]
     if args and run(["gh", "issue", "edit", str(n), "--repo", REPO, *args], check=check).returncode:
         return
+    if assignee:
+        record("claim-unassigned", ticket=n)
     if owned is not None:
         delete_host_claim(n, owned)
 

@@ -775,8 +775,11 @@ in the same pass. This is a request, not authority: no failure escalation or
 `ready-for-human` label is applied unless the manager declines. Without an
 available manager, the durable request waits without launching another worker.
 Queued requests release the ticket assignment and host claim while the durable
-pending guard blocks further workers; Factory's own cleanup does not count as
-human takeover on later manager passes. A live `factory-add-only-override` label
+pending guard blocks further workers; same-pass releasing decisions also clear
+the assignment. Successful unassignment and host-label transitions are journaled
+before later host cleanup can fail, so partial cleanup can recover its request
+marker without counting as human takeover on later manager passes.
+A live `factory-add-only-override` label
 completes that pending request at dispatch or manager admission, without replaying
 the manager, including after a partial decision application. Unrelated human
 activity does not grant authorization. CLOSE and SPLIT retain the parent in

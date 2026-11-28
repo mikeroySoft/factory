@@ -291,7 +291,7 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
     items = handoff.timeline(n)
     machine = {e["comment"] for e in events if e.get("event") == "comment"}
     release = _request_release(escalation, events) if escalation.get("event") == "manager-request" else None
-    marker_events = events[release + 1:] if release is not None else events
+    marker_events = events[release:] if release is not None else events
     escalation_comments = {e["comment"] for e in marker_events if e.get("event") == "comment"
                            and e.get("kind") == "escalation" and e.get("round") == escalation.get("round")
                            and e.get("at", "") >= escalation["at"]}
@@ -301,6 +301,8 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
         return True
     removed_host_labels = {e["label"] for e in events[events.index(escalation):]
                            if e.get("event") == "claim-label-removed"}
+    restored_host_labels = {e["label"] for e in events[events.index(escalation):]
+                            if e.get("event") == "claim-label-restored"}
     for index, item in enumerate(items):
         if item.get("created_at", "") < escalation["at"]:
             continue
@@ -319,6 +321,8 @@ def human_activity(n: int, escalation: dict, events: list[dict]) -> bool:
             )
             or (kind == "unlabeled" and item.get("label", {}).get("name") == LABEL_AGENT)
             or (kind == "unlabeled" and item.get("label", {}).get("name") in removed_host_labels
+                and (item.get("actor") or {}).get("login", "").casefold() == dispatch.host_claim_login())
+            or (kind == "labeled" and item.get("label", {}).get("name") in restored_host_labels
                 and (item.get("actor") or {}).get("login", "").casefold() == dispatch.host_claim_login())
             or kind == "unassigned"
         ):
@@ -1165,7 +1169,7 @@ def _pending_add_only_row(events: list[dict], n: int) -> dict | None:
         if request.get("exhausted"):
             return None
         recovery = next((
-            row for row in reversed(rows[index + 1:])
+            row for row in reversed(rows[index:])
             if row.get("event") in {"manager-request-failed", "manager-request-complete"}
             and row.get("packet") == request.get("packet")
             and row.get("round") == request.get("round")
@@ -1173,7 +1177,7 @@ def _pending_add_only_row(events: list[dict], n: int) -> dict | None:
         if recovery is not None:
             return request if recovery["event"] == "manager-request-failed" else None
         managed = [
-            row for row in rows[index + 1:]
+            row for row in rows[index:]
             if row.get("event") == "manage"
             and row.get("code") == "add_only_authorization"
             and row.get("packet") == request.get("packet")
@@ -1204,7 +1208,7 @@ def pending_add_only_request(n: int, *, labels: set[str] | None = None) -> bool:
 
 def _ensure_request_comment(n: int, request: dict, events: list[dict]) -> bool:
     release = _request_release(request, events)
-    events = events[release + 1:] if release is not None else events
+    events = events[release:] if release is not None else events
     if any(
         row.get("event") == "comment"
         and row.get("kind") == "escalation"
@@ -1255,10 +1259,10 @@ def _manager_decision(
     wt = cfg.factory / f"wt-{n}"
     cwd = wt if wt.is_dir() else cfg.root
     prompt_path = cfg.factory / f"manager-prompt-{n}.md"
-    prompt_path.write_text("\n\n".join(parts))
     notes = rejected = None
     output = ""
     try:
+        prompt_path.write_text("\n\n".join(parts))
         proc = dispatch.run(cfg.manager_cmd(prompt_path, cwd), cwd=cwd, check=False)
         output = proc.stdout
         if proc.returncode:
@@ -1306,6 +1310,27 @@ def _manager_decision(
         packet=str(packet), notes=status, rejected=rejected, **({"code": code} if code else {}),
     )
     return decision, body, data
+
+
+def _release_add_only_claim(n: int, request: dict, *labels: str) -> None:
+    events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
+    before_release = len(events)
+    released = False
+    try:
+        dispatch.unclaim(n, *labels, check=True)
+        released = True
+    finally:
+        events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
+        # Unassignment may succeed before host-comment deletion fails.
+        if released or any(
+            row.get("event") == "claim-unassigned" for row in events[before_release:]
+        ):
+            dispatch.record(
+                "manager-request-release", ticket=n,
+                packet=request["packet"], round=request["round"],
+            )
+            events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
+            _ensure_request_comment(n, request, events)
 
 
 def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
@@ -1372,9 +1397,11 @@ def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
                 apply_fix(n, issue, data, packet, round=request["round"])
                 return
             if decision in {"CLOSE", "SPLIT"}:
-                dispatch.unclaim(
-                    n, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN,
+                _release_add_only_claim(
+                    n, request, "--remove-label", LABEL_AGENT, "--add-label", LABEL_HUMAN,
                 )
+            else:
+                _release_add_only_claim(n, request)
             apply(n, issue, decision, body, data, packet)
         except dispatch.WorkerUnavailable:
             release_pending = True
@@ -1390,16 +1417,9 @@ def _handle_add_only_request(n: int, issue: dict, request: dict) -> None:
             events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
             if _request_release(request, events) is None:
                 try:
-                    dispatch.unclaim(n, "--add-label", LABEL_AGENT, check=True)
+                    _release_add_only_claim(n, request, "--add-label", LABEL_AGENT)
                 except (CalledProcessError, OSError, ValueError) as exc:
                     dispatch.log(f"#{n}: manager request release failed ({exc}); request remains queued")
-                else:
-                    dispatch.record(
-                        "manager-request-release", ticket=n,
-                        packet=request["packet"], round=request["round"],
-                    )
-                    events = generation.current(lifecycle.read_events(dispatch.EVENTS), n).rows
-                    _ensure_request_comment(n, request, events)
 
 
 def request_add_only_authorization(
