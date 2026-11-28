@@ -81,3 +81,35 @@ class ProducerLandTest(unittest.TestCase):
         self.assertEqual([row["head"] for row in self.events(ultron, "review")], [old, head])
         ultron.land_pass(False)
         self.assertTrue(self.github.merged)
+
+    def test_producer_withdraws_approval_after_comment_requested_changes(self):
+        ultron = self.dispatcher("ultron")
+        self.claim("ultron", age=3 * 3600)
+        head = self.approve(ultron)
+        ultron.record("review-result", pr=102, head=head, verdict="REQUEST_CHANGES")
+        self.assertEqual(self.github.pr()["reviewDecision"], "")
+
+        ultron.land_pass(True)
+        self.assert_untouched(ultron)
+        ultron.land_pass(False)
+
+        self.assertFalse(self.github.merged)
+        self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+        self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertEqual([row["code"] for row in self.events(ultron, "escalate")], ["review_revise"])
+        self.assertEqual(self.events(ultron, "refreshed"), [])
+
+    def test_producer_withdraws_approval_after_local_review_revise(self):
+        ultron = self.dispatcher("ultron")
+        self.claim("ultron")
+        head = self.approve(ultron)
+        ultron.record("review", ticket=9, head=head, actual_head=head,
+                      accepted=False, verdict="REVISE", role="primary")
+
+        ultron.land_pass(False)
+
+        self.assertFalse(self.github.merged)
+        self.assertNotIn(config.LABEL_APPROVED, self.github.pr_labels)
+        self.assertIn(config.LABEL_HUMAN, self.github.issue_labels)
+        self.assertEqual([row["code"] for row in self.events(ultron, "escalate")], ["review_revise"])
+        self.assertEqual(self.events(ultron, "refreshed"), [])
