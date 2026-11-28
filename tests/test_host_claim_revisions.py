@@ -682,8 +682,8 @@ class HostClaimRevisionTest(unittest.TestCase):
                     ])
                 self.assertNotIn(old, self.github.comments)
                 self.assertEqual(self.github.issue["assignees"], [])
-                self.assertEqual(self.github.issue["labels"],
-                                 [{"name": "ready-for-agent"}, {"name": "host:old"}])
+                self.assertCountEqual(self.github.issue["labels"],
+                                      [{"name": "ready-for-agent"}, {"name": "host:old"}])
                 self.assertEqual(ultron.frontier()[0].get("held"), "host label (old)")
                 self.github.run("human", [
                     "gh", "issue", "edit", "7", "--remove-label", "host:old",
@@ -756,7 +756,9 @@ class HostClaimOwnershipTest(unittest.TestCase):
         self.github.next_id = 1000
         self.github.run("human", [
             "gh", "issue", "edit", "7", "--remove-label", "host:old",
-            "--remove-label", "host:ultron",
+        ])
+        self.github.run("human", [
+            "gh", "issue", "edit", "7", "--remove-label", "host:ultron",
         ])
         read = tank.gh_json
 

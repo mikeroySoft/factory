@@ -354,6 +354,10 @@ class InterruptedClaimRequeueTrustTest(unittest.TestCase):
                 tank = self.dispatcher("tank")
                 now = datetime.now(UTC)
                 prior = self.github.add_claim("ultron", now - timedelta(hours=6)) if kind == "obsolete" else None
+                if prior:
+                    self.github.run("human", [
+                        "gh", "issue", "edit", "7", "--remove-label", "host:ultron",
+                    ])
                 current = self.github.add_claim("tank", now - timedelta(hours=3))
                 nonce = (prior or current)["body"].split("nonce=", 1)[1].split()[0]
                 self.github.comments.append({
